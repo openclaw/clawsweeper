@@ -1,0 +1,1 @@
+- Pass workflow and composite-action inputs through environment variables, reject malformed comment dispatch identifiers, and restrict activity notifications to read-only access and same-repository workflow runs.

@@ -160,7 +160,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           BOOTSTRAP_GITHUB_TOKEN: ${{ steps.bootstrap.outputs.token }}
-        run: node scripts/build-data.ts --state ../.dashboard-state ${{ steps.refresh.outputs.corpus == 'true' && '--records ../records' || '' }} --backfill-days "${{ inputs.backfill_days || 0 }}"
+          RECORDS_ARGS: ${{ steps.refresh.outputs.corpus == 'true' && '--records ../records' || '' }}
+          BACKFILL_DAYS: ${{ inputs.backfill_days || 0 }}
+        run: |
+          read -r -a records_args <<< "$RECORDS_ARGS"
+          node scripts/build-data.ts --state ../.dashboard-state "${records_args[@]}" --backfill-days "$BACKFILL_DAYS"
 
       - name: Save dashboard state
         if: ${{ always() && hashFiles('.dashboard-state/actions.json') != '' }}

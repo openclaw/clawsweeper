@@ -70,10 +70,13 @@ jobs:
 
       - name: Resolve target repository
         id: target
+        env:
+          DISPATCH_TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}
+          WORKFLOW_EVENT_SCHEDULE: ${{ github.event.schedule || '' }}
         run: |
-          target_repo="${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}"
+          target_repo="${DISPATCH_TARGET_REPO}"
           if [ -z "$target_repo" ]; then
-            case "${{ github.event.schedule || '' }}" in
+            case "${WORKFLOW_EVENT_SCHEDULE}" in
               "12 */6 * * *")
                 target_repo="openclaw/clawhub"
                 ;;
@@ -147,6 +150,8 @@ jobs:
           CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/audit-canonical-baseline
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          WORKFLOW_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           git pull --rebase --autostash
@@ -165,7 +170,7 @@ jobs:
             --target-repo "$TARGET_REPO" \
             --state "Audit finished" \
             --detail "Reconciled durable $TARGET_REPO records before audit: moved ${moved_to_closed} closed records, restored ${moved_to_items} reopened records, removed ${removed_stale_closed_copies} stale archived copies. Refreshed audit state from a full live scan." \
-            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            --run-url "https://github.com/${WORKFLOW_REPOSITORY}/actions/runs/${WORKFLOW_RUN_ID}"
 
       - name: Upload canonical close-verdict audit
         uses: actions/upload-artifact@v7

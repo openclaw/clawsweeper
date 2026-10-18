@@ -158,8 +158,11 @@ jobs:
     steps:
       - name: Explain skipped event
         run: |
-          echo "Skipping ${{ github.event.client_payload.target_repo }}#${{ github.event.client_payload.item_number || '?' }}."
+          echo "Skipping ${DISPATCH_TARGET_REPO}#${DISPATCH_ITEM_NUMBER}."
           echo "Set CLAWSWEEPER_ENABLE_CLAWHUB=1 after installing the ClawSweeper GitHub App on openclaw/clawhub."
+        env:
+          DISPATCH_TARGET_REPO: ${{ github.event.client_payload.target_repo }}
+          DISPATCH_ITEM_NUMBER: ${{ github.event.client_payload.item_number || '?' }}
 
   legacy-event-queue-intake:
     name: Queue legacy exact-review event
@@ -895,6 +898,12 @@ jobs:
           REVIEW_LEASE_QUEUE_ONLY: ${{ steps.reserve-exact-review-lease.outputs.queue_only || 'false' }}
           SOURCE_ACTION: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction || '' }}
           EXACT_REVIEW_DECISION: ${{ steps.claim-exact-review-queue.outputs.decision }}
+          STEPS_TARGET_OUTPUTS_TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          STEPS_TARGET_OUTPUTS_ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          STEPS_TARGET_OUTPUTS_CODEX_TIMEOUT_MS: ${{ steps.target.outputs.codex_timeout_ms }}
+          STEPS_TARGET_OUTPUTS_MEDIA_PROOF_TIMEOUT_MS: ${{ steps.target.outputs.media_proof_timeout_ms }}
+          STEPS_TARGET_OUTPUTS_MEDIA_PREPROCESSING_RESERVE_SECONDS: ${{ steps.target.outputs.media_preprocessing_reserve_seconds }}
+          STEPS_TARGET_OUTPUTS_TARGET_CHECKOUT_DIR: ${{ steps.target.outputs.target_checkout_dir }}
         run: |
           set -euo pipefail
           source scripts/control-plane-curl.sh
@@ -1026,7 +1035,7 @@ jobs:
             sleep 2
             admission_observed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             refreshed_pull="$(mktemp)"
-            gh api "repos/${{ steps.target.outputs.target_repo }}/pulls/${{ steps.target.outputs.item_number }}" > "$refreshed_pull"
+            gh api "repos/${STEPS_TARGET_OUTPUTS_TARGET_REPO}/pulls/${STEPS_TARGET_OUTPUTS_ITEM_NUMBER}" > "$refreshed_pull"
             REFRESHED_PULL="$refreshed_pull" ADMISSION_OBSERVED_AT="$admission_observed_at" node --input-type=module <<'NODE'
             import fs from 'node:fs';
             import { oversizedPullRequestAdmission } from './dist/clawsweeper-oversized-pr-policy.js';
@@ -1046,8 +1055,8 @@ jobs:
             fi
             rm -f "$refreshed_pull" "$refreshed_pull.ready"
             verify_startup_authority
-            pnpm run review -- --target-repo "${{ steps.target.outputs.target_repo }}" \
-              --artifact-dir artifacts/event --item-number "${{ steps.target.outputs.item_number }}" \
+            pnpm run review -- --target-repo "${STEPS_TARGET_OUTPUTS_TARGET_REPO}" \
+              --artifact-dir artifacts/event --item-number "${STEPS_TARGET_OUTPUTS_ITEM_NUMBER}" \
               --output-retention debug \
               "${review_lease_args[@]}" \
               --skip-start-comment "${admission_args[@]}"
@@ -1063,7 +1072,7 @@ jobs:
             echo "exit_code=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          codex_timeout_ms="${{ steps.target.outputs.codex_timeout_ms }}"
+          codex_timeout_ms="${STEPS_TARGET_OUTPUTS_CODEX_TIMEOUT_MS}"
           if ! [[ "$codex_timeout_ms" =~ ^[0-9]+$ ]] || [ "$codex_timeout_ms" -lt 1 ]; then
             echo "Invalid Codex timeout: $codex_timeout_ms" >&2
             exit 1
@@ -1077,9 +1086,9 @@ jobs:
             expected_source_revision_arg=(--expected-source-revision "$EXPECTED_SOURCE_REVISION")
           fi
           codex_timeout_seconds=$(((codex_timeout_ms + 999) / 1000))
-          media_proof_timeout_ms="${{ steps.target.outputs.media_proof_timeout_ms }}"
+          media_proof_timeout_ms="${STEPS_TARGET_OUTPUTS_MEDIA_PROOF_TIMEOUT_MS}"
           media_proof_timeout_seconds=$(((media_proof_timeout_ms + 999) / 1000))
-          media_preprocessing_reserve_seconds="${{ steps.target.outputs.media_preprocessing_reserve_seconds }}"
+          media_preprocessing_reserve_seconds="${STEPS_TARGET_OUTPUTS_MEDIA_PREPROCESSING_RESERVE_SECONDS}"
           if ! [[ "$media_preprocessing_reserve_seconds" =~ ^[1-9][0-9]*$ ]]; then
             echo "Invalid media preprocessing reserve: $media_preprocessing_reserve_seconds" >&2
             exit 1
@@ -1089,8 +1098,8 @@ jobs:
           verify_startup_authority
           set +e
           setsid timeout --kill-after=30s "${review_timeout_seconds}s" pnpm run review -- \
-            --target-repo "${{ steps.target.outputs.target_repo }}" \
-            --target-dir "${{ steps.target.outputs.target_checkout_dir }}" \
+            --target-repo "${STEPS_TARGET_OUTPUTS_TARGET_REPO}" \
+            --target-dir "${STEPS_TARGET_OUTPUTS_TARGET_CHECKOUT_DIR}" \
             --artifact-dir artifacts/event \
             --output-retention debug \
             --batch-size 1 \
@@ -1098,7 +1107,7 @@ jobs:
             --codex-model internal \
             --codex-sandbox clawsweeper-review \
             --codex-timeout-ms "$codex_timeout_ms" \
-            --item-numbers "${{ steps.target.outputs.item_number }}" \
+            --item-numbers "${STEPS_TARGET_OUTPUTS_ITEM_NUMBER}" \
             --readonly-openclaw \
             --skip-start-comment \
             "${review_lease_args[@]}" \
@@ -1171,11 +1180,11 @@ jobs:
             echo "::notice::Review coordination is held until $retry_at."
           fi
 
-          report_path="artifacts/event/${{ steps.target.outputs.item_number }}.md"
+          report_path="artifacts/event/${STEPS_TARGET_OUTPUTS_ITEM_NUMBER}.md"
           if [ ! -f "$report_path" ]; then
-            live_state="$(gh api "repos/${{ steps.target.outputs.target_repo }}/issues/${{ steps.target.outputs.item_number }}" --jq .state)"
+            live_state="$(gh api "repos/${STEPS_TARGET_OUTPUTS_TARGET_REPO}/issues/${STEPS_TARGET_OUTPUTS_ITEM_NUMBER}" --jq .state)"
             if [ "$live_state" != "closed" ]; then
-              echo "Exact review produced no artifact for open item ${{ steps.target.outputs.target_repo }}#${{ steps.target.outputs.item_number }}." >&2
+              echo "Exact review produced no artifact for open item ${STEPS_TARGET_OUTPUTS_TARGET_REPO}#${STEPS_TARGET_OUTPUTS_ITEM_NUMBER}." >&2
               exit 1
             fi
             echo "::notice::Exact review produced no artifact because the item closed during review."
@@ -2228,10 +2237,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts/event
-          report=".artifacts/exact-review-bundle/review/${{ steps.publication-context.outputs.item_number }}.md"
+          report=".artifacts/exact-review-bundle/review/${STEPS_PUBLICATION_CONTEXT_OUTPUTS_ITEM_NUMBER}.md"
           if [ -f "$report" ]; then
-            cp "$report" "artifacts/event/${{ steps.publication-context.outputs.item_number }}.md"
+            cp "$report" "artifacts/event/${STEPS_PUBLICATION_CONTEXT_OUTPUTS_ITEM_NUMBER}.md"
           fi
+        env:
+          STEPS_PUBLICATION_CONTEXT_OUTPUTS_ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
 
       - name: Create target write token
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
@@ -3158,10 +3169,13 @@ jobs:
 
       - name: Resolve proof target repository
         id: target
+        env:
+          INPUT_TARGET_REPO: ${{ github.event.inputs.target_repo || '' }}
+          WORKFLOW_EVENT_SCHEDULE: ${{ github.event.schedule || '' }}
         run: |
-          target_repo="${{ github.event.inputs.target_repo || '' }}"
+          target_repo="${INPUT_TARGET_REPO}"
           if [ -z "$target_repo" ]; then
-            case "${{ github.event.schedule || '' }}" in
+            case "${WORKFLOW_EVENT_SCHEDULE}" in
               "8,23,38,53 * * * *") target_repo="openclaw/clawhub" ;;
               *) target_repo="openclaw/openclaw" ;;
             esac
@@ -3180,9 +3194,12 @@ jobs:
 
       - name: Resolve proof artifact identity
         id: proof-artifact
+        env:
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          echo "name=apply-coverage-proofs-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
-          echo "action_ledger_name=action-ledger-apply-proof-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+          echo "name=apply-coverage-proofs-${WORKFLOW_RUN_ID}-${WORKFLOW_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "action_ledger_name=action-ledger-apply-proof-${WORKFLOW_RUN_ID}-${WORKFLOW_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - uses: ./.github/actions/setup-state
         with:
@@ -3203,9 +3220,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          INPUT_APPLY_ITEM_NUMBERS: ${{ github.event.inputs.apply_item_numbers || '' }}
         run: |
           set -euo pipefail
-          item_numbers="${{ github.event.inputs.apply_item_numbers || '' }}"
+          item_numbers="${INPUT_APPLY_ITEM_NUMBERS}"
           if [ "$item_numbers" = "__cursor__" ]; then
             item_numbers=""
           fi
@@ -3219,17 +3237,26 @@ jobs:
         id: proof-select
         env:
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          INPUT_APPLY_MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}
+          INPUT_APPLY_MIN_AGE_MINUTES: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}
+          INPUT_APPLY_KIND: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}
+          INPUT_APPLY_CLOSE_REASONS: ${{ github.event.inputs.apply_close_reasons || env.CLAWSWEEPER_AUTO_CLOSE_REASONS }}
+          INPUT_APPLY_STALE_MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}
+          INPUT_APPLY_ITEM_NUMBERS: ${{ github.event.inputs.apply_item_numbers || '' }}
+          INPUT_APPLY_SYNC_COMMENTS_ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_EVENT_SCHEDULE: ${{ github.event.schedule || '' }}
         run: |
           set -euo pipefail
-          min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
-          min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
-          apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
-          apply_close_reasons="${{ github.event.inputs.apply_close_reasons || env.CLAWSWEEPER_AUTO_CLOSE_REASONS }}"
-          stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
-          item_numbers="${{ github.event.inputs.apply_item_numbers || '' }}"
-          sync_comments_only="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}"
-          if [ "${{ github.event_name }}" = "schedule" ] &&
-            [ "${{ github.event.schedule || '' }}" = "6,21,36,51 * * * *" ]; then
+          min_age_days="${INPUT_APPLY_MIN_AGE_DAYS}"
+          min_age_minutes="${INPUT_APPLY_MIN_AGE_MINUTES}"
+          apply_kind="${INPUT_APPLY_KIND}"
+          apply_close_reasons="${INPUT_APPLY_CLOSE_REASONS}"
+          stale_min_age_days="${INPUT_APPLY_STALE_MIN_AGE_DAYS}"
+          item_numbers="${INPUT_APPLY_ITEM_NUMBERS}"
+          sync_comments_only="${INPUT_APPLY_SYNC_COMMENTS_ONLY}"
+          if [ "${EVENT_NAME}" = "schedule" ] &&
+            [ "${WORKFLOW_EVENT_SCHEDULE}" = "6,21,36,51 * * * *" ]; then
             sync_comments_only="true"
           fi
           if [ "$item_numbers" = "__cursor__" ]; then
@@ -3316,11 +3343,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_PROOF_INSPECTION_TOKEN: ${{ steps.proof-inspection-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          STEPS_PROOF_SELECT_OUTPUTS_ITEM_NUMBERS: ${{ steps.proof-select.outputs.item_numbers }}
+          INPUT_APPLY_MIN_AGE_MINUTES: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}
+          INPUT_APPLY_KIND: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}
+          INPUT_APPLY_CLOSE_REASONS: ${{ github.event.inputs.apply_close_reasons || env.CLAWSWEEPER_AUTO_CLOSE_REASONS }}
+          INPUT_APPLY_STALE_MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}
+          INPUT_APPLY_MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}
         run: |
           set -euo pipefail
-          item_numbers="${{ steps.proof-select.outputs.item_numbers }}"
+          item_numbers="${STEPS_PROOF_SELECT_OUTPUTS_ITEM_NUMBERS}"
           item_count="$(pnpm run --silent workflow -- count-csv --items "$item_numbers")"
-          min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
+          min_age_minutes="${INPUT_APPLY_MIN_AGE_MINUTES}"
           min_age_minutes_arg=()
           if [ -n "$min_age_minutes" ]; then
             min_age_minutes_arg=(--min-age-minutes "$min_age_minutes")
@@ -3331,10 +3364,10 @@ jobs:
             --skip-dashboard \
             --dry-run \
             --item-numbers "$item_numbers" \
-            --apply-kind "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}" \
-            --apply-close-reasons "${{ github.event.inputs.apply_close_reasons || env.CLAWSWEEPER_AUTO_CLOSE_REASONS }}" \
-            --stale-min-age-days "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}" \
-            --min-age-days "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}" \
+            --apply-kind "${INPUT_APPLY_KIND}" \
+            --apply-close-reasons "${INPUT_APPLY_CLOSE_REASONS}" \
+            --stale-min-age-days "${INPUT_APPLY_STALE_MIN_AGE_DAYS}" \
+            --min-age-days "${INPUT_APPLY_MIN_AGE_DAYS}" \
             "${min_age_minutes_arg[@]}" \
             --limit "$item_count" \
             --processed-limit "$((item_count * 10))" \
@@ -3351,13 +3384,14 @@ jobs:
         if: ${{ always() && !cancelled() && steps.proof-select.outcome == 'success' && (steps.proof-select.outputs.item_numbers == '' || steps.generate-apply-proofs.outcome == 'success') }}
         env:
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          STEPS_PROOF_SELECT_OUTPUTS_ITEM_NUMBERS: ${{ steps.proof-select.outputs.item_numbers }}
         run: |
           set -euo pipefail
           source scripts/apply-workflow-helpers.sh
           write_coverage_proof_manifest \
             ".artifacts/apply-proof/pr-close-coverage-proof" \
             "$TARGET_REPO" \
-            "${{ steps.proof-select.outputs.item_numbers }}"
+            "${STEPS_PROOF_SELECT_OUTPUTS_ITEM_NUMBERS}"
 
       - name: Export primary apply proof result
         id: primary-proof-result
@@ -3400,7 +3434,9 @@ jobs:
       - name: Export uploaded apply proof action ledger identity
         id: publishable-action-ledger
         if: ${{ always() && steps.upload-action-events.outputs.artifact-id != '' }}
-        run: echo "name=${{ steps.proof-artifact.outputs.action_ledger_name }}" >> "$GITHUB_OUTPUT"
+        run: echo "name=${STEPS_PROOF_ARTIFACT_OUTPUTS_ACTION_LEDGER_NAME}" >> "$GITHUB_OUTPUT"
+        env:
+          STEPS_PROOF_ARTIFACT_OUTPUTS_ACTION_LEDGER_NAME: ${{ steps.proof-artifact.outputs.action_ledger_name }}
 
   publish-apply-proof-action-ledger:
     name: Publish immutable apply proof action ledger
@@ -3493,10 +3529,12 @@ jobs:
         id: target
         env:
           PROOF_TARGET_REPO: ${{ needs.apply-proof.outputs.target_repo }}
+          DISPATCH_TARGET_REPO: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo || github.event.inputs.target_repo || '' }}
+          WORKFLOW_EVENT_SCHEDULE: ${{ github.event.schedule || '' }}
         run: |
-          target_repo="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo || github.event.inputs.target_repo || '' }}"
+          target_repo="${DISPATCH_TARGET_REPO}"
           if [ -z "$target_repo" ]; then
-            case "${{ github.event.schedule || '' }}" in
+            case "${WORKFLOW_EVENT_SCHEDULE}" in
               "8,23,38,53 * * * *")
                 target_repo="openclaw/clawhub"
                 ;;
@@ -3589,10 +3627,11 @@ jobs:
           GH_TOKEN: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-write-token.outputs.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          DISPATCH_ITEM_NUMBER: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}
         run: |
           set -euo pipefail
           source scripts/apply-workflow-helpers.sh
-          item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
+          item_numbers="${DISPATCH_ITEM_NUMBER}"
           prepare_apply_reconciliation_args
           persist_reconciliation "${reconcile_args[@]}"
 
@@ -3606,26 +3645,40 @@ jobs:
           CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS: ${{ steps.target-write-token.outputs.minted-at-ms }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          INPUT_APPLY_LIMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '40' }}
+          INPUT_APPLY_MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}
+          INPUT_APPLY_MIN_AGE_MINUTES: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}
+          INPUT_APPLY_KIND: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}
+          INPUT_APPLY_CLOSE_REASONS: ${{ github.event.inputs.apply_close_reasons || env.CLAWSWEEPER_AUTO_CLOSE_REASONS }}
+          INPUT_APPLY_STALE_MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}
+          INPUT_APPLY_CLOSE_DELAY_MS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}
+          INPUT_APPLY_CHECKPOINT_SIZE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '40' }}
+          DISPATCH_ITEM_NUMBER: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}
+          SCHEDULED_COMMENT_SYNC: ${{ github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *' && 'true' || 'false' }}
+          INPUT_APPLY_SYNC_COMMENTS_ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}
+          INPUT_APPLY_COMMENT_SYNC_MIN_AGE_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_comment_sync_min_age_days || '7' }}
+          WORKFLOW_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
           source scripts/apply-workflow-helpers.sh
           initialize_apply_token_budget
-          limit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '40' }}"
-          min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_days || '0' }}"
-          min_age_minutes="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_min_age_minutes || '' }}"
-          apply_kind="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_kind || 'all' }}"
-          apply_close_reasons="${{ github.event.inputs.apply_close_reasons || env.CLAWSWEEPER_AUTO_CLOSE_REASONS }}"
-          stale_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_stale_min_age_days || '60' }}"
-          close_delay_ms="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_close_delay_ms || '2000' }}"
-          checkpoint_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_checkpoint_size || '40' }}"
+          limit="${INPUT_APPLY_LIMIT}"
+          min_age_days="${INPUT_APPLY_MIN_AGE_DAYS}"
+          min_age_minutes="${INPUT_APPLY_MIN_AGE_MINUTES}"
+          apply_kind="${INPUT_APPLY_KIND}"
+          apply_close_reasons="${INPUT_APPLY_CLOSE_REASONS}"
+          stale_min_age_days="${INPUT_APPLY_STALE_MIN_AGE_DAYS}"
+          close_delay_ms="${INPUT_APPLY_CLOSE_DELAY_MS}"
+          checkpoint_size="${INPUT_APPLY_CHECKPOINT_SIZE}"
           comment_sync_processed_limit=40
           base_close_processed_limit=600
           close_processed_limit="$base_close_processed_limit"
           adaptive_apply_scan_reason="base_window"
-          sync_batch_size="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_limit || '40' }}"
-          item_numbers="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.item_number || github.event.inputs.apply_item_numbers || '' }}"
-          scheduled_comment_sync="${{ github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *' && 'true' || 'false' }}"
+          sync_batch_size="${INPUT_APPLY_LIMIT}"
+          item_numbers="${DISPATCH_ITEM_NUMBER}"
+          scheduled_comment_sync="${SCHEDULED_COMMENT_SYNC}"
           sync_open_pr_batch="$scheduled_comment_sync"
           if [ "$item_numbers" = "__cursor__" ]; then
             sync_open_pr_batch="true"
@@ -3633,7 +3686,7 @@ jobs:
           fi
           explicit_item_numbers="$item_numbers"
           auto_selected_apply_batch=false
-          sync_comments_only="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_sync_comments_only || 'false' }}"
+          sync_comments_only="${INPUT_APPLY_SYNC_COMMENTS_ONLY}"
           product_direction_enabled=false
           case "${CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED,,}" in
             true|1|yes|on) product_direction_enabled=true ;;
@@ -3660,7 +3713,7 @@ jobs:
             echo "APPLY_NOOP=true" >> "$GITHUB_ENV"
             exit 0
           fi
-          comment_sync_min_age_days="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_comment_sync_min_age_days || '7' }}"
+          comment_sync_min_age_days="${INPUT_APPLY_COMMENT_SYNC_MIN_AGE_DAYS}"
           target_slug="$TARGET_REPO"
           target_slug="${target_slug//\//-}"
           cursor_path="results/comment-sync-cursors/${target_slug}.json"
@@ -3705,7 +3758,7 @@ jobs:
                 --target-repo "$TARGET_REPO" \
                 --state "Apply comments idle" \
                 --detail "No open PR review records were available for cursor-based comment sync. Cursor remains ${next_cursor:-0}." \
-                --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                --run-url "https://github.com/${WORKFLOW_REPOSITORY}/actions/runs/${WORKFLOW_RUN_ID}"
               publish_status "chore: update idle sweep comment sync status"
               {
                 echo "APPLY_CLOSED_TOTAL=0"
@@ -3757,7 +3810,7 @@ jobs:
             --target-repo "$TARGET_REPO" \
             --state "Apply in progress" \
             --detail "Starting apply/comment-sync run for up to $limit fresh $apply_kind closes. Close reasons: $apply_close_reasons.$candidate_quality_detail Scan window: $close_processed_limit records ($adaptive_apply_scan_reason). Existing Codex automated review comments are updated in place when closing or when comment-only sync is stale by ${comment_sync_min_age_days} day(s); checkpoints commit every $checkpoint_size fresh closes; close delay is ${close_delay_ms}ms; sync-comments-only=$sync_comments_only; item numbers=${item_numbers:-all}." \
-            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            --run-url "https://github.com/${WORKFLOW_REPOSITORY}/actions/runs/${WORKFLOW_RUN_ID}"
           publish_status "chore: mark sweep apply in progress"
           closed_total=0
           continue_apply=false
@@ -3804,7 +3857,7 @@ jobs:
               --target-repo "$TARGET_REPO" \
               --state "Apply comments synced" \
               --detail "Comment-only apply checkpoint $checkpoint finished. Synced durable review comments: $synced_count. Result records: $result_count. Item numbers: ${comment_sync_checkpoint_items:-all}. Next cursor: ${next_cursor:-none}." \
-              --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --run-url "https://github.com/${WORKFLOW_REPOSITORY}/actions/runs/${WORKFLOW_RUN_ID}" \
               --apply-health-file ".artifacts/apply-health-$checkpoint.json"
             publish_status "chore: update sweep comment sync status"
             report_apply_token_budget_stop ".artifacts/apply-reports/apply-report-$checkpoint.json" "$result_count" "unknown"
@@ -3881,7 +3934,7 @@ jobs:
               --target-repo "$TARGET_REPO" \
               --state "Apply in progress" \
               --detail "Checkpoint $checkpoint finished. Fresh closes in checkpoint: $closed_in_chunk. Total fresh closes in this run: $closed_total/$limit. Candidates examined: $examined_count. Action records: $result_count, including durable review comment syncs." \
-              --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --run-url "https://github.com/${WORKFLOW_REPOSITORY}/actions/runs/${WORKFLOW_RUN_ID}" \
               --apply-health-file ".artifacts/apply-health-$checkpoint.json"
             publish_status "chore: update sweep apply checkpoint $checkpoint status"
             echo "::endgroup::"
@@ -3944,7 +3997,7 @@ jobs:
             --target-repo "$TARGET_REPO" \
             --state "Apply finished" \
             --detail "Apply/comment-sync run finished with $closed_total fresh closes out of requested limit $limit. See apply-report.json for per-item results." \
-            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --run-url "https://github.com/${WORKFLOW_REPOSITORY}/actions/runs/${WORKFLOW_RUN_ID}" \
             --apply-health-file ".artifacts/apply-health-final.json"
           publish_status "chore: mark sweep apply finished"
           next_apply_item_numbers="$item_numbers"
@@ -4044,6 +4097,8 @@ jobs:
         if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          WORKFLOW_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
         run: |
           if [ "${APPLY_NOOP:-false}" = "true" ]; then
             echo "No proposed closes were ready; not queueing another apply run."
@@ -4074,13 +4129,13 @@ jobs:
             runs_json="$(mktemp)"
             {
               for run_status in in_progress pending queued waiting requested; do
-                gh api --paginate "repos/${{ github.repository }}/actions/runs?per_page=100&status=${run_status}" \
+                gh api --paginate "repos/${WORKFLOW_REPOSITORY}/actions/runs?per_page=100&status=${run_status}" \
                   --jq '.workflow_runs[] | {databaseId:.id, workflowPath:.path, displayTitle:.display_title, status:.status, createdAt:.created_at, updatedAt:.updated_at}' 2>/dev/null || true
               done
             } | jq -s '.' > "$runs_json"
             pnpm run --silent workflow -- apply-continuation-blocker \
               --runs "$runs_json" \
-              --current-run-id "${{ github.run_id }}" \
+              --current-run-id "${WORKFLOW_RUN_ID}" \
               --target-repo "${APPLY_TARGET_REPO:-openclaw/openclaw}" > "$continuation_env"
             rm -f "$runs_json"
             cat "$continuation_env"
@@ -4129,10 +4184,12 @@ jobs:
       - name: Save apply telemetry context
         if: ${{ always() }}
         continue-on-error: true
+        env:
+          STEPS_APPLY_TELEMETRY_START_OUTPUTS_STARTED_AT: ${{ steps.apply-telemetry-start.outputs.started_at || '' }}
         run: |
           mkdir -p .artifacts
           noop=false
-          started_at="${{ steps.apply-telemetry-start.outputs.started_at || '' }}"
+          started_at="${STEPS_APPLY_TELEMETRY_START_OUTPUTS_STARTED_AT}"
           if [ "${APPLY_NOOP:-false}" = "true" ]; then
             noop=true
           fi
@@ -4159,6 +4216,7 @@ jobs:
         if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' && steps.target.outputs.target_repo == 'openclaw/openclaw' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          WORKFLOW_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [ "${APPLY_AUTO_SELECTED_BATCH:-false}" != "true" ]; then
@@ -4166,7 +4224,7 @@ jobs:
             exit 0
           fi
           runs_json="$({
-            gh api "repos/${{ github.repository }}/actions/runs?per_page=100" \
+            gh api "repos/${WORKFLOW_REPOSITORY}/actions/runs?per_page=100" \
               --jq '.workflow_runs[] | {databaseId:.id, workflowPath:.path, displayTitle:.display_title, status:.status, createdAt:.created_at, updatedAt:.updated_at}' 2>/dev/null \
               || true
           } | jq -s 'unique_by(.databaseId)')"

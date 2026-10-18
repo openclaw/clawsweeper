@@ -16,7 +16,9 @@ runs:
     - name: Install trusted review scanner
       if: ${{ env.CLAWSWEEPER_RUNNER == 'openclaw' }}
       shell: bash
-      run: bash "${{ github.action_path }}/../setup-review-tools/install.sh"
+      env:
+        WORKFLOW_ACTION_PATH: ${{ github.action_path }}
+      run: bash "${WORKFLOW_ACTION_PATH}/../setup-review-tools/install.sh"
 
     - name: Cache OpenClaw CLI and npm downloads
       if: ${{ env.CLAWSWEEPER_RUNNER == 'openclaw' }}
@@ -39,9 +41,11 @@ runs:
         npm config set cache "$HOME/.npm"
         echo "$HOME/.clawsweeper-repair/openclaw/bin" >> "$GITHUB_PATH"
         export PATH="$HOME/.clawsweeper-repair/openclaw/bin:$PATH"
-        npm install -g "openclaw@${{ inputs['openclaw-version'] }}" \
+        npm install -g "openclaw@${INPUTS_OPENCLAW_VERSION}" \
           --prefer-online --no-audit --no-fund
         openclaw --version
+      env:
+        INPUTS_OPENCLAW_VERSION: ${{ inputs['openclaw-version'] }}
 
     - name: Cache OpenClaw source build
       if: ${{ env.CLAWSWEEPER_RUNNER == 'openclaw' && inputs['openclaw-source-ref'] != '' }}
@@ -57,18 +61,20 @@ runs:
         set -euo pipefail
         source_root="$HOME/.clawsweeper-repair/openclaw-source"
         if [ ! -x "$source_root/checkout/dist/index.js" ] || \
-           [ "$(cat "$source_root/ref" 2>/dev/null)" != "${{ inputs['openclaw-source-ref'] }}" ]; then
+           [ "$(cat "$source_root/ref" 2>/dev/null)" != "${INPUTS_OPENCLAW_SOURCE_REF}" ]; then
           rm -rf "$source_root"
           mkdir -p "$source_root"
           git init -q "$source_root/checkout"
           git -C "$source_root/checkout" fetch -q --depth 1 \
-            https://github.com/openclaw/openclaw.git "${{ inputs['openclaw-source-ref'] }}"
+            https://github.com/openclaw/openclaw.git "${INPUTS_OPENCLAW_SOURCE_REF}"
           git -C "$source_root/checkout" checkout -q FETCH_HEAD
           (cd "$source_root/checkout" && corepack enable && pnpm install --frozen-lockfile && pnpm build)
-          printf '%s\n' "${{ inputs['openclaw-source-ref'] }}" > "$source_root/ref"
+          printf '%s\n' "${INPUTS_OPENCLAW_SOURCE_REF}" > "$source_root/ref"
         fi
         launcher="$source_root/openclaw"
         printf '#!/bin/sh\nexec node "%s/checkout/dist/index.js" "$@"\n' "$source_root" > "$launcher"
         chmod +x "$launcher"
         echo "CLAWSWEEPER_OPENCLAW_BIN=$launcher" >> "$GITHUB_ENV"
         "$launcher" --version
+      env:
+        INPUTS_OPENCLAW_SOURCE_REF: ${{ inputs['openclaw-source-ref'] }}

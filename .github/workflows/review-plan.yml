@@ -123,8 +123,11 @@ jobs:
     steps:
       - name: Explain skipped event
         run: |
-          echo "Skipping ${{ github.event.client_payload.target_repo }}#${{ github.event.client_payload.item_number || '?' }}."
+          echo "Skipping ${DISPATCH_TARGET_REPO}#${DISPATCH_ITEM_NUMBER}."
           echo "Set CLAWSWEEPER_ENABLE_CLAWHUB=1 after installing the ClawSweeper GitHub App on openclaw/clawhub."
+        env:
+          DISPATCH_TARGET_REPO: ${{ github.event.client_payload.target_repo }}
+          DISPATCH_ITEM_NUMBER: ${{ github.event.client_payload.item_number || '?' }}
 
   plan:
     name: Plan review candidates
@@ -143,11 +146,16 @@ jobs:
 
       - name: Resolve target repository
         id: target
+        env:
+          DISPATCH_TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}
+          DISPATCH_TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_branch || github.event.client_payload.target_branch || 'main' }}
+          WORKFLOW_EVENT_SCHEDULE: ${{ github.event.schedule || '' }}
+          WORKFLOW_REPOSITORY: ${{ github.repository }}
         run: |
-          target_repo="${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}"
-          target_branch="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_branch || github.event.client_payload.target_branch || 'main' }}"
+          target_repo="${DISPATCH_TARGET_REPO}"
+          target_branch="${DISPATCH_TARGET_BRANCH}"
           if [ -z "$target_repo" ]; then
-            case "${{ github.event.schedule || '' }}" in
+            case "${WORKFLOW_EVENT_SCHEDULE}" in
               "2/5 * * * *"|"22 * * * *"|"8,23,38,53 * * * *")
                 target_repo="openclaw/clawhub"
                 ;;
@@ -164,7 +172,7 @@ jobs:
           target_name="${target_repo#*/}"
           target_slug="$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
           target_checkout_dir="$target_name"
-          if [ "$target_repo" = "${{ github.repository }}" ]; then
+          if [ "$target_repo" = "${WORKFLOW_REPOSITORY}" ]; then
             target_checkout_dir="${target_name}-target"
           fi
           {
@@ -235,14 +243,17 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          STEPS_TARGET_OUTPUTS_TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          WORKFLOW_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
         run: |
-          target_slug="${{ steps.target.outputs.target_repo }}"
+          target_slug="${STEPS_TARGET_OUTPUTS_TARGET_REPO}"
           target_slug="${target_slug//\//-}"
           pnpm run status -- \
-            --target-repo "${{ steps.target.outputs.target_repo }}" \
+            --target-repo "${STEPS_TARGET_OUTPUTS_TARGET_REPO}" \
             --state "Planning review" \
             --detail "Planner is scanning GitHub for the next review candidates. Selected candidates will be offered to the shared review queue." \
-            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            --run-url "https://github.com/${WORKFLOW_REPOSITORY}/actions/runs/${WORKFLOW_RUN_ID}"
           timeout 20s pnpm run repair:publish-main -- \
             --message "chore: mark sweep planning started" \
             --path "results/sweep-status/${target_slug}.json" \
@@ -363,13 +374,17 @@ jobs:
           REQUESTED_TARGET_BRANCH: ${{ steps.target.outputs.target_branch }}
           CODEX_TIMEOUT_MS: ${{ steps.mode.outputs.codex_timeout_ms }}
           ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || github.event.client_payload.review_options.additional_prompt || github.event.client_payload.additional_prompt || '' }}
+          STEPS_MODE_OUTPUTS_HOT_INTAKE: ${{ steps.mode.outputs.hot_intake }}
+          STEPS_TARGET_OUTPUTS_TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           lane="normal_backfill"
-          if [ "${{ steps.mode.outputs.hot_intake }}" = "true" ]; then
+          if [ "${STEPS_MODE_OUTPUTS_HOT_INTAKE}" = "true" ]; then
             lane="hot_intake"
           fi
-          target_repo="${{ steps.target.outputs.target_repo }}"
+          target_repo="${STEPS_TARGET_OUTPUTS_TARGET_REPO}"
           target_branch="$REQUESTED_TARGET_BRANCH"
           if [ -z "$target_branch" ]; then
             target_branch="$(gh api "repos/$target_repo" --jq '.default_branch // empty')"
@@ -391,7 +406,7 @@ jobs:
             --target-branch "$target_branch" \
             --queue-url "$QUEUE_URL" \
             "${timeout_args[@]}" \
-            --delivery-prefix "scheduled:${{ github.run_id }}:${{ github.run_attempt }}")"
+            --delivery-prefix "scheduled:${WORKFLOW_RUN_ID}:${WORKFLOW_RUN_ATTEMPT}")"
           jq -e '.offered >= .attempted and .attempted >= (.queued + .deduped + .shed + .rejected)' <<<"$result" >/dev/null
           {
             echo "### Scheduled review funnel"

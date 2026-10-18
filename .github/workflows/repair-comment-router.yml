@@ -202,35 +202,68 @@ jobs:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           CLAWSWEEPER_TARGET_INSTALLATION_ID: ${{ steps.app_token.outputs.installation-id }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          INPUT_TARGET_REPO: ${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+          INPUT_TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || '' }}
+          INPUT_LOOKBACK_MINUTES: ${{ github.event_name == 'workflow_dispatch' && inputs.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
+          INPUT_SINCE: ${{ github.event_name == 'workflow_dispatch' && inputs.since || '' }}
+          INPUT_MAX_COMMENTS: ${{ github.event_name == 'workflow_dispatch' && inputs.max_comments || vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '100' }}
+          INPUT_ITEM_NUMBERS: ${{ github.event_name == 'workflow_dispatch' && inputs.item_numbers || '' }}
+          INPUT_COMMENT_IDS: ${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || '' }}
+          INPUT_FORCE_REPROCESS: ${{ github.event_name == 'workflow_dispatch' && inputs.force_reprocess || 'false' }}
+          INPUT_ATTEMPT_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.attempt_id || '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TARGET_REPO: ${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}
+          DISPATCH_TARGET_BRANCH: ${{ github.event.client_payload.target_branch || '' }}
+          DISPATCH_LOOKBACK_MINUTES: ${{ github.event.client_payload.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
+          DISPATCH_MAX_COMMENTS: ${{ github.event.client_payload.max_comments || '1' }}
+          DISPATCH_ITEM_NUMBER: ${{ github.event.client_payload.item_number || '' }}
+          DISPATCH_COMMENT_ID: ${{ github.event.client_payload.comment_id || '' }}
+          DISPATCH_STATUS_COMMENT_ID: ${{ github.event.client_payload.status_comment_id || '' }}
+          DISPATCH_SOURCE_DELIVERY_ID: ${{ github.event.client_payload.source_delivery_id || '' }}
+          DISPATCH_SOURCE_EVENT: ${{ github.event.client_payload.source_event || 'issue_comment' }}
+          DISPATCH_SOURCE_ACTION: ${{ github.event.client_payload.source_action || '' }}
+          DISPATCH_COMMENT_EVENT_AUTH: ${{ github.event.client_payload.comment_event_auth || '' }}
+          DISPATCH_COMMENT_UPDATED_AT: ${{ github.event.client_payload.comment_updated_at || '' }}
+          DISPATCH_COMMENT_BODY_SHA256: ${{ github.event.client_payload.comment_body_sha256 || '' }}
+          DISPATCH_FORCE_REPROCESS: ${{ github.event.client_payload.force_reprocess || 'false' }}
+          DISPATCH_ATTEMPT_ID: ${{ github.event.client_payload.attempt_id || '' }}
+          INPUTS_EXECUTE: ${{ inputs.execute }}
+          VARS_CLAWSWEEPER_COMMENT_ROUTER_EXECUTE: ${{ vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0' }}
         run: |
           set -euo pipefail
-          target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
-          target_branch="${{ github.event_name == 'workflow_dispatch' && inputs.target_branch || '' }}"
-          lookback_minutes="${{ github.event_name == 'workflow_dispatch' && inputs.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}"
-          since="${{ github.event_name == 'workflow_dispatch' && inputs.since || '' }}"
-          max_comments="${{ github.event_name == 'workflow_dispatch' && inputs.max_comments || vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '100' }}"
-          item_numbers="${{ github.event_name == 'workflow_dispatch' && inputs.item_numbers || '' }}"
-          comment_ids="${{ github.event_name == 'workflow_dispatch' && inputs.comment_ids || '' }}"
-          force_reprocess="${{ github.event_name == 'workflow_dispatch' && inputs.force_reprocess || 'false' }}"
-          attempt_id="${{ github.event_name == 'workflow_dispatch' && inputs.attempt_id || '' }}"
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            target_repo="${{ github.event.client_payload.target_repo || 'openclaw/openclaw' }}"
-            target_branch="${{ github.event.client_payload.target_branch || '' }}"
-            lookback_minutes="${{ github.event.client_payload.lookback_minutes || vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}"
+          target_repo="${INPUT_TARGET_REPO}"
+          target_branch="${INPUT_TARGET_BRANCH}"
+          lookback_minutes="${INPUT_LOOKBACK_MINUTES}"
+          since="${INPUT_SINCE}"
+          max_comments="${INPUT_MAX_COMMENTS}"
+          item_numbers="${INPUT_ITEM_NUMBERS}"
+          comment_ids="${INPUT_COMMENT_IDS}"
+          force_reprocess="${INPUT_FORCE_REPROCESS}"
+          attempt_id="${INPUT_ATTEMPT_ID}"
+          if [ "${EVENT_NAME}" = "repository_dispatch" ]; then
+            for numeric_field in DISPATCH_ITEM_NUMBER DISPATCH_COMMENT_ID DISPATCH_STATUS_COMMENT_ID; do
+              if [ -n "${!numeric_field}" ] && [[ ! "${!numeric_field}" =~ ^[0-9]+$ ]]; then
+                echo "::error::Invalid ${numeric_field#DISPATCH_}: expected digits only."
+                exit 1
+              fi
+            done
+            target_repo="${DISPATCH_TARGET_REPO}"
+            target_branch="${DISPATCH_TARGET_BRANCH}"
+            lookback_minutes="${DISPATCH_LOOKBACK_MINUTES}"
             since=""
-            max_comments="${{ github.event.client_payload.max_comments || '1' }}"
-            item_numbers="${{ github.event.client_payload.item_number || '' }}"
-            comment_ids="${{ github.event.client_payload.comment_id || '' }}"
-            status_comment_id="${{ github.event.client_payload.status_comment_id || '' }}"
-            source_delivery_id="${{ github.event.client_payload.source_delivery_id || '' }}"
-            source_event="${{ github.event.client_payload.source_event || 'issue_comment' }}"
-            source_action="${{ github.event.client_payload.source_action || '' }}"
-            dispatch_actor="${{ github.actor }}"
-            comment_event_auth="${{ github.event.client_payload.comment_event_auth || '' }}"
-            comment_updated_at="${{ github.event.client_payload.comment_updated_at || '' }}"
-            comment_body_sha256="${{ github.event.client_payload.comment_body_sha256 || '' }}"
-            force_reprocess="${{ github.event.client_payload.force_reprocess || 'false' }}"
-            attempt_id="${{ github.event.client_payload.attempt_id || '' }}"
+            max_comments="${DISPATCH_MAX_COMMENTS}"
+            item_numbers="${DISPATCH_ITEM_NUMBER}"
+            comment_ids="${DISPATCH_COMMENT_ID}"
+            status_comment_id="${DISPATCH_STATUS_COMMENT_ID}"
+            source_delivery_id="${DISPATCH_SOURCE_DELIVERY_ID}"
+            source_event="${DISPATCH_SOURCE_EVENT}"
+            source_action="${DISPATCH_SOURCE_ACTION}"
+            dispatch_actor="${GITHUB_ACTOR}"
+            comment_event_auth="${DISPATCH_COMMENT_EVENT_AUTH}"
+            comment_updated_at="${DISPATCH_COMMENT_UPDATED_AT}"
+            comment_body_sha256="${DISPATCH_COMMENT_BODY_SHA256}"
+            force_reprocess="${DISPATCH_FORCE_REPROCESS}"
+            attempt_id="${DISPATCH_ATTEMPT_ID}"
           else
             status_comment_id=""
             source_delivery_id=""
@@ -240,6 +273,14 @@ jobs:
             comment_event_auth=""
             comment_updated_at=""
             comment_body_sha256=""
+          fi
+          if [[ ! "$target_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Invalid target_repo: expected owner/repository."
+            exit 1
+          fi
+          if [ -n "$target_branch" ] && [[ ! "$target_branch" =~ ^[A-Za-z0-9_./-]+$ ]]; then
+            echo "::error::Invalid target_branch: expected letters, digits, underscore, dot, slash, or hyphen."
+            exit 1
           fi
           if [ "$force_reprocess" = "true" ] && [ -z "$attempt_id" ]; then
             attempt_id="forced-replay-${GITHUB_RUN_ID}"
@@ -295,9 +336,9 @@ jobs:
             args+=(--force-reprocess)
             args+=(--attempt-id "$attempt_id")
           fi
-          if { [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.execute }}" = "true" ]; } ||
-             { [ "${{ github.event_name }}" = "repository_dispatch" ]; } ||
-             { [ "${{ github.event_name }}" = "schedule" ] && [ "${{ vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE || '0' }}" = "1" ]; }; then
+          if { [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${INPUTS_EXECUTE}" = "true" ]; } ||
+             { [ "${EVENT_NAME}" = "repository_dispatch" ]; } ||
+             { [ "${EVENT_NAME}" = "schedule" ] && [ "${VARS_CLAWSWEEPER_COMMENT_ROUTER_EXECUTE}" = "1" ]; }; then
             args+=(--execute)
           fi
           pnpm run repair:comment-router -- "${args[@]}"
@@ -307,6 +348,7 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          STEPS_TARGET_OUTPUTS_TARGET_SLUG: ${{ steps.target.outputs.target_slug }}
         run: |
           if jq -e '.short_circuited == true' results/comment-router-latest.json >/dev/null 2>&1; then
             echo "Exact terminal comment version already recorded; skipping state publication."
@@ -324,20 +366,22 @@ jobs:
             --rebase-strategy theirs
           )
           if [ "$cursor_changed" = "true" ]; then
-            publish_args+=(--path "results/comment-router-cursors/${{ steps.target.outputs.target_slug }}.json")
+            publish_args+=(--path "results/comment-router-cursors/${STEPS_TARGET_OUTPUTS_TARGET_SLUG}.json")
           fi
           pnpm run repair:publish-main -- "${publish_args[@]}"
 
       - name: Finalize command action ledger
         id: finalize-command-action-ledger
         if: ${{ always() && steps.setup-pnpm.outcome == 'success' }}
+        env:
+          STEPS_ROUTE_COMMENTS_OUTCOME: ${{ steps.route-comments.outcome }}
         run: |
           set -euo pipefail
           : "${CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT:?setup-action-ledger output root is required}"
           mkdir -p .artifacts
           allow_empty_args=()
           # Empty is valid only when this run's report proves no command lifecycle started.
-          if [ "${{ steps.route-comments.outcome }}" = "success" ] &&
+          if [ "${STEPS_ROUTE_COMMENTS_OUTCOME}" = "success" ] &&
              jq -e '.commands_seen == 0' results/comment-router-latest.json >/dev/null 2>&1; then
             allow_empty_args+=(--allow-empty)
           fi

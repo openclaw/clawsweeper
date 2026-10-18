@@ -135,19 +135,20 @@ jobs:
       - id: limit
         env:
           GH_TOKEN: ${{ github.token }}
+          WORKFLOW_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           cap="$(pnpm run --silent workflow -- worker-limit assist)"
           active_assist_jobs() {
             local runs total id jobs
             total=0
-            runs="$(gh run list --repo "${{ github.repository }}" --status in_progress --limit 100 --json databaseId,workflowName \
+            runs="$(gh run list --repo "${WORKFLOW_REPOSITORY}" --status in_progress --limit 100 --json databaseId,workflowName \
               | jq -r '.[] | select(.workflowName == "ClawSweeper assist") | .databaseId')"
             while IFS= read -r id; do
               if [ -z "$id" ]; then
                 continue
               fi
-              jobs="$(gh run view "$id" --repo "${{ github.repository }}" --json jobs 2>/dev/null \
+              jobs="$(gh run view "$id" --repo "${WORKFLOW_REPOSITORY}" --json jobs 2>/dev/null \
                 | jq '[.jobs[]? | select(.name == "assist") | select(.status == "in_progress" or .status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested")] | length' 2>/dev/null \
                 || printf '0')"
               if [[ "$jobs" =~ ^[0-9]+$ ]]; then

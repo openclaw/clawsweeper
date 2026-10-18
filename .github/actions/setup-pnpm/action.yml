@@ -26,12 +26,14 @@ runs:
         set -euo pipefail
         corepack enable
         for attempt in 1 2 3; do
-          if corepack prepare "pnpm@${{ inputs.pnpm-version }}" --activate; then
+          if corepack prepare "pnpm@${INPUTS_PNPM_VERSION}" --activate; then
             exit 0
           fi
           sleep "$((attempt * 10))"
         done
-        corepack prepare "pnpm@${{ inputs.pnpm-version }}" --activate
+        corepack prepare "pnpm@${INPUTS_PNPM_VERSION}" --activate
+      env:
+        INPUTS_PNPM_VERSION: ${{ inputs.pnpm-version }}
 
     - name: Resolve pnpm store
       id: pnpm-store
@@ -47,22 +49,25 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        lockfile="${{ inputs.working-directory }}/pnpm-lock.yaml"
+        lockfile="${INPUTS_WORKING_DIRECTORY}/pnpm-lock.yaml"
         if [ -f "$lockfile" ]; then
           lock_hash="$(git hash-object "$lockfile")"
         else
           lock_hash="no-lockfile"
         fi
-        workspace="${{ inputs.working-directory }}/pnpm-workspace.yaml"
+        workspace="${INPUTS_WORKING_DIRECTORY}/pnpm-workspace.yaml"
         if [ -f "$workspace" ]; then
           policy_hash="$(git hash-object "$workspace")"
         else
           policy_hash="no-workspace"
         fi
         {
-          echo "key=${RUNNER_OS:-unknown}-pnpm-${{ inputs.pnpm-version }}-$policy_hash-$lock_hash"
-          echo "restore_key=${RUNNER_OS:-unknown}-pnpm-${{ inputs.pnpm-version }}-$policy_hash-"
+          echo "key=${RUNNER_OS:-unknown}-pnpm-${INPUTS_PNPM_VERSION}-$policy_hash-$lock_hash"
+          echo "restore_key=${RUNNER_OS:-unknown}-pnpm-${INPUTS_PNPM_VERSION}-$policy_hash-"
         } >> "$GITHUB_OUTPUT"
+      env:
+        INPUTS_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUTS_PNPM_VERSION: ${{ inputs.pnpm-version }}
 
     - uses: actions/cache@v6
       with:
@@ -85,6 +90,8 @@ runs:
           fi
           sleep "$((attempt * 10))"
         done
-        if [[ -n "${{ inputs.build-script }}" ]]; then
-          pnpm run "${{ inputs.build-script }}"
+        if [[ -n "${INPUTS_BUILD_SCRIPT}" ]]; then
+          pnpm run "${INPUTS_BUILD_SCRIPT}"
         fi
+      env:
+        INPUTS_BUILD_SCRIPT: ${{ inputs.build-script }}

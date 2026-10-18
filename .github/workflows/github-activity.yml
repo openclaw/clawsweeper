@@ -48,7 +48,7 @@ on:
       - completed
 
 permissions:
-  contents: write
+  contents: read
   actions: read
   issues: read
   pull-requests: read
@@ -65,6 +65,7 @@ jobs:
   notify:
     if: >-
       ${{
+        (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository) &&
         !(github.event_name == 'pull_request_target' && github.event.action == 'synchronize') &&
         !(github.event_name == 'repository_dispatch' && github.event.client_payload.activity.type == 'pull_request_target' && github.event.client_payload.activity.action == 'synchronize') &&
         !(github.event_name == 'workflow_run' && contains(fromJSON('["success","neutral","skipped"]'), github.event.workflow_run.conclusion))
