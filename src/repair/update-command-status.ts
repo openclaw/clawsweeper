@@ -105,7 +105,7 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
   }
   validateRepo(options.repo);
   validateItemNumber(options.itemNumber);
-  if (options.requireQueueAuthorityFence && !(await exactReviewQueueAuthorityFence(process.env))) {
+  if (options.requireQueueAuthorityFence && !exactReviewQueueAuthorityFence(process.env)) {
     recordCommandProgress(lifecycle, {
       state: "superseded",
       status: "skipped",
@@ -157,7 +157,7 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
       throw new Error("command status mutation required but no comment was found");
     return { outcome: "skipped" };
   }
-  if (options.requireQueueAuthorityFence && !(await exactReviewQueueAuthorityFence(process.env))) {
+  if (options.requireQueueAuthorityFence && !exactReviewQueueAuthorityFence(process.env)) {
     recordCommandProgress(lifecycle, {
       state: "superseded",
       status: "skipped",
@@ -727,10 +727,11 @@ export function parseOptions(argv: string[]): Options {
   };
 }
 
-export async function exactReviewQueueAuthorityFence(
+export function exactReviewQueueAuthorityFence(
   env: NodeJS.ProcessEnv = process.env,
   execute: (file: string, args: string[], options: { maxBuffer: number }) => string = runCommand,
-): Promise<boolean> {
+  phase: "status" | "review" = "status",
+): boolean {
   const origin = new URL(env.QUEUE_URL || "");
   if (
     origin.username ||
@@ -768,7 +769,7 @@ export async function exactReviewQueueAuthorityFence(
     run_id: runId,
     run_attempt: runAttempt,
     ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
-    phase: "status",
+    phase,
   });
   const output = execute(
     "bash",

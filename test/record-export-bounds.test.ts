@@ -510,8 +510,13 @@ test("signed record export does not advertise an empty page at the record bounda
   ).join("\n");
   assert.match(
     sourcePlan,
-    /SEARCH exact_review_canonical_records .*\(repo_slug=\? AND section=\? AND item_id=\?\)/,
+    /SEARCH v1 USING INDEX exact_review_canonical_records_listing \(repo_slug=\? AND section=\? AND item_id=\?\)/,
   );
+  assert.match(
+    sourcePlan,
+    /SEARCH exact_review_canonical_records_v2 .*\(repo_slug=\? AND section=\? AND item_id=\?\)/,
+  );
+  assert.doesNotMatch(sourcePlan, /MATERIALIZE exact_review_canonical_record_sources/);
   assert.match(
     sourcePlan,
     /SEARCH exact_review_record_backfill .*\(repo_slug=\? AND section=\? AND record_id=\?\)/,

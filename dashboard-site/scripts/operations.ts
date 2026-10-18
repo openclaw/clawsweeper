@@ -14,10 +14,10 @@ type Handoff = 'idle' | 'healthy' | 'degraded' | 'stalled';
 const HANDOFF_RANK: Record<Handoff, number> = { idle: 0, healthy: 0, degraded: 1, stalled: 2 };
 const unhealthy = (status: Handoff): status is 'degraded' | 'stalled' => HANDOFF_RANK[status] > 0;
 
-type Lane = { pending: number; enqueued_total: number; completed_total: number; shed_total?: number };
+type Lane = { pending: number; enqueued_total?: number; completed_total?: number; published_total?: number; shed_total?: number };
 type Sample = {
   at: string;
-  exact_review: { review: Lane; publication: Lane; handoff: { status: Handoff; leased: number } };
+  exact_review: { review: Lane; publication: Lane; handoff: { status: Handoff; leased: number } | null };
 };
 
 export type OperationsHour = {
@@ -39,6 +39,7 @@ export type Operations = {
   generatedAt: string;
   windowStart: string;
   hours: OperationsHour[];
+  reviewOffers: { accepted: number; shed: number } | null;
   incidents: Incident[];
   coverage: { percent: number | null; failedSlots: number | null; missingSlots: number | null };
   // Usable samples in the window, and how many of them were unhealthy.
@@ -51,23 +52,25 @@ const num = (value: unknown) => (typeof value === 'number' && Number.isFinite(va
 function lane(value: unknown): Lane | null {
   if (!isRecord(value)) return null;
   const pending = num(value.pending);
-  const enqueued = num(value.enqueued_total);
-  const completed = num(value.completed_total);
-  if (pending === null || enqueued === null || completed === null) return null;
-  const shed = num(value.shed_total);
-  return { pending, enqueued_total: enqueued, completed_total: completed, ...(shed === null ? {} : { shed_total: shed }) };
+  if (pending === null) return null;
+  return { pending, ...Object.fromEntries(['enqueued_total', 'completed_total', 'published_total', 'shed_total'].flatMap(key => {
+    const count = num(value[key]);
+    return count === null ? [] : [[key, count]];
+  })) };
 }
 
-// A sample counts only when its queue collection succeeded and every field this page reads is present.
+// Collection and depths establish a sample. Each counter and handoff is observed independently.
 function usableSample(value: unknown): Sample | null {
   if (!isRecord(value) || typeof value.at !== 'string' || !Number.isFinite(Date.parse(value.at))) return null;
   const exact = value.exact_review;
-  if (!isRecord(exact) || exact.collection_ok !== true || !isRecord(exact.handoff)) return null;
+  if (!isRecord(exact) || exact.collection_ok !== true) return null;
   const review = lane(exact.review);
   const publication = lane(exact.publication);
-  const status = exact.handoff.status;
-  if (!review || !publication || (status !== 'idle' && status !== 'healthy' && status !== 'degraded' && status !== 'stalled')) return null;
-  return { at: value.at, exact_review: { review, publication, handoff: { status, leased: num(exact.handoff.leased) ?? 0 } } };
+  if (!review || !publication) return null;
+  const handoff = isRecord(exact.handoff) ? exact.handoff : {};
+  const status = handoff.status;
+  const leased = num(handoff.leased);
+  return { at: value.at, exact_review: { review, publication, handoff: leased !== null && (status === 'idle' || status === 'healthy' || status === 'degraded' || status === 'stalled') ? { status, leased } : null } };
 }
 
 // Counter growth between two samples; a drop means the counter was reset, so the step is unknown.
@@ -90,39 +93,48 @@ export function summarizeOperations(history: unknown, applyDay: unknown, applyWe
   const endHour = Math.floor(now / HOUR_MS) * HOUR_MS;
   const startHour = endHour - 7 * 24 * HOUR_MS;
 
-  type Bucket = { completed: number; enqueued: number; shed: number; published: number; steps: number; reviewPending: number; publicationPending: number; leased: number; handoff: Handoff };
+  type Flow = 'completed' | 'enqueued' | 'shed' | 'published';
+  type Bucket = Record<Flow, number | null> & { reviewPending: number; publicationPending: number; leased: number | null; handoff: Handoff | null };
   const buckets = new Map<number, Bucket>();
+  let reviewOffers: Operations['reviewOffers'] = null;
   let previous: Sample | null = null;
   for (const sample of samples) {
     const time = Date.parse(sample.at);
+    if (time > now) continue;
     const hour = Math.floor(time / HOUR_MS) * HOUR_MS;
     if (hour < startHour) {
       previous = sample;
       continue;
     }
     const { review, publication, handoff } = sample.exact_review;
-    const bucket = buckets.get(hour) ?? { completed: 0, enqueued: 0, shed: 0, published: 0, steps: 0, reviewPending: 0, publicationPending: 0, leased: 0, handoff: handoff.status };
+    const bucket = buckets.get(hour) ?? { completed: null, enqueued: null, shed: null, published: null, reviewPending: 0, publicationPending: 0, leased: null, handoff: null };
     // Count a step only across a normal sample interval; a long gap would pile hours of work into one point.
-    if (previous && time - Date.parse(previous.at) <= 2 * SAMPLE_MS) {
+    if (previous && time > Date.parse(previous.at) && time - Date.parse(previous.at) <= 2 * SAMPLE_MS) {
       const prior = previous.exact_review;
-      const steps = [
-        growth(review.completed_total, prior.review.completed_total),
-        growth(review.enqueued_total, prior.review.enqueued_total),
-        growth(review.shed_total, prior.review.shed_total),
-        growth(publication.completed_total, prior.publication.completed_total),
-      ];
-      if (steps.every(step => step !== null)) {
-        bucket.completed += steps[0]!;
-        bucket.enqueued += steps[1]!;
-        bucket.shed += steps[2]!;
-        bucket.published += steps[3]!;
-        bucket.steps++;
+      const steps: Record<Flow, number | null> = {
+        completed: growth(review.completed_total, prior.review.completed_total),
+        enqueued: growth(review.enqueued_total, prior.review.enqueued_total),
+        shed: growth(review.shed_total, prior.review.shed_total),
+        published: growth(publication.published_total, prior.publication.published_total),
+      };
+      for (const key of Object.keys(steps) as Flow[]) {
+        const step = steps[key];
+        if (step !== null) bucket[key] = (bucket[key] ?? 0) + step;
+      }
+      // Ratios need the same observed intervals on both sides. Independent
+      // hourly totals can otherwise turn a missing denominator into 100% shed.
+      if (hour < endHour && steps.enqueued !== null && steps.shed !== null) {
+        reviewOffers ??= { accepted: 0, shed: 0 };
+        reviewOffers.accepted += steps.enqueued;
+        reviewOffers.shed += steps.shed;
       }
     }
     bucket.reviewPending = Math.max(bucket.reviewPending, review.pending);
     bucket.publicationPending = Math.max(bucket.publicationPending, publication.pending);
-    bucket.leased = Math.max(bucket.leased, handoff.leased);
-    if (HANDOFF_RANK[handoff.status] > HANDOFF_RANK[bucket.handoff]) bucket.handoff = handoff.status;
+    if (handoff) {
+      bucket.leased = Math.max(bucket.leased ?? 0, handoff.leased);
+      if (bucket.handoff === null || HANDOFF_RANK[handoff.status] > HANDOFF_RANK[bucket.handoff]) bucket.handoff = handoff.status;
+    }
     buckets.set(hour, bucket);
     previous = sample;
   }
@@ -130,13 +142,12 @@ export function summarizeOperations(history: unknown, applyDay: unknown, applyWe
   const hours: OperationsHour[] = [];
   for (let hour = startHour; hour <= endHour; hour += HOUR_MS) {
     const bucket = buckets.get(hour);
-    const flows = bucket && bucket.steps > 0;
     hours.push({
       hour: new Date(hour).toISOString(),
-      completed: flows ? bucket.completed : null,
-      enqueued: flows ? bucket.enqueued : null,
-      shed: flows ? bucket.shed : null,
-      published: flows ? bucket.published : null,
+      completed: bucket?.completed ?? null,
+      enqueued: bucket?.enqueued ?? null,
+      shed: bucket?.shed ?? null,
+      published: bucket?.published ?? null,
       reviewPending: bucket ? bucket.reviewPending : null,
       publicationPending: bucket ? bucket.publicationPending : null,
       leased: bucket ? bucket.leased : null,
@@ -154,7 +165,7 @@ export function summarizeOperations(history: unknown, applyDay: unknown, applyWe
   };
   for (const sample of samples) {
     const time = Date.parse(sample.at);
-    if (time < startHour) continue;
+    if (time < startHour || time > now || !sample.exact_review.handoff) continue;
     const status = sample.exact_review.handoff.status;
     handoffSamples.observed++;
     if (!unhealthy(status)) {
@@ -180,6 +191,7 @@ export function summarizeOperations(history: unknown, applyDay: unknown, applyWe
     generatedAt: new Date(now).toISOString(),
     windowStart: new Date(startHour).toISOString(),
     hours,
+    reviewOffers,
     incidents: incidents.reverse(),
     coverage: { percent: num(coverage.coverage_percent), failedSlots: num(coverage.failed_slots), missingSlots: num(coverage.missing_slots) },
     handoffSamples,

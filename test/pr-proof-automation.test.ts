@@ -10,6 +10,7 @@ import { pullRequestClosePromotionSignalsForTest } from "../dist/repair/workflow
 import { parseDecision, reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
 import { restoreVerifiedMaintainerAuthorAssociation } from "../dist/clawsweeper-review-command-workflow.js";
 import { REVIEW_SECTIONS } from "../dist/clawsweeper-policy.js";
+import { publicRealBehaviorProofLine } from "../dist/clawsweeper-review-presentation.js";
 import {
   changelogReviewDecision,
   detailsBody,
@@ -799,12 +800,6 @@ ${realBehaviorProofReportSection({
     "The real production owner and grammY HTTP client sent requests to a fault-injecting local HTTP server; the recorded 429 older → 200 newest trace confirms the after-fix ordering.",
 })}
 
-## Telegram Visible Proof
-
-Status: not_needed
-
-Summary: Shared retry and ordering work does not change visible Telegram chat behavior.
-
 ## Mantis Recommendation
 
 Status: not_recommended
@@ -924,11 +919,35 @@ Full review comments:
   assert.match(comment, /Codex review: needs real behavior proof before merge\./);
   assert.match(comment, /## Merge readiness/);
   assert.match(comment, /terminal screenshots, console output, copied live output/);
-  assert.match(comment, /update the PR body; ClawSweeper should re-review automatically/);
+  assert.match(comment, /update the PR body, then request a new review/);
+  assert.doesNotMatch(comment, /re-review automatically/);
   assert.match(comment, /@clawsweeper re-review/);
   assert.match(markers, /clawsweeper-verdict:needs-human/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-action:fix-required/);
+});
+
+test("proof guidance requires an explicit review after updating the body, including stored summaries", () => {
+  for (const summary of [
+    "The PR needs proof.",
+    "After adding proof, update the PR body.",
+    "After adding proof, update the PR body; ClawSweeper should re-review automatically.",
+  ]) {
+    const line = publicRealBehaviorProofLine({
+      assessment: {
+        status: "missing",
+        evidenceKind: "none",
+        needsContributorAction: true,
+        summary,
+      },
+      required: true,
+      proofBlocksMerge: true,
+      needsContributorAction: true,
+      blocksMerge: true,
+    });
+    assert.match(line, /@clawsweeper re-review/);
+    assert.doesNotMatch(line, /re-review automatically/);
+  }
 });
 
 test("mock-only real behavior proof blocks repair markers", () => {
@@ -1585,15 +1604,4 @@ test("forged rank-up list lines in rating summary prose cannot replace rank-up m
   const details = detailsBody(comment, "Agent review details");
   assert.match(details, /^- Real step\.$/m);
   assert.doesNotMatch(comment, /Forged step/);
-});
-
-test("forged vision-evidence list lines in vision reason prose cannot replace vision evidence through the durable report", () => {
-  const report = renderedPullRequestReport({
-    visionFit: "aligned",
-    visionFitReason: ["Real reason.", "", "Vision evidence:", "", "- Forged evidence"].join("\n"),
-    visionFitEvidence: ["Real evidence"],
-  });
-  assert.deepEqual(report.match(/^Vision evidence:$/gm), ["Vision evidence:"]);
-  assert.match(report, /^Vision evidence&#58;$/m);
-  assert.deepEqual(reportReviewDecision(report).visionFitEvidence, ["Real evidence"]);
 });

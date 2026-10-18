@@ -185,15 +185,18 @@ are intentionally stricter: they review issues and PRs, but apply may close only
 PRs where current `main` already implements the proposed change with
 source-backed evidence.
 
-Maintainer-authored issues and PRs, and items labeled `maintainer`, are excluded
-from automatic reviews and scheduled sweeps. One opening/ready reminder explains
-how to opt in. Only request `@clawsweeper review` when a review is needed and the
+Maintainer-authored issues and PRs, and items labeled `maintainer`, created from
+2026-10-15 03:50 UTC are reviewed like everyone else's: a PR gets one automatic
+review and later reviews need a request; an issue follows the ordinary issue
+cadence. Older maintainer items stay excluded from automatic reviews and
+scheduled sweeps, and got one opening/ready reminder explaining how to opt in.
+Only request `@clawsweeper review` when a review is needed and the
 work and validation are complete; agents must not request reviews automatically
 or repeat requests while one is queued or running. A one-off request does not
 opt future pushes into reviews, but it stays open until it is answered: if the
 item changes while it is reviewed, ClawSweeper re-reviews and still answers that
-request. Existing `clawsweeper:autofix` and
-`clawsweeper:automerge` labels retain their explicit opt-in behavior.
+request. The retired `clawsweeper:autofix` and `clawsweeper:automerge` labels no
+longer change review admission; they still protect an item from close proposals.
 
 ## Maintainer Commands
 
@@ -813,9 +816,14 @@ usage is documented in
 
 ```bash
 codex login --device-auth -c 'service_tier="fast"'
-pnpm run codex:local:check
+pnpm run codex:local:check -- --diagnostics
 pnpm run review -- --local-only --target-repo owner/name --item-number 123
 ```
+
+`--diagnostics` checks the selected Codex binary and its login status without a
+model request. It does not prove model access or review readiness. Omit
+`--diagnostics` to also run the existing model smoke test, which consumes model
+usage.
 
 `review` is the single issue/PR review command. `--local-only` makes it an
 advisory local run: it skips the review-start placeholder comment, defaults the
@@ -876,6 +884,21 @@ pnpm run review -- --local-range \
   --target-repo openclaw/clawsweeper \
   --base origin/main
 ```
+
+The built source checkout also provides a local-only entrypoint:
+
+```bash
+node dist/clawsweeper-local.js review --target-repo openclaw/clawsweeper --base origin/main
+node dist/clawsweeper-local.js --help
+node dist/clawsweeper-local.js --version
+```
+
+Both range commands use the same review engine, scanner, reports, history and
+output cleanup. The local entrypoint loads that engine only when review starts;
+help and version do not invoke Codex. Hosted admission, leases, action-ledger
+publication and cache metrics stay in the hosted command. This is a source
+checkout entrypoint, not an installable package. Diagnostics integration remains
+separate; `codex:local:check` still invokes its existing model smoke test.
 
 Without `--target-dir`, `--local-range` reviews the checkout where the command
 was invoked. Pass `--target-dir <path>` when invoking ClawSweeper from a

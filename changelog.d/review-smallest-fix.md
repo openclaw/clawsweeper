@@ -1,0 +1,1 @@
+- Review pull requests against the target repository's pr-simplify skill and flag machinery and tests the smallest complete fix does not need.

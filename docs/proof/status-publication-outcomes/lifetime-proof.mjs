@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { chromium } from "playwright-core";
+import { provePublicationOrder } from "./publication-order-proof.mjs";
 
 export async function proveLifetime(origin, revision, artifacts) {
   const results = [];
@@ -62,55 +63,7 @@ export async function proveLifetime(origin, revision, artifacts) {
   return { revision, results, persistence: persistenceProof, browser: browserProof };
 
   async function provePersistence() {
-    await post("/__proof/lifetime", { stall: "write", count: 17, ttl: 5 });
-    try {
-      const first = await get("/api/status");
-      assert.equal(first.fleet.active_codex_jobs, 17);
-      await new Promise((resolve) => setTimeout(resolve, 5_500));
-      await post("/__proof/lifetime", { advance: true, count: 18, ttl: 5 });
-      const next = await get("/api/status");
-      assert.equal(next.fleet.active_codex_jobs, 18);
-      const beforeRelease = await observeUntil((value) => value.snapshot_publications === 1);
-      assert.equal(beforeRelease.snapshot_writes, 2);
-      assert.equal(beforeRelease.stored_status.active_codex_jobs, 18);
-      assert.equal(beforeRelease.stored_status.generated_at, next.generated_at);
-      await post("/__proof/release");
-      const afterRelease = await observeUntil((value) => value.snapshot_publications === 2);
-      assert.equal(afterRelease.stored_status.active_codex_jobs, 17);
-      assert.equal(afterRelease.stored_status.generated_at, first.generated_at);
-      assert.equal(afterRelease.stored_status.canonical_freshness.state, "stale");
-      const observed = await get("/api/status");
-      if (observed.fleet.active_codex_jobs === 17) {
-        assert.equal(observed.generated_at, first.generated_at);
-        assert.equal(observed.freshness.state, "stale");
-      } else {
-        assert.equal(observed.fleet.active_codex_jobs, 18);
-        assert.equal(observed.freshness.state, "fresh");
-      }
-      return {
-        held_write_does_not_block_new_publication: true,
-        before_release: beforeRelease,
-        after_release: afterRelease,
-        durable_freshness_proof: "canonical publicStatusFreshness projection of stored body",
-        next_http_status: {
-          active_codex_jobs: observed.fleet.active_codex_jobs,
-          generated_at: observed.generated_at,
-          freshness: observed.freshness,
-        },
-      };
-    } finally {
-      await post("/__proof/release");
-    }
-  }
-
-  async function observeUntil(predicate) {
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline) {
-      const observations = await get("/__proof/observations");
-      if (predicate(observations)) return observations;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.fail("durable publication did not reach the expected terminal state");
+    return provePublicationOrder(origin, revision);
   }
 
   async function proveClients() {

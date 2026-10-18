@@ -166,6 +166,9 @@ importers:
 
   .:
     dependencies:
+      markdown-it:
+        specifier: ^15.0.2
+        version: 15.0.2
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -179,9 +182,9 @@ importers:
       '@types/yauzl':
         specifier: 3.4.0
         version: 3.4.0
-      markdown-it:
-        specifier: ^15.0.2
-        version: 15.0.2
+      es-module-lexer:
+        specifier: 3.0.3
+        version: 3.0.3
       oxfmt:
         specifier: ^0.67.0
         version: 0.67.0
@@ -607,6 +610,9 @@ packages:
     resolution: {integrity: sha512-zwfzJecQ/Uej6tusMqwAqU/6KL2XaB2VZ2Jg54Je6ahNBGNH6Ek6g3jjNCF0fG9EWQKGZNddNjU5F1ZQn/sBnA==}
     engines: {node: '>=20.19.0'}
 
+  es-module-lexer@3.0.3:
+    resolution: {integrity: sha512-yWGe1O/j+almnV4hOYrmZo8u58JdnmXEMneRQAYkWtqSiT86yoMIEKF4rpqEDj52tbYl3xceBD3DQIBwcsC9Pw==}
+
   linkify-it@6.1.0:
     resolution: {integrity: sha512-wJ/TwpSDTLepCrQoYWYIExIKg5Zchex2Nn5yk2mFnB+6PtdkHtyLx742md9csRjjOnGkKIS/RrbY7l8D6gT9Vw==}
 
@@ -888,6 +894,8 @@ snapshots:
   argparse@3.0.1: {}
 
   entities@8.0.0: {}
+
+  es-module-lexer@3.0.3: {}
 
   linkify-it@6.1.0:
     dependencies:

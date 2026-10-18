@@ -1,0 +1,60 @@
+{
+  "fixture": "test/oversized-pr-close.test.ts (OWNER-authored oversized PR openclaw/openclaw#141913, real apply owner with --exact-event-publication, recording gh)",
+  "decision_source": "test/exact-review-deferred-publication-fixture.ts deferredContinuationClaim: the CLAIM_DECISION the real queue hands the review job after the deferred publisher's source-drift requeue",
+  "scenarios": [
+    {
+      "scenario": "exact-close-held-open",
+      "actions": [
+        "review_comment_synced",
+        "closed"
+      ],
+      "mutations": [
+        "api repos/openclaw/openclaw/issues/141913/comments --method POST --input <comment-body.json>",
+        "pr close 141913",
+        "api repos/openclaw/openclaw/issues/comments/150913 --method PATCH --input <comment-body.json>"
+      ]
+    },
+    {
+      "scenario": "exact-close-held-publication-finished",
+      "actions": [
+        "skipped_maintainer_authored"
+      ],
+      "mutations": []
+    },
+    {
+      "scenario": "exact-close-held-lease-lost",
+      "actions": [
+        "skipped_maintainer_authored"
+      ],
+      "mutations": []
+    },
+    {
+      "scenario": "exact-close-held-newer-command-answered",
+      "actions": [
+        "skipped_maintainer_authored"
+      ],
+      "mutations": []
+    },
+    {
+      "scenario": "exact-close-held-newer-command-answered-under-other-casing",
+      "actions": [
+        "skipped_maintainer_authored"
+      ],
+      "mutations": []
+    },
+    {
+      "scenario": "exact-close-held-newer-publication",
+      "actions": [
+        "skipped_maintainer_authored"
+      ],
+      "mutations": []
+    },
+    {
+      "scenario": "exact-close-held-older-producer-borrows-newer-publication",
+      "actions": [
+        "skipped_maintainer_authored"
+      ],
+      "mutations": []
+    }
+  ]
+}

@@ -10,7 +10,7 @@ import type {
 import { frontMatterValue } from "./report-front-matter.js";
 import { markdownRepository, repoRelativePath } from "./clawsweeper-repository-paths.js";
 import { linkedSha, markdownLink } from "./clawsweeper-links.js";
-import { fixedInReportText, fixedInText } from "./clawsweeper-status-context.js";
+import { fixedInReportText, fixedInText } from "./clawsweeper-status-presentation.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 import { ReviewRecordFormatError } from "./review-record.js";

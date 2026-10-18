@@ -34,6 +34,7 @@ import {
   type GithubEtagRetainedResponses,
 } from "./github-etag-read-broker.js";
 import { recordGithubEgressBrokerEvent } from "./github-egress-observer.js";
+import { rawGitHubJsonRead } from "./github-raw-json-read.js";
 import {
   activeGitHubRateLimitCircuit,
   GitHubRateLimitCircuitError,
@@ -520,6 +521,7 @@ export function ghWithPreparedTimeout(
   env: NodeJS.ProcessEnv = {},
   deadlineAt?: number,
   onDispatch?: () => void,
+  losslessJson = false,
 ): string {
   gitHubRunState();
   const resolvedArgs = args[0] === "api" ? args : ["--repo", targetRepo(), ...args];
@@ -542,7 +544,8 @@ export function ghWithPreparedTimeout(
       throw circuit;
     }
   }
-  const etagKey = githubEtagKeyForArgs(resolvedArgs, preparedEnv, env);
+  // Receipt verification must observe current bytes, never a sanitized ETag body.
+  const etagKey = losslessJson ? null : githubEtagKeyForArgs(resolvedArgs, preparedEnv, env);
   if (etagKey && githubEtagBrokerConfigured()) {
     return ghWithDurableEtag(
       resolvedArgs,
@@ -573,7 +576,9 @@ export function ghWithPreparedTimeout(
   };
   onDispatch?.();
   try {
-    const result = runText("gh", resolvedArgs, commandOptions);
+    const result = losslessJson
+      ? rawGitHubJsonRead(resolvedArgs, { ...process.env, ...preparedEnv }, commandTimeoutMs)
+      : runText("gh", resolvedArgs, commandOptions);
     recordGitHubRequest(resolvedArgs, scope, "success");
     return result;
   } catch (error) {

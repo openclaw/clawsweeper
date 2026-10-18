@@ -207,6 +207,23 @@ The public `scheduled_feed` also reports the admission budget itself:
 
 `lanes.review.shed_reasons_since_reset` splits review sheds into `backpressure`, `scheduled_rate` and `unattributed`. Together these show whether scheduled backfill is held back by organic debt, by lane rates, by a throttle pause, or by queue backpressure. They are aggregate numbers with no item, repository or credential detail.
 
+Ordinary automatic PR reviews first observe the live head, title, body, and
+draft state, then wait for `EXACT_REVIEW_INITIAL_PR_QUIET_MS` (ten minutes).
+Meaningful changes restart that quiet window, including changes discovered
+without a webhook. Comments and label-only activity do not extend it. There is
+no maximum-wait shortcut: a continuously changing PR waits until it settles.
+Draft-state changes restart the window; existing draft and oversized-PR gates remain in force.
+Explicit review requests bypass this initial hold.
+
+Once a PR has a completed canonical review, ordinary webhooks and scheduled
+hot/normal passes cannot review it again. Request `@clawsweeper re-review` after
+finishing changes. The additive `exact_review_pull_request_answers` table records
+that fact across restarts, report replacement, archive moves, and queue cleanup;
+existing verified canonical reports with retained completion provenance seed it
+on first use. Reports whose old receipts were already pruned remain eligible
+for one fresh answer. Unverified attempts and stale-source requeues do not
+consume the first answer. Issues keep their existing cadence.
+
 Fresh webhook work waits for `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` (90 seconds by
 default) so rapid edits and pushes coalesce before dispatch. Repeated pending
 revisions extend that delay up to `EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS` (three
@@ -233,7 +250,8 @@ ordinary-review one-minute heartbeat plus request/termination time. Oversized
 generation retains its post-generation finalization check rather than an active
 stop loop. Finalization and publication fences remain unchanged. The [startup proof](proof/exact-review-start/README.md)
 records the isolated workflow/process boundary and its limits.
-Explicit command work and publication work bypass the delay.
+Explicit command work and publication work bypass the delay. The PR quiet
+window above takes precedence for ordinary automatic PRs.
 
 Items under active churn wait longer. When an item has already completed
 `EXACT_REVIEW_ACTIVE_ITEM_REVIEW_THRESHOLD` (2 by default) successful review
@@ -247,9 +265,9 @@ the first pending enqueue, so a continuously pushed pull request is still
 reviewed. The active delay only ever lengthens the ordinary debounce. A
 superseding event still revokes an in-flight lease immediately; only the next
 dispatch waits. Explicit commands, publication, scheduled intake, repair
-follow-ups, and recovery work keep their existing timing, as do first reviews,
-items below the threshold, and the immediate pull request `opened` /
-`ready_for_review` event that creates a queue entry. The queue keeps the completion history in an
+follow-ups, and recovery work keep their existing timing, as do items below the threshold. PR `opened` / `ready_for_review` intake
+can observe live state immediately, but ordinary PR dispatch still waits for
+the initial quiet window above. The queue keeps the completion history in an
 additive `exact_review_queue_review_completions` table keyed by item and
 workflow run, pruned to the window; a store without history behaves as before.
 The next-wake calculation reads the delayed `nextAttemptAt`, so a held item does
@@ -259,7 +277,9 @@ When pending depth reaches
 `EXACT_REVIEW_PENDING_SOFT_LIMIT` (600 by default), new recovery and scheduled
 feed work is shed; this threshold counts review work only, so publication
 backlog cannot consume review admission capacity. Existing items, webhook
-events, commands, and publications remain admitted. The queue reports shed
+events, commands, and publications remain admitted, and so does recovery or
+source-drift work that still carries a command's context, which also passes
+a GitHub throttle window. The queue reports shed
 counts under `lanes.review.shed_reasons_since_reset` and the rolling flow by
 `backpressure` versus `scheduled_rate`; pre-migration totals remain
 `unattributed`. Executed reviews debit a durable 220-review/hour
@@ -298,7 +318,9 @@ deletes the queue item. Once an item has used
 next source-drift requeue is not admitted: the item is parked with reason
 `source_drift_loop`, and later automatic requeues are deduped against it with
 `dedupe_scope: source_drift_loop`. The publisher still receives a successful
-dedupe, so the parked item is the only new state. A direct-publication
+dedupe, so the parked item is the only new state. The direct and batch
+publishers both send that requeue as `publisher-source-drift:<producer run
+id>:<attempt>`, so one review generation is requeued at most once. A direct-publication
 completion that owes a lifecycle requeue (`direct_lifecycle_requeue`) creates the
 same automatic generation without `/enqueue`, so it counts and parks the same
 way: below the limit its successor revision is pending; at the limit the
@@ -323,8 +345,9 @@ it as absent before the limit check, and parking never refreshes an expired row.
 
 Deterministic no-op holds stop the other observed self-feeding shape without a
 counter. When a review run completes successfully on the guarded locked-conversation
-path or on the oversized PR path, sweep.yml sends `review_hold`
-(`locked_conversation` or `oversized_pull_request`) with the lease completion.
+path, the oversized PR path, or the maintainer-request guard, sweep.yml sends
+`review_hold` (`locked_conversation`, `oversized_pull_request`, or
+`maintainer_request_required`) with the lease completion.
 Without command context, without input that arrived during the lease, and (for
 oversized PRs) with a pinned head, the queue keeps the row parked under that
 reason instead of deleting it. Scheduled offers then dedupe with that
@@ -332,9 +355,19 @@ reason instead of deleting it. Scheduled offers then dedupe with that
 and neither claims a run, so neither debits the scheduled budget nor counts
 toward `review_runaway_health`. Organic events, commands, manual reviews, the
 parked terminal check, and parked-review fresh recovery release it exactly as
-for `source_drift_loop`. Older Workers ignore the field, and older workflows do
-not send it, so either deploy order keeps the previous behavior until both sides
-are current.
+for `source_drift_loop`. The Worker must recognize a hold reason before a
+workflow sends it; deploy the Worker first when adding a reason. Older workflows
+that omit the field keep the previous behavior.
+
+The queue also applies the maintainer-request hold before dispatch, so the
+common case starts no runner. The live item check that runs before every
+dispatch evaluates the same rule for automatic work (no command, manual request
+or publication). GitHub shows a private org member to the App as `CONTRIBUTOR`,
+so for a `CONTRIBUTOR` author the queue and the webhook gate read the author's
+repository permission (admin or maintain counts as a maintainer, as in the
+runner admission check), cached per author for one hour. A held item parks under
+`maintainer_request_required` exactly as after a skipped run. A failed
+permission read dispatches as before, and the runner check still applies.
 
 The same queue keeps a trailing 24-hour history of claimed review runs per item
 (`exact_review_queue_review_generations`, keyed by item, run ID, and attempt;

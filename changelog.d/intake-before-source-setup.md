@@ -1,0 +1,1 @@
+- Publish preliminary intake labels before target-source checkout, and skip runner and source preparation when an exact-review reservation is held or superseded.

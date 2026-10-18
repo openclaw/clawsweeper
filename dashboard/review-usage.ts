@@ -22,6 +22,7 @@ export const REVIEW_USAGE_LAYOUT = {
     "reasoning_output_tokens",
     "duration_ms",
     "usage_present",
+    "core_usage_present",
   ],
 } as const;
 
@@ -50,7 +51,10 @@ export function writeReviewUsage(dataset: ReviewUsageDataset, payload: ReviewUsa
     output_tokens: payload.usage?.output_tokens ?? 0,
     reasoning_output_tokens: payload.usage?.reasoning_output_tokens ?? 0,
     duration_ms: payload.duration_ms,
-    usage_present: payload.usage === null ? 0 : 1,
+    // Keep the existing full-usage flag meaningful to older queries; unknown writes are not zeroes.
+    usage_present:
+      payload.usage !== null && payload.usage.cache_write_input_tokens !== null ? 1 : 0,
+    core_usage_present: payload.usage === null ? 0 : 1,
   };
   dataset.writeDataPoint({
     indexes: REVIEW_USAGE_LAYOUT.indexes.map((key) => payload[key]),

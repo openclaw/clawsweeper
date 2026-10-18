@@ -71,85 +71,132 @@ export function observeGitHubDebugStderr(
   nowMs = Date.now(),
 ): Buffer {
   try {
-    const context = githubEgressContext(args, env);
     const parsed = parseGitHubDebugStderr(stderr, githubEgressAllowedHosts(env));
-    const complete = context.complete && parsed.complete;
-    for (const [index, attempt] of parsed.attempts.entries()) {
-      const routeTemplate = attempt.routeTemplate;
-      const observedAtMs = attempt.receivedAtMs ?? nowMs;
-      const pageBucket =
-        attempt.pageBucket === "none" && parsed.attempts.length > 1
-          ? githubEgressPageBucket(index + 1)
-          : attempt.pageBucket;
-      const operation =
-        routeTemplate === "unknown"
-          ? context.descriptor.operation
-          : githubEgressOperation(routeTemplate);
-      const attemptComplete =
-        complete &&
-        attempt.complete &&
-        attempt.receivedAtMs !== null &&
-        routeTemplate !== "unknown";
-      appendGithubEgressMetric(env, {
-        ...metricBase(context, observedAtMs),
-        operation,
-        method: attempt.method,
-        routeTemplate,
-        pageBucket,
-        unit: "wire_attempt",
-        outcome: wireOutcome(attempt.status, attempt.headers),
-        statusBucket: githubEgressStatusBucket(attempt.status),
-        latencyBucket: githubEgressLatencyBucket(attempt.latencyMs),
-        attempted: true,
-        telemetryComplete: attemptComplete,
-        count: 1,
-      });
-      if (attempt.status === 403 || attempt.status === 429) {
-        appendRateLimitObservation(env, {
-          version: GITHUB_EGRESS_TELEMETRY_VERSION,
-          observedAt: new Date(observedAtMs).toISOString(),
-          deploymentRevision: context.deploymentRevision,
-          configRevision: context.configRevision,
-          poolClass: context.poolClass,
-          poolIdentity: context.poolIdentity,
-          stage: context.stage,
-          sourceAction: context.sourceAction,
-          operation,
-          method: attempt.method,
-          routeTemplate,
-          pageBucket,
-          status: attempt.status,
-          headers: attempt.headers,
-          resetAuthorityCandidate: resetAuthorityCandidate(attempt.headers),
-          telemetryComplete: attemptComplete,
-        });
-      }
-    }
-    const last = parsed.attempts.at(-1);
-    const invocationDescriptor = observedInvocationDescriptor(context, parsed.attempts);
-    appendGithubEgressMetric(env, {
-      ...metricBase(context, nowMs),
-      operation: invocationDescriptor.operation,
-      method: invocationDescriptor.method,
-      routeTemplate: invocationDescriptor.routeTemplate,
-      pageBucket: "none",
-      unit: "invocation",
-      outcome:
-        parsed.attempts.length === 0
-          ? "pre_wire_failure"
-          : wireOutcome(last?.status ?? null, last?.headers ?? emptyRateLimitHeaders()),
-      statusBucket: githubEgressStatusBucket(last?.status ?? null),
-      latencyBucket: "unknown",
-      attempted: parsed.attempts.length > 0,
-      telemetryComplete: complete && parsed.attempts.length > 0 && invocationDescriptor.complete,
-      count: 1,
-    });
+    recordGitHubAttempts(args, env, parsed.attempts, parsed.complete, nowMs);
     return parsed.cleanStderr;
   } catch {
     // Observation is deliberately fail-open for command behavior. Never put a
     // raw diagnostic frame back on stderr: it may contain response bodies,
     // query strings, ETags, URLs, or request identifiers.
     return conservativeStripGitHubDebug(stderr);
+  }
+}
+
+function recordGitHubAttempts(
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  attempts: readonly ParsedWireAttempt[],
+  completeInput: boolean,
+  nowMs: number,
+): void {
+  const context = githubEgressContext(args, env);
+  const complete = context.complete && completeInput;
+  for (const [index, attempt] of attempts.entries()) {
+    const routeTemplate = attempt.routeTemplate;
+    const observedAtMs = attempt.receivedAtMs ?? nowMs;
+    const pageBucket =
+      attempt.pageBucket === "none" && attempts.length > 1
+        ? githubEgressPageBucket(index + 1)
+        : attempt.pageBucket;
+    const operation =
+      routeTemplate === "unknown"
+        ? context.descriptor.operation
+        : githubEgressOperation(routeTemplate);
+    const attemptComplete =
+      complete && attempt.complete && attempt.receivedAtMs !== null && routeTemplate !== "unknown";
+    appendGithubEgressMetric(env, {
+      ...metricBase(context, observedAtMs),
+      operation,
+      method: attempt.method,
+      routeTemplate,
+      pageBucket,
+      unit: "wire_attempt",
+      outcome: wireOutcome(attempt.status, attempt.headers),
+      statusBucket: githubEgressStatusBucket(attempt.status),
+      latencyBucket: githubEgressLatencyBucket(attempt.latencyMs),
+      attempted: true,
+      telemetryComplete: attemptComplete,
+      count: 1,
+    });
+    if (attempt.status === 403 || attempt.status === 429) {
+      appendRateLimitObservation(env, {
+        version: GITHUB_EGRESS_TELEMETRY_VERSION,
+        observedAt: new Date(observedAtMs).toISOString(),
+        deploymentRevision: context.deploymentRevision,
+        configRevision: context.configRevision,
+        poolClass: context.poolClass,
+        poolIdentity: context.poolIdentity,
+        stage: context.stage,
+        sourceAction: context.sourceAction,
+        operation,
+        method: attempt.method,
+        routeTemplate,
+        pageBucket,
+        status: attempt.status,
+        headers: attempt.headers,
+        resetAuthorityCandidate: resetAuthorityCandidate(attempt.headers),
+        telemetryComplete: attemptComplete,
+      });
+    }
+  }
+  const last = attempts.at(-1);
+  const invocationDescriptor = observedInvocationDescriptor(context, attempts);
+  appendGithubEgressMetric(env, {
+    ...metricBase(context, nowMs),
+    operation: invocationDescriptor.operation,
+    method: invocationDescriptor.method,
+    routeTemplate: invocationDescriptor.routeTemplate,
+    pageBucket: "none",
+    unit: "invocation",
+    outcome:
+      attempts.length === 0
+        ? "pre_wire_failure"
+        : wireOutcome(last?.status ?? null, last?.headers ?? emptyRateLimitHeaders()),
+    statusBucket: githubEgressStatusBucket(last?.status ?? null),
+    latencyBucket: "unknown",
+    attempted: attempts.length > 0,
+    telemetryComplete: complete && attempts.length > 0 && invocationDescriptor.complete,
+    count: 1,
+  });
+}
+
+/** Records a byte-preserving GET using the same wire accounting as gh. */
+export function recordGitHubHttpRead(
+  args: readonly string[],
+  status: number,
+  headers: ReadonlyMap<string, string>,
+  latencyMs: number,
+  env: NodeJS.ProcessEnv,
+): void {
+  try {
+    const descriptor = githubEgressCommandDescriptor(args);
+    const safeHeaders = [...headers]
+      .filter(([name]) =>
+        /^(?:retry-after|x-ratelimit-(?:limit|remaining|used|reset|resource))$/.test(name),
+      )
+      .map(([name, value]) => `< ${name}: ${value}`)
+      .join("\n");
+    const nowMs = Date.now();
+    recordGitHubAttempts(
+      args,
+      env,
+      [
+        {
+          method: "GET",
+          routeTemplate: descriptor.routeTemplate,
+          pageBucket: githubEgressPageBucket(githubPageFromArgs(args)),
+          status,
+          latencyMs,
+          receivedAtMs: nowMs,
+          headers: responseHeaders(safeHeaders),
+          complete: descriptor.routeTemplate !== "unknown",
+        },
+      ],
+      true,
+      nowMs,
+    );
+  } catch {
+    // Telemetry failure must not change receipt verification.
   }
 }
 

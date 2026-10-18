@@ -10,6 +10,7 @@
     "build:dashboard": "tsc -p tsconfig.dashboard.json",
     "build:node": "pnpm run build && pnpm run build:repair",
     "build:all": "pnpm run build && pnpm run build:repair && pnpm run build:dashboard",
+    "package:local": "pnpm run build:node && node scripts/stage-local-package.mjs",
     "plan": "node dist/clawsweeper.js plan",
     "reserve-review-lease": "node dist/clawsweeper.js reserve-review-lease",
     "review": "node dist/clawsweeper.js review",
@@ -83,13 +84,14 @@
     "crabbox:warmup": "crabbox warmup"
   },
   "dependencies": {
+    "markdown-it": "^15.0.2",
     "yaml": "^2.9.0",
     "yauzl": "3.4.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.4",
     "@types/yauzl": "3.4.0",
-    "markdown-it": "^15.0.2",
+    "es-module-lexer": "3.0.3",
     "oxfmt": "^0.67.0",
     "oxlint": "^1.82.0",
     "oxlint-tsgolint": "7.0.2001",

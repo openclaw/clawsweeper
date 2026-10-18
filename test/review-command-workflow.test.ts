@@ -32,7 +32,7 @@ import {
   ReviewGitError,
 } from "../dist/clawsweeper-review-blobs.js";
 import { ReviewSourcePreparationError } from "../dist/review-source-preparation.js";
-import { ValidationRecoveryRequiredError } from "../dist/repair/validation-recovery.js";
+import { ValidationRecoveryRequiredError } from "../dist/validation-recovery.js";
 import { reviewOutputItemBudget } from "../dist/review-output-policy.js";
 
 import { parseArgs } from "../dist/clawsweeper-args.js";

@@ -24,10 +24,12 @@ import {
   assertActiveReviewOutputBudget,
   assertTransientReviewOutputBudget,
   createReviewOutputBudget,
+  createReviewOutputWriter,
   createTransientReviewOutput,
   emitReviewFailureJson,
   emitReviewOutput,
   finalizeSummaryReviewOutput,
+  finalizeReviewCommandOutput,
   prepareRetainedReviewOutput,
   pruneReviewOutputItem,
   produceReviewOutput,
@@ -41,6 +43,101 @@ import {
 import { prepareMediaProofArtifacts } from "../dist/clawsweeper-media-proof.js";
 import type { ItemContext, MediaProofCommandRunner } from "../src/clawsweeper-types.js";
 import { localReviewOutputHasPayload } from "../dist/clawsweeper-review-command-workflow.js";
+
+test("review output writer replaces item reports and admits before exposing them", () => {
+  const output = createTransientReviewOutput("clawsweeper-writer-test-");
+  try {
+    const outputSelection = reviewOutputSelection(parseArgs([]), {
+      destinationFlag: "artifact_dir",
+    });
+    const outputBudget = createReviewOutputBudget(output.path, "none");
+    const writer = createReviewOutputWriter({
+      outputSelection,
+      outputBudget,
+      retainedReviewOutput: null,
+      artifactDir: output.path,
+      localOnly: true,
+    });
+    const path = join(output.path, "report.md");
+    writer.writeReport({ number: 1 }, path, "first");
+    writer.writeReport({ number: 1 }, path, "replacement");
+    assert.deepEqual(writer.results, [{ itemNumber: 1, path: null, markdown: "replacement" }]);
+    assert.throws(
+      () => writer.writeReport({ number: 2 }, path, "x".repeat(16 * 1024 * 1024 + 1)),
+      /reports exceeded/,
+    );
+    assert.equal(readFileSync(path, "utf8"), "replacement");
+    assert.equal(writer.results.length, 1);
+    writer.assertBudget();
+  } finally {
+    output.cleanup();
+  }
+});
+
+test("review finalization restores before summary pruning and always cleans up", () => {
+  const parent = createTransientReviewOutput("clawsweeper-finalize-test-");
+  const output = prepareRetainedReviewOutput(join(parent.path, "summary"), "summary");
+  const reportPath = join(output.path, "report.md");
+  const scratchPath = join(output.path, "scratch");
+  writeFileSync(reportPath, "report");
+  writeFileSync(scratchPath, "scratch");
+  const events: string[] = [];
+  try {
+    assert.equal(
+      finalizeReviewCommandOutput({
+        outputSelection: reviewOutputSelection(parseArgs(["--output-retention", "summary"]), {
+          destinationFlag: "artifact_dir",
+        }),
+        retainedReviewOutput: output,
+        results: [{ path: reportPath, markdown: "report" }],
+        commandError: undefined,
+        restoreTreeModes: () => {
+          assert.equal(existsSync(scratchPath), true);
+          events.push("restore");
+        },
+        cleanupReviewOutput: () => {
+          assert.equal(existsSync(scratchPath), false);
+          events.push("cleanup");
+        },
+      }),
+      undefined,
+    );
+    assert.deepEqual(events, ["restore", "cleanup"]);
+  } finally {
+    parent.cleanup();
+  }
+});
+
+test("review finalization preserves command and first cleanup failure precedence", () => {
+  const restoreError = new Error("restore");
+  const cleanupError = new Error("cleanup");
+  const outputSelection = reviewOutputSelection(parseArgs([]), { destinationFlag: "artifact_dir" });
+  for (const [commandError, restorationFails, expected] of [
+    [undefined, false, cleanupError],
+    [undefined, true, restoreError],
+    [new Error("command"), true, undefined],
+  ] as const) {
+    let cleaned = false;
+    assert.equal(
+      finalizeReviewCommandOutput({
+        outputSelection,
+        retainedReviewOutput: null,
+        results: [],
+        commandError,
+        restoreTreeModes: () => {
+          if (restorationFails) throw restoreError;
+        },
+        cleanupReviewOutput: (received) => {
+          assert.equal(received, commandError);
+          cleaned = true;
+          throw cleanupError;
+        },
+      }),
+      expected,
+    );
+    assert.equal(cleaned, true);
+  }
+});
 
 test("local review output defaults to none and preserves explicit-path compatibility", () => {
   assert.deepEqual(reviewOutputSelection(parseArgs([]), { destinationFlag: "artifact_dir" }), {

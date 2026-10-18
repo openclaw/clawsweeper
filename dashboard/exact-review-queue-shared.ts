@@ -5,6 +5,16 @@ const EXACT_REVIEW_SCHEDULED_NORMAL_SOURCE_ACTION = "scheduled_normal_backfill";
 
 export type ExactReviewScheduledLane = "hot_intake" | "normal_backfill";
 
+export function exactReviewDispatcherRetryAt(
+  dispatcher: { state?: string; retryAt?: number } | undefined,
+  now: number,
+): number | null {
+  const retryAt = Number(dispatcher?.retryAt || 0);
+  return (dispatcher?.state === "paused" || dispatcher?.state === "blocked") && retryAt > now
+    ? retryAt
+    : null;
+}
+
 export function exactReviewScheduledLane(
   decision: ExactReviewDecision,
 ): ExactReviewScheduledLane | null {

@@ -1,0 +1,1 @@
+- Add bounded canonical record verification to manual queue maintenance, keeping signing credentials in the workflow and reporting body hashes, revisions, and coverage gaps without logging record contents.

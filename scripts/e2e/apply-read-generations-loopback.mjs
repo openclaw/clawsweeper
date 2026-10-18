@@ -5,11 +5,9 @@ import { once } from "node:events";
 import { createApplyLeaseGuards } from "../../dist/clawsweeper-apply-lease-guards.js";
 import { renderReviewStartStatusComment } from "../../dist/clawsweeper.js";
 import { LiveReadGeneration } from "../../dist/live-read-generation.js";
-import { hydratePrLists } from "../../dist/pr-hydration-snapshot.js";
 
 const reviewedHead = "a".repeat(40);
 const changedHead = "c".repeat(40);
-const activityRevision = `sha256:${"1".repeat(64)}`;
 const leaseOwner = "apply-read-generation-proof";
 const leaseStartedAt = new Date().toISOString();
 const leaseExpiresAt = new Date(Date.parse(leaseStartedAt) + 10 * 60 * 1000).toISOString();
@@ -65,12 +63,6 @@ function request(path, options = {}) {
 const reset = () => request("/reset", { body: {} });
 const counts = () => request("/counts");
 const get = (path) => request(path);
-const hydration = (items) => ({
-  items,
-  total: items.length,
-  hydrated: items.length,
-  truncated: false,
-});
 
 function issueReviewCommentState(generation, bypassGenerationCache) {
   const comments = generation.read("paged:comments", () => get("/comments"), {
@@ -180,53 +172,6 @@ try {
   );
 
   reset();
-  const cold = hydratePrLists({
-    repo: "openclaw/clawsweeper",
-    number: 42,
-    pullUpdatedAt: "2026-08-13T00:00:00Z",
-    headSha: reviewedHead,
-    changedFileCount: 1,
-    commitCount: 1,
-    reviewCommentCount: 1,
-    commentActivityRevision: activityRevision,
-    prior: null,
-    fetchFiles: () => hydration(get("/files")),
-    fetchCommits: () => hydration(get("/commits")),
-    fetchReviewComments: () => hydration(get("/inline-comments")),
-    fetchCompleteReviewComments: () => get("/inline-comments"),
-    fetchReviewCommentsSince: () => get("/inline-comments"),
-    revalidateCommentActivityRevision: () => null,
-  });
-  assert.ok(cold.snapshot);
-  reset();
-  const reused = hydratePrLists({
-    repo: "openclaw/clawsweeper",
-    number: 42,
-    pullUpdatedAt: "2026-08-13T00:00:00Z",
-    headSha: reviewedHead,
-    changedFileCount: 1,
-    commitCount: 1,
-    reviewCommentCount: 1,
-    commentActivityRevision: activityRevision,
-    prior: cold.snapshot,
-    requireFullyValidatedSnapshot: true,
-    revalidateCommentActivityRevision: () => get("/activity").revision,
-    fetchFiles: () => hydration(get("/files")),
-    fetchCommits: () => hydration(get("/commits")),
-    fetchReviewComments: () => hydration(get("/inline-comments")),
-    fetchCompleteReviewComments: () => get("/inline-comments"),
-    fetchReviewCommentsSince: () => get("/inline-comments"),
-  });
-  assert.equal(reused.filesReused, true);
-  assert.equal(reused.commitsReused, true);
-  assert.equal(reused.reviewCommentsReused, true);
-  const snapshotCounts = counts();
-  assert.equal(snapshotCounts["/activity"], 1);
-  assert.equal(snapshotCounts["/files"] ?? 0, 0);
-  assert.equal(snapshotCounts["/commits"] ?? 0, 0);
-  assert.equal(snapshotCounts["/inline-comments"] ?? 0, 0);
-
-  reset();
   const applyGeneration = new LiveReadGeneration();
   const shared = (key, path) => applyGeneration.read(key, () => get(path));
   shared("issue", "/issue");
@@ -253,7 +198,6 @@ try {
         barrier_live_reads: { pull_per_barrier: 2, comments_per_barrier: 1 },
         concurrent_head_blocked: true,
         concurrent_comment_blocked: true,
-        validated_snapshot_list_reads: { files: 0, commits: 0, inline_comments: 0 },
       },
       null,
       2,

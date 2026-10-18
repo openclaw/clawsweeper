@@ -4,7 +4,6 @@ import test from "node:test";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -25,7 +24,7 @@ import {
 } from "../dist/clawsweeper-source-revision.js";
 import { buildPullRequestReviewEvidence, readReviewGit } from "../dist/pr-review-evidence.js";
 import { createLocalRangeReviewer } from "../dist/clawsweeper-local-review.js";
-import { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "../dist/command.js";
+import { resolveSpawnCommand, runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "../dist/command.js";
 import { changelogReviewDecision, reviewFinding } from "./helpers.ts";
 
 const buildLocalRangeReviewForTest = createLocalRangeReviewer({
@@ -39,7 +38,40 @@ const buildLocalRangeReviewForTest = createLocalRangeReviewer({
   reviewCommentContentRevision,
 });
 
-const CLI = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
+// Run the same native parity cases against either entrypoint.
+const LOCAL_CLI =
+  process.env.CLAWSWEEPER_TEST_LOCAL_ENTRY_PATH ??
+  fileURLToPath(new URL("../dist/clawsweeper-local.js", import.meta.url));
+const CLI =
+  process.env.CLAWSWEEPER_TEST_LOCAL_ENTRY_PATH ??
+  fileURLToPath(
+    new URL(
+      process.env.CLAWSWEEPER_TEST_LOCAL_ENTRY === "1"
+        ? "../dist/clawsweeper-local.js"
+        : "../dist/clawsweeper.js",
+      import.meta.url,
+    ),
+  );
+
+function spawnReview(
+  cli: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; encoding: "utf8"; timeout?: number },
+) {
+  const batch = cli.endsWith(".cmd");
+  const invocation = resolveSpawnCommand(
+    batch ? cli : process.execPath,
+    batch ? args : [cli, ...args],
+    {
+      cwd: options.cwd,
+      env: options.env,
+    },
+  );
+  return spawnSync(invocation.command, invocation.args, {
+    ...options,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+  });
+}
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -306,10 +338,9 @@ test(
       writeFileSync(decisionPath, JSON.stringify(changelogReviewDecision()));
       process.env.PATH = `${harness}${delimiter}${originalPath}`;
       const runReview = (mode: string) =>
-        spawnSync(
-          process.execPath,
+        spawnReview(
+          CLI,
           [
-            CLI,
             "review",
             "--local-range",
             "--base",
@@ -661,10 +692,9 @@ test("review rejects --item-number combined with --local-range", () => {
   // The guard fires before any checkout/fetch, so a non-git temp dir is enough.
   const dir = mkdtempSync(join(tmpdir(), "lrr-guard-"));
   try {
-    const r = spawnSync(
-      "node",
+    const r = spawnReview(
+      CLI,
       [
-        CLI,
         "review",
         "--local-only",
         "--local-range",
@@ -688,13 +718,14 @@ test("--local-range failure emits one JSON result and removes default scratch", 
   useFakeScanner(t);
   const dir = initRepo();
   const codexDir = mkdtempSync(join(tmpdir(), "lrr-default-codex-"));
-  const fakeCodex = join(codexDir, "fake-codex.sh");
   const fakeCodexMarker = join(codexDir, "fake-codex-ran.txt");
-  writeFileSync(
-    fakeCodex,
-    '#!/bin/sh\nprintf "%s\\n%s\\n" "$PWD" "$GH_CONFIG_DIR" > "$FAKE_CODEX_MARKER"\nexit 1\n',
+  const fakeCodex = writeNodeCodex(
+    codexDir,
+    `import fs from "node:fs";
+fs.writeFileSync(process.env.FAKE_CODEX_MARKER, process.cwd() + "\\n" + process.env.GH_CONFIG_DIR + "\\n");
+process.exit(1);
+`,
   );
-  chmodSync(fakeCodex, 0o755);
   try {
     writeFileSync(join(dir, "a.txt"), "base\n");
     git(dir, "add", "a.txt");
@@ -704,10 +735,9 @@ test("--local-range failure emits one JSON result and removes default scratch", 
     git(dir, "add", "a.txt");
     git(dir, "commit", "-q", "-m", "feat: local range");
 
-    const result = spawnSync(
-      "node",
+    const result = spawnReview(
+      CLI,
       [
-        CLI,
         "review",
         "--local-range",
         "--base",
@@ -761,10 +791,14 @@ test("--local-range does not host-download proof video URLs from the body", asyn
   const port = (server.address() as { port: number }).port;
   const dir = initRepo();
   const codexDir = mkdtempSync(join(tmpdir(), "lrr-codex-"));
-  const fakeCodex = join(codexDir, "fake-codex.sh");
   const fakeCodexMarker = join(codexDir, "fake-codex-ran.txt");
-  writeFileSync(fakeCodex, '#!/bin/sh\nprintf "ran\\n" > "$FAKE_CODEX_MARKER"\nexit 1\n');
-  chmodSync(fakeCodex, 0o755);
+  const fakeCodex = writeNodeCodex(
+    codexDir,
+    `import fs from "node:fs";
+fs.writeFileSync(process.env.FAKE_CODEX_MARKER, "ran\\n");
+process.exit(1);
+`,
+  );
   try {
     writeFileSync(join(dir, "a.txt"), "x\n");
     git(dir, "add", "a.txt");
@@ -782,10 +816,9 @@ test("--local-range does not host-download proof video URLs from the body", asyn
     );
     // codex is stubbed (CODEX_BIN exits 1) so no real engine runs; media-proof would still
     // curl the URL BEFORE the engine if it weren't skipped for --local-range.
-    const result = spawnSync(
-      "node",
+    const result = spawnReview(
+      CLI,
       [
-        CLI,
         "review",
         "--local-only",
         "--local-range",
@@ -826,12 +859,24 @@ test("--local-range does not host-download proof video URLs from the body", asyn
   }
 });
 
-function writeLocalReviewCodex(harness: string, priorFindingTitle = ""): string {
+function writeNodeCodex(harness: string, script: string): string {
   const fakeCodexScript = join(harness, "fake-codex.mjs");
   const fakeCodex =
     process.platform === "win32" ? join(harness, "fake-codex.cmd") : join(harness, "fake-codex");
-  writeFileSync(
-    fakeCodexScript,
+  writeFileSync(fakeCodexScript, script);
+  if (process.platform === "win32") {
+    writeFileSync(fakeCodex, `@echo off\r\n"${process.execPath}" "${fakeCodexScript}" %*\r\n`);
+  } else {
+    writeFileSync(fakeCodex, `#!/bin/sh\nexec "${process.execPath}" "${fakeCodexScript}" "$@"\n`, {
+      mode: 0o755,
+    });
+  }
+  return fakeCodex;
+}
+
+function writeLocalReviewCodex(harness: string, priorFindingTitle = ""): string {
+  return writeNodeCodex(
+    harness,
     `import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 const args = process.argv.slice(2);
@@ -862,15 +907,77 @@ if (process.env.LOCAL_REVIEW_FAIL === "1") {
 process.stdout.write(fs.readFileSync(process.env.LOCAL_REVIEW_DECISION, "utf8") + "\\n");
 `,
   );
-  if (process.platform === "win32") {
-    writeFileSync(fakeCodex, `@echo off\r\n"${process.execPath}" "${fakeCodexScript}" %*\r\n`);
-  } else {
-    writeFileSync(fakeCodex, `#!/bin/sh\nexec "${process.execPath}" "${fakeCodexScript}" "$@"\n`, {
-      mode: 0o755,
-    });
-  }
-  return fakeCodex;
 }
+
+test("local range provenance runs inside the native GitHub command scope", (t) => {
+  useFakeScanner(t);
+  const dir = initRepo();
+  const harness = mkdtempSync(join(tmpdir(), "lrr-provenance-"));
+  try {
+    // Boundary commits are intentionally excluded from provenance lookups.
+    git(dir, "commit", "--allow-empty", "-qm", "initial");
+    writeFileSync(join(dir, "feature.txt"), "before\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "base");
+    git(dir, "branch", "base-ref");
+    writeFileSync(join(dir, "feature.txt"), "after\n");
+    git(dir, "commit", "-qam", "change existing line");
+    const decision = join(harness, "decision.json");
+    const marker = join(harness, "gh-calls.jsonl");
+    writeFileSync(decision, JSON.stringify(changelogReviewDecision()));
+    const ghScript = join(harness, "gh.mjs");
+    writeFileSync(
+      ghScript,
+      `import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+console.log(process.argv.includes("rate_limit") ? '{"resources":{"core":{"remaining":5000}}}' : '[]');
+`,
+    );
+    const result = spawnReview(
+      LOCAL_CLI,
+      [
+        "review",
+        "--local-range",
+        "--base",
+        "base-ref",
+        "--target-repo",
+        "openclaw/clawsweeper",
+        "--target-dir",
+        dir,
+        "--result-format",
+        "json",
+      ],
+      {
+        encoding: "utf8",
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          GH_BIN: process.execPath,
+          GH_BIN_ARGS: JSON.stringify([ghScript]),
+          NODE_OPTIONS: [
+            process.env.NODE_OPTIONS,
+            `--import=${new URL("./local-entry-import-guard.mjs", import.meta.url).href}`,
+          ]
+            .filter(Boolean)
+            .join(" "),
+          CODEX_BIN: writeLocalReviewCodex(harness),
+          LOCAL_REVIEW_DECISION: decision,
+          LOCAL_REVIEW_CAPTURE: join(harness, "capture.json"),
+          CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: "1",
+        },
+      },
+    );
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(existsSync(marker), "the changed base line must reach the real ghJson callback");
+    assert.match(readFileSync(marker, "utf8"), /commits\/[^/]+\/pulls/);
+    assert.doesNotMatch(result.stdout + result.stderr, /GitHub operations require withGitHubRun/);
+    assert.equal(git(dir, "status", "--porcelain"), "");
+  } finally {
+    rmSync(harness, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("--local-range persists whole-range Git statistics beyond every display evidence cap", (t) => {
   useFakeScanner(t);
@@ -889,10 +996,9 @@ test("--local-range persists whole-range Git statistics beyond every display evi
   };
   const runReview = (name: string) => {
     const output = join(harness, name);
-    const result = spawnSync(
-      process.execPath,
+    const result = spawnReview(
+      CLI,
       [
-        CLI,
         "review",
         "--local-range",
         "--base",
@@ -1073,10 +1179,9 @@ test("--local-range preserves native history and exports current preflight summa
   const fakeCodex = writeLocalReviewCodex(harness, priorFindingTitle);
 
   function runReview(artifactDir: string, base = "base-ref", shouldFail = false): void {
-    const result = spawnSync(
-      process.execPath,
+    const result = spawnReview(
+      CLI,
       [
-        CLI,
         "review",
         "--local-range",
         "--preflight",

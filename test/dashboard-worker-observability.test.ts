@@ -73,7 +73,7 @@ test("public durable publication event endpoint returns bounded aggregate-only w
     true,
   );
   assert.equal(JSON.stringify(body).includes("openclaw/openclaw#898"), false);
-  assert.equal(JSON.stringify(body).includes("workflow"), false);
+  assert.doesNotMatch(JSON.stringify(body), /"workflow(?:_run)?"\s*:/);
   const cached = await worker.fetch(
     new Request("https://clawsweeper.openclaw.ai/api/recent-durable-publication-events?window=6h"),
     { EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue) },

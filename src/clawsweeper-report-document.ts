@@ -28,10 +28,6 @@ import {
   reviewStructuralPullStateDigest,
   type ReviewStructuralRecord,
 } from "./review-structural-cache.js";
-import {
-  fitPrHydrationSnapshotToPublicationLimit,
-  serializePrHydrationSnapshot,
-} from "./pr-hydration-snapshot.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
 import { replaceFrontMatterValue } from "./report-front-matter.js";
 import { reviewRecordFrontMatterLine } from "./review-record.js";
@@ -64,7 +60,7 @@ import {
   runtimeReviewText,
 } from "./clawsweeper-report-context.js";
 import { prSurfaceFilesFromContext } from "./clawsweeper-orchestration-foundation.js";
-import { fixedInText, formatTimestamp } from "./clawsweeper-status-context.js";
+import { fixedInText, formatTimestamp } from "./clawsweeper-status-presentation.js";
 
 export function localCheckoutAccessForDecision(
   decision: Pick<Decision, "localCheckoutAccess">,
@@ -171,22 +167,6 @@ function renderMaintainerDecisionReportSection(decision: Decision): string {
     "Options:",
     "",
     options,
-  ].join("\n");
-}
-
-function renderVisionFitReportSection(decision: Decision): string {
-  return [
-    `Status: ${decision.visionFit}`,
-    "",
-    `Implementation complexity: ${decision.implementationComplexity}`,
-    "",
-    `Auto implementation candidate: ${decision.autoImplementationCandidate}`,
-    "",
-    `Reason: ${sentence(decision.visionFitReason)}`,
-    "",
-    "Vision evidence:",
-    "",
-    markdownList(decision.visionFitEvidence),
   ].join("\n");
 }
 
@@ -354,14 +334,6 @@ export function renderPrRatingAssessmentReportSection(
 
 function renderPrRatingReportSection(decision: Decision): string {
   return renderPrRatingAssessmentReportSection(decision.prRating, decision.realBehaviorProof);
-}
-
-function renderTelegramVisibleProofReportSection(decision: Decision): string {
-  return [
-    `Status: ${decision.telegramVisibleProof.status}`,
-    "",
-    `Summary: ${sentence(decision.telegramVisibleProof.summary)}`,
-  ].join("\n");
 }
 
 function renderFeatureShowcaseReportSection(decision: Decision): string {
@@ -555,7 +527,6 @@ export function markdownFor(options: {
   const reproductionAssessment =
     options.decision.reproductionAssessment.trim() || "_Not provided._";
   const solutionAssessment = options.decision.solutionAssessment.trim() || "_Not provided._";
-  const visionFit = renderVisionFitReportSection(options.decision);
   const rootCauseCluster = renderRootCauseClusterReportSection(options.decision);
   // Product, provenance, and testing reviews judge pull requests only.
   const pullRequestReviewSections =
@@ -574,7 +545,6 @@ export function markdownFor(options: {
   const securityReview = renderSecurityReviewReportSection(options.decision);
   const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
   const prRating = renderPrRatingReportSection(options.decision);
-  const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
   const featureShowcase = renderFeatureShowcaseReportSection(options.decision);
   const agentsPolicyStatus = renderAgentsPolicyStatusReportSection(options.decision);
   const workCandidateSection = renderWorkCandidateReportSection(options.decision);
@@ -605,7 +575,6 @@ review_lease_owner: ${options.reviewLeaseOwner ?? "unknown"}
 review_lease_comment_id: ${options.reviewLeaseCommentId ?? "unknown"}
 main_sha: ${options.git.mainSha}
 pull_head_sha: ${pullHeadShaFromContext(options.context) ?? "unknown"}
-pr_hydration_snapshot: ${serializePrHydrationSnapshot(options.context.prHydrationSnapshot)}
 reviewed_pull_state_digest: ${
     reviewedPullStateDigest
       ? (reviewStructuralPullStateDigest(reviewedPullStateDigest) ?? "unknown")
@@ -722,8 +691,6 @@ reproduction_confidence: ${options.decision.reproductionConfidence}
 requires_new_feature: ${options.decision.requiresNewFeature}
 requires_new_config_option: ${options.decision.requiresNewConfigOption}
 requires_product_decision: ${options.decision.requiresProductDecision}
-vision_fit: ${options.decision.visionFit}
-vision_fit_evidence: ${jsonFrontMatterValue(options.decision.visionFitEvidence)}
 implementation_complexity: ${options.decision.implementationComplexity}
 auto_implementation_candidate: ${options.decision.autoImplementationCandidate}
 real_behavior_proof_status: ${options.decision.realBehaviorProof.status}
@@ -732,7 +699,6 @@ real_behavior_proof_needs_contributor_action: ${options.decision.realBehaviorPro
 ${options.decision.realBehaviorProof.dataModelCompatibility ? `real_behavior_proof_data_model_compatibility: ${options.decision.realBehaviorProof.dataModelCompatibility}\n` : ""}pr_rating_overall: ${options.decision.prRating.overallTier}
 pr_rating_proof: ${options.decision.prRating.proofTier}
 pr_rating_patch: ${options.decision.prRating.patchTier}
-telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}
 feature_showcase_status: ${options.decision.featureShowcase.status}
 agents_policy_status: ${options.decision.agentsPolicyStatus.status}
 product_kind: ${options.decision.productReview.kind}
@@ -824,10 +790,6 @@ ${reproductionAssessment}
 
 ${solutionAssessment}
 
-## ${REVIEW_SECTIONS.visionFit}
-
-${visionFit}
-
 ## ${REVIEW_SECTIONS.rootCauseCluster}
 
 ${rootCauseCluster}
@@ -847,10 +809,6 @@ ${realBehaviorProof}
 ## ${REVIEW_SECTIONS.prRating}
 
 ${prRating}
-
-## ${REVIEW_SECTIONS.telegramVisibleProof}
-
-${telegramVisibleProof}
 
 ## ${REVIEW_SECTIONS.featureShowcase}
 
@@ -928,5 +886,5 @@ ${renderReviewContextBudget(options.context)}
 - context collection ms: ${reviewTelemetryNumber(options.runtime.contextElapsedMs)}
 - Codex review ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
   `;
-  return fitPrHydrationSnapshotToPublicationLimit(markdown);
+  return markdown;
 }

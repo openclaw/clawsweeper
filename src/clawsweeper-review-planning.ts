@@ -26,7 +26,6 @@ export function createReviewPlanning(dependencies: ReviewPlanningDependencies) {
     fetchOpenItemCounts: tools.fetchOpenItemCounts,
     fetchOpenItemNumbers: tools.fetchOpenItemNumbers,
     fetchOpenItems: tools.fetchOpenItems,
-    fetchPlannedPrActivityRevisions: tools.fetchPlannedPrActivityRevisions,
     isCurrentForCadence: tools.isCurrentForCadence,
     isFresh: tools.isFresh,
     planCandidates: tools.planCandidates,

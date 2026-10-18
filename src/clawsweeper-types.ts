@@ -9,7 +9,6 @@ import type {
   reviewHistoryForReviewer,
 } from "./review-history.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
-import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import type { ReviewHistoryCoverage } from "./pr-review-history.js";
 import type { ProvenanceEvidence } from "./pr-review-provenance.js";
 import type { SchedulerDueCandidate } from "./scheduler-policy.js";
@@ -147,10 +146,8 @@ export type PrStatusLabelKind =
   | "waiting_on_author"
   | "ready_for_maintainer_look";
 export type FeatureShowcaseStatus = "showcase" | "none";
-export type TelegramVisibleProofStatus = "needed" | "not_needed";
-export type VisionFitStatus = "aligned" | "rejected" | "unclear" | "not_applicable";
 export type ImplementationComplexity = "small" | "medium" | "large" | "unclear" | "not_applicable";
-export type AutoImplementationCandidate = "none" | "strict_bug" | "vision_fit";
+export type AutoImplementationCandidate = "none" | "strict_bug";
 export type RootCauseRelationship =
   | "canonical"
   | "duplicate"
@@ -446,11 +443,6 @@ export interface TestingReview {
   missingE2e: string;
 }
 
-export interface TelegramVisibleProof {
-  status: TelegramVisibleProofStatus;
-  summary: string;
-}
-
 export interface FeatureShowcase {
   status: FeatureShowcaseStatus;
   reason: string;
@@ -546,7 +538,6 @@ export interface MergeRiskOption {
   body: string;
   category: MergeRiskOptionCategory;
   recommended: boolean;
-  automergeInstruction: string;
 }
 
 export interface LabelJustification {
@@ -607,9 +598,6 @@ export interface Decision {
   requiresProductDecision: boolean;
   reproductionAssessment: string;
   solutionAssessment: string;
-  visionFit: VisionFitStatus;
-  visionFitReason: string;
-  visionFitEvidence: string[];
   implementationComplexity: ImplementationComplexity;
   autoImplementationCandidate: AutoImplementationCandidate;
   rootCauseCluster: RootCauseClusterAssessment;
@@ -621,7 +609,6 @@ export interface Decision {
   securityReview: SecurityReview;
   realBehaviorProof: RealBehaviorProof;
   prRating: PrRating;
-  telegramVisibleProof: TelegramVisibleProof;
   featureShowcase: FeatureShowcase;
   overallCorrectness: OverallCorrectness;
   overallConfidenceScore: number;
@@ -688,7 +675,7 @@ export interface ItemContext {
   pullReviewComments?: unknown[];
   pullReviewCommentsRevision?: string;
   pullReviewActivityCursor?: string;
-  prHydrationSnapshot?: PrHydrationSnapshot;
+  pullFilesRaw?: unknown[];
   pullChecks?: unknown;
   bulkFiler?: BulkFilerReviewContext;
   counts?: {
@@ -976,6 +963,12 @@ export interface PlanSelectionTelemetry {
 
 export type DueCandidate = SchedulerDueCandidate<Item, ExistingReview>;
 
+export interface ApplyCloseGuardBlock {
+  reason: string;
+  /** A live predicate positively established an intentional non-close outcome. */
+  closePolicyHoldVerified?: true;
+}
+
 export interface ApplyResult {
   repo?: string;
   number: number;
@@ -987,6 +980,7 @@ export interface ApplyResult {
   terminalMissingVerified?: boolean;
   terminalStateVerified?: boolean;
   guardedOpenStateVerified?: boolean;
+  closePolicyHoldVerified?: boolean;
   activeReviewLeaseVerified?: boolean;
   activeReviewLeaseExpiresAt?: string;
   terminalPolicyNoopVerified?: boolean;
@@ -1129,6 +1123,8 @@ export interface GitHubRuntimeBudget {
 
 export type GitHubDeadlineOptions = {
   deadlineAt?: number | undefined;
+  /** Preserve response strings for byte-exact receipt verification. GET-only. */
+  losslessJson?: boolean | undefined;
 };
 
 export type GitHubRequestReservation = {
@@ -1370,6 +1366,7 @@ export interface CanonicalPullRequestCommentSyncBlock {
 }
 
 export interface PrCloseCoverageProofGateBlock {
+  closePolicyHoldVerified?: true;
   actionTaken: ActionTaken;
   reason: string;
 }

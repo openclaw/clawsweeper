@@ -1,0 +1,1 @@
+- Prevent concurrent single-request ledger and exact-review artifact uploads from overwriting immutable R2 objects while preserving identical replay.

@@ -14,6 +14,7 @@ import {
 } from "../dist/github-egress-descriptor.js";
 import {
   observeGitHubDebugStderr,
+  recordGitHubHttpRead,
   recordGithubEgressBrokerEvent,
   recordGithubEgressMember,
   recordUnobservedGitHubInvocation,
@@ -25,6 +26,37 @@ import {
 import { MemoryDurableStorage } from "./dashboard-worker-harness.ts";
 
 const NOW = Date.parse("2026-08-12T12:00:00.000Z");
+
+test("lossless receipt reads preserve bounded wire and rate-limit accounting", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-egress-receipt-"));
+  try {
+    const metricsPath = join(root, "metrics.jsonl");
+    const rateLimitPath = join(root, "rate-limits.jsonl");
+    recordGitHubHttpRead(
+      ["api", "repos/private-owner/private-repo/issues/991/comments?per_page=100&page=2"],
+      429,
+      new Map([
+        ["retry-after", "5"],
+        ["etag", "private-etag"],
+        ["x-github-request-id", "private-request"],
+      ]),
+      20,
+      observerEnv(metricsPath, rateLimitPath),
+    );
+    const metrics = jsonLines(metricsPath);
+    assert.equal(metrics.length, 2);
+    assert.ok(metrics.every((entry) => entry.telemetryComplete === true));
+    assert.equal(metrics[0]!.unit, "wire_attempt");
+    assert.equal(metrics[0]!.pageBucket, "2");
+    assert.equal(metrics[0]!.operation, "comments");
+    assert.equal(metrics[1]!.unit, "invocation");
+    assert.equal(jsonLines(rateLimitPath)[0]!.status, 429);
+    const persisted = readFileSync(metricsPath, "utf8") + readFileSync(rateLimitPath, "utf8");
+    assert.doesNotMatch(persisted, /private-owner|private-repo|private-etag|private-request/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("GH_DEBUG observation counts paginated wire attempts and strips unsafe diagnostics", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-egress-observer-"));

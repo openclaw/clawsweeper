@@ -65,7 +65,7 @@ import { frontMatterValue } from "./report-front-matter.js";
 import { agentsPolicyStatusLine, collapsedDetailsBlock } from "./clawsweeper-report-helpers.js";
 import { markdownLink, repoUrlFor } from "./clawsweeper-links.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
-import { formatReviewFreshnessTimestamp } from "./clawsweeper-status-context.js";
+import { formatReviewFreshnessTimestamp } from "./clawsweeper-status-presentation.js";
 import { markdownRepository } from "./clawsweeper-repository-paths.js";
 import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
 
@@ -813,14 +813,12 @@ function mergeRiskFallbackOptionsLines(bestSolutionLine: string, nextStepLine: s
       body: instruction,
       category: "fix_before_merge",
       recommended: false,
-      automergeInstruction: "",
     },
     {
       title: "Pause or close",
       body: "Do not merge this PR until maintainers decide whether the risk is worth taking.",
       category: "pause_or_close",
       recommended: false,
-      automergeInstruction: "",
     },
   ]);
 }

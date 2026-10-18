@@ -53,7 +53,11 @@ table rewrite, or database vacuum runs. The lifecycle audit still uses the
 projections continue to own admission, receipts, acknowledgements, and audit
 history; older projection JSON remains readable without its former Bay and
 inline-proof markers. Direct and batch publication-outcome telemetry continues
-to back recent durable publication events.
+to back recent durable publication events. The batch telemetry table also retains
+nullable `reason_code` metadata from validated batch and non-batch completions.
+An idempotent additive column ensure preserves old rows and explicit-column
+writers; replay keeps the first event and its reason. Missing historical reasons
+are not reconstructed from current queue or dead-letter state.
 
 Report readers share one anchored leading-front-matter parser. A unique header
 value remains authoritative when report prose or a valid fenced example quotes
@@ -86,6 +90,45 @@ record shape and observer-only projection are unchanged.
 from R2. Exact and batch review publishers pass the reviewed item numbers to
 read only their open/closed reports, plans, and decision packets. Those focused
 reads do not depend on repository-wide snapshots or journal exports.
+
+PR hydration uses current GitHub inputs; only the bounded raw file window is
+retained in memory for the current review preflight. Review records do not persist
+`pr_hydration_snapshot`; later review and apply runs fetch current GitHub inputs.
+Canonical publication also strips that retired field from older publishers and
+restored snapshots while retaining the original authenticated retry receipts.
+Existing canonical reports drain through the finite
+`record-hydration-cache-cleanup:v1` alarm checkpoint: at most 64 raw identities,
+four tuples and 8 MiB of source bodies per pass. Maintenance preserves report
+evidence, packets, producer provenance and answered state, and advances tuple
+and export revisions atomically. Conflicted tuples retry after the first scan;
+unresolved ownership stays explicitly incomplete. The unresolved count records
+deferred encounters, not distinct tuples. Logical contents shrink;
+reported database bytes are measured separately.
+The signed storage-stats response and maintenance summary expose committed
+removed-byte/field counters and completion or unresolved status without a
+separate payload census.
+
+For explicit content attribution, run `exact-review-queue-maintenance.yml` with
+`mode=storage-stats`, `execute=false` and `storage_table` set to one user table.
+Each signed read scans at most 128 row identities and returns per-column
+TEXT/BLOB byte totals without returning contents. `storage_max_pages` limits a
+run to 1–1,000 pages (100 by default), with a four-minute total deadline. Resume
+an incomplete run by copying `nextCursor` into `storage_cursor`; each result
+reports totals only for that run's scanned range. Failed runs print their last
+completed page's totals and cursor before failing.
+
+The census fixes the initial upper row identity; inserts above that bound are excluded.
+Concurrent updates and deletions mean pages are not one atomic snapshot.
+Numeric values, indexes, row headers and unused pages are excluded; these are
+exact observed content bytes, not occupied database pages. The ordinary
+sampled summary and reported database bytes remain separate measurements.
+Workerd reports occupied pages, including indexes and page overhead, while
+excluding free pages; this value is not the database file's allocation.
+Runtime-internal tables, `WITHOUT ROWID` tables and nonpositive row identities
+are rejected by this diagnostic. Tables wider than 98 columns exceed the
+Workerd result-column limit after adding the two pagination fields and are
+also rejected.
+
 Explicit ledger/assets hydration streams one R2 listing page into its staging
 tree at a time; descriptor memory does not grow with the entire prefix. It still
 downloads the complete requested trees. Before replacing the local view, it
@@ -179,6 +222,23 @@ retention convention, cap the store at 2,048 entries and each JSON body at 512
 KiB, and evict least-recently validated entries when full. The durable body is
 returned only by the post-304 confirmation operation; a lookup alone returns
 only its ETag and digest.
+
+Ordinary webhook item, comment, and review payloads become eligible for retirement
+after 30 minutes of family inactivity. Bounded passes preserve active collections,
+unresolved placeholders, ordering metadata, and real deletion tombstones.
+Retired reads require authoritative repair before reuse.
+See [the webhook read model](github-webhook-read-model.md#stored-schema-and-bounds)
+for deployment approval, rebuild behavior, and the remaining metadata growth.
+
+Canonical non-commit publication removes its replaced backfill body and chunks
+inside the same transaction as the canonical record and export pointer. An idle
+alarm also sweeps the historical backfill rowid range captured on first startup,
+at most 64 raw candidates per pass. Its durable cursor advances past ineligible
+rows and stops at that fixed upper bound. Deletion requires an exact record ID
+and agreement between the canonical record and canonical export pointer on
+revision, deletion state, and digest. Commits, live backfill exports, and missing
+or mismatched owners remain. Progress counts logical payload bytes; SQLite's
+physical database size can stay unchanged while freed pages become reusable.
 
 Git-backed reports, dashboard status, and post-dispatch cursors are best-effort
 after their productive side effect or canonical publication succeeds. Git

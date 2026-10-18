@@ -1,15 +1,7 @@
 // This module owns the grammar of the ClawSweeper command markers: the
-// command-ack, command-status, command response and automerge-requested-by
-// markers. It builds them and parses them. The dashboard Worker imports it,
-// and the Worker has no Node APIs. Keep this module free of imports.
-
-// Command statuses for these intents share one status comment per item.
-export const AUTOMERGE_STATUS_INTENTS: ReadonlySet<string> = new Set([
-  "automerge",
-  "clawsweeper_auto_repair",
-  "clawsweeper_auto_merge",
-  "maintainer_approve_automerge",
-]);
+// command-ack, command-status and command response markers. It builds them
+// and parses them. The dashboard Worker imports it, and the Worker has no
+// Node APIs. Keep this module free of imports.
 
 export type CommandStatusMarker = {
   issueNumber: string;
@@ -101,36 +93,6 @@ export function parseCommandStatusMarker(
   return { issueNumber: match[1]!, intent: match[2]!, revision: match[3]! };
 }
 
-// True when the body has a shared automerge status marker of any item.
-export function hasAutomergeCommandStatusMarker(body: unknown): boolean {
-  return new RegExp(
-    `clawsweeper-command-status:\\d+:(?:${[...AUTOMERGE_STATUS_INTENTS].join("|")}):`,
-    "i",
-  ).test(String(body ?? ""));
-}
-
-// Finds the shared automerge status marker of one item. The caller can add
-// intents that reuse that status comment.
-export function automergeStatusMarkerFromBody(
-  body: unknown,
-  issueNumber: unknown,
-  intents: Iterable<string> = AUTOMERGE_STATUS_INTENTS,
-): string | null {
-  const number = Number(issueNumber);
-  if (!Number.isSafeInteger(number) || number < 1) return null;
-  const alternation = [...intents]
-    .map((intent) => intent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("|");
-  return (
-    String(body ?? "").match(
-      new RegExp(
-        `<!-- clawsweeper-command-status:${number}:(?:${alternation}):[^<>\\r\\n]{1,120} -->`,
-        "i",
-      ),
-    )?.[0] ?? null
-  );
-}
-
 export function commandResponseMarker(
   commentId: unknown,
   intent: unknown,
@@ -168,17 +130,6 @@ export function parseCommandResponseMarker(marker: unknown): CommandResponseMark
   };
 }
 
-export function automergeRequestedByMarker(login: unknown, id: unknown): string {
-  return `<!-- clawsweeper-automerge-requested-by login="${escapeHtmlAttribute(login)}" id="${escapeHtmlAttribute(id)}" -->`;
-}
-
-export function automergeRequestedByAttributes(body: unknown): Record<string, string> | null {
-  const marker = String(body ?? "").match(
-    /<!--\s*clawsweeper-automerge-requested-by\s+([^>]*)-->/i,
-  );
-  return marker ? markerAttributes(marker[1] ?? "") : null;
-}
-
 export function markerAttributes(input: unknown): Record<string, string> {
   const attrs: Record<string, string> = {};
   for (const match of String(input ?? "").matchAll(/([a-z0-9_-]+)=("[^"]*"|'[^']*'|[^\s>]+)/gi)) {
@@ -186,12 +137,4 @@ export function markerAttributes(input: unknown): Record<string, string> {
     attrs[(match[1] ?? "").toLowerCase()] = raw.replace(/^["']|["']$/g, "");
   }
   return attrs;
-}
-
-function escapeHtmlAttribute(value: unknown): string {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
 }

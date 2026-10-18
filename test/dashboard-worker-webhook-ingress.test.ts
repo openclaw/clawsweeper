@@ -31,10 +31,18 @@ test("maintainer item events stay out of the queue and share one opt-in reminder
   const queued: unknown[] = [];
   const pending: Promise<unknown>[] = [];
   let posts = 0;
+  const permissionReads: string[] = [];
   t.mock.method(globalThis, "fetch", async (input, init) => {
     const url = new URL(String(input));
     if (url.pathname === "/app/installations/123/access_tokens")
       return jsonResponse({ token: "fixture-token" });
+    const permission = url.pathname.match(
+      /^\/repos\/openclaw\/fs-safe\/collaborators\/([^/]+)\/permission$/,
+    );
+    if (permission) {
+      permissionReads.push(permission[1]!);
+      return jsonResponse({ permission: permission[1] === "private-member" ? "admin" : "read" });
+    }
     assert.match(url.pathname, /^\/repos\/openclaw\/fs-safe\/issues\/\d+\/comments$/);
     const existing = comments.get(url.pathname) ?? [];
     if (init?.method === "POST") {
@@ -137,6 +145,40 @@ test("maintainer item events stay out of the queue and share one opt-in reminder
     "maintainer",
   );
   assert.equal(queued.length, 1);
+  assert.equal(posts, 2);
+  // GitHub shows a private org member to the App as CONTRIBUTOR; repository
+  // permission decides, and one read serves the author's later events.
+  const privateMemberPull = {
+    ...pull,
+    number: 45,
+    draft: false,
+    author_association: "CONTRIBUTOR",
+    user: { login: "private-member" },
+  };
+  for (const action of ["synchronize", "edited"]) {
+    assert.deepEqual(await (await send("pull_request", action, privateMemberPull)).json(), {
+      ok: true,
+      accepted: false,
+      reason: "maintainer review requires an explicit request",
+    });
+  }
+  await send("issues", "opened", {
+    ...issue,
+    number: 46,
+    author_association: "CONTRIBUTOR",
+    user: { login: "outside-author" },
+  });
+  // A maintainer item created from the cutover is queued like any other, with no
+  // permission read and no opt-in reminder.
+  await send("issues", "opened", {
+    ...issue,
+    number: 47,
+    author_association: "MEMBER",
+    created_at: "2026-10-16T00:00:00Z",
+  });
+  await Promise.all(pending);
+  assert.deepEqual(permissionReads, ["private-member", "outside-author"]);
+  assert.equal(queued.length, 3);
   assert.equal(posts, 2);
 });
 
@@ -558,6 +600,7 @@ test("hosted pull request reservation rechecks visibility before durable authori
       const storage = new MemoryDurableStorage();
       let visibilityProbes = 0;
       let sourceAuthorityCalls = 0;
+      let maintenanceWake: number | null = null;
       let targetCredentialCalls = 0;
       const hostedPublicTargetProbe = async () => {
         visibilityProbes += 1;
@@ -602,11 +645,15 @@ test("hosted pull request reservation rechecks visibility before durable authori
           CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
           hostedPublicTargetProbe,
           EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
-            fetch: (request: Request) => {
+            fetch: async (request: Request) => {
               if (new URL(request.url).pathname === "/source-authority") {
                 sourceAuthorityCalls += 1;
               }
-              return queue.fetch(request);
+              const result = await queue.fetch(request);
+              if (new URL(request.url).pathname === "/github-read-model/ingest") {
+                maintenanceWake = await storage.getAlarm();
+              }
+              return result;
             },
           }),
         },
@@ -629,7 +676,17 @@ test("hosted pull request reservation rechecks visibility before durable authori
         false,
       );
       assert.equal(storage.rawHas("exact-review-source-authority-sequence:v1"), false);
-      assert.equal(await storage.getAlarm(), null);
+      // Public read-model ingress already owns a future maintenance wake.
+      // Rejected authority must leave that wake and all canonical state alone.
+      assert.ok(maintenanceWake !== null && maintenanceWake > Date.now());
+      assert.deepEqual(
+        Array.from(
+          storage.sql.exec("SELECT payload_retire_at FROM github_webhook_read_model_items_v1"),
+          (row) => Number(row.payload_retire_at),
+        ),
+        [maintenanceWake],
+      );
+      assert.equal(await storage.getAlarm(), maintenanceWake);
       assert.equal(sqlRowCount(storage, "exact_review_queue_deliveries"), 0);
       assert.equal(sqlRowCount(storage, "exact_review_queue_items"), 0);
     }

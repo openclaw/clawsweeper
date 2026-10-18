@@ -9,7 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { waitForDashboardDeployment } from "../scripts/dashboard-smoke.mjs";
+import { verifyReviewAdmission, waitForDashboardDeployment } from "../scripts/dashboard-smoke.mjs";
 
 test("dashboard smoke executes through a symlink and reports unhealthy responses", async () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-smoke-symlink-"));
@@ -65,11 +65,13 @@ async function runStatusSmoke(
     body?: string;
     capability?: unknown;
     redirect?: boolean;
+    capabilities?: unknown[];
   } = {},
 ) {
   const requests: string[] = [];
   const signedRequests: Array<{ body: boolean; signature: boolean }> = [];
   const secret = admission.secret ?? "synthetic-deployment-secret";
+  const capabilities = admission.capabilities?.slice();
   const server = createServer(async (request, response) => {
     requests.push(`${request.method} ${request.url}`);
     if (request.url === "/api/health") {
@@ -88,7 +90,7 @@ async function runStatusSmoke(
       } else {
         response.writeHead(admission.status ?? 200);
       }
-      response.end(admission.body ?? JSON.stringify(admission.capability));
+      response.end(admission.body ?? JSON.stringify(capabilities?.shift() ?? admission.capability));
     } else if (request.url === "/api/status") {
       response.setHeader("x-clawsweeper-cache", cacheState);
       response.end(JSON.stringify(status));
@@ -119,6 +121,8 @@ async function runStatusSmoke(
           ...process.env,
           CLAWSWEEPER_EXPECTED_DEPLOY_SHA: admission.deploy ? "expected-sha" : "",
           CLAWSWEEPER_WEBHOOK_SECRET: secret,
+          CLAWSWEEPER_DEPLOY_READY_TIMEOUT_MS: "1000",
+          CLAWSWEEPER_DEPLOY_READY_INTERVAL_MS: "10",
         },
         timeout: 30_000,
       },
@@ -257,6 +261,7 @@ test("dashboard smoke preserves the complete valid CLI route and authorization c
 
 function admissionCapability(enabled = false) {
   return {
+    deployment_sha: "expected-sha",
     scheduled_feed: { target_rate_per_hour: 60, enqueue_replay: "scheduled_disposition_v1" },
     manual_publication: { policy: "record_comment_only", enabled },
     ignored: "private-response-marker",
@@ -275,12 +280,105 @@ test("deployment smoke verifies signed admission without enabling disabled manua
     const output = JSON.parse(result.stdout);
     assert.deepEqual(output.review_admission, {
       state: "verified",
+      deployment_sha: "expected-sha",
       target_rate_per_hour: 60,
       manual_publication_enabled: enabled,
     });
     assert.equal(output.exact_review_reconcile_status, 401);
     assert.doesNotMatch(result.stdout, /private-response-marker|synthetic-deployment-secret/);
   }
+});
+
+test("deployment smoke waits for the Durable Object revision after Worker readiness", async () => {
+  const valid = admissionCapability();
+  const { deployment_sha: _sha, ...legacy } = valid;
+  const result = await runStatusSmoke(completeStatus(), "miss", {
+    deploy: true,
+    capabilities: [legacy, { ...valid, deployment_sha: "previous-sha" }, valid],
+  });
+  assert.equal(result.code, 0);
+  assert.equal(result.signedRequests.length, 3);
+  assert.ok(result.signedRequests.every((request) => request.body && request.signature));
+  assert.equal(JSON.parse(result.stdout).review_admission.deployment_sha, "expected-sha");
+});
+
+test("deployment smoke fails if a healthy queue keeps serving another revision", async () => {
+  const secret = "synthetic-deployment-secret";
+  for (const deployment_sha of [null, "previous-sha", "private-response-marker"]) {
+    let timestamp = 0;
+    const requests: number[] = [];
+    const sleeps: number[] = [];
+    await assert.rejects(
+      verifyReviewAdmission({
+        baseUrl: "https://clawsweeper.example",
+        expectedSha: "expected-sha",
+        secret,
+        timeoutMs: 100,
+        intervalMs: 40,
+        fetchImpl: async (url, options) => {
+          assert.equal(
+            String(url),
+            "https://clawsweeper.example/internal/exact-review/admission-capabilities",
+          );
+          assert.equal(options.method, "POST");
+          assert.equal(options.redirect, "error");
+          assert.equal(options.body, "{}");
+          assert.equal(
+            new Headers(options.headers).get("x-clawsweeper-exact-review-signature"),
+            `sha256=${createHmac("sha256", secret).update("{}").digest("hex")}`,
+          );
+          assert.ok(options.signal instanceof AbortSignal);
+          requests.push(timestamp);
+          return Response.json({ ...admissionCapability(), deployment_sha });
+        },
+        sleep: async (delayMs) => {
+          sleeps.push(delayMs);
+          timestamp += delayMs;
+        },
+        now: () => timestamp,
+      }),
+      (error: Error) => {
+        assert.equal(
+          error.message,
+          "review queue deployment expected-sha was not ready within 100ms",
+        );
+        assert.doesNotMatch(error.message, /private-response-marker|synthetic-deployment-secret/);
+        return true;
+      },
+    );
+    assert.deepEqual(requests, [0, 40, 80]);
+    assert.deepEqual(sleeps, [40, 40, 20]);
+    assert.equal(timestamp, 100);
+  }
+});
+
+test("deployment smoke returns only the verified admission result after the queue catches up", async () => {
+  let timestamp = 0;
+  let probes = 0;
+  const result = await verifyReviewAdmission({
+    baseUrl: "https://clawsweeper.example",
+    expectedSha: "expected-sha",
+    secret: "synthetic-deployment-secret",
+    timeoutMs: 100,
+    intervalMs: 40,
+    fetchImpl: async () =>
+      Response.json({
+        ...admissionCapability(true),
+        deployment_sha: probes++ === 0 ? "previous-sha" : "expected-sha",
+      }),
+    sleep: async (delayMs) => {
+      timestamp += delayMs;
+    },
+    now: () => timestamp,
+  });
+  assert.equal(probes, 2);
+  assert.equal(timestamp, 40);
+  assert.deepEqual(result, {
+    state: "verified",
+    deployment_sha: "expected-sha",
+    target_rate_per_hour: 60,
+    manual_publication_enabled: true,
+  });
 });
 
 test("deployment smoke rejects missing signing authority before any request", async () => {

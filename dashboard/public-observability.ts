@@ -1,3 +1,4 @@
+import { PUBLICATION_TELEMETRY_REASONS } from "./exact-review-publication-reasons.ts";
 import { publicTimestamp as timestamp } from "./public-timestamp.ts";
 import {
   GITHUB_EGRESS_CLAIM_GENERATION_BUCKETS,
@@ -904,7 +905,11 @@ export function publicGithubEgressObservabilityProjection(value: unknown) {
   };
 }
 
-function publicationSource(value: unknown, outcomes: readonly string[]) {
+function publicationSource(
+  value: unknown,
+  outcomes: readonly string[],
+  reasonCodes?: Record<string, readonly string[]>,
+) {
   const source = objectValue(value);
   const countsSource = objectValue(source?.counts);
   if (!source || !countsSource || typeof source.complete !== "boolean") return null;
@@ -945,7 +950,39 @@ function publicationSource(value: unknown, outcomes: readonly string[]) {
   ) {
     return null;
   }
-  return { complete: source.complete, rows, latest_observed_at: latestObservedAt, counts, buckets };
+  let reasonCounts: Record<string, Record<string, number | null>> | null = null;
+  // Older snapshots still carry valid outcome totals. Their missing breakdown
+  // is unavailable, not zero and not a reason to discard the whole snapshot.
+  if (reasonCodes && source.reason_counts != null) {
+    const reasons = objectValue(source.reason_counts);
+    if (!source.complete || !reasons) return null;
+    reasonCounts = {};
+    for (const outcome of outcomes) {
+      const outcomeReasons = reasonCodes[outcome];
+      if (!outcomeReasons) return null;
+      const projected = nullableCountObject(
+        reasons[outcome],
+        [...outcomeReasons, "unrecorded"],
+        10_000,
+      );
+      if (
+        !projected ||
+        Object.values(projected).some((value) => value === null) ||
+        Object.values(projected).reduce<number>((total, value) => total + Number(value), 0) !==
+          counts[outcome]
+      )
+        return null;
+      reasonCounts[outcome] = projected;
+    }
+  }
+  return {
+    complete: source.complete,
+    rows,
+    latest_observed_at: latestObservedAt,
+    counts,
+    buckets,
+    ...(reasonCodes ? { reason_counts: reasonCounts } : {}),
+  };
 }
 
 export function publicRecentDurablePublicationEventsProjection(value: unknown) {
@@ -960,7 +997,11 @@ export function publicRecentDurablePublicationEventsProjection(value: unknown) {
   const startAt = timestamp(window.start_at);
   const endAt = timestamp(window.end_at);
   const direct = publicationSource(source.direct, DIRECT_PUBLICATION_OUTCOMES);
-  const batch = publicationSource(source.batch, BATCH_PUBLICATION_OUTCOMES);
+  const batch = publicationSource(
+    source.batch,
+    BATCH_PUBLICATION_OUTCOMES,
+    PUBLICATION_TELEMETRY_REASONS,
+  );
   if (
     source.version !== 1 ||
     !capturedAt ||

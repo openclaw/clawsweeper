@@ -637,3 +637,30 @@ test("oversized policy no-op requires one exact retained proposal and a typed re
     assert.equal(exactEventApplyProof([action], 42, "proposed_close").disposition, "unproven");
   }
 });
+
+test("a policy hold requires its own proof, live open state and one matching stored action", () => {
+  const hold = eventApplyAction({
+    number: 42,
+    action: "kept_open",
+    guardedOpenStateVerified: true,
+    closePolicyHoldVerified: true,
+  });
+  const proof = exactEventApplyProof([hold], 42, "kept_open");
+  assert.equal(proof.guardedOpenAction, "kept_open");
+  assert.equal(proof.syncedCount, 0);
+  assert.equal(proof.terminalCount, 0);
+  for (const entry of [
+    { ...hold, closePolicyHoldVerified: false },
+    { ...hold, guardedOpenStateVerified: false },
+    { ...hold, action: "skipped_invalid_decision" },
+  ]) {
+    assert.equal(exactEventApplyProof([entry], 42, "kept_open").guardedOpenAction, null);
+  }
+  assert.equal(exactEventApplyProof([hold], 43, "kept_open").guardedOpenAction, null);
+  assert.equal(exactEventApplyProof([hold], 42, "proposed_close").guardedOpenAction, null);
+  assert.equal(exactEventApplyProof([hold, hold], 42, "kept_open").guardedOpenAction, null);
+  assert.equal(
+    eventApplyAction({ closePolicyHoldVerified: "true" }).closePolicyHoldVerified,
+    false,
+  );
+});

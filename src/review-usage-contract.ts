@@ -15,7 +15,7 @@ export interface ReviewUsageRecord {
   usage: {
     input_tokens: number;
     cached_input_tokens: number;
-    cache_write_input_tokens: number;
+    cache_write_input_tokens: number | null;
     output_tokens: number;
     reasoning_output_tokens: number;
   } | null;
@@ -55,11 +55,17 @@ function optionalLabel(value: unknown): value is string | undefined {
   return value === undefined || (typeof value === "string" && /^[a-zA-Z0-9_.-]{0,64}$/.test(value));
 }
 
-function validUsage(value: unknown): value is NonNullable<ReviewUsageRecord["usage"]> {
+export function isReviewTokenUsage(
+  value: unknown,
+): value is NonNullable<ReviewUsageRecord["usage"]> {
   return (
     isRecord(value) &&
     Object.keys(value).every((key) => USAGE_KEYS.includes(key)) &&
-    USAGE_KEYS.every((key) => nonnegativeInteger(value[key]))
+    USAGE_KEYS.every((key) =>
+      key === "cache_write_input_tokens" && value[key] === null
+        ? true
+        : nonnegativeInteger(value[key]),
+    )
   );
 }
 
@@ -84,6 +90,6 @@ export function isReviewUsageRecord(value: unknown): value is ReviewUsageRecord 
     optionalLabel(value.reasoning_effort) &&
     (value.outcome === "ok" || value.outcome === "failed" || value.outcome === "timeout") &&
     nonnegativeInteger(value.duration_ms) &&
-    (value.usage === null || validUsage(value.usage))
+    (value.usage === null || isReviewTokenUsage(value.usage))
   );
 }

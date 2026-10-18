@@ -182,12 +182,33 @@ jobs:
       - name: Enforce coverage thresholds over every shard
         run: node scripts/run-node-tests.mjs all --coverage-from "$RUNNER_TEMP/coverage"
 
+  installed-package:
+    name: installed local package (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:node
+
+      - name: Qualify the installed local reviewer
+        run: node --test test/local-package-install.test.ts
+
   # Single required status: passes only when every gate above passed. `always()`
   # keeps it from being skipped (which would read as success) when a gate fails.
   check:
     name: pnpm check
     if: always()
-    needs: [check-fast, check-tests, check-coverage]
+    needs: [check-fast, check-tests, check-coverage, installed-package]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

@@ -47,6 +47,80 @@ export interface ReviewOutputResult {
   markdown: string;
 }
 
+export function createReviewOutputWriter(options: {
+  outputSelection: ReviewOutputSelection;
+  outputBudget: ReviewOutputBudget;
+  retainedReviewOutput: RetainedReviewOutput | null;
+  artifactDir: string;
+  localOnly: boolean;
+}) {
+  const { outputSelection, outputBudget, retainedReviewOutput, artifactDir, localOnly } = options;
+  const results: ReviewOutputResult[] = [];
+  return {
+    results,
+    writeReport(this: void, item: { number: number }, path: string, markdown: string): void {
+      const next = [...results];
+      if (localOnly) {
+        const result = {
+          itemNumber: item.number,
+          path: outputSelection.retention === "none" ? null : path,
+          markdown,
+        };
+        const prior = next.findIndex((candidate) => candidate.itemNumber === item.number);
+        if (prior >= 0) next[prior] = result;
+        else next.push(result);
+        // None-mode files are pruned, but stdout remains live. Admit the report
+        // before writing it or exposing it in the eventual JSON envelope.
+        assertReviewReportsBudget(next, outputSelection.retention);
+      }
+      writeReviewOutput(outputBudget, path, markdown, "report");
+      if (localOnly) results.splice(0, results.length, ...next);
+    },
+    assertBudget(this: void): void {
+      if (outputSelection.retention === "none") assertTransientReviewOutputBudget(artifactDir);
+      else if (retainedReviewOutput) assertActiveReviewOutputBudget(retainedReviewOutput);
+    },
+  };
+}
+
+export function finalizeReviewCommandOutput(options: {
+  restoreTreeModes: () => void;
+  outputSelection: ReviewOutputSelection;
+  retainedReviewOutput: RetainedReviewOutput | null;
+  results: readonly ReviewOutputResult[];
+  cleanupReviewOutput: (error?: unknown) => void;
+  commandError: unknown;
+}): unknown {
+  let finalizationError: unknown;
+  try {
+    options.restoreTreeModes();
+    if (options.outputSelection.retention === "summary") {
+      finalizeSummaryReviewOutput(
+        options.retainedReviewOutput!,
+        options.results.flatMap((result) => (result.path ? [result.path] : [])),
+      );
+    }
+  } catch (error) {
+    if (options.commandError === undefined) finalizationError = error;
+    else
+      console.error(
+        `[review] summary output cleanup failed after command failure: ${error instanceof Error ? error.message : String(error)}`,
+      );
+  } finally {
+    try {
+      options.cleanupReviewOutput(options.commandError);
+    } catch (error) {
+      if (options.commandError === undefined && finalizationError === undefined)
+        finalizationError = error;
+      else
+        console.error(
+          `[review] private output cleanup failed after an earlier failure: ${error instanceof Error ? error.message : String(error)}`,
+        );
+    }
+  }
+  return finalizationError;
+}
+
 const SUMMARY_MAX_FILES = 128;
 const SUMMARY_MAX_BYTES = 16 * 1024 * 1024;
 const SUMMARY_OWNER_FILE = ".clawsweeper-output-owner";

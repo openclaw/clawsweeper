@@ -99,6 +99,21 @@ test("missing home, sessions, matching files, or usage produces null", (t) => {
   assert.equal(readReviewRolloutUsage(options), null);
 });
 
+test("receiver compatibility does not enable omitted or null cache writes in the producer", (t) => {
+  const options = fixture(t);
+  const { cache_write_input_tokens: _cacheWrite, ...core } = usage;
+  for (const counters of [core, { ...core, cache_write_input_tokens: null }]) {
+    writeFileSync(
+      join(options.directory, "rollout-strict.jsonl"),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "token_count", info: { total_token_usage: counters } },
+      }) + "\n",
+    );
+    assert.equal(readReviewRolloutUsage(options), null);
+  }
+});
+
 for (const scenario of ["oversized", "malformed", "unreadable", "invalid-counter"] as const) {
   test(`a ${scenario} rollout invalidates the complete sum instead of returning partial usage`, (t) => {
     const options = fixture(t);

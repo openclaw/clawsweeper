@@ -72,8 +72,13 @@ Workers Scripts edit permission before enabling the workflow as the production
 deploy path. The deploy workflow injects the `CLAWSWEEPER_STATUS_INGEST_TOKEN`
 GitHub secret into a temporary Wrangler config as the Worker `INGEST_TOKEN`.
 The smoke test waits for the expected deployment revision and a successful
-exact-review queue response within the same default 180-second readiness budget. It then
-verifies the signed review-admission capability contract, queue schema,
+exact-review queue response within the same default 600-second readiness budget.
+It then waits up to another 600 seconds for the signed review-admission
+response to report that same deployment revision from the Durable Object itself.
+The queue Durable Object can keep serving the previous version for several
+minutes after a deploy.
+A healthy outer Worker or a successful response from an older queue is not
+deployment readiness. The smoke also verifies the capability contract, queue schema,
 unsigned-request rejection, and Overview rendering. An exact-revision smoke run
 requires the existing `CLAWSWEEPER_WEBHOOK_SECRET`; it sends a signed empty JSON
 object without following redirects and validates scheduled pacing, replay, and
@@ -159,7 +164,7 @@ unchanged.
 
 ## Operator dashboard pages
 
-The operator dashboard at `/` (Overview, Throughput, Quality, Queue, Operations,
+The operator dashboard at `/` (Overview, Agent performance, Throughput, Review assessments, Queue, Operations,
 Coverage, Repositories) is a static Astro site in `dashboard-site/`. The `Dashboard site`
 workflow (`.github/workflows/dashboard-site.yml`) rebuilds it every 15 minutes
 and publishes it to the Cloudflare Pages project `clawsweeper-dashboard`
@@ -172,8 +177,11 @@ not restarted by it.
 Each build reads four sources:
 
 - the corpus aggregate (totals, decisions, quality, closes, per-repository
-  counts), cached in the workflow state. It is rebuilt only when the workflow is
-  started by hand with `refresh_corpus`: that run hydrates every canonical
+  counts), cached in the workflow state. It is rebuilt twice a day by the first
+  scheduled build in the 00 or 12 UTC hour (the quietest review hours) that finds
+  the corpus over 11 hours old, by any scheduled build that finds it over 13 hours
+  old (GitHub delays and drops scheduled runs), and when the workflow is started
+  by hand with `refresh_corpus`: that run hydrates every canonical
   record read-only with `scripts/hydrate-state.ts`, reads front matter only and
   keeps repositories that GitHub reports as public. The cache keeps each
   repository's contribution apart, so every build checks visibility again,
@@ -183,8 +191,9 @@ Each build reads four sources:
   close time (`current_item_closed_at`), which apply writes only when it
   archives an item that someone else closed. The record export runs
   inside the exact-review queue Durable Object and slows reviews while it runs
-  (a full export on 2026-10-12 failed 26 review runs in 14 minutes), so run it at
-  a quiet hour. Until the first such run, scheduled builds skip with a notice;
+  (a full export on 2026-10-12 failed 26 review runs in 14 minutes; after the
+  queue fixes, the 2026-10-14 and 2026-10-15 refreshes saw 1 failure in 100 review
+  runs), so the schedule uses the quietest hours. Until the first such run, scheduled builds skip with a notice;
 - the public `/api/exact-review-queue` and `/api/review-coverage` responses;
 - the public 7-day `/api/health-history` samples and the 24-hour and 7-day
   `/api/apply-observability` summaries, for the Operations page. Samples are
@@ -209,8 +218,8 @@ Each build reads four sources:
 Open pages check for a newer build every five minutes and when the tab becomes
 visible, and reload when one is published. The header shows both the build time
 and the review-corpus time. A page warns when its build is more than an hour old
-(the refresh has stopped) or when the corpus is more than a day old (it updates
-only with `refresh_corpus`). Unknown paths return the site's 404 page with
+(the 15-minute rebuild has stopped) or when the corpus is more than 14 hours old
+(the scheduled refresh has stopped). Unknown paths return the site's 404 page with
 status 404. Pull requests that touch `dashboard-site/` build the site from
 `dashboard-site/fixtures/dashboard.json`, without secrets or publishing.
 
@@ -223,6 +232,19 @@ neither measures first response or end-to-end service latency. Sweep run success
 shows its numerator, denominator and recorded days in the requested seven-day
 window; period comparison requires all seven days in both windows. Execution
 success does not establish decision correctness.
+
+Each detailed chart has one page owner. Agent performance owns execution timing,
+failed attempts by stage and repeated-claim investigation. Its run-time chart shows
+daily p50 and p90 together in duration units; these are run timings, separate from
+the model-only latest-review snapshot. Operations owns review flow, publication
+backlog, actual deliveries and batch handoff. Throughput owns volume and workflow
+activity; Coverage owns freshness. Overview keeps compact summaries and links.
+
+Publication pending excludes superseded revisions retained for command
+acknowledgements; those records do not establish failed delivery. Repeated-claim
+alerts count recorded claims, which may end before model execution. The bounded
+public target sample links to GitHub for revision and trigger investigation; it is
+not a ranking or proof of wasted execution.
 
 The site shows no report bodies, author identities or free-text concerns.
 Local preview: in `dashboard-site/`, install dependencies, run
@@ -249,17 +271,21 @@ The payload contains `schema: 1`, `target_repo`, positive `item_number`,
 nonnegative integer `duration_ms`, and `usage`. Repository owner/name are
 bounded to 39/100 ASCII characters, optional labels to 64 ASCII letters,
 digits, underscores, dots, or hyphens, and run IDs to 32 digits. Unknown fields,
-including model names, are rejected. `usage` is either null or a complete
-object containing the nonnegative safe integer token counts listed below.
-Unavailable or incomplete usage remains null rather than being inferred.
-A measured zero remains distinct from missing usage.
+including model names, are rejected. `usage` is either null or an object with
+four required nonnegative safe integer counters: `input_tokens`,
+`cached_input_tokens`, `output_tokens`, and `reasoning_output_tokens`.
+`cache_write_input_tokens` is a nonnegative safe integer or null. The receiver
+accepts unknown cache writes without treating them as a measured zero. The
+current collector remains strict: a missing or invalid counter makes its
+whole usage null. For rollouts that omit cache writes, preserving their four
+measured counters requires the separate producer rollout below.
 
 The source-to-ingest flow has two separate steps:
 
 1. The review runtime synchronously appends token-only review-attempt records to the JSONL
    file named by `CLAWSWEEPER_REVIEW_USAGE_PATH`, configured in the workflow as
    `${{ runner.temp }}/clawsweeper-review-usage.jsonl`. Records contain the bounded
-   metadata above and the five token counters below (or null usage), never turn
+   metadata above and the five counter fields below (or null usage), never turn
    counts, prompts, responses, or model names. The append completes before a
    failure or timeout can exit the review process. The review step receives neither
    `CLAWSWEEPER_WEBHOOK_SECRET` nor `EXACT_REVIEW_QUEUE_URL`.
@@ -279,7 +305,24 @@ window. The hosted setup isolates `CODEX_HOME` by run ID/attempt, and each revie
 process reviews items sequentially. The reader scans backward in 64 KiB chunks
 to find each session's latest token count. Missing homes/files, unreadable
 or changing files, malformed usage, and files larger than 64 MiB produce null
-usage rather than a partial sum.
+usage rather than a partial sum. Receiver compatibility does not change that
+collection behavior or begin sending nullable cache writes.
+
+Roll out the shared validator, Worker writer, and updated queries before the
+separate producer change starts sending nullable cache writes. Qualify the
+deployed receiver with legacy, nullable, and missing-usage records and verify
+their persisted columns and the weighted queries; HTTP acceptance alone is
+not persistence proof. The schema remains 1 and older five-number payloads
+remain valid. Roll back the producer before the receiver,
+and drain pending nullable handoffs before reverting receiver support. Keep the
+updated mask-aware queries for the lifetime of already-written partial rows;
+producer rollback does not remove those rows. A legacy query must explicitly
+restrict its input to `double7 = 1`. Existing complete rows have `double7 = 1`
+but no `double8`; queries must recognize either presence flag when selecting
+measured core usage. This is a source rollout order, not a deployment performed
+by this change. Preserve the selected base revision’s review-admission policy
+and raw admission guards throughout the rollout. Do not enable the producer
+until receiver and query qualification is complete.
 
 `REVIEW_USAGE_LAYOUT` in [`dashboard/review-usage.ts`](../dashboard/review-usage.ts)
 is the canonical source of the ordered tuples used by the writer. Analytics
@@ -289,10 +332,13 @@ Engine positions are one-based within each tuple:
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `index1`            | `target_repo`                                                                                                                                                                                         |
 | `blob1`–`blob8`     | `target_repo`, `item_kind`, `outcome`, `trigger_lane` (default empty), `service_tier` (default `standard`, including empty input), `reasoning_effort` (default empty), `run_id`, string `item_number` |
-| `double1`–`double7` | `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `duration_ms`, `usage_present` (1 when available, otherwise 0)                         |
+| `double1`–`double8` | `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `duration_ms`, `usage_present`, `core_usage_present` |
 
-Null usage writes zero into the five token columns but preserves duration and
-sets `double7` to 0. `input_tokens` includes cached reads and cache writes;
+`double7` is 1 only when all five counters are known. `double8` is 1 when the
+four core counters are known, including when cache writes are unknown. Unknown
+cache writes use zero in the numeric column with `double7 = 0, double8 = 1`;
+that stored zero is not a measured zero. Null usage zeros the token columns and
+both presence flags but preserves duration. `input_tokens` includes cached reads and cache writes;
 `output_tokens` includes reasoning output. Neither subset should be counted
 twice. Run attempt is validated in the payload but is not a separate dataset
 column. Points represent review attempts, not unique issues or PRs; the route
@@ -318,17 +364,21 @@ SELECT
   toStartOfInterval(timestamp, INTERVAL '1' DAY) AS day,
   blob1 AS repo,
   sum(_sample_interval) AS reviews,
-  sum(double7 * _sample_interval) AS reviews_with_usage,
+  sum(double7 * _sample_interval) AS reviews_with_full_usage,
+  sum(if(double7 = 0 AND double8 = 1, _sample_interval, 0)) AS reviews_with_partial_usage,
+  sum(if(double7 = 0 AND double8 = 0, _sample_interval, 0)) AS reviews_without_usage,
   sum(double1 * _sample_interval) AS input_tokens,
   sum(double2 * _sample_interval) AS cached_input_tokens,
-  sum(double3 * _sample_interval) AS cache_write_input_tokens,
+  sum(double3 * _sample_interval) AS known_cache_write_input_tokens,
   sum(double4 * _sample_interval) AS output_tokens,
   sum(double5 * _sample_interval) AS reasoning_output_tokens,
   sum(((double1 - double2 - double3) * 2
        + double2 * 0.10 + double3 * 2.50 + double4 * 10)
-      * _sample_interval) / 1000000 AS estimated_usd
+      * double7 * _sample_interval) / 1000000 AS full_usage_estimated_usd
 FROM clawsweeper_review_usage
 WHERE timestamp >= NOW() - INTERVAL '30' DAY
+  AND blob1 != 'openclaw/__review_usage_canary__'
+  AND blob4 != 'operator-canary'
 GROUP BY day, repo
 ORDER BY day, repo
 ```
@@ -336,14 +386,17 @@ ORDER BY day, repo
 This is a reference-price estimate, not an invoice: service-tier adjustments
 and the **greater-than-272K per-request surcharge are not included**. These are
 review sums, so they cannot determine whether an individual request crossed
-that threshold. Missing usage contributes no token cost; compare
-`reviews_with_usage` against `reviews` before interpreting totals.
+that threshold. Cost covers only the full-usage cohort; partial and missing
+attempts have unknown cost and are not estimated as free. Core token sums
+include both full and partial usage. Known cache writes cover only full usage.
+Compare the weighted cohort counts before interpreting totals.
 
 ### Per-review duration and average tokens by lane/repository
 
 This includes failed and timed-out attempts in duration percentiles. Average
-tokens use only attempts with available usage. Groups without any available
-usage are omitted. The blank lane means no lane was provided, not an inferred
+tokens use attempts with measured core usage, including older complete rows.
+Groups without measured core usage are omitted. Duration percentiles still
+cover all attempts in those groups. The blank lane means no lane was provided, not an inferred
 workflow lane.
 
 ```sql
@@ -351,25 +404,159 @@ SELECT
   blob1 AS repo,
   blob4 AS lane,
   sum(_sample_interval) AS reviews,
-  sum(double7 * _sample_interval) AS reviews_with_usage,
+  sum(if(double7 = 1 OR double8 = 1, _sample_interval, 0)) AS reviews_with_core_usage,
   quantileExactWeighted(0.50)(double6, _sample_interval) AS duration_p50_ms,
   quantileExactWeighted(0.95)(double6, _sample_interval) AS duration_p95_ms,
   sum(double1 * _sample_interval)
-    / sum(double7 * _sample_interval) AS avg_input_tokens,
+    / sum(if(double7 = 1 OR double8 = 1, _sample_interval, 0)) AS avg_input_tokens,
   sum(double4 * _sample_interval)
-    / sum(double7 * _sample_interval) AS avg_output_tokens,
+    / sum(if(double7 = 1 OR double8 = 1, _sample_interval, 0)) AS avg_output_tokens,
   sum((double1 + double4) * _sample_interval)
-    / sum(double7 * _sample_interval) AS avg_total_tokens
+    / sum(if(double7 = 1 OR double8 = 1, _sample_interval, 0)) AS avg_total_tokens
 FROM clawsweeper_review_usage
 WHERE timestamp >= NOW() - INTERVAL '30' DAY
+  AND blob1 != 'openclaw/__review_usage_canary__'
+  AND blob4 != 'operator-canary'
 GROUP BY repo, lane
-HAVING sum(double7 * _sample_interval) > 0
+HAVING sum(if(double7 = 1 OR double8 = 1, _sample_interval, 0)) > 0
 ORDER BY repo, lane
 ```
 
 See the [sampling guidance](https://developers.cloudflare.com/analytics/analytics-engine/sampling/)
 and [weighted aggregate functions](https://developers.cloudflare.com/analytics/analytics-engine/sql-reference/aggregate-functions/)
 for interpreting approximate aggregates.
+
+### Bounded private operator workflow
+
+- Status: active operator interface; live permission and deployed-receiver qualification remain separate gates.
+- Owner: ClawSweeper maintainers.
+- Source: [maintenance workflow](../.github/workflows/exact-review-queue-maintenance.yml),
+  [operator helper](../scripts/review-usage-operator.mjs), and its focused CLI tests.
+- Verified base: `104113c2b611525c4103a3e3fb6900cfaea72a8f`. Update this contract when the workflow inputs, fixed resources,
+  request limits, credential reference, Analytics layout, or receiver contract changes.
+
+The existing maintenance workflow has three private usage modes. They do not
+change existing queue/storage modes, review policy, or the one-time PR 2002
+checkpoint. The public dashboard remains observer-only. This consumer does not
+match any push path in the dashboard deployment workflow; merging only these
+operator files does not deploy the Worker.
+
+Use only a reviewed consumer landed on canonical main. Each job checks out its
+immutable workflow event SHA with persisted Git credentials disabled. Record
+that **source SHA** separately from the **deployed Worker source SHA** and
+**version UUID**. A squash changes commit identity: rebind the reviewed source
+tree to the landed commit, and obtain exact-head checks before dispatch. The
+consumer verifies Worker source through the approved version's
+`resources.bindings` and current settings' `bindings`; the latest deployment
+must contain exactly that version at 100%. These are point-in-time guards,
+not a deployment lock. Coordinate against concurrent deployments; any drift
+before or after the operation fails qualification.
+
+Only read jobs receive `OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN` as
+`CLOUDFLARE_API_TOKEN`, the existing Foundation credential reference used for
+this Worker/account. No general-token fallback exists. This reference does not
+establish effective permissions: version content/bindings access and Account
+Analytics Read are independently required. Missing credentials, HTTP 401/403,
+Analytics denial, unexpected shapes, redirects and limits stop with a redacted
+error. Do not request additional access or switch credentials automatically.
+Read jobs receive no HMAC secret. The canary job receives only the existing
+`CLAWSWEEPER_WEBHOOK_SECRET` and native read-job identity outputs.
+
+All requests use the fixed account, `clawsweeper-status` Worker,
+`clawsweeper_review_usage` dataset and canonical usage route. There is no
+production URL, SQL, resource, credential or command override. Each request has
+a 30-second deadline and rejects redirects. Streaming response limits are
+256 KiB for metadata and 64 KiB for Analytics/ingestion; each invocation runs
+at most three fixed SELECTs with `LIMIT 8 FORMAT JSON`. Metadata guards run
+before and after SELECTs. Only approved identity and numeric result fields are
+printed; plaintext bindings, API errors and credential values never appear.
+UInt64 decimal strings are normalized only within JavaScript's safe numeric range.
+
+The modes are:
+
+- `operator-read`: metadata guards plus fixed weighted cohort, duration and
+  historical-full-row SELECTs over the last 30 days. It performs no ingestion.
+- `canary`: a read guard job runs first. Both `execute=true` and
+  `authorize_usage_canary=true` are required for the separate write job;
+  workflow run attempt must be 1. Exactly four fixed schema-1 records cover
+  null usage, unknown cache writes, measured zero and legacy five-number usage.
+  Each uses duration 100 ms, the workflow run ID and run attempt 1. The write
+  job signs the exact body and requires HTTP 202 plus `ok: true`.
+  Another isolated read job rechecks the deployment after success or failure.
+- `read-back`: a separately approved original canary run ID selects the four
+  records within the last day. Weighted counts, all five counters, both
+  masks and each record’s 100 ms duration must match; missing, duplicate, sampled or corrupted evidence fails.
+  The same aggregate SELECT checks full/partial/missing/core cohorts, full-mask
+  reference cost and input/output/total averages over measured core usage.
+  Actual curried `quantileExactWeighted` SQL executes, plus a 30-day
+  historical query restricted to `double7 = 1 AND double8 = 0`. No writes occur.
+
+Before **any** canary, both global queries above and the helper's global
+SELECTs exclude repository `openclaw/__review_usage_canary__` **and** lane
+`operator-canary`. The predicates exclude a row when either identity matches;
+reserving a repository alone would contaminate other aggregations. Focused
+SQLite predicate proof verifies both documented queries with ordinary,
+repository-only, lane-only and combined synthetic identities. These synthetic
+records do not represent GitHub items and trigger no reviews or model runs.
+
+The fixed payloads use input/cached/cache-write/output/reasoning counts of
+null usage; 100/20/unknown/30/10; 0/0/0/0/0; and 100/20/5/30/10.
+Expected weighted counts are 4 attempts, 2 full, 1 partial, 1 missing and 3
+with core usage. Input/output totals are 200/60; core averages are 200/3
+input, 20 output and 260/3 total tokens. Full-only reference cost is
+$0.0004645 at the prices above, not a billing claim. These 100 ms fixtures
+do not use earlier illustrative payload quantities. Per-item duration checks
+reject a corrupted duration even if both aggregate percentiles remain 100.
+
+No write retry or idempotency assumption exists. A failure reports attempted
+and acknowledged counts, then stops. A timed-out request may already have
+written. Preserve the original run ID and inspect it through read-back; do not
+rerun the canary job or create replacement writes. HTTP 202 establishes only
+acceptance. A successful read-back establishes bounded persistence, masks,
+counters and SQL execution. Constant-duration canaries do **not** establish
+nontrivial weighted-quantile or sampling correctness. An empty historical
+cohort establishes query execution only, not observed historical compatibility.
+
+#### Staged dispatch packet
+
+These are future operator commands, subject to exact-head review and explicit
+stage authorization. No workflow dispatch, receiver merge/deploy or canary is
+a side effect of preparing this PR.
+
+1. Verify the reviewed consumer's landed source/tree, canonical main SHA and
+   exact-head checks. This PR's files do not trigger Worker deployment. Leave
+   receiver PR 2011 separate; its future merge matches `dashboard/**` and can
+   automatically deploy the entire Worker. Rebind its squash tree/source and
+   qualify that whole deployment before selecting its expected SHA/version.
+2. After the trusted consumer lands and its named credential route is verified,
+   authorize a read-only dispatch with the approved current deployment identity:
+
+   ```bash
+   ghx workflow run exact-review-queue-maintenance.yml --repo openclaw/clawsweeper --ref main -f mode=operator-read -f usage_deploy_sha=APPROVED_DEPLOY_SHA -f usage_version_id=APPROVED_VERSION_UUID
+   ```
+
+3. Inspect the run's immutable workflow source SHA, approved deployment identity,
+   before/after guards, numeric outputs and terminal conclusion. Permission
+   failure is a stop, not authorization to try a different credential.
+4. Only after separately authorized receiver deployment and source/deployment
+   qualification, approve one post-receiver canary run:
+
+   ```bash
+   ghx workflow run exact-review-queue-maintenance.yml --repo openclaw/clawsweeper --ref main -f mode=canary -f execute=true -f authorize_usage_canary=true -f usage_deploy_sha=APPROVED_RECEIVER_DEPLOY_SHA -f usage_version_id=APPROVED_RECEIVER_VERSION_UUID
+   ```
+
+5. Keep the original run ID even after partial failure. Authorize read-back
+   once that data is queryable; this consumer has no polling or automatic retry:
+
+   ```bash
+   ghx workflow run exact-review-queue-maintenance.yml --repo openclaw/clawsweeper --ref main -f mode=read-back -f usage_deploy_sha=APPROVED_RECEIVER_DEPLOY_SHA -f usage_version_id=APPROVED_RECEIVER_VERSION_UUID -f usage_canary_run_id=APPROVED_ORIGINAL_RUN_ID
+   ```
+
+Nullable writes require the receiver capability from
+[PR 2011](https://github.com/openclaw/clawsweeper/pull/2011), independently
+qualified on its actual deployed identity. Stop/drain nullable production
+before any receiver downgrade. Keep mask-aware queries while partial rows
+remain retained; legacy-only consumers must explicitly filter `double7 = 1`.
 
 ## What the status API shows
 
@@ -438,12 +625,17 @@ Actions set. The public recent-publication route revalidates that state into
 bounded outcome counts without returning private repositories, revision
 identifiers, target keys, facts, titles, raw URLs, or failure detail.
 
-Status responses use stale-while-revalidate delivery. After the 20-second fresh
-window expires, the Worker immediately returns the last good snapshot, marks it
-with `X-ClawSweeper-Cache: stale`, and coalesces one background refresh per
-isolate. The Worker applies the public status projector before writing fresh or
-stale edge-cache bodies and the `StatusStore` snapshot, then applies it again on
-every cache/store read. Legacy cache bodies are reprojected, nested or unexpected
+Status responses use stale-while-revalidate delivery. After the configured fresh
+window expires (60 seconds in production), the Worker immediately returns the last
+good snapshot, marks it with `X-ClawSweeper-Cache: stale`, and coalesces one background refresh per
+isolate. With the production Durable Object binding, `StatusStore` owns both
+cached reads and publication. It atomically retains the snapshot with the newer
+collection timestamp; delayed older writes and equal-timestamp replays cannot
+replace it. Reads retain the original age. Existing edge bodies are bypassed,
+so an older edge write cannot undo the durable fence. This adds one Durable
+Object read per cached status request. Deployments without that binding retain
+the edge-cache path. The Worker applies the public status projector before
+publication and again on every cache/store read. Legacy cache bodies are reprojected, nested or unexpected
 fields are dropped, and stale, future-dated, or malformed store documents are
 rejected. Diagnostics retain a bounded error count and the fixed
 `telemetry_unavailable` category, never upstream exception or API error text.
@@ -555,6 +747,16 @@ in-progress run at least 150 minutes old, or incomplete Actions telemetry opens 
 expandable “Work execution needs attention” alert. This live diagnostic reuses
 the status snapshot's Actions reads; the history cron no longer stores queue
 pressure or oldest-run values.
+
+Active-run collection reads up to three pages of 100 runs for each active status.
+When counts or rows change during a census, it discards that attempt and reads
+the affected status again once, bypassing the refresh-local memoized pages.
+The ceiling is 30 page reads across five statuses, including fresh rebuilds.
+A full final page with additional runs, a failed page, or a second inconsistent
+census keeps operational telemetry unknown. A complete 100-run page does not
+itself make telemetry unavailable. The advisory ETag cache has a one-second deadline
+per operation; a stalled lookup, confirmation, or write falls back to the
+authoritative GitHub response without consuming the entire refresh deadline.
 
 Queued runs older than 1440 minutes are reported separately as zombies and do
 not contribute to `queued_over_threshold` or `oldest_queued_minutes`; they
@@ -678,19 +880,22 @@ or `recover-fresh` these rows through the signed parked-review routes, and the
 periodic terminal check still removes closed or head-advanced targets. The lane
 breakdown counts them under `parked_reasons.source_drift_loop`.
 
-Review items parked as `locked_conversation` or `oversized_pull_request` are
-holds for deterministic no-ops, not failures. A review run for an open but
+Review items parked as `locked_conversation`, `oversized_pull_request`, or
+`maintainer_request_required` are holds for deterministic no-ops, not failures.
+A review run for an open but
 locked conversation completes without Codex, and a run for a PR above the size
-limit takes the metadata-only size path; neither writes anything the scheduled
-planners can see, so without the hold the same unchanged item is offered and
-claimed again every tick. The queue keeps the completed row parked instead,
+limit takes the metadata-only size path. Maintainer items without an explicit
+request or automation opt-in also skip review. None writes a completed review
+the scheduled planners can see, so without the hold the same unchanged item is
+offered and claimed again every tick. The queue keeps the completed row parked instead,
 scheduled offers dedupe against it with that reason, and automatic recoveries
 dedupe with `dedupe_scope: review_hold`. Any other admitted input releases the
 hold: an organic webhook event such as `unlocked` or `synchronize`, an explicit
 command, or a manual review. The periodic terminal check removes closed and
 head-advanced targets, and the parked-review reconciler recovers a row whose
 source identity changed (for example an unlock or a `size: accepted-large`
-label). Command reviews and PRs without a pinned head are never held.
+label). Command reviews are never held; oversized PR holds also require a
+pinned head.
 
 `review_runaway_health` is the companion alert for any self-feeding loop the
 breaker does not stop, such as a command continuation. The queue records each
@@ -734,8 +939,12 @@ left by a rollback cannot override that newer lease, and a wholly unknown legacy
 age stays non-alarming. A claim is degraded after one third of the dispatch
 lease (bounded to 30-120 seconds) and stalled after two thirds (bounded to
 31-300 seconds), so operators see the failure before the lease expires and
-requeues. A blocked dispatcher with pending work is stalled; an intentionally
-paused dispatcher is degraded. `/api/status` includes this snapshot and the live
+requeues. During its retry delay, a blocked dispatcher with pending work is
+stalled and a paused dispatcher is degraded. After the deadline, eligible work
+shows degraded `dispatcher_retry_due` until a successful preflight records
+recovery. If capacity, target cooldowns, review throttling, or debounce prevents
+admission, the expired block does not override current handoff health. Missing
+retry deadlines retain the warning. `/api/status` includes this snapshot and the live
 dashboard renders the three phases, oldest age, available exact-review slots,
 and the current classification without changing queue capacity or storage
 schema. Fleet snapshots may use the longer stale fallback during a GitHub API

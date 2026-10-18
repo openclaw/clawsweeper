@@ -1,12 +1,13 @@
+import { reviewBodyWithoutPreflight } from "./review-preflight-body.js";
 import { AgentInputScanError } from "./agent-input-scan.js";
 import { GitHubOperationDeadlineError } from "./clawsweeper-github-runtime.js";
 import { ghJson, ghJsonEach, ghJsonOnce } from "./clawsweeper-github-execution.js";
 import { githubCount } from "./clawsweeper-github-context.js";
 import { targetRepo } from "./repository-profiles.js";
 import { fetchIssueReviewComments } from "./clawsweeper-review-comment-state.js";
-import { isSafeGitBranchName } from "./clawsweeper-review-runtime.js";
+import { isSafeGitBranchName } from "./clawsweeper-review-core.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
-import { validationRecoveryRequired } from "./repair/validation-recovery.js";
+import { validationRecoveryRequired } from "./validation-recovery.js";
 import { BULK_FILED_LABEL } from "./repair/exact-review-guard-labels.js";
 import {
   BULK_FILER_SEARCH_TIMEOUT_MS,
@@ -122,7 +123,12 @@ function compactIssue(value: unknown): unknown {
     createdAt: issue.created_at,
     updatedAt: issue.updated_at,
     closedAt: issue.closed_at,
-    body: truncateText(issue.body, 12000),
+    body: truncateText(
+      issue.pull_request && typeof issue.body === "string"
+        ? reviewBodyWithoutPreflight(issue.body)
+        : issue.body,
+      12000,
+    ),
   };
 }
 
@@ -281,7 +287,10 @@ function compactPullRequest(value: unknown): unknown {
     changedFiles: pull.changed_files,
     createdAt: pull.created_at,
     updatedAt: pull.updated_at,
-    body: truncateText(pull.body, 12000),
+    body: truncateText(
+      typeof pull.body === "string" ? reviewBodyWithoutPreflight(pull.body) : pull.body,
+      12000,
+    ),
   };
 }
 

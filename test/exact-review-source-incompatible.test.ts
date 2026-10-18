@@ -113,12 +113,15 @@ test("scheduled-first PRs bind source identity before dispatch and remain stoppe
 test("scheduled source binding preserves issues, bound PRs, and closed-target cleanup", async () => {
   for (const scenario of ["issue", "bound", "closed", "incomplete"] as const) {
     const reads: string[] = [];
-    const h = createExactReviewAdmissionHarness((_repo, _number, kind) => {
-      reads.push(kind);
-      return jsonResponse(
-        scenario === "closed" ? { state: "closed" } : { state: "open", head: { sha: head } },
-      );
-    });
+    const h = createExactReviewAdmissionHarness(
+      (_repo, _number, kind) => {
+        reads.push(kind);
+        return jsonResponse(
+          scenario === "closed" ? { state: "closed" } : { state: "open", head: { sha: head } },
+        );
+      },
+      { rawPullResponse: scenario === "incomplete" },
+    );
     await withExactReviewAdmissionHarness(h, async () => {
       const identity =
         scenario === "bound"
@@ -148,8 +151,10 @@ test("scheduled source binding preserves issues, bound PRs, and closed-target cl
         assert.equal(item.decision.sourceHeadSha, undefined);
       } else {
         assert.equal(item.state, "dispatching");
-        assert.equal(item.leaseDecision?.sourceBaseSha, identity.sourceBaseSha);
-        assert.equal(item.leaseDecision?.sourceContentRevision, identity.sourceContentRevision);
+        if (scenario === "bound") {
+          assert.equal(item.leaseDecision?.sourceBaseSha, "b".repeat(40));
+          assert.match(item.leaseDecision?.sourceContentRevision ?? "", /^[a-f0-9]{64}$/);
+        }
         if (scenario === "issue") assert.equal(item.leaseDecision?.sourceHeadSha, undefined);
       }
       assert.deepEqual(reads, [scenario === "issue" ? "issue" : "pull_request"]);

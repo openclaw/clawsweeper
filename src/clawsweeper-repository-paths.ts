@@ -12,6 +12,22 @@ import { frontMatterValue } from "./report-front-matter.js";
 import { targetProfile, targetRepo } from "./repository-profiles.js";
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+export const REVIEW_ITEM_PROMPT_PATHS = {
+  core: join(ROOT, "prompts", "review-item.md"),
+  issue: join(ROOT, "prompts", "review-item-issue.md"),
+  pull_request: join(ROOT, "prompts", "review-item-pr.md"),
+  closeReasons: join(ROOT, "prompts", "review-close-reasons.md"),
+};
+export const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(
+  ROOT,
+  "schema",
+  "clawsweeper-decision.schema.json",
+);
+export const PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH = join(
+  ROOT,
+  "prompts",
+  "pr-close-coverage-proof.md",
+);
 const RECORDS_ROOT = join(ROOT, "records");
 
 export function repoRelativePath(path: string): string {

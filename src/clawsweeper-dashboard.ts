@@ -19,7 +19,11 @@ import { reportReviewDecision } from "./report-review-decision.js";
 import { ReviewRecordFormatError } from "./review-record.js";
 
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
-import { displayTitle, formatStatusNumber, formatTimestamp } from "./clawsweeper-status-context.js";
+import {
+  displayTitle,
+  formatStatusNumber,
+  formatTimestamp,
+} from "./clawsweeper-status-presentation.js";
 import { itemUrlFor, markdownLink, repoUrlFor, reportFileUrl } from "./clawsweeper-links.js";
 import { targetRepo } from "./repository-profiles.js";
 import {

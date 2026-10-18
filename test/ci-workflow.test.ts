@@ -29,7 +29,12 @@ test("CI keeps one pnpm check status that requires every check job", () => {
   const check = jobs.check!;
   // A skipped job reads as success to required-status checks, so it must always run.
   assert.equal(check.if, "always()");
-  assert.deepEqual(check.needs, ["check-fast", "check-tests", "check-coverage"]);
+  assert.deepEqual(check.needs, [
+    "check-fast",
+    "check-tests",
+    "check-coverage",
+    "installed-package",
+  ]);
   const [gate] = check.steps;
   assert.equal(gate?.env?.NEEDS, "${{ toJSON(needs) }}");
   assert.match(gate?.run ?? "", /jq -e 'all\(\.\[\]; \.result == "success"\)'/);

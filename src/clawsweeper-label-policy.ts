@@ -4,7 +4,6 @@ import {
   PR_STATUS_LABELS,
 } from "./clawsweeper-policy.js";
 import {
-  AUTOMERGE_LABEL,
   HUMAN_REVIEW_LABEL,
   MANUAL_ONLY_LABEL,
   MERGE_READY_LABEL,
@@ -86,7 +85,6 @@ export function prStatusLabelKind(options: {
   beforeMergeItems: readonly Pick<PublicBeforeMergeItem, "state">[];
   securityReview: Pick<SecurityReview, "status">;
   mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
-  hasAutomergeLabel: boolean;
   hasRepairLoopPauseLabel: boolean;
   hasRecentReReviewRequest: boolean;
   hasRecentAuthorActivity: boolean;
@@ -102,7 +100,6 @@ export function prStatusLabelKind(options: {
   if (options.proofPolicy.blocksMerge) return "needs_maintainer_proof_decision";
   if (options.reviewFailed) return null;
   if (unresolvedWork) return "waiting_on_author";
-  if (options.hasAutomergeLabel) return "automerge_armed";
   if (options.beforeMergeItems.length === 0) return "ready_for_maintainer_look";
   return null;
 }
@@ -210,7 +207,6 @@ export function prStatusLabelKindFromReport(
     beforeMergeItems: pullRequestReviewReadinessFromReport(markdown).items,
     securityReview: decision.securityReview,
     mergeRiskOptions: decision.mergeRiskOptions,
-    hasAutomergeLabel: currentLabels.includes(AUTOMERGE_LABEL),
     hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(currentLabels),
     hasRecentReReviewRequest: hasRecentReReviewRequest(
       context,

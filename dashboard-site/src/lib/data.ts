@@ -1,7 +1,7 @@
 import raw from "../data/dashboard.json";
 import type { Operations, OperationsHour } from "../../scripts/operations.ts";
 import { duration, label } from "./format";
-import { summarizeRunWindow } from "./run-window.ts";
+import { reviewTimingWindow, summarizeRunWindow } from "./run-window.ts";
 
 // The build snapshot (scripts/build-data.ts). Typed loosely at the edge; every page reads
 // through the view helpers below so presentation never learns the raw shapes.
@@ -183,6 +183,7 @@ export const kpis = {
 
 export const runs = {
   days: completeRunDays,
+  timings: reviewTimingWindow(runDays, asOf.actions, 30),
   failureRate: completeRunDays.map((day) => ({
     date: day.date,
     value: day.total ? day.failure / day.total : null,
@@ -217,6 +218,7 @@ export const live = {
   runaway: object(queue.review_runaway_health),
   feed: object(queue.scheduled_feed),
   pressure: object(queue.pressure),
+  publicationHandoff: object(queue.publication_handoff),
   review: reviewLane as Json,
   publication: publicationLane as Json,
   pending: reviewLane.pending as number,
@@ -224,7 +226,7 @@ export const live = {
   parked: (reviewLane.parked + publicationLane.parked) as number,
   capacity: reviewLane.capacity as number,
   active: reviewLane.active as number,
-  oldestPendingSeconds: reviewLane.oldest_pending_age_seconds as number | null,
+  oldestPendingSeconds: (reviewLane.oldest_pending_age_seconds ?? null) as number | null,
   parkedReasons: entries({ ...reviewLane.parked_reasons }, ["unknown"]),
   publicationParked: entries({ ...publicationLane.parked_reasons }, ["unknown"]),
   backoffReasons: entries({ ...reviewLane.backoff_reasons }),
@@ -270,12 +272,12 @@ export const healthChecks: HealthCheck[] = [
     };
   })(),
   (() => {
-    const name = "Runaway reviews";
+    const name = "Repeated review claims";
     const tip =
-      "Items reviewed again and again in a short window. Usually a revision loop or a feed bug.";
+      "Targets claimed repeatedly for review. Claims may end before model execution; revision and trigger attribution is unavailable, so repetition alone does not establish waste.";
     const runaway = live.runaway;
     if (!runaway || runaway.status === "unknown") return unavailable(name, tip);
-    const detail = `over ${runaway.threshold_reviews_per_day} reviews in ${runaway.window_hours}h`;
+    const detail = `over ${runaway.threshold_reviews_per_day} claims in ${runaway.window_hours}h`;
     if (runaway.status === "healthy")
       return { name, ok: true, value: "Healthy", detail, tip, alert: null };
     return {
@@ -284,7 +286,7 @@ export const healthChecks: HealthCheck[] = [
       value: `${runaway.runaway_items} items`,
       detail,
       tip,
-      alert: `${runaway.runaway_items} items over ${runaway.threshold_reviews_per_day} reviews/day`,
+      alert: `${runaway.runaway_items} targets over ${runaway.threshold_reviews_per_day} claims in ${runaway.window_hours}h`,
     };
   })(),
   (() => {
@@ -393,9 +395,8 @@ const hourly = (pick: (hour: OperationsHour) => number | null) =>
   opsHours.map((hour) => ({ date: hour.hour, value: pick(hour) }));
 const majorIncidents = operations.incidents.filter((incident) => incident.minutes >= 10);
 const { observed: handoffObserved, unhealthy: handoffUnhealthy } = operations.handoffSamples;
-const offered =
-  sum(known(completeHours.map((hour) => hour.shed))) +
-  sum(known(completeHours.map((hour) => hour.enqueued)));
+const reviewOffers = operations.reviewOffers;
+const offered = reviewOffers ? reviewOffers.accepted + reviewOffers.shed : null;
 const failureKinds = [
   ...new Set([
     ...Object.keys(operations.apply.day.failures),
@@ -414,7 +415,8 @@ export const ops = {
     // observed: at least one hour with known counter growth; a measured zero is still a value.
     observed: completeHours.some((hour) => hour.shed !== null),
     week: sum(known(completeHours.map((hour) => hour.shed))),
-    share: offered ? sum(known(completeHours.map((hour) => hour.shed))) / offered : null,
+    offers: offered,
+    share: offered ? reviewOffers!.shed / offered : null,
   },
   handoff: {
     // Share of observed 5-minute samples; unobserved time is unknown, not healthy.
@@ -427,6 +429,7 @@ export const ops = {
   },
   series: {
     completed: hourly((hour) => hour.completed),
+    published: hourly((hour) => hour.published),
     shed: hourly((hour) => hour.shed),
     reviewPending: hourly((hour) => hour.reviewPending),
     publicationPending: hourly((hour) => hour.publicationPending),

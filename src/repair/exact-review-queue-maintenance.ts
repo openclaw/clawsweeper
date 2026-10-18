@@ -1,11 +1,20 @@
 #!/usr/bin/env node
+import { verifyCanonicalBodyLifecycle } from "../canonical-body-tiering-policy.js";
 import { sha256 } from "../content-hash.js";
 import { requiredEnv as env } from "../required-env.js";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { ExactReviewBatchQueueClient } from "./exact-review-batch-queue-client.js";
 
-if (process.argv[2] === "retire-closed-publication") {
+if (process.argv[2] === "canonical-bodies") {
+  try {
+    await maintainCanonicalBodies();
+  } catch {
+    console.error('{"ok":false,"status":"canonical_tiering_failed"}');
+    console.error("[exact-review-queue-maintenance] FAILED (exit 1)");
+    process.exitCode = 1;
+  }
+} else if (process.argv[2] === "retire-closed-publication") {
   try {
     await retireClosedPublication();
   } catch {
@@ -135,4 +144,79 @@ function integerArg(name: string, fallback: number, minimum: number, maximum: nu
     throw new Error(`${name} must be an integer from ${minimum} to ${maximum}`);
   }
   return value;
+}
+
+async function maintainCanonicalBodies() {
+  const { values } = parseArgs({
+    args: process.argv.slice(3),
+    options: {
+      action: { type: "string", default: "preview" },
+      apply: { type: "boolean", default: false },
+      "expected-deployment-sha": { type: "string" },
+      "attestation-file": { type: "string" },
+      "reviewed-plan-sha256": { type: "string" },
+    },
+  });
+  const action = values.action;
+  if (
+    !["preview", "activate", "migrate"].includes(action) ||
+    (action !== "preview" && !values.apply) ||
+    (action === "preview" && values.apply)
+  )
+    throw new Error("invalid canonical tiering action");
+  if (!values["attestation-file"] || statSync(values["attestation-file"]).size > 8192)
+    throw new Error("bounded operator attestation required");
+  const bytes = readFileSync(values["attestation-file"]);
+  if (bytes.byteLength > 8192) throw new Error("attestation too large");
+  const attestation: unknown = JSON.parse(bytes.toString("utf8"));
+  await verifyCanonicalBodyLifecycle(
+    attestation,
+    env("CLOUDFLARE_ACCOUNT_ID"),
+    env("CLOUDFLARE_API_TOKEN"),
+  );
+  const client = new ExactReviewBatchQueueClient({
+    baseUrl: env("EXACT_REVIEW_QUEUE_URL"),
+    webhookSecret: env("CLAWSWEEPER_WEBHOOK_SECRET"),
+  });
+  const started = Date.now();
+  let result: Record<string, unknown> = {},
+    previous: Record<string, unknown> | null = null,
+    passes = 0,
+    stop = "pass_limit";
+  // Explicit migration drains bounded passes under one approved plan. It never
+  // schedules an alarm or changes startup behavior; the durable cursor resumes.
+  for (; passes < (action === "migrate" ? 100_000 : 1);) {
+    if (Date.now() - started >= 50 * 60 * 1000) {
+      stop = "time_limit";
+      break;
+    }
+    result = await client.maintainCanonicalBodies({
+      action,
+      execute: values.apply,
+      expectedDeploymentSha: values["expected-deployment-sha"],
+      reviewedPreviewSha256: values["reviewed-plan-sha256"],
+      attestation,
+    });
+    passes++;
+    if (action !== "migrate") {
+      stop = "requested_action";
+      break;
+    }
+    const checkpoint = result.checkpoint as Record<string, unknown>;
+    if (checkpoint.completed_at) {
+      stop = "complete";
+      break;
+    }
+    if (
+      previous &&
+      Number(checkpoint.after_rowid) <= Number(previous.after_rowid) &&
+      checkpoint.migrated === previous.migrated
+    ) {
+      stop = "unresolved_source";
+      break;
+    }
+    previous = checkpoint;
+    if (passes % 100 === 0) console.log(JSON.stringify({ ok: true, passes, checkpoint }));
+  }
+  console.log(JSON.stringify({ ...result, passes, stop }));
 }

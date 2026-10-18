@@ -71,8 +71,9 @@ type BlobR2Bucket = {
     options?: {
       httpMetadata?: { contentType?: string };
       customMetadata?: Record<string, string>;
+      onlyIf?: Headers;
     },
-  ) => Promise<unknown>;
+  ) => Promise<BlobR2Object | null>;
   list: (options?: {
     prefix?: string;
     cursor?: string;
@@ -179,10 +180,22 @@ async function putBlob(bucket: BlobR2Bucket, body: Record<string, unknown>) {
     return blobJson({ ok: true, path, bytes: content.byteLength, digest, unchanged: true });
   }
   if (conflict) throw conflict;
-  await bucket.put(path, content, {
+  const immutable = isImmutableStateBlobPath(path);
+  // HEAD is only a replay fast path. The commit condition prevents another
+  // publisher from replacing an immutable key after both observed absence.
+  const written = await bucket.put(path, content, {
     httpMetadata: { contentType: "application/octet-stream" },
     customMetadata: { sha256: digest, verified: "server" },
+    ...(immutable ? { onlyIf: new Headers({ "If-None-Match": "*" }) } : {}),
   });
+  if (immutable && written === null) {
+    const winner = await bucket.head(path);
+    const conflict = existingConflict(path, winner, digest, content.byteLength);
+    if (conflict === "unchanged")
+      return blobJson({ ok: true, path, bytes: content.byteLength, digest, unchanged: true });
+    if (conflict) throw conflict;
+    throw new BlobRequestError(503, { error: "blob_store_unavailable" });
+  }
   return blobJson({ ok: true, path, bytes: content.byteLength, digest, unchanged: false }, 201);
 }
 

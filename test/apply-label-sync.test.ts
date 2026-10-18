@@ -23,6 +23,7 @@ import { completeActivityContextSymbol, type ItemContext } from "../dist/clawswe
 import {
   implementedCloseReport,
   lowSignalCloseReport,
+  mockCommandBinEnv,
   prRatingReportSection,
   promotionGhMock,
   realBehaviorProofReportSection,
@@ -755,7 +756,7 @@ test("exact event source drift includes a revision change while its apply lease 
   );
 });
 
-function assertCompletedIssueLeaseAccepted(extraArgs: string[]): void {
+function assertCompletedIssueLeaseAccepted(extraArgs: string[], reusedLease = false): void {
   const root = mkdtempSync(tmpPrefix);
   try {
     const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
@@ -806,6 +807,15 @@ function assertCompletedIssueLeaseAccepted(extraArgs: string[]): void {
       leaseExpiresAt,
       leaseOwner,
     });
+    const durableComment = reusedLease
+      ? reportWithSyncedReviewComment(
+          closeReport
+            .replace(`review_lease_owner: ${leaseOwner}`, "review_lease_owner: previous-owner")
+            .replace(`reviewed_at: ${reviewedAt}`, "reviewed_at: 2026-04-30T00:00:00Z"),
+          number,
+          "implemented_on_main",
+        ).comment
+      : synced.comment;
     const comments = [
       {
         id: 9000 + number,
@@ -813,7 +823,7 @@ function assertCompletedIssueLeaseAccepted(extraArgs: string[]): void {
         created_at: reviewedAt,
         updated_at: reviewedAt,
         user: { login: "clawsweeper[bot]" },
-        body: synced.comment,
+        body: durableComment,
       },
       {
         id: leaseCommentId,
@@ -890,6 +900,14 @@ test("exact publication consumes its matching completed issue review lease", () 
 
 test("exact issue apply accepts its report-owned lease update after stable source proof", () => {
   assertCompletedIssueLeaseAccepted([]);
+});
+
+test("exact publication accepts a later issue review that reuses a command lease id", () => {
+  assertCompletedIssueLeaseAccepted(["--exact-event-publication"], true);
+});
+
+test("issue apply accepts a later owner of the same command lease id", () => {
+  assertCompletedIssueLeaseAccepted([], true);
 });
 
 test("exact publication rechecks after batched labels and again before close", () => {
@@ -1402,7 +1420,7 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
 
 for (const scenario of [
   { name: "verified newer", lease: "9200", owner: "new-review-owner", verified: true },
-  { name: "equal lease", lease: "9100", owner: "new-review-owner", verified: false },
+  { name: "equal lease", lease: "9100", owner: "new-review-owner", verified: true },
   { name: "unknown owner", lease: "9200", owner: "unknown", verified: false },
   { name: "unsafe lease", lease: "9007199254740992", owner: "new-review-owner", verified: false },
 ]) {
@@ -3173,7 +3191,6 @@ test("apply-decisions keeps a listed security owner acceptance out of ready and 
             body: "A maintainer may accept this bounded security tradeoff before merge.",
             category: "accept_risk",
             recommended: true,
-            automergeInstruction: "",
           },
         ]),
       }),
@@ -3191,7 +3208,6 @@ test("apply-decisions keeps a listed security owner acceptance out of ready and 
             body: "A maintainer may accept this bounded security tradeoff before merge.",
             category: "accept_risk",
             recommended: true,
-            automergeInstruction: "",
           },
         ],
         overallConfidenceScore: 0.95,
@@ -3940,6 +3956,24 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   }
 });
 
+function withMockReceiptGh(root: string, script: string, run: () => void): void {
+  const previous = {
+    GH_TOKEN: process.env.GH_TOKEN,
+    CURL_BIN: process.env.CURL_BIN,
+    CURL_BIN_ARGS: process.env.CURL_BIN_ARGS,
+  };
+  process.env.GH_TOKEN = "fixture-only";
+  Object.assign(process.env, mockCommandBinEnv("curl", join(root, "bin", "gh.js")));
+  try {
+    withMockGh(root, script, run);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 for (const scenario of [
   "normal",
   "lifecycle_drift",
@@ -4106,6 +4140,20 @@ const pairedLockedCloseoutCleanup = ${pairedLockedCloseoutCleanup};
 const pairedProvenanceRevokedBeforeClose = ${pairedProvenanceRevokedBeforeClose};
 const pairedProvenanceRetargetedBeforeClose = ${pairedProvenanceRetargetedBeforeClose};
 const pairedHumanActivityDuringLease = ${pairedHumanActivityDuringLease};
+const linkedIssueReviewComment = () => ({
+  id: 9456,
+  html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9456",
+  created_at: "2026-05-01T01:00:00Z",
+  updated_at: pairedFreshOwnedReviewComment ? freshOwnedReviewUpdatedAt : "2026-05-01T01:00:00Z",
+  user: { login: "clawsweeper[bot]" },
+  body: readFileSync(linkedIssueCommentPath, "utf8")
+});
+if (rawArgs.includes("--url")) {
+  const url = new URL(rawArgs[rawArgs.indexOf("--url") + 1]);
+  if (url.pathname !== "/repos/openclaw/clawsweeper/issues/comments/9456") throw new Error("unexpected receipt route");
+  console.log("HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n" + JSON.stringify(linkedIssueReviewComment()));
+  process.exit(0);
+}
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   const timeline = existsSync(betweenFreshnessAndCloseoutHumanActivityPath)
     ? [{
@@ -4183,14 +4231,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     if (pairedBotActivityDuringCloseout) writeFileSync(pairedIssueBotActivityPath, new Date(Date.now() + 60_000).toISOString());
     console.log(JSON.stringify({ id: 9456, html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9456" }));
   } else {
-    const comments = [{
-      id: 9456,
-      html_url: "https://github.com/openclaw/clawsweeper/issues/456#issuecomment-9456",
-      created_at: "2026-05-01T01:00:00Z",
-      updated_at: pairedFreshOwnedReviewComment ? freshOwnedReviewUpdatedAt : "2026-05-01T01:00:00Z",
-      user: { login: "clawsweeper[bot]" },
-      body: readFileSync(linkedIssueCommentPath, "utf8")
-    }];
+    const comments = [linkedIssueReviewComment()];
     if (pairedFreshOwnedReviewComment) {
       comments.push({
         id: 9455,
@@ -4426,7 +4467,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   process.exit(1);
 }
 `;
-      withMockGh(root, ghMock, () => {
+      withMockReceiptGh(root, ghMock, () => {
         runApplyDecisionsForTest({
           itemsDir,
           closedDir,

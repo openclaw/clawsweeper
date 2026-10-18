@@ -28,7 +28,7 @@ export class TestStorage {
         }
       }
       const statement = this.database.prepare(query);
-      if (/^\s*(?:SELECT|WITH)\b/i.test(query) || /\bRETURNING\b/i.test(query)) {
+      if (/^\s*(?:SELECT|WITH|EXPLAIN)\b/i.test(query) || /\bRETURNING\b/i.test(query)) {
         return new SqlCursor(statement.all(...bindings) as Record<string, unknown>[]);
       }
       statement.run(...bindings);

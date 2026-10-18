@@ -194,25 +194,25 @@ test("record export merges section pages with both revision bounds and tombstone
     maxSourceBytes: 100_000,
     maxRecords: 1,
   };
-  const first = store.exportRecords(options);
+  const first = await store.exportRecords(options);
   assert.deepEqual(
     first.records.map((row) => [row.section, row.id, row.deleted]),
     [["closed", "1", true]],
   );
   assert.equal(first.nextCursor, 2);
-  const second = store.exportRecords({ ...options, cursor: first.nextCursor! });
+  const second = await store.exportRecords({ ...options, cursor: first.nextCursor! });
   assert.deepEqual(
     second.records.map((row) => [row.section, row.id, row.deleted]),
     [["items", "2", false]],
   );
   assert.equal(second.nextCursor, 4);
-  const last = store.exportRecords({ ...options, cursor: second.nextCursor! });
+  const last = await store.exportRecords({ ...options, cursor: second.nextCursor! });
   assert.deepEqual(
     last.records.map((row) => [row.section, row.id, row.deleted]),
     [["closed", "2", true]],
   );
   assert.equal(last.nextCursor, null);
-  assert.deepEqual(store.exportRecords({ ...options, sections: [] }).records, []);
+  assert.deepEqual((await store.exportRecords({ ...options, sections: [] })).records, []);
   assert.equal(store.snapshotRecordCount("a-repo", 3), 1);
   assert.deepEqual(store.snapshotRecordIdentities("a-repo", 3), [{ section: "items", id: "1" }]);
   assert.equal(store.snapshotRecordCount("a-repo", 6), 2);
@@ -3213,6 +3213,7 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
   });
   const dispatches: unknown[] = [];
   const regularDispatches: unknown[] = [];
+  let failBatchDispatch = false;
   let signalBatchDispatch!: () => void;
   let releaseBatchDispatch!: () => void;
   const batchDispatchStarted = new Promise<void>((resolve) => {
@@ -3262,6 +3263,7 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
     ) {
       assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test-token");
       dispatches.push(JSON.parse(String(init?.body)));
+      if (failBatchDispatch) return new Response("dispatch rejected", { status: 422 });
       signalBatchDispatch();
       await batchDispatchRelease;
       return new Response(null, { status: 204 });
@@ -3308,6 +3310,8 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
     assert.match(String(dispatch?.inputs.dispatch_id), /^publication-batch-dispatch:/);
     assert.equal(dispatch?.inputs.dispatched_at, "1970-01-01T01:56:40.000Z");
     const dispatchedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(dispatchedStats.publication_handoff.dispatch_state, "dispatching");
+    assert.equal(dispatchedStats.publication_handoff.dispatch_wait_seconds, null);
     assert.equal(
       dispatchedStats.lanes.publication.batches.dispatch_pending_until,
       "1970-01-01T01:57:40.000Z",
@@ -3388,6 +3392,12 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
     assert.match(secondDispatch.inputs.dispatch_id, /^publication-batch-dispatch:/);
     assert.equal(secondDispatch.inputs.dispatched_at, "1970-01-01T02:14:20.000Z");
     assert.equal(partialStorage.scheduledAlarm(), 8_660_000);
+    now += 15_000;
+    const waitingStats = await (
+      await partialQueue.fetch(new Request("https://queue/stats"))
+    ).json();
+    assert.equal(waitingStats.publication_handoff.dispatch_state, "awaiting_claim");
+    assert.equal(waitingStats.publication_handoff.dispatch_wait_seconds, 15);
 
     const multiOwnerStorage = new TestStorage();
     const multiOwnerQueue = new ExactReviewQueue(
@@ -3406,6 +3416,25 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
     await multiOwnerQueue.fetch(publicationRequest("delivery-owner-b2", 117, "1016", "bbb/repo"));
     await multiOwnerQueue.alarm();
     assert.equal(dispatches.length, 3);
+
+    failBatchDispatch = true;
+    const failedQueue = new ExactReviewQueue(
+      { storage: new TestStorage() },
+      {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+      },
+    );
+    await failedQueue.fetch(publicationRequest("delivery-failed-1", 118, "1017"));
+    await failedQueue.fetch(publicationRequest("delivery-failed-2", 119, "1018"));
+    await failedQueue.alarm();
+    const failedStats = await (await failedQueue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(failedStats.lanes.publication.batches.last_dispatch_succeeded, false);
+    assert.equal(failedStats.lanes.publication.batches.dispatch_pending_until, null);
+    assert.equal(failedStats.publication_handoff.dispatch_state, "dispatch_failed");
+    assert.equal(failedStats.publication_handoff.dispatch_wait_seconds, null);
   } finally {
     Date.now = originalNow;
     globalThis.fetch = originalFetch;
@@ -3541,37 +3570,53 @@ test("batch rollout wakes a retryable publication at its next eligibility time",
   assert.equal(storage.scheduledAlarm(), 9_030_000);
 });
 
-test("batch protocol routes require the shared internal signature", async () => {
+test("batch and canonical maintenance routes require the shared internal signature and forward exact payloads", async () => {
   const secret = "test-secret";
-  const body = JSON.stringify({ claim_id: "claim-authenticated", lease_owner: "worker-1" });
-  let forwardedPath = "";
-  const env = {
-    CLAWSWEEPER_WEBHOOK_SECRET: secret,
-    EXACT_REVIEW_QUEUE: {
-      idFromName: () => "global",
-      get: () => ({
-        fetch: async (request: Request) => {
-          forwardedPath = new URL(request.url).pathname;
-          return new Response(JSON.stringify({ ok: true }));
-        },
+  for (const [path, payload] of [
+    ["/publication-batches/claim", { claim_id: "claim-authenticated", lease_owner: "worker-1" }],
+    [
+      "/canonical-bodies/maintenance",
+      {
+        action: "migrate",
+        execute: true,
+        expectedDeploymentSha: "e".repeat(40),
+        reviewedPreviewSha256: "f".repeat(64),
+      },
+    ],
+  ] as const) {
+    const body = JSON.stringify(payload);
+    let forwardedPath = "",
+      forwardedBody = "";
+    const env = {
+      CLAWSWEEPER_WEBHOOK_SECRET: secret,
+      EXACT_REVIEW_QUEUE: {
+        idFromName: () => "global",
+        get: () => ({
+          fetch: async (request: Request) => {
+            forwardedPath = new URL(request.url).pathname;
+            forwardedBody = await request.text();
+            return new Response(JSON.stringify({ ok: true }));
+          },
+        }),
+      },
+    };
+    const url = "https://clawsweeper.openclaw.ai/internal/exact-review" + path;
+    const unauthorized = await worker.fetch(new Request(url, { method: "POST", body }), env);
+    assert.equal(unauthorized.status, 401);
+    assert.equal(forwardedPath, "");
+    const signature = "sha256=" + createHmac("sha256", secret).update(body).digest("hex");
+    const authorized = await worker.fetch(
+      new Request(url, {
+        method: "POST",
+        headers: { "x-clawsweeper-exact-review-signature": signature },
+        body,
       }),
-    },
-  };
-  const url = "https://clawsweeper.openclaw.ai/internal/exact-review/publication-batches/claim";
-  const unauthorized = await worker.fetch(new Request(url, { method: "POST", body }), env);
-  assert.equal(unauthorized.status, 401);
-
-  const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
-  const authorized = await worker.fetch(
-    new Request(url, {
-      method: "POST",
-      headers: { "x-clawsweeper-exact-review-signature": signature },
-      body,
-    }),
-    env,
-  );
-  assert.equal(authorized.status, 200);
-  assert.equal(forwardedPath, "/publication-batches/claim");
+      env,
+    );
+    assert.equal(authorized.status, 200);
+    assert.equal(forwardedPath, path);
+    assert.equal(forwardedBody, body);
+  }
 });
 
 test("batch claims reject partial dispatch metadata", async () => {
@@ -3824,6 +3869,12 @@ test("reservation-to-claim observability traces one batch without exposing lease
   assert.equal(batch.items[0].reservation_to_claim_ms, 1_000);
   assert.equal(batch.items[0].enqueue_to_claim_ms, 2_000);
   assert.equal(observability.delay_buckets.metric, "reservation_to_claim_ms");
+  assert.equal(stats.publication_handoff.dispatch_state, "idle");
+  assert.equal(stats.publication_handoff.sample_count, 1);
+  assert.equal(stats.publication_handoff.retained_batches, 1);
+  assert.equal(stats.publication_handoff.delay_buckets[0].count, 1);
+  assert.equal(stats.publication_handoff.first_claim_at, batch.claimed_at);
+  assert.equal(stats.publication_handoff.dispatch_wait_seconds, null);
   assert.ok(
     observability.alerts.some((alert: { kind: string }) => alert.kind === "github_throttle"),
   );
@@ -5243,6 +5294,95 @@ test("batch completion refreshes deterministic invalid artifacts", async () => {
     "artifact_retention_recovery",
   );
   assert.equal(state.items["openclaw/openclaw#127"].decision.publication, undefined);
+});
+
+test("batch refresh supersedes an older command instead of overwriting a queued newer one", async () => {
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  const command = (commentId: number) => ({
+    targetRepo: "openclaw/openclaw",
+    targetBranch: "main",
+    itemNumber: 128,
+    itemKind: "issue",
+    sourceEvent: "issues",
+    sourceAction: "re_review",
+    supersedesInProgress: false,
+    sourceCommentId: commentId,
+    sourceCommentUpdatedAt: new Date(Date.parse("2026-09-04T10:00:00Z") + commentId).toISOString(),
+    commandBodyDigest: String(commentId % 10).repeat(64),
+    commandOrigin: "hosted_webhook",
+    sourceCommentVerified: true,
+    commandStatusMarker: `<!-- clawsweeper-command-status:128:re_review:command-${commentId} -->`,
+  });
+  const older = command(1);
+  const published = JSON.parse(await publicationRequest("older-command", 128, "1028").text());
+  published.decision = {
+    ...published.decision,
+    ...older,
+    sourceAction: "exact_review_artifact_publish",
+    publication: { ...published.decision.publication, producerDecision: older },
+  };
+  await queue.fetch(
+    new Request("https://queue/enqueue", { method: "POST", body: JSON.stringify(published) }),
+  );
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-older-command",
+        lease_owner: "worker-1",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  const member = claim.batch.items[0];
+  const newer = command(2);
+  await queue.fetch(
+    new Request("https://queue/enqueue", {
+      method: "POST",
+      body: JSON.stringify({ delivery_id: "newer-command", decision: newer }),
+    }),
+  );
+
+  const completion = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "refresh_required",
+            reason_code: "invalid_artifact",
+          },
+        ],
+      }),
+    )
+  ).json();
+
+  assert.equal(completion.accepted, 1, JSON.stringify(completion));
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, Record<string, any>>;
+  };
+  assert.deepEqual(state.items["openclaw/openclaw#128"]?.decision, newer);
+  // The older command's publication stays only as its terminal acknowledgement.
+  assert.equal(state.items[member.item_key]?.terminalFinalization?.disposition, "superseded");
+  assert.equal(
+    state.items[member.item_key]?.decision.publication.producerDecision.commandStatusMarker,
+    older.commandStatusMarker,
+  );
+  assert.equal(
+    new ExactReviewLifecycleProjectionStore(storage).read(
+      "openclaw/openclaw#128",
+      member.item_key,
+      member.revision,
+    )?.terminalDisposition?.kind,
+    "superseded",
+  );
 });
 
 test("credential circuits persist, preserve healthy owners, and defer unattempted members without retry charge", async (t) => {

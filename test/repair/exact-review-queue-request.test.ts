@@ -840,7 +840,20 @@ test("completion bodies keep the claim tuple and each review result in the queue
       review_hold: "oversized_pull_request",
     }),
   );
+  assert.deepEqual(
+    body({ SCHEDULED_SEMANTIC_NOOP: "true", REVIEW_HOLD: "maintainer_request_required" }),
+    {
+      ...tuple,
+      outcome: "success",
+      lifecycle_terminal_disposition: "policy_noop",
+      review_hold: "maintainer_request_required",
+    },
+  );
   // A command review is never held.
+  assert.deepEqual(
+    body({ REVIEW_HOLD: "maintainer_request_required", HAS_COMMAND_CONTEXT: "true" }),
+    { ...tuple, outcome: "success" },
+  );
   assert.deepEqual(body({ REVIEW_HOLD: "locked_conversation", HAS_COMMAND_CONTEXT: "true" }), {
     ...tuple,
     outcome: "success",

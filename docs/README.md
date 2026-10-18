@@ -25,6 +25,7 @@ manual.
 | Inspect observer routes and configuration ownership | [Public observer API](public-api.md)          | [Operator configuration](operator-configuration.md) |
 | Prepare proof for a change                          | [Contributing](../CONTRIBUTING.md)            | [Agent instructions](../AGENTS.md)                  |
 | Review a local committed range                      | [Local branch review](commit-sweeper.md)      | `pnpm local-review -- --base origin/main`           |
+| Qualify the full local review artifact              | [Private local package](local-package.md)    | Build, pack, and install outside the checkout      |
 
 Production mutation commands are intentionally not repeated here. Follow the
 linked runbook, confirm its status and source of truth, and keep deployment,
@@ -55,14 +56,19 @@ everything else requires human comparison with current main.
   execution behavior
 - [State storage](state-storage.md) — active; Worker, R2, and Git-backed state
   ownership
+- [Canonical body tiering](canonical-body-tiering.md) — proposed; preserve records
+  while moving exact bodies from SQLite to the existing R2 bucket
 - [Action ledger](action-ledger.md) — active; mutation receipts and replay
   boundaries
 - [Issue review advisory labels](work-lane.md) — active; structured review labels
 - [Review cache](review-cache.md) — active; reusable review-state contract
+- [Intake triage](intake-triage.md) — active; bounded preliminary classification
 - [Local review preflight summary](portable-review-receipt.md) — proposed
-  local-range export; bounded advisory PR-body handoff
+  local-range export; bounded advisory PR-body handoff and review-content reader
 - [GitHub webhook read model](github-webhook-read-model.md) — active; signed
   ingress, App subscriptions, snapshot freshness, and safety boundary
+- [Review authority contract](review-authority.md) — proposed integration;
+  inert role classifier and API evidence requirements
 
 ## Configuration and repository onboarding
 
@@ -88,6 +94,7 @@ everything else requires human comparison with current main.
 
 - [Live dashboard](live-dashboard.md) — active; Worker status and operational
   telemetry
+- [Agent performance metrics](agent-performance-metrics.md) — execution timing, repeated work, chart ownership and observation limits
 - [GitHub publication egress telemetry](github-egress-telemetry.md) — active;
   wire denominator, credential attribution, completeness, and retention
 - [Triage dashboard](triage-dashboard.md) — active; cached issue triage

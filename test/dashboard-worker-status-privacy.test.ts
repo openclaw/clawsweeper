@@ -2052,6 +2052,50 @@ test("public queue HTTP route applies the closed projector before serialization"
   assert.equal(serialized.includes("private-owner"), false);
 });
 
+test("public publication handoff exposes only bounded aggregate timing and survives reprojection", () => {
+  const handoff = {
+    observed_at: STATUS_NOW,
+    sample_count: 4,
+    retained_batches: 5,
+    first_claim_at: "2026-07-01T00:00:00.000Z",
+    last_claim_at: "2026-07-01T01:00:00.000Z",
+    dispatch_state: "awaiting_claim",
+    dispatch_wait_seconds: 17,
+    delay_buckets: [
+      { id: "under_1m", count: 1 },
+      { id: "1m_to_5m", count: 1 },
+      { id: "5m_to_10m", count: 1 },
+      { id: "over_10m", count: 1 },
+    ],
+  };
+  const projected = publicExactReviewQueueProjection({
+    publication_handoff: {
+      ...handoff,
+      secret: "private-marker",
+      batches: [{ item_key: "private/item#1" }],
+    },
+  });
+  assert.deepEqual(projected.publication_handoff, handoff);
+  assert.deepEqual(publicExactReviewQueueProjection(projected).publication_handoff, handoff);
+  assert.doesNotMatch(JSON.stringify(projected), /private-marker|private\/item/);
+  for (const patch of [
+    { sample_count: 3 },
+    { retained_batches: 0 },
+    { dispatch_state: "private-marker" },
+    { dispatch_wait_seconds: -1 },
+    { dispatch_state: "idle" },
+    { first_claim_at: "invalid" },
+    { delay_buckets: [{ id: "private-marker", count: 4 }] },
+  ]) {
+    assert.equal(
+      publicExactReviewQueueProjection({ publication_handoff: { ...handoff, ...patch } })
+        .publication_handoff,
+      null,
+    );
+  }
+  assert.equal(publicExactReviewQueueProjection({}).publication_handoff, null);
+});
+
 test("status reprojection keeps the closed runaway alert and only public sample keys", () => {
   const queue = publicExactReviewQueueProjection(
     {

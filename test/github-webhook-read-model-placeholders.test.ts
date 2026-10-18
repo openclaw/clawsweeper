@@ -36,6 +36,8 @@ function scriptedStore(rows: Iterable<Row>) {
 function row(number: number, comment: Row, item: Row = { state: "open" }): Row {
   return {
     number,
+    item_number: number,
+    item_pruned: 0,
     snapshot_json: JSON.stringify(comment),
     item_json: JSON.stringify(item),
     item_kind: "issue",
@@ -132,6 +134,25 @@ test("placeholder discovery preserves coercion and malformed-value behavior", as
   );
 });
 
+test("placeholder discovery still detects parent gaps after reaching its group limit", async () => {
+  for (const parent of [
+    { item_number: null, item_pruned: null },
+    { item_number: 2, item_pruned: 1 },
+  ]) {
+    const result = await scriptedStore([
+      row(1, { id: 1, body: marker }),
+      { ...row(2, { id: 2, body: marker }), ...parent },
+      row(1, { id: 3, body: marker }),
+    ]).readPlaceholders({ repository, state: "open", limit: 1 }, now);
+    assert.equal(result.usable, false);
+    assert.equal(result.gap_detected, true);
+    assert.deepEqual(
+      (result.candidates as Candidate[]).map((candidate) => candidate.comments.map(({ id }) => id)),
+      [[1, 3]],
+    );
+  }
+});
+
 for (const [limit, expected] of [
   [undefined, 100],
   [0, 100],
@@ -187,7 +208,9 @@ test("SQLite placeholder discovery preserves group order, isolation, kind, and f
     [4, "open", "issue"],
   ] as const) {
     storage.run(
-      "INSERT INTO github_webhook_read_model_items_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      `INSERT INTO github_webhook_read_model_items_v1
+         (repository, number, item_kind, source_updated_at, snapshot_json, delivery_id, watermark, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       repository,
       number,
       kind,
@@ -199,7 +222,9 @@ test("SQLite placeholder discovery preserves group order, isolation, kind, and f
     );
   }
   storage.run(
-    "INSERT INTO github_webhook_read_model_items_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    `INSERT INTO github_webhook_read_model_items_v1
+       (repository, number, item_kind, source_updated_at, snapshot_json, delivery_id, watermark, received_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     "other/project",
     1,
     "issue",
@@ -219,7 +244,9 @@ test("SQLite placeholder discovery preserves group order, isolation, kind, and f
     ["other/project", 1, 1, 0, marker, 0],
   ] as const) {
     storage.run(
-      "INSERT INTO github_webhook_read_model_comments_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      `INSERT INTO github_webhook_read_model_comments_v1
+         (repository, number, comment_id, source_updated_at, tombstone, snapshot_json, delivery_id, watermark, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       repo,
       number,
       id,

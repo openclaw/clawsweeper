@@ -35,14 +35,22 @@ not split reports into issue/PR subtrees.
 ## Operating Model
 
 - Review lane is proposal-only. It never closes GitHub items.
-- Maintainer-authored items and items labeled `maintainer` require an explicit
-  `@clawsweeper review` request unless an existing automation opt-in label is set.
+- Ordinary PRs receive one automatic completed review after ten quiet minutes.
+  Later pushes, edits, reopen events, and scheduled passes require a new explicit
+  review request. Failed or stale-source attempts can finish the first review.
+  `clawsweeper:autofix` and `clawsweeper:automerge` no longer change review
+  admission; they only keep their close protection.
+- Maintainer-authored items and items labeled `maintainer` created from
+  2026-10-15 03:50 UTC are reviewed like everyone else's: a PR gets its one
+  automatic review. Older maintainer items need an explicit `@clawsweeper review`
+  request.
   Finish the work and validation first; request review only when it is needed.
   Agents must not request reviews automatically or repeat a queued/running request.
   An explicit review request stays open while the queue requeues its own review
-  in place after source drift; that retry continues the request. A finished or
-  replaced request, later changes after the answer, and scheduled passes need a
-  new request.
+  after source drift, in place or from the publisher still holding the request's
+  publication; that retry continues the request. A finished or replaced
+  request, later changes after the answer, and scheduled passes need a new
+  request.
 - Apply lane mutates GitHub by syncing the durable Codex review comment and then
   closing only unchanged, high-confidence proposals.
 - Repository-specific rules live in `src/repository-profiles.ts`; ClawHub apply
@@ -122,13 +130,16 @@ not split reports into issue/PR subtrees.
 - A ClawSweeper result that requires proof or identifies an accepted/actionable
   finding remains PR-owner work, not a handoff. Before a manually requested
   review or re-review, put current proof and the finding disposition or evidence
-  in the main PR body. A head or PR-body change after the durable review marker
+  in the main PR body. A head or review-content body change after the durable review marker
   makes that review and any affected proof stale: rerun the affected proof and
   obtain a review for the current head and body. CI, labels, readiness, and
   maintainer permissions are evidence only; the explicit-user-approval boundary
   below still controls landing.
 - Before merge or automerge, the latest ClawSweeper review must apply to the
-  current PR head and body. Resolve every accepted finding. Apply each
+  current PR head and review-content body. The canonical preflight reader excludes
+  one valid advisory annotation only; human text, proof, and all outside whitespace
+  remain review content. Raw event and concurrency guards can still invalidate
+  after a metadata edit. Resolve every accepted finding. Apply each
   applicable `Rank-up moves:` item, or explicitly justify the exception in the
   PR body; Rank-up moves remain optional and do not by themselves block merge.
   Do not merge while proof is missing or while the review has an unresolved

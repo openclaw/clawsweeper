@@ -9,13 +9,12 @@ Reports store the lane fields in frontmatter:
 - `reproduction_status` and `reproduction_confidence`
 - `requires_new_feature`, `requires_new_config_option`, and
   `requires_product_decision`
-- `vision_fit`, `vision_fit_evidence`, and `implementation_complexity`
-- `auto_implementation_candidate`: `none`, `strict_bug`, or `vision_fit`
+- `implementation_complexity`
+- `auto_implementation_candidate`: `none` or `strict_bug`
 - `work_candidate`: `none`, `manual_review`, or `queue_fix_pr`
 - `work_status`: `none`, `manual_review`, or `candidate`
 - `work_priority` and `work_confidence`
 - `work_cluster_refs`, `work_validation`, and `work_likely_files`
-
 
 For open issues with complete, current kept-open reviews, apply/comment-sync
 also projects a small owned set of advisory GitHub labels from the same
@@ -59,7 +58,7 @@ Except for that queueable-issue stale transition, the advisory-label sync owns
 only the `clawsweeper:*` and issue-rating labels in this group. Reruns add labels
 that match the latest report, remove stale labels from the owned group, and
 preserve unrelated labels plus `good first issue`, `clawsweeper:human-review`,
-`proof: sufficient`, and `proof: telegram-e2e`.
+and `proof: sufficient`.
 
 `good first issue` uses GitHub's standard label name, color, and description.
 ClawSweeper keeps the bar narrower than merely "small": the bug must reproduce
@@ -71,4 +70,3 @@ is treated as an opt-out; a later human re-add clears that opt-out.
 
 Historical work and implementation fields remain readable in stored review
 records. Automatic issue implementation and operator promotion are retired.
-

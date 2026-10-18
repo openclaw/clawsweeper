@@ -222,6 +222,23 @@ type LifecycleAdmissionInput = ProjectionIdentity & {
   observedAt: number;
 };
 
+type CommandStatusAddress = { statusMarker: string | null; statusCommentId: number | null };
+
+/**
+ * Whether two status addresses name the same command. A later request may reuse
+ * the status comment under a new marker, so any conflicting part is another
+ * command; an address that gained its other part later still matches.
+ */
+export function sameCommandStatusAddress(left: CommandStatusAddress, right: CommandStatusAddress) {
+  const conflicts = <T>(a: T | null, b: T | null) => a !== null && b !== null && a !== b;
+  return (
+    !conflicts(left.statusMarker, right.statusMarker) &&
+    !conflicts(left.statusCommentId, right.statusCommentId) &&
+    ((left.statusMarker !== null && left.statusMarker === right.statusMarker) ||
+      (left.statusCommentId !== null && left.statusCommentId === right.statusCommentId))
+  );
+}
+
 export class ExactReviewLifecycleProjectionStore {
   private readonly storage: DurableStorage;
   private schemaReady = false;
@@ -873,6 +890,54 @@ export class ExactReviewLifecycleProjectionStore {
       return null;
     }
     return this.readSync(canonicalTargetKey, fenceKey, revision);
+  }
+
+  /**
+   * Whether a different command was admitted at this review fence after
+   * `revision`, under any repository casing. Every casing of an item shares one
+   * revision counter, and the repository index keeps this to one repository.
+   */
+  otherCommandAdmittedAfter(fenceKey: string, revision: number, command: CommandStatusAddress) {
+    return this.commandAdmittedAfter(
+      fenceKey,
+      revision,
+      (admission) => !sameCommandStatusAddress(admission, command),
+    );
+  }
+
+  /** Whether this command was admitted again at this fence after `revision`. */
+  sameCommandAdmittedAfter(fenceKey: string, revision: number, command: CommandStatusAddress) {
+    return this.commandAdmittedAfter(fenceKey, revision, (admission) =>
+      sameCommandStatusAddress(admission, command),
+    );
+  }
+
+  /** Unreadable input counts as a match, so callers keep their prior outcome. */
+  private commandAdmittedAfter(
+    fenceKey: string,
+    revision: number,
+    matches: (admission: CommandStatusAddress) => boolean,
+  ) {
+    if (!validFenceKey(fenceKey) || !positiveInteger(revision)) return true;
+    const fence = fenceKey.toLowerCase();
+    return Array.from(
+      this.storage.sql.exec(
+        `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?
+            AND LOWER(fence_key) = ? AND revision > ?`,
+        fence.slice(0, fence.indexOf("#")),
+        fence,
+        revision,
+      ),
+    ).some((row) => {
+      let admission: ExactReviewLifecycleProjection["admission"];
+      try {
+        ({ admission } = projectionFromRow(String(row.projection_json || "")));
+      } catch {
+        return true;
+      }
+      return admission.commandOriginated && matches(admission);
+    });
   }
 
   maxRevision(canonicalTargetKey: string) {

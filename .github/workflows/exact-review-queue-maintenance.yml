@@ -4,13 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Reconcile lineages, retire one verified closed publication, or report storage by table (read-only)"
+        description: "Maintain queue storage, explicitly tier canonical bodies, or run a bounded review-usage operation"
         required: true
         type: choice
-        options: [reconcile, retire-closed-publication, storage-stats]
+        options:
+          [
+            reconcile,
+            retire-closed-publication,
+            storage-stats,
+            canonical-bodies,
+            canonical-records-verify,
+            operator-read,
+            canary,
+            read-back,
+          ]
         default: reconcile
       execute:
-        description: "Apply one bounded pass (false runs a dry-run)"
+        description: "Apply bounded maintenance (false runs a dry-run)"
         required: true
         type: boolean
         default: false
@@ -24,6 +34,16 @@ on:
         required: true
         type: number
         default: 1
+      storage_table:
+        description: "Storage stats only: optional exact logical-content census for one table"
+        type: string
+      storage_cursor:
+        description: "Storage census only: nextCursor JSON from an incomplete prior range"
+        type: string
+      storage_max_pages:
+        description: "Storage census only: bounded pages (1..1000, 128 rows each, 240 seconds total)"
+        type: number
+        default: 100
       producer_run_id:
         description: "Retirement only: exact producer run ID"
         type: string
@@ -37,8 +57,45 @@ on:
         description: "Retirement only: approved publication queue revision"
         type: string
       reviewed_plan_sha256:
-        description: "Retirement execute requires the reviewed preview plan SHA256"
+        description: "Execute requires the reviewed preview plan SHA256"
         type: string
+
+      canonical_action:
+        description: "Canonical bodies only: preview, activation, or bounded resumable migration"
+        type: choice
+        options: [preview, activate, migrate]
+        default: preview
+      expected_deployment_sha:
+        description: "Canonical bodies: exact deployed capable Worker SHA"
+        type: string
+      canonical_attestation_json:
+        description: "Canonical bodies: reviewed operator attestation with actual lifecycle rules and rollback proof"
+        type: string
+      canonical_verification_phase:
+        description: "Record verification only: baseline before migration or recheck afterward"
+        type: choice
+        options: [baseline, recheck]
+        default: baseline
+      canonical_verification_repo_slug:
+        description: "Record verification only: exact repository slug"
+        type: string
+      canonical_verification_baseline_json:
+        description: "Record verification recheck only: metadata JSON from the baseline run"
+        type: string
+
+      usage_deploy_sha:
+        description: "Usage operator only: approved deployed Worker source SHA (not workflow source)"
+        type: string
+      usage_version_id:
+        description: "Usage operator only: approved Worker version UUID, required at 100% traffic"
+        type: string
+      usage_canary_run_id:
+        description: "Read-back only: explicitly approved original canary workflow run ID"
+        type: string
+      authorize_usage_canary:
+        description: "Separately authorize four synthetic usage writes after receiver deployment (also requires execute)"
+        type: boolean
+        default: false
 
 concurrency:
   group: exact-review-queue-maintenance
@@ -57,6 +114,7 @@ jobs:
     steps:
       # Read-only: one signed request; the queue counts rows and samples row sizes per table.
       - name: Report queue storage by table
+        if: ${{ inputs.storage_table == '' }}
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
@@ -88,10 +146,29 @@ jobs:
             echo
             echo "Content estimates use sampled column lengths; indexes and SQLite overhead are excluded."
             echo
+            jq -r 'if .hydrationCacheCleanup then .hydrationCacheCleanup | "Hydration cache cleanup: \(.retired) report fields and \(.retiredBytes) logical bytes removed (committed counters, not remaining size); completedAt=\(.completedAt), unresolved encounters=\(.unresolved), blockedAt=\(.blockedAt)." else "Hydration cache cleanup: not initialized." end' stats.json
+            echo
             echo "| Table | Rows | Estimated avg row bytes | Estimated content bytes |"
             echo "|---|---:|---:|---:|"
             jq -r '.storage.tables[] | "| \(.table) | \(.rows) | \(.averageRowBytes) | \(.estimatedBytes) |"' stats.json
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v7
+        if: ${{ inputs.storage_table != '' }}
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/queue-storage-census.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Measure bounded table content
+        if: ${{ inputs.storage_table != '' }}
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          STORAGE_CENSUS_TABLE: ${{ inputs.storage_table }}
+          STORAGE_CENSUS_CURSOR: ${{ inputs.storage_cursor }}
+          STORAGE_CENSUS_MAX_PAGES: ${{ inputs.storage_max_pages }}
+        run: node scripts/queue-storage-census.mjs
 
   reconcile:
     if: ${{ inputs.mode == 'reconcile' || inputs.mode == '' }}
@@ -170,3 +247,151 @@ jobs:
             --apply \
             --reviewed-plan-sha256 "$REVIEWED_PLAN_SHA256" \
             --plan-file "$RUNNER_TEMP/closed-publication-retirement.json"
+
+  canonical-records-verify:
+    if: >-
+      github.repository == 'openclaw/clawsweeper' && github.ref == 'refs/heads/main' &&
+      inputs.mode == 'canonical-records-verify'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      # Body reads also run existing initialization/legacy cleanup; execute is required.
+      - name: Verify bounded canonical record sample
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          EXPECTED_DEPLOYMENT_SHA: ${{ inputs.expected_deployment_sha }}
+          REVIEWED_PLAN_SHA256: ${{ inputs.reviewed_plan_sha256 }}
+          VERIFICATION_EXECUTE: ${{ inputs.execute }}
+          VERIFICATION_PHASE: ${{ inputs.canonical_verification_phase }}
+          VERIFICATION_REPO_SLUG: ${{ inputs.canonical_verification_repo_slug }}
+          VERIFICATION_BASELINE: ${{ inputs.canonical_verification_baseline_json }}
+        run: node scripts/canonical-record-verification.ts
+
+  canonical-bodies:
+    if: ${{ inputs.mode == 'canonical-bodies' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:repair
+      - name: Preview or execute explicit canonical body maintenance
+        env:
+          CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
+          CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN || secrets.OPENCLAW_CLOUDFLARE_API_TOKEN }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CANONICAL_ACTION: ${{ inputs.canonical_action }}
+          EXECUTE: ${{ inputs.execute }}
+          EXPECTED_DEPLOYMENT_SHA: ${{ inputs.expected_deployment_sha }}
+          CANONICAL_ATTESTATION_JSON: ${{ inputs.canonical_attestation_json }}
+          REVIEWED_PLAN_SHA256: ${{ inputs.reviewed_plan_sha256 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$CANONICAL_ATTESTATION_JSON" > "$RUNNER_TEMP/canonical-attestation.json"
+          args=()
+          if [[ "$EXECUTE" == "true" ]]; then args+=(--apply); fi
+          pnpm run --silent repair:exact-review-queue-maintenance canonical-bodies \
+            --action "$CANONICAL_ACTION" "${args[@]}" \
+            --expected-deployment-sha "$EXPECTED_DEPLOYMENT_SHA" \
+            --attestation-file "$RUNNER_TEMP/canonical-attestation.json" \
+            --reviewed-plan-sha256 "$REVIEWED_PLAN_SHA256"
+
+  usage-read:
+    if: >-
+      github.repository == 'openclaw/clawsweeper' && github.ref == 'refs/heads/main' &&
+      (inputs.mode == 'operator-read' || inputs.mode == 'canary' || inputs.mode == 'read-back')
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    outputs:
+      source_sha: ${{ steps.usage.outputs.source_sha }}
+      deployment_sha: ${{ steps.usage.outputs.deployment_sha }}
+      version_id: ${{ steps.usage.outputs.version_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/review-usage-operator.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Read guarded review usage
+        id: usage
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN }}
+          USAGE_OPERATOR_MODE: ${{ inputs.mode == 'read-back' && 'read-back' || 'operator-read' }}
+          USAGE_DEPLOY_SHA: ${{ inputs.usage_deploy_sha }}
+          USAGE_VERSION_ID: ${{ inputs.usage_version_id }}
+          USAGE_CANARY_RUN_ID: ${{ inputs.usage_canary_run_id }}
+        run: node scripts/review-usage-operator.mjs
+
+  usage-canary:
+    needs: usage-read
+    if: >-
+      github.repository == 'openclaw/clawsweeper' && github.ref == 'refs/heads/main' &&
+      inputs.mode == 'canary' && inputs.execute && inputs.authorize_usage_canary && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/review-usage-operator.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Submit four approved canary records once
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          USAGE_OPERATOR_MODE: canary
+          USAGE_DEPLOY_SHA: ${{ inputs.usage_deploy_sha }}
+          USAGE_VERSION_ID: ${{ inputs.usage_version_id }}
+          USAGE_EXECUTE: ${{ inputs.execute }}
+          USAGE_CANARY_AUTHORIZED: ${{ inputs.authorize_usage_canary }}
+          USAGE_GUARD_SOURCE_SHA: ${{ needs.usage-read.outputs.source_sha }}
+          USAGE_GUARD_DEPLOY_SHA: ${{ needs.usage-read.outputs.deployment_sha }}
+          USAGE_GUARD_VERSION_ID: ${{ needs.usage-read.outputs.version_id }}
+        run: node scripts/review-usage-operator.mjs
+
+  usage-read-after:
+    needs: [usage-read, usage-canary]
+    if: >-
+      always() && github.repository == 'openclaw/clawsweeper' && github.ref == 'refs/heads/main' &&
+      (needs.usage-canary.result == 'success' || needs.usage-canary.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/review-usage-operator.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Recheck deployment after the bounded write attempt
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN }}
+          USAGE_OPERATOR_MODE: operator-read
+          USAGE_DEPLOY_SHA: ${{ needs.usage-read.outputs.deployment_sha }}
+          USAGE_VERSION_ID: ${{ needs.usage-read.outputs.version_id }}
+        run: node scripts/review-usage-operator.mjs

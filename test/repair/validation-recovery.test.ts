@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   ValidationRecoveryRequiredError,
   validationRecoveryRequired,
-} from "../../dist/repair/validation-recovery.js";
+} from "../../dist/validation-recovery.js";
 
 test("recovery errors retain acquisition paths and the original cause", () => {
   const cause = new Error("supervisor completion could not be verified");

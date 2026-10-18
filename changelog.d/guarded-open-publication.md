@@ -1,0 +1,1 @@
+- Complete verified activity-based close-policy holds as guarded-open publication outcomes, preserving source-drift and failed-verification safeguards, and create issue-close payload directories on fresh checkouts.

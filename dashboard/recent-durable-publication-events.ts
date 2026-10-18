@@ -1,3 +1,4 @@
+import { PUBLICATION_TELEMETRY_REASONS } from "./exact-review-publication-reasons.ts";
 import {
   EXACT_REVIEW_LIFECYCLE_TELEMETRY_BATCH_TABLE,
   EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE,
@@ -42,6 +43,7 @@ export function recentDurablePublicationEvents(options: {
     storage: options.storage.sql,
     table: EXACT_REVIEW_LIFECYCLE_TELEMETRY_BATCH_TABLE,
     outcomes: ["superseded", "retryable", "permanent"],
+    reasonCodes: PUBLICATION_TELEMETRY_REASONS,
     from,
     now,
     bucketMs,
@@ -80,6 +82,7 @@ function source(options: {
   storage: SqlStorage;
   table: string;
   outcomes: string[];
+  reasonCodes?: Record<string, readonly string[]>;
   from: number;
   now: number;
   bucketMs: number;
@@ -93,7 +96,7 @@ function source(options: {
   try {
     const rows = Array.from(
       options.storage.exec(
-        `SELECT outcome, observed_at FROM ${options.table}
+        `SELECT outcome, observed_at${options.reasonCodes ? ", reason_code" : ""} FROM ${options.table}
           WHERE observed_at >= ? AND observed_at <= ?
           ORDER BY observed_at, event_id LIMIT ?`,
         options.from,
@@ -103,8 +106,17 @@ function source(options: {
     );
     // The approved public contract deliberately fails closed rather than
     // returning a partial aggregate when a raw retained-event window is over cap.
-    if (rows.length > RECENT_DURABLE_PUBLICATION_EVENT_SCAN_LIMIT) return unknown(options.outcomes);
+    if (rows.length > RECENT_DURABLE_PUBLICATION_EVENT_SCAN_LIMIT)
+      return unknown(options.outcomes, options.reasonCodes !== undefined);
     const counts: Record<string, number> = empty();
+    const reasonCounts = options.reasonCodes
+      ? Object.fromEntries(
+          Object.entries(options.reasonCodes).map(([outcome, reasons]) => [
+            outcome,
+            Object.fromEntries([...reasons, "unrecorded"].map((reason) => [reason, 0])),
+          ]),
+        )
+      : null;
     const buckets = blankBuckets();
     let latest: number | null = null;
     for (const row of rows) {
@@ -115,13 +127,26 @@ function source(options: {
         typeof observedAt !== "number" ||
         !validTimestamp(observedAt)
       )
-        return unknown(options.outcomes);
+        return unknown(options.outcomes, options.reasonCodes !== undefined);
+      if (reasonCounts && options.reasonCodes) {
+        const recorded = row.reason_code;
+        if (
+          recorded != null &&
+          (typeof recorded !== "string" || !options.reasonCodes[outcome]?.includes(recorded))
+        ) {
+          return unknown(options.outcomes, true);
+        }
+        const outcomeCounts = reasonCounts[outcome];
+        if (!outcomeCounts) return unknown(options.outcomes, true);
+        const reason = recorded == null ? "unrecorded" : String(recorded);
+        outcomeCounts[reason] = (outcomeCounts[reason] ?? 0) + 1;
+      }
       counts[outcome] = (counts[outcome] ?? 0) + 1;
       const bucket =
         buckets[
           Math.min(23, Math.max(0, Math.floor((observedAt - options.from) / options.bucketMs)))
         ];
-      if (!bucket) return unknown(options.outcomes);
+      if (!bucket) return unknown(options.outcomes, options.reasonCodes !== undefined);
       bucket.counts[outcome] = (bucket.counts[outcome] ?? 0) + 1;
       latest = Math.max(latest ?? observedAt, observedAt);
     }
@@ -131,9 +156,10 @@ function source(options: {
       latest_observed_at: latest === null ? null : new Date(latest).toISOString(),
       counts,
       buckets,
+      ...(reasonCounts ? { reason_counts: reasonCounts } : {}),
     };
   } catch {
-    return unknown(options.outcomes);
+    return unknown(options.outcomes, options.reasonCodes !== undefined);
   }
 }
 
@@ -141,12 +167,13 @@ function validTimestamp(value: number) {
   return Number.isSafeInteger(value) && Math.abs(value) <= 8_640_000_000_000_000;
 }
 
-function unknown(outcomes: string[]) {
+function unknown(outcomes: string[], reasons: boolean) {
   return {
     complete: false,
     rows: null,
     latest_observed_at: null,
     counts: Object.fromEntries(outcomes.map((outcome) => [outcome, null])),
+    ...(reasons ? { reason_counts: null } : {}),
     buckets: Array.from({ length: RECENT_DURABLE_PUBLICATION_EVENT_BUCKETS }, (_, index) => ({
       index,
       counts: Object.fromEntries(outcomes.map((outcome) => [outcome, null])),
