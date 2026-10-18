@@ -60,7 +60,13 @@ It requests issues and pull-requests read only. An inaccessible repository
 must not cause a token for a different repository to be reused.
 
 Workflow and webhook token requests name their target, central, or state repository
-and request only their API permissions. The four metadata-only inventory/coverage
+and request only their API permissions. Target publication tokens read contents;
+issue/PR permissions own comment, label, and closure writes. State-token callers
+pass an empty Actions grant except audit, which dispatches the state dashboard.
+The state-size-only reconcile caller omits both optional grants; the composite
+always requests metadata read so empty grants cannot inherit App permissions.
+The comment router enqueues through Worker HMAC, so its unused legacy central
+dispatch token is restricted to metadata read. The four metadata-only inventory/coverage
 mints in `target-fanout.yml` are intentionally owner-scoped: their first read is
 `GET /installation/repositories`, which discovers the repository set itself.
 They cannot select that unknown set before minting. No token requests workflows,

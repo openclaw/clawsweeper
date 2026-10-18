@@ -92,7 +92,7 @@ jobs:
           owner: ${{ steps.batch.outputs.target_owner }}
           repositories: ${{ steps.batch.outputs.target_repositories }}
           permission-checks: read
-          permission-contents: write
+          permission-contents: read
           permission-issues: write
           permission-pull-requests: write
           permission-statuses: read

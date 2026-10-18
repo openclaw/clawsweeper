@@ -145,9 +145,8 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: ${{ steps.target.outputs.target_repo_owner }}
           repositories: ${{ steps.target.outputs.target_repo_name }}
-          permission-actions: write
           permission-checks: read
-          permission-contents: write
+          permission-contents: read
           permission-issues: write
           permission-pull-requests: write
           permission-statuses: read
@@ -160,8 +159,8 @@ jobs:
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: openclaw
           repositories: clawsweeper
-          permission-actions: write
-          permission-contents: write
+          # The router enqueues through Worker HMAC; this legacy env token is unused.
+          permission-metadata: read
 
       - name: Create state token
         id: state-token
@@ -169,6 +168,7 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          actions-permission: ""
 
       - uses: ./.github/actions/setup-state
         with:

@@ -353,7 +353,7 @@ jobs:
           owner: ${{ steps.target.outputs.target_repo_owner }}
           repositories: ${{ steps.target.outputs.target_repo_name }}
           permission-checks: read
-          permission-contents: write
+          permission-contents: read
           permission-issues: write
           permission-pull-requests: write
           permission-statuses: read
@@ -2244,7 +2244,7 @@ jobs:
           owner: ${{ steps.publication-context.outputs.target_repo_owner }}
           repositories: ${{ steps.publication-context.outputs.target_repo_name }}
           permission-checks: read
-          permission-contents: write
+          permission-contents: read
           permission-issues: write
           permission-pull-requests: write
           permission-statuses: read
@@ -3552,6 +3552,7 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          actions-permission: ""
 
       - uses: ./.github/actions/setup-state
         with:
