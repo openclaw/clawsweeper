@@ -73,7 +73,7 @@ test(
 type CompositeAction = {
   inputs: Record<string, { default: string }>;
   runs?: {
-    steps?: Array<{ if?: string; name?: string; run?: string }>;
+    steps?: Array<{ if?: string; name?: string; run?: string; env?: Record<string, string> }>;
   };
 };
 
@@ -168,36 +168,32 @@ ${npmBody}
 `,
     { mode: 0o755 },
   );
-  const script = source.runs?.steps?.find((step) => step.name === "Install Codex CLI")?.run;
-  assert.ok(script);
-  return spawnSync(
-    "/bin/bash",
-    [
-      "-c",
-      script.replace(/\$\{\{\s*([^}]+?)\s*\}\}/g, (_, key) => {
-        const input = /^inputs\['([^']+)'\]$/.exec(key)?.[1];
-        if (input === "auth-mode") return mode;
-        assert.ok(input && source.inputs[input], `unknown expression ${key}`);
-        return source.inputs[input].default;
-      }),
-    ],
-    {
-      encoding: "utf8",
-      timeout: 20_000,
-      env: {
-        HOME: home,
-        PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
-        GITHUB_PATH: join(home, "github-path"),
-        GITHUB_ACTION_PATH: sourcePath,
-        OPENAI_API_KEY: "fixture-only",
-        CODEX_API_KEY: "fixture-only",
-        PROXY_API_KEY: "fixture-only",
-        CLAWSWEEPER_INTERNAL_MODEL: "fixture-only",
-        CLAWSWEEPER_CLAWROUTER_CONFIG: "fixture-only",
-        GITHUB_TOKEN: "fixture-only",
-      },
-    },
+  const step = source.runs?.steps?.find((entry) => entry.name === "Install Codex CLI");
+  assert.ok(step?.run);
+  const stepEnv = Object.fromEntries(
+    Object.entries(step.env ?? {}).map(([name, expression]) => {
+      const input = /^\$\{\{ inputs\['([^']+)'\] \}\}$/.exec(expression)?.[1];
+      assert.ok(input && source.inputs[input], `unknown expression ${expression}`);
+      return [name, input === "auth-mode" ? mode : source.inputs[input].default];
+    }),
   );
+  return spawnSync("/bin/bash", ["-c", step.run], {
+    encoding: "utf8",
+    timeout: 20_000,
+    env: {
+      ...stepEnv,
+      HOME: home,
+      PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+      GITHUB_PATH: join(home, "github-path"),
+      GITHUB_ACTION_PATH: sourcePath,
+      OPENAI_API_KEY: "fixture-only",
+      CODEX_API_KEY: "fixture-only",
+      PROXY_API_KEY: "fixture-only",
+      CLAWSWEEPER_INTERNAL_MODEL: "fixture-only",
+      CLAWSWEEPER_CLAWROUTER_CONFIG: "fixture-only",
+      GITHUB_TOKEN: "fixture-only",
+    },
+  });
 }
 
 test(
