@@ -26,10 +26,12 @@ export function hiddenPayloadSecurityReview(
       for (const match of token.content.matchAll(/<!--[\s\S]*?(?:-->|$)/g)) {
         const hidden = match[0];
         const download = /\b(?:curl|wget)\b/i.test(hidden) && /https?:\/\//i.test(hidden);
-        const substitution = /(?:\$\(\s*|`)(?:\/[\w./-]+\/)?(?:curl|wget|env|printenv)\b/i.test(
+        const substitution = /(?:[$<]\(\s*|`)(?:\/[\w./-]+\/)?(?:curl|wget|env|printenv)\b/i.test(
           hidden,
         );
-        const shellPipe = /\|\s*(?:(?:ba|da|z|k)?sh)\b/i.test(hidden);
+        // Interpreters are often named by path or through env: `| /bin/sh`, `| /usr/bin/env bash`.
+        const shellPipe =
+          /\|\s*(?:sudo\s+)?(?:\/[\w./-]+\/)?(?:env\s+)?(?:(?:ba|da|z|k)?sh)\b/i.test(hidden);
         const environment = /\b(?:env|printenv)\b|\/proc\/(?:self|\d+)\/environ/i.test(hidden);
         const encodedEnvironment = environment && /\|\s*base64\b/i.test(hidden);
         if (!(download && (substitution || shellPipe)) && !encodedEnvironment) continue;
