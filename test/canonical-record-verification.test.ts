@@ -341,7 +341,20 @@ test("redirects, failed retries, stalled bodies and oversized streams are bounde
 test("CLI exercises real loopback HTTP with metadata output and safe failure recovery", async (t) => {
   let requests = 0;
   let generation = 1;
-  let failure: "deployment" | "missing" | "http" | "json" | "oversized" | undefined;
+  let failedAttempts = 0;
+  const privateId = "987654321";
+  let failure:
+    | "deployment"
+    | "missing"
+    | "auth"
+    | "point"
+    | "http"
+    | "json"
+    | "invalid"
+    | "transport"
+    | "timeout"
+    | "oversized"
+    | undefined;
   const server = createServer(async (request, response) => {
     requests++;
     let body = "";
@@ -353,6 +366,24 @@ test("CLI exercises real loopback HTTP with metadata output and safe failure rec
         `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
       );
     }
+    if (failure === "transport" && endpoint.endsWith("admission-capabilities")) {
+      // A prior HTTP response must not survive the final transport failure.
+      if (++failedAttempts === 1) response.writeHead(503).end(secret);
+      else request.socket.destroy();
+      return;
+    }
+    if (failure === "timeout") {
+      response.writeHead(200).flushHeaders();
+      return;
+    }
+    if (
+      (failure === "auth" && endpoint.endsWith("/export")) ||
+      (failure === "point" && endpoint.endsWith(`/${privateId}`))
+    ) {
+      response.writeHead(401, { "x-private-detail": secret });
+      response.end(`private body ${secret}`);
+      return;
+    }
     if ((failure === "http" && endpoint !== "/api/health") || failure === "json") {
       response.writeHead(failure === "http" ? 503 : 200);
       response.end(`private body ${secret}`);
@@ -360,6 +391,10 @@ test("CLI exercises real loopback HTTP with metadata output and safe failure rec
     }
     if (failure === "oversized") {
       response.end(Buffer.alloc(16 * 1024 * 1024 + 1));
+      return;
+    }
+    if (failure === "invalid") {
+      response.end(JSON.stringify(secret));
       return;
     }
     let value: unknown;
@@ -376,7 +411,12 @@ test("CLI exercises real loopback HTTP with metadata output and safe failure rec
         sections: [section],
         nextCursor: null,
         records: [
-          { section, id: "1", storeRevision: generation, ...record("private body 🦊", generation) },
+          {
+            section,
+            id: privateId,
+            storeRevision: generation,
+            ...record("private body 🦊", generation),
+          },
         ],
       };
     } else
@@ -393,7 +433,7 @@ test("CLI exercises real loopback HTTP with metadata output and safe failure rec
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
   const run = async (baseline?: string, env: Record<string, string> = {}) =>
     promisify(execFile)(process.execPath, ["scripts/canonical-record-verification.ts"], {
-      timeout: 10_000,
+      timeout: failure === "timeout" ? 35_000 : 10_000,
       env: {
         PATH: process.env.PATH,
         EXACT_REVIEW_QUEUE_URL: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
@@ -419,7 +459,13 @@ test("CLI exercises real loopback HTTP with metadata output and safe failure rec
   assert.ok(!`${before.stdout}${after.stdout}`.includes("private body"));
   assert.ok(!`${before.stdout}${after.stdout}`.includes(secret));
 
-  const expectFailure = async (baseline: string, category: string, action: RegExp, env = {}) => {
+  const expectFailure = async (
+    baseline: string,
+    category: string,
+    action: RegExp,
+    env = {},
+    diagnostics?: Record<string, unknown>,
+  ) => {
     await assert.rejects(run(baseline, env), (error: unknown) => {
       const result = error as { code: number; stdout: string; stderr: string };
       assert.equal(result.code, 1);
@@ -429,6 +475,16 @@ test("CLI exercises real loopback HTTP with metadata output and safe failure rec
       assert.match(result.stderr, /FAILED \(exit 1\)\n$/);
       assert.ok(!result.stderr.includes("private body"));
       assert.ok(!result.stderr.includes(secret));
+      assert.ok(!result.stderr.includes(privateId));
+      assert.ok(!result.stderr.includes("127.0.0.1"));
+      assert.ok(!result.stderr.includes("sha256="));
+      const diagnostic = result.stderr
+        .split("\n")
+        .filter((line) => line.startsWith("[canonical-record-verification] request "));
+      assert.equal(diagnostic.length, diagnostics ? 1 : 0);
+      if (diagnostics) {
+        assert.deepEqual(JSON.parse(diagnostic[0]!.split(" request ")[1]!), diagnostics);
+      }
       return true;
     });
   };
@@ -443,14 +499,48 @@ test("CLI exercises real loopback HTTP with metadata output and safe failure rec
   await expectFailure(after.stdout, "plan_mismatch", /newly reviewed execution plan/);
   failure = "missing";
   await expectFailure(after.stdout, "record_mismatch", /investigate record preservation/);
-  for (const mode of ["http", "json"] as const) {
+  for (const [mode, diagnostics] of [
+    ["http", { stage: "admission", status: 503, attempts: 3, failureKind: "http_status" }],
+    ["auth", { stage: "export", status: 401, attempts: 1, failureKind: "http_status" }],
+    ["point", { stage: "point", status: 401, attempts: 1, failureKind: "http_status" }],
+    ["json", { stage: "health", status: 200, attempts: 1, failureKind: "invalid_json" }],
+    ["transport", { stage: "admission", status: null, attempts: 3, failureKind: "transport" }],
+    ["timeout", { stage: "health", status: 200, attempts: 1, failureKind: "timeout" }],
+  ] as const) {
     failure = mode;
     await expectFailure(
       after.stdout,
       "request_failed",
       /check service access, availability and response validity/,
+      {},
+      diagnostics,
     );
   }
+  assert.equal(failedAttempts, 3);
+  failure = "invalid";
+  await expectFailure(
+    after.stdout,
+    "record_mismatch",
+    /investigate record preservation/,
+    {},
+    {
+      stage: "health",
+      status: 200,
+      attempts: 1,
+      failureKind: "invalid_response",
+    },
+  );
   failure = "oversized";
-  await expectFailure(after.stdout, "read_limit", /review the bounded read plan/);
+  await expectFailure(
+    after.stdout,
+    "read_limit",
+    /review the bounded read plan/,
+    {},
+    {
+      stage: "health",
+      status: 200,
+      attempts: 1,
+      failureKind: "read_limit",
+    },
+  );
 });

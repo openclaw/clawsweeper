@@ -51,9 +51,23 @@ const RECOVERY = {
     "Stop and check service access, availability and response validity; preserve the baseline and migration checkpoint.",
 } as const;
 type FailureCategory = keyof typeof RECOVERY;
+type RequestDiagnostics = {
+  stage: "health" | "admission" | "export" | "point";
+  status: number | null;
+  attempts: number;
+  failureKind:
+    | "http_status"
+    | "transport"
+    | "timeout"
+    | "redirect"
+    | "invalid_json"
+    | "invalid_response"
+    | "read_limit";
+};
 
 class VerificationError extends Error {
   readonly category: FailureCategory;
+  diagnostics?: RequestDiagnostics;
   constructor(message: string, category: FailureCategory) {
     super(message);
     this.category = category;
@@ -222,12 +236,21 @@ export async function verifyCanonicalRecords(options: Options) {
   let logicalRequests = 0;
   // signedRequest owns the three-attempt policy. Buffer here so its timeout
   // includes streamed bodies, and neither redirects nor error bodies leak data.
-  const boundedFetch: typeof globalThis.fetch = async (input, init) => {
+  async function boundedFetch(
+    diagnostics: RequestDiagnostics,
+    input: Parameters<typeof globalThis.fetch>[0],
+    init?: RequestInit,
+  ) {
+    // A retry must not attribute a previous response status to a transport failure.
+    diagnostics.status = null;
+    diagnostics.failureKind = "read_limit";
     requireThat(
       ++attempts <= 408 && Date.now() < deadline,
       "verification request budget exceeded",
       "read_limit",
     );
+    diagnostics.attempts++;
+    diagnostics.failureKind = "transport";
     const controller = new AbortController();
     const aborted = new Promise<never>((_resolve, reject) => {
       controller.signal.addEventListener(
@@ -247,7 +270,10 @@ export async function verifyCanonicalRecords(options: Options) {
         }),
         aborted,
       ]);
+      diagnostics.status = response.status;
+      diagnostics.failureKind = "redirect";
       requireThat(response.status < 300 || response.status >= 400, "redirect refused");
+      diagnostics.failureKind = "transport";
       reader = response.body?.getReader();
       const chunks: Uint8Array[] = [];
       let bytes = 0;
@@ -259,40 +285,65 @@ export async function verifyCanonicalRecords(options: Options) {
         chunks.push(next.value);
       }
       requireThat(!controller.signal.aborted, "request deadline exceeded");
+      diagnostics.failureKind = "invalid_response";
       return new Response(Buffer.concat(chunks), { status: response.status });
+    } catch (error) {
+      if (controller.signal.aborted) diagnostics.failureKind = "timeout";
+      throw error;
     } finally {
       clearTimeout(timer);
       controller.abort();
       void reader?.cancel().catch(() => {});
     }
-  };
-  async function request(endpoint: string, body?: unknown) {
-    requireThat(
-      ++logicalRequests <= 136 && Date.now() < deadline,
-      "verification request budget exceeded",
-      "read_limit",
-    );
-    const response =
-      endpoint === "/api/health"
-        ? await boundedFetch(`${base.origin}${endpoint}`, { method: "GET" })
-        : await signedRequest({
-            baseUrl: base.origin,
-            path: endpoint,
-            webhookSecret: options.webhookSecret,
-            method: body === undefined ? "GET" : "POST",
-            body,
-            fetch: boundedFetch,
-          });
-    requireThat(
-      response.ok || response.status === 404,
-      `verification HTTP ${response.status}`,
-      "request_failed",
-    );
-    return { status: response.status, value: object(await response.json()) };
+  }
+  async function request(stage: RequestDiagnostics["stage"], endpoint: string, body?: unknown) {
+    const diagnostics: RequestDiagnostics = {
+      stage,
+      status: null,
+      attempts: 0,
+      failureKind: "read_limit",
+    };
+    try {
+      requireThat(
+        ++logicalRequests <= 136 && Date.now() < deadline,
+        "verification request budget exceeded",
+        "read_limit",
+      );
+      const response =
+        endpoint === "/api/health"
+          ? await boundedFetch(diagnostics, `${base.origin}${endpoint}`, { method: "GET" })
+          : await signedRequest({
+              baseUrl: base.origin,
+              path: endpoint,
+              webhookSecret: options.webhookSecret,
+              method: body === undefined ? "GET" : "POST",
+              body,
+              fetch: (input, init) => boundedFetch(diagnostics, input, init),
+            });
+      diagnostics.failureKind = "http_status";
+      requireThat(
+        response.ok || response.status === 404,
+        `verification HTTP ${response.status}`,
+        "request_failed",
+      );
+      diagnostics.failureKind = "invalid_json";
+      const value = await response.json();
+      diagnostics.failureKind = "invalid_response";
+      return { status: response.status, value: object(value) };
+    } catch (error) {
+      const failure =
+        error instanceof VerificationError
+          ? error
+          : new VerificationError("verification request failed", "request_failed");
+      if (failure.category === "read_limit") diagnostics.failureKind = "read_limit";
+      failure.diagnostics = { ...diagnostics };
+      throw failure;
+    }
   }
   async function identity() {
     for (const endpoint of ["/api/health", "/internal/exact-review/admission-capabilities"]) {
       const { status, value } = await request(
+        endpoint === "/api/health" ? "health" : "admission",
         endpoint,
         endpoint === "/api/health" ? undefined : {},
       );
@@ -309,7 +360,7 @@ export async function verifyCanonicalRecords(options: Options) {
   const exported = new Map<string, Row>();
   const completeSections = new Set<Section>();
   for (const section of SECTIONS) {
-    const { status, value } = await request("/internal/state/records/export", {
+    const { status, value } = await request("export", "/internal/state/records/export", {
       repoSlug: options.repoSlug,
       sections: [section],
       sinceRevision: 0,
@@ -358,6 +409,7 @@ export async function verifyCanonicalRecords(options: Options) {
     }
     const { section, id } = selected;
     const { status, value } = await request(
+      "point",
       `/internal/state/records/${options.repoSlug}/${section}/${id}`,
     );
     // Export also contains backfill rows; the point reader only owns canonical
@@ -447,11 +499,14 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error: unknown) => {
-    // Only local categories and fixed recovery text are printable. Transport
-    // errors can contain response bodies, URLs or credentials.
+    // Only local categories, bounded diagnostics and fixed recovery text are printable.
+    // Transport errors can contain response bodies, URLs or credentials.
     const category = error instanceof VerificationError ? error.category : "request_failed";
     process.stderr.write(
       `[canonical-record-verification] ${category}: ${RECOVERY[category]} No activation requested.\n` +
+        (error instanceof VerificationError && error.diagnostics
+          ? `[canonical-record-verification] request ${JSON.stringify(error.diagnostics)}\n`
+          : "") +
         "[canonical-record-verification] FAILED (exit 1)\n",
     );
     process.exitCode = 1;
