@@ -4,6 +4,7 @@ import { classifyScheduledReviewNoop } from "../scheduled-review-noop.js";
 import { ghRetryKind } from "../github-retry.js";
 import { ghErrorText, ghTextWithRetry } from "./github-cli.js";
 import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
+import { readExactReviewLiveItem } from "./exact-review-live-item.js";
 import {
   isExplicitReviewRequest,
   requiresMaintainerReviewRequest,
@@ -76,25 +77,12 @@ export function exactReviewAdmission(output: Output): void {
     decision: JSON.stringify(decision),
   });
 
-  let issue: Record<string, unknown>;
+  let issue: Record<string, unknown> | null;
   try {
     // Keep every admission read in this process so the native public-read
     // owner can spend its single App fallback allowance across the whole step.
-    issue = JSON.parse(read(`issues/${number}`));
+    issue = readExactReviewLiveItem(repo, Number(number), rootToken);
   } catch (error) {
-    if (/HTTP 404|Not Found/i.test(ghErrorText(error))) {
-      try {
-        readRepository();
-      } catch (repositoryError) {
-        console.error(ghErrorText(repositoryError));
-        throw error;
-      }
-      output({ ...terminal, terminal_missing: "true" });
-      console.error(
-        `::notice::Completing ${repo}#${number} because the repository is accessible but the item is missing.`,
-      );
-      return;
-    }
     if (ghRetryKind(error) === "throttle") {
       console.error(ghErrorText(error));
       const retryAt = retry(20, true);
@@ -104,6 +92,13 @@ export function exactReviewAdmission(output: Output): void {
       return;
     }
     throw error;
+  }
+  if (!issue) {
+    output({ ...terminal, terminal_missing: "true" });
+    console.error(
+      `::notice::Completing ${repo}#${number} because the item is no longer in this repository.`,
+    );
+    return;
   }
 
   const open = issue.state === "open";

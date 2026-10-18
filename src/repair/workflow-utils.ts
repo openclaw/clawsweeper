@@ -22,6 +22,7 @@ import {
 import { repositoryProfileFor, slugForRepo } from "../repository-profiles.js";
 import { recoverReviewShard } from "../review-recovery.js";
 import { exactReviewAdmission } from "./exact-review-admission.js";
+import { exactReviewLiveItemState } from "./exact-review-live-item.js";
 
 type ApplyAction = {
   action: string;
@@ -176,6 +177,9 @@ async function runCli(): Promise<void> {
   switch (command) {
     case "exact-review-admission":
       exactReviewAdmission(printOutput);
+      break;
+    case "exact-review-live-item":
+      console.log(JSON.stringify(exactReviewLiveItemState()));
       break;
     case "plan-output":
       printPlanOutput();

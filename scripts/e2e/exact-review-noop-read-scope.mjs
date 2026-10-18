@@ -85,6 +85,8 @@ function snapshot(ref, capsule, runtimes) {
     ? [
         classifierPath,
         "src/repair/exact-review-admission.ts",
+        "src/repair/exact-review-live-item.ts",
+        "src/github-item-identity.ts",
         "src/repair/workflow-utils.ts",
         "src/repair/github-cli.ts",
         "src/repair/process-env.ts",
@@ -489,6 +491,31 @@ function scenarios() {
       }),
     ),
   );
+  for (const entry of cases) {
+    entry.issue = {
+      ...entry.issue,
+      html_url: `https://github.com/${entry.repo}/${entry.issue.pull_request ? "pull" : "issues"}/${entry.number}`,
+    };
+  }
+  for (const [name, number, repository] of [
+    ["different-number", 1756, "example/transferred"],
+    ["same-number", 41, "example/transferred"],
+  ]) {
+    const original = cases.find((entry) => entry.name === "issue:normal");
+    cases.push({
+      ...original,
+      name: `transfer:${name}`,
+      issue: {
+        ...original.issue,
+        number,
+        html_url: `https://github.com/${repository}/issues/${number}`,
+      },
+      expected: { proceed: "false", terminal_missing: "true" },
+      candidateOnly: true,
+      skipSourceRead: true,
+      verifyPublication: true,
+    });
+  }
   return cases;
 }
 
@@ -638,7 +665,13 @@ function execute(snapshot, scenario) {
     mkdirSync(join(snapshot.directory, "scripts"), { recursive: true });
     if (!snapshot.native)
       writeFileSync(join(snapshot.directory, legacyClassifierPath), snapshot.classifier);
-    writeFileSync(join(temp, "step.sh"), snapshot.shell);
+    writeFileSync(
+      join(temp, "step.sh"),
+      snapshot.shell +
+        (scenario.verifyPublication
+          ? '\npnpm run --silent workflow -- exact-review-live-item > "$READ_SCOPE_PUBLICATION"\n'
+          : ""),
+    );
     writeFileSync(
       join(temp, "config.json"),
       JSON.stringify({ ...scenario, native: snapshot.native }),
@@ -682,6 +715,7 @@ function execute(snapshot, scenario) {
         READ_SCOPE_GHX_PATH: process.env.PATH,
         READ_SCOPE_CONFIG: join(temp, "config.json"),
         READ_SCOPE_TRACE: join(temp, "trace"),
+        READ_SCOPE_PUBLICATION: join(temp, "publication.json"),
       },
     });
     assert.equal(
@@ -709,6 +743,12 @@ function execute(snapshot, scenario) {
     }
     for (const [key, value] of Object.entries(scenario.expected)) {
       assert.equal(outputs[key], value, `${scenario.name}: ${key}`);
+    }
+    if (scenario.verifyPublication) {
+      assert.deepEqual(JSON.parse(readFileSync(join(temp, "publication.json"), "utf8")), {
+        state: "missing",
+        locked: false,
+      });
     }
     if (scenario.name === "quota:branch-throttle") assert.equal(outputs.retry_kind, undefined);
     if (

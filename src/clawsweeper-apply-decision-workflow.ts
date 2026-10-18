@@ -1,4 +1,5 @@
 import { sha256 } from "./content-hash.js";
+import { GitHubItemMovedError } from "./github-item-identity.js";
 import {
   isExplicitReviewRequest,
   requiresMaintainerReviewRequest,
@@ -1020,7 +1021,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       try {
         liveItem = fetchApplyItem(number);
       } catch (error) {
-        if (!isGitHubNotFoundError(error)) throw error;
+        if (!(error instanceof GitHubItemMovedError) && !isGitHubNotFoundError(error)) throw error;
         // A repository lookup can return the same 404 when the repo is missing or
         // inaccessible. Confirm repo access before treating this as an item miss.
         ghJson<unknown>(["api", `repos/${targetRepo()}`]);

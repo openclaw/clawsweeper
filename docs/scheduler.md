@@ -19,6 +19,14 @@ The global worker budget comes from `config/automation-limits.json`; see
 [Automation Limits](limits.md) for the derived lane limits and GitHub variable
 overrides.
 
+Exact admission and publication rechecks bind the returned GitHub repository,
+number, and item URL to the requested identity. A transferred issue completes
+through the existing missing-target disposition for its former identity. It
+does not borrow the destination number for review, cache repair, or mutation;
+the destination repository's normal intake owns any subsequent review.
+Cached items that point to another identity are ignored and verified with a
+live read before use.
+
 Exact-review completion sends `review_failure_reason` for every diagnostics
 manifest with `failure.stage: agent_input_scan` and `retryable: false`, using
 `failure.reason_code` verbatim. The accepted scanner reasons are

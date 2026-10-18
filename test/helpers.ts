@@ -1195,7 +1195,7 @@ export function reportWithSyncedReviewComment(
         "---",
         `review_comment_sha256: ${sha256ForTest(comment)}`,
         `review_comment_id: ${9000 + number}`,
-        `review_comment_url: https://github.com/openclaw/clawsweeper/issues/${number}#issuecomment-${9000 + number}`,
+        `review_comment_url: https://github.com/${frontMatterValue(report, "repository")}/issues/${number}#issuecomment-${9000 + number}`,
         "review_comment_synced_at: 2026-05-01T01:00:00Z",
         "",
       ].join("\n"),

@@ -2305,19 +2305,14 @@ jobs:
             if [ "$LIVE_TERMINAL_NOOP" = "true" ] || [ "$LIVE_TERMINAL_MISSING" = "true" ] || [ "$LIVE_GUARDED_OPEN" = "true" ]; then
               live_item_error="$(mktemp)"
               live_locked=false
-              if ! live_item="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" 2>"$live_item_error")"; then
-                if grep -Eqi 'HTTP 404|Not Found' "$live_item_error" && gh api "repos/$TARGET_REPO" >/dev/null; then
-                  live_state=missing
-                else
-                  record_publication_failure_kind "$live_item_error"
-                  cat "$live_item_error" >&2
-                  rm -f "$live_item_error"
-                  exit 1
-                fi
-              else
-                live_state="$(jq -r '.state' <<< "$live_item")"
-                live_locked="$(jq -r '.locked == true' <<< "$live_item")"
+              if ! live_item="$(pnpm run --silent workflow -- exact-review-live-item 2>"$live_item_error")"; then
+                record_publication_failure_kind "$live_item_error"
+                cat "$live_item_error" >&2
+                rm -f "$live_item_error"
+                exit 1
               fi
+              live_state="$(jq -r '.state' <<< "$live_item")"
+              live_locked="$(jq -r '.locked == true' <<< "$live_item")"
               rm -f "$live_item_error"
               case "$live_state" in
                 open)
@@ -2359,27 +2354,27 @@ jobs:
             exit 0
           fi
           live_item_error="$(mktemp)"
-          if ! live_state="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" --jq .state 2>"$live_item_error")"; then
-            if grep -Eqi 'HTTP 404|Not Found' "$live_item_error" && gh api "repos/$TARGET_REPO" >/dev/null; then
-              rm -f "$live_item_error"
-              {
-                echo "terminal_noop=false"
-                echo "terminal_missing=true"
-                echo "terminal_closed=false"
-                echo "guarded_open=false"
-                echo "policy_noop=false"
-                echo "requeue_latest=false"
-                echo "remote_tuple_verified=false"
-                echo "routing_deferred=false"
-              } >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
+          if ! live_item="$(pnpm run --silent workflow -- exact-review-live-item 2>"$live_item_error")"; then
             record_publication_failure_kind "$live_item_error"
             cat "$live_item_error" >&2
             rm -f "$live_item_error"
             exit 1
           fi
+          live_state="$(jq -r '.state' <<< "$live_item")"
           rm -f "$live_item_error"
+          if [ "$live_state" = "missing" ]; then
+            {
+              echo "terminal_noop=false"
+              echo "terminal_missing=true"
+              echo "terminal_closed=false"
+              echo "guarded_open=false"
+              echo "policy_noop=false"
+              echo "requeue_latest=false"
+              echo "remote_tuple_verified=false"
+              echo "routing_deferred=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$live_state" = "closed" ]; then
             {
               echo "terminal_noop=true"

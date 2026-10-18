@@ -550,26 +550,31 @@ test("apply-decisions revalidates review activity before each mutation request",
   }
 });
 
-test("apply-decisions archives records deleted after review instead of failing the run", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
-    writeFileSync(
-      join(itemsDir, "321.md"),
-      implementedCloseReport({ action_taken: "proposed_close" }),
-      "utf8",
-    );
+for (const missing of ["deleted", "transferred"] as const) {
+  test(`apply-decisions archives records ${missing} after review instead of failing the run`, () => {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "items");
+      const closedDir = join(root, "closed");
+      const plansDir = join(root, "plans");
+      const reportPath = join(root, "apply-report.json");
+      mkdirSync(itemsDir, { recursive: true });
+      mkdirSync(plansDir, { recursive: true });
+      writeFileSync(
+        join(itemsDir, "321.md"),
+        implementedCloseReport({ action_taken: "proposed_close" }),
+        "utf8",
+      );
 
-    const ghMock = `
+      const ghMock = `
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 const path = args[1] || "";
 if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  if (${JSON.stringify(missing)} === "transferred") {
+    console.log(JSON.stringify({number: 321, html_url: "https://github.com/example/destination/issues/321", state: "open"}));
+    process.exit(0);
+  }
   console.error("gh: Not Found (HTTP 404)");
   process.exit(1);
 }
@@ -580,31 +585,32 @@ if (args[0] === "api" && path === "repos/openclaw/clawsweeper") {
 console.error("unexpected gh args", JSON.stringify(args));
 process.exit(1);
 `;
-    withMockGh(root, ghMock, () => {
-      runApplyDecisionsForTest({
-        itemsDir,
-        closedDir,
-        plansDir,
-        reportPath,
-        extraArgs: ["--event-apply-proof"],
+      withMockGh(root, ghMock, () => {
+        runApplyDecisionsForTest({
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: ["--event-apply-proof"],
+        });
       });
-    });
 
-    assert.equal(existsSync(join(itemsDir, "321.md")), false);
-    assert.ok(existsSync(join(closedDir, "321.md")));
-    assert.match(readText(join(closedDir, "321.md")), /^action_taken: skipped_already_closed$/m);
-    assert.deepEqual(JSON.parse(readText(reportPath)), [
-      {
-        number: 321,
-        action: "skipped_already_closed",
-        reason: "item not found on GitHub",
-        terminalMissingVerified: true,
-      },
-    ]);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+      assert.equal(existsSync(join(itemsDir, "321.md")), false);
+      assert.ok(existsSync(join(closedDir, "321.md")));
+      assert.match(readText(join(closedDir, "321.md")), /^action_taken: skipped_already_closed$/m);
+      assert.deepEqual(JSON.parse(readText(reportPath)), [
+        {
+          number: 321,
+          action: "skipped_already_closed",
+          reason: "item not found on GitHub",
+          terminalMissingVerified: true,
+        },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("apply-decisions keeps missing records queued during comment-only sync", () => {
   const root = mkdtempSync(tmpPrefix);
@@ -2909,7 +2915,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   console.log(JSON.stringify({
     number: 321,
     title: "Exempt PR",
-    html_url: "https://github.com/openclaw/openclaw/pull/321",
+    html_url: "https://github.com/openclaw/clawsweeper/pull/321",
     body: "",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
@@ -2921,13 +2927,13 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     user: { login: "reporter" },
     labels: ${JSON.stringify(labels)},
     comments: 0,
-    pull_request: { url: "https://api.github.com/repos/openclaw/openclaw/pulls/321" }
+    pull_request: { url: "https://api.github.com/repos/openclaw/clawsweeper/pulls/321" }
   }));
 } else if (args[0] === "api" && /\\/pulls\\/321$/.test(path)) {
   console.log(JSON.stringify({
     number: 321,
     title: "Exempt PR",
-    html_url: "https://github.com/openclaw/openclaw/pull/321",
+    html_url: "https://github.com/openclaw/clawsweeper/pull/321",
     state: "open",
     draft: false,
     created_at: "2026-01-01T00:00:00Z",
@@ -2937,8 +2943,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     requested_reviewers: [],
     requested_teams: [],
     body: "",
-    head: { sha: "head-sha", ref: "branch", repo: { full_name: "fork/openclaw" } },
-    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
+    head: { sha: "head-sha", ref: "branch", repo: { full_name: "fork/clawsweeper" } },
+    base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/clawsweeper" } },
     user: { login: "reporter" }
   }));
 } else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {

@@ -27,6 +27,7 @@ import {
   usableGithubReadModelResponse,
 } from "./github-webhook-read-model-client.js";
 import { indexedExistingReview } from "./clawsweeper-record-metadata.js";
+import { assertGitHubItemIdentity, GitHubItemMovedError } from "./github-item-identity.js";
 
 export function isFresh(
   review: { reviewedAt: string | undefined; reviewStatus: string | undefined } | null,
@@ -181,14 +182,17 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
     options: LiveReadOptions & { liveReadGeneration?: LiveReadGeneration } = {},
   ): { item: Item; state: string } {
     const args = ["api", `repos/${targetRepo()}/issues/${number}`];
-    const readIssue = () =>
-      ghJson<
+    const readIssue = () => {
+      const issue = ghJson<
         GitHubIssueListItem & {
           active_lock_reason?: string | null;
           locked?: boolean;
           state?: string;
         }
       >(args);
+      assertGitHubItemIdentity(issue, targetRepo(), number);
+      return issue;
+    };
     const issue = (() => {
       if (options.liveReadGeneration) {
         return options.liveReadGeneration.read(generationReadKey("json", args), readIssue, options);
@@ -203,11 +207,19 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
         ) {
           const value = snapshot.item;
           if (value && typeof value === "object" && !Array.isArray(value)) {
-            return value as GitHubIssueListItem & {
+            const cached = value as GitHubIssueListItem & {
               active_lock_reason?: string | null;
               locked?: boolean;
               state?: string;
             };
+            try {
+              assertGitHubItemIdentity(cached, targetRepo(), number);
+              return cached;
+            } catch (error) {
+              if (!(error instanceof GitHubItemMovedError)) throw error;
+              // Older redirected reads could cache a destination under the old
+              // repository. Re-read this key before it can affect another item.
+            }
           }
         }
       }
@@ -227,6 +239,7 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
       }
       return live;
     })();
+    assertGitHubItemIdentity(issue, targetRepo(), number);
     const labels = (issue.labels ?? []).flatMap((label: unknown) => {
       if (typeof label === "string") return [label];
       if (!label || typeof label !== "object" || Array.isArray(label)) return [];

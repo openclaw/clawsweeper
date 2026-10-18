@@ -108,7 +108,7 @@ if (process.env.LIVE_STATE === 'missing') { process.stderr.write('gh: Not Found 
 const number = Number(endpoint.split('/').at(-1));
 // Synthetic kinds: the recorded apply report does not establish issue/PR kind.
 const pr = [128515,121477].includes(number);
-process.stdout.write(args.includes('--jq') ? (pr ? 'pull_request' : 'issue') : JSON.stringify({number,state:process.env.LIVE_STATE || 'open',locked:false,...(pr ? {pull_request:{}} : {})}));
+process.stdout.write(args.includes('--jq') ? (pr ? 'pull_request' : 'issue') : JSON.stringify({number,html_url:'https://github.com/openclaw/openclaw/'+(pr ? 'pull/' : 'issues/')+number,state:process.env.LIVE_STATE || 'open',locked:false,...(pr ? {pull_request:{}} : {})}));
 `;
   for (const tool of ["gh", "curl", "pnpm"])
     fs.writeFileSync(path.join(bin, tool), proxy, { mode: 0o755 });
