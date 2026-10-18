@@ -1018,7 +1018,11 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
   assert.equal(telemetryStart.env?.APPLY_OUTCOME, "in_progress");
   assert.match(telemetryStart.run ?? "", /publish-apply-observability\.mjs/);
   assert.match(telemetryStart.run ?? "", /apply-observability-context\.json/);
-  assert.match(telemetryContext.run ?? "", /apply-telemetry-start\.outputs\.started_at/);
+  assert.equal(
+    telemetryContext.env?.STEPS_APPLY_TELEMETRY_START_OUTPUTS_STARTED_AT,
+    "${{ steps.apply-telemetry-start.outputs.started_at || '' }}",
+  );
+  assert.match(telemetryContext.run ?? "", /\$\{STEPS_APPLY_TELEMETRY_START_OUTPUTS_STARTED_AT\}/);
 });
 
 // The review token can only read the target. Codex reviews always run in the review sandbox.
@@ -2964,7 +2968,10 @@ test("apply proof keeps Codex away from the apply write tokens", () => {
 
 test("comment-only apply preparation never scans the full target repository", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
-    jobs: Record<string, { steps: Array<{ name?: string; if?: string; run?: string }> }>;
+    jobs: Record<
+      string,
+      { steps: Array<{ name?: string; if?: string; run?: string; env?: Record<string, string> }> }
+    >;
   };
   const steps = workflow.jobs["apply-proof"]!.steps;
   const reconcile = steps.find((step) => step.name === "Reconcile read-only proof inputs");
@@ -2998,7 +3005,8 @@ test("comment-only apply preparation never scans the full target repository", ()
   assert.equal(shouldReconcile(schedule("6,21,36,51 * * * *")), false);
   assert.equal(shouldReconcile(dispatch("false")), true);
   assert.equal(shouldReconcile(schedule("3 * * * *")), true);
-  assert.match(select.run, /github\.event\.schedule \|\| ''/);
+  assert.equal(select.env?.WORKFLOW_EVENT_SCHEDULE, "${{ github.event.schedule || '' }}");
+  assert.match(select.run, /\$\{WORKFLOW_EVENT_SCHEDULE\}/);
   assert.match(select.run, /6,21,36,51 \* \* \* \*/);
   assert.match(select.run, /sync_comments_only="true"/);
 });
