@@ -356,23 +356,70 @@ test("dispatcher uses OIDC only and warns without failing when either endpoint i
       source_action: "created",
     });
 
-    const fallbacks = [
-      { name: "worker rejection", oidc: true, token: 200, direct: 401, posts: 2 },
-      { name: "worker outage", oidc: true, token: 200, direct: 503, posts: 2 },
-      // curl --fail treats a 3xx as success; only a 2xx may skip the relay.
-      { name: "worker redirect", oidc: true, token: 200, direct: 307, posts: 2 },
-      { name: "token endpoint failure", oidc: true, token: 500, direct: 202, posts: 1 },
-      { name: "no id-token permission", oidc: false, token: 200, direct: 202, posts: 0 },
+    const declined = /::warning::.*declined this event/;
+    const unavailable = /::error::.*intake unavailable/;
+    const noToken = /::error::.*OIDC token unavailable/;
+    // A deliberate 4xx refusal is covered by the App webhook. Every other failure shares
+    // the Worker's failure domain with that webhook, so the run must fail and stay re-runnable.
+    const failures = [
+      {
+        name: "worker rejection",
+        oidc: true,
+        token: 200,
+        direct: 401,
+        posts: 2,
+        exit: 0,
+        log: declined,
+      },
+      {
+        name: "worker outage",
+        oidc: true,
+        token: 200,
+        direct: 503,
+        posts: 2,
+        exit: 1,
+        log: unavailable,
+      },
+      // curl --fail treats a 3xx as success; only a 2xx counts as delivered.
+      {
+        name: "worker redirect",
+        oidc: true,
+        token: 200,
+        direct: 307,
+        posts: 2,
+        exit: 1,
+        log: unavailable,
+      },
+      {
+        name: "token endpoint failure",
+        oidc: true,
+        token: 500,
+        direct: 202,
+        posts: 1,
+        exit: 1,
+        log: noToken,
+      },
+      {
+        name: "no id-token permission",
+        oidc: false,
+        token: 200,
+        direct: 202,
+        posts: 0,
+        exit: 1,
+        log: noToken,
+      },
       {
         name: "unreachable worker",
         oidc: true,
         token: 200,
         direct: 202,
         posts: 1,
+        exit: 1,
+        log: unavailable,
         directUrl: "http://127.0.0.1:9/github/target-dispatch",
       },
     ];
-    for (const scenario of fallbacks) {
+    for (const scenario of failures) {
       requests = [];
       tokenStatus = scenario.token;
       directStatus = scenario.direct;
@@ -380,10 +427,10 @@ test("dispatcher uses OIDC only and warns without failing when either endpoint i
         oidc: scenario.oidc,
         ...(scenario.directUrl ? { directUrl: scenario.directUrl } : {}),
       });
-      assert.equal(result.status, 0, scenario.name);
+      assert.equal(result.status, scenario.exit, scenario.name);
       assert.equal(requests.length, scenario.posts, scenario.name);
       assert.equal(result.gh, "", scenario.name);
-      assert.match(result.stdout, /::warning::.*relying on the App webhook/, scenario.name);
+      assert.match(result.stdout, scenario.log, scenario.name);
     }
   } finally {
     server.close();

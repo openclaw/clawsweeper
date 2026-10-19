@@ -258,11 +258,18 @@ jobs:
               echo "Queued ClawSweeper intake directly: $(jq -c . "$direct_body" 2>/dev/null || echo '{}')"
               exit 0
             fi
-            echo "::warning::ClawSweeper intake answered HTTP ${direct_status:-none}; relying on the App webhook."
+            # 4xx is a deliberate refusal (ineligible event); the App webhook covers it. Other
+            # failures share the Worker's failure domain with that webhook, so fail visibly
+            # and leave the run re-runnable instead of silently dropping the event.
+            if [[ "${direct_status:-}" == 4[0-9][0-9] ]]; then
+              echo "::warning::ClawSweeper intake declined this event (HTTP $direct_status); the App webhook route still applies."
+              exit 0
+            fi
+            echo "::error::ClawSweeper intake unavailable (HTTP ${direct_status:-none}); re-run this job after the Worker recovers."
           else
-            echo "::warning::ClawSweeper OIDC token unavailable; relying on the App webhook."
+            echo "::error::ClawSweeper OIDC token unavailable; the dispatch job needs id-token: write."
           fi
-          exit 0
+          exit 1
       - name: Dispatch ClawSweeper comment
         if: >-
           ${{
@@ -305,11 +312,18 @@ jobs:
               echo "Queued ClawSweeper intake directly: $(jq -c . "$direct_body" 2>/dev/null || echo '{}')"
               exit 0
             fi
-            echo "::warning::ClawSweeper intake answered HTTP ${direct_status:-none}; relying on the App webhook."
+            # 4xx is a deliberate refusal (ineligible event); the App webhook covers it. Other
+            # failures share the Worker's failure domain with that webhook, so fail visibly
+            # and leave the run re-runnable instead of silently dropping the event.
+            if [[ "${direct_status:-}" == 4[0-9][0-9] ]]; then
+              echo "::warning::ClawSweeper intake declined this event (HTTP $direct_status); the App webhook route still applies."
+              exit 0
+            fi
+            echo "::error::ClawSweeper intake unavailable (HTTP ${direct_status:-none}); re-run this job after the Worker recovers."
           else
-            echo "::warning::ClawSweeper OIDC token unavailable; relying on the App webhook."
+            echo "::error::ClawSweeper OIDC token unavailable; the dispatch job needs id-token: write."
           fi
-          exit 0
+          exit 1
 ```
 
 `target_branch` is branch authority from the signed event repository payload,
@@ -362,10 +376,14 @@ OIDC never grants authority to a payload-provided comment body or association.
 
 ### Failure semantics and legacy receivers
 
-A missing or unavailable OIDC token, network failure, redirect, or any non-2xx
-Worker answer emits `::warning::` and exits zero. The keyless template has no
-`repository_dispatch` fallback and makes no target GitHub writes. These cases
-previously fell back and now rely solely on the App webhook route:
+A Worker `4xx` answer is a deliberate refusal: the step emits `::warning::` and
+exits zero, and the App webhook route still applies. A missing or unavailable
+OIDC token, network failure, redirect, or `5xx` emits `::error::` and fails the
+job: the App webhook shares the Worker's failure domain, so a red, re-runnable
+run is the visible record instead of a silently dropped event. The keyless
+template has no `repository_dispatch` fallback and makes no target GitHub
+writes. These cases previously fell back and now rely solely on the App webhook
+route (or a re-run once the Worker recovers):
 
 - every configured issue, PR, or command event during OIDC or Worker failure;
 - PRs targeting a non-default base branch (their token ref is that base branch);
@@ -381,7 +399,8 @@ Non-command comments, unauthorized commands, and label-only observations retain
 the existing classifier/admission policy. They do not gain review authority.
 Verify the three subscriptions before migrating any target; do not migrate an
 installation missing one. Outages affecting both routes can delay or lose an
-individual delivery; a warning is not a durable admission receipt.
+individual delivery; the failed dispatcher run is the record to re-run, not a
+durable admission receipt.
 
 Receiving `clawsweeper_item` and `clawsweeper_comment` `repository_dispatch`
 handlers are **legacy compatibility** for unmigrated target copies. Keep them
@@ -513,8 +532,9 @@ authoritative. Do not use a PAT or add another comment dispatcher.
 To verify a migrated target, confirm one `ClawSweeper Dispatch` run with
 `Queued ClawSweeper intake directly`, no relay workflow run for the item, and one
 canonical command acknowledgement/review when both routes deliver. An ordinary
-comment should produce no command POST. Exercise a Worker rejection and verify
-warning plus successful workflow exit while the App route still admits the event.
+comment should produce no command POST. Exercise a Worker rejection (`4xx`) and
+verify warning plus successful workflow exit while the App route still admits the
+event, and a Worker outage (`5xx`) and verify a failed, re-runnable run.
 
 ### Rollout checklist (separate operation)
 

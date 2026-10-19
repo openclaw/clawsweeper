@@ -193,11 +193,18 @@ jobs:
               echo "Queued ClawSweeper intake directly: $(jq -c . "$direct_body" 2>/dev/null || echo '{}')"
               exit 0
             fi
-            echo "::warning::ClawSweeper intake answered HTTP ${direct_status:-none}; relying on the App webhook."
+            # 4xx is a deliberate refusal (ineligible event); the App webhook covers it. Other
+            # failures share the Worker's failure domain with that webhook, so fail visibly
+            # and leave the run re-runnable instead of silently dropping the event.
+            if [[ "${direct_status:-}" == 4[0-9][0-9] ]]; then
+              echo "::warning::ClawSweeper intake declined this event (HTTP $direct_status); the App webhook route still applies."
+              exit 0
+            fi
+            echo "::error::ClawSweeper intake unavailable (HTTP ${direct_status:-none}); re-run this job after the Worker recovers."
           else
-            echo "::warning::ClawSweeper OIDC token unavailable; relying on the App webhook."
+            echo "::error::ClawSweeper OIDC token unavailable; the dispatch job needs id-token: write."
           fi
-          exit 0
+          exit 1
       - name: Dispatch ClawSweeper comment
         if: >-
           ${{
@@ -240,8 +247,15 @@ jobs:
               echo "Queued ClawSweeper intake directly: $(jq -c . "$direct_body" 2>/dev/null || echo '{}')"
               exit 0
             fi
-            echo "::warning::ClawSweeper intake answered HTTP ${direct_status:-none}; relying on the App webhook."
+            # 4xx is a deliberate refusal (ineligible event); the App webhook covers it. Other
+            # failures share the Worker's failure domain with that webhook, so fail visibly
+            # and leave the run re-runnable instead of silently dropping the event.
+            if [[ "${direct_status:-}" == 4[0-9][0-9] ]]; then
+              echo "::warning::ClawSweeper intake declined this event (HTTP $direct_status); the App webhook route still applies."
+              exit 0
+            fi
+            echo "::error::ClawSweeper intake unavailable (HTTP ${direct_status:-none}); re-run this job after the Worker recovers."
           else
-            echo "::warning::ClawSweeper OIDC token unavailable; relying on the App webhook."
+            echo "::error::ClawSweeper OIDC token unavailable; the dispatch job needs id-token: write."
           fi
-          exit 0
+          exit 1
