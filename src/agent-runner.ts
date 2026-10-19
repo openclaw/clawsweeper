@@ -1,3 +1,5 @@
+import { redactPublication, registerCodexAuthCapabilities } from "./publication-dlp.js";
+import { DEFAULT_CODEX_OUTPUT_FILE_BYTES } from "./codex-output-capture.js";
 import { randomInt } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -59,6 +61,7 @@ export function reviewNetworkCapability(
 
 export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessResult {
   if (options.diagnosticPromptPath) rmSync(options.diagnosticPromptPath, { force: true });
+  registerCodexAuthCapabilities(options.env);
   const runner = agentRunner(options.env);
   if (runner === "openclaw") openclawModel(options.env);
   const startedAt = Date.now();
@@ -98,7 +101,7 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
   }
   if (runner === "codex") {
     const args = codexAgentArgs(options);
-    const managedOutput = options.outputLastMessageBytes !== undefined && outputPath !== undefined;
+    const managedOutput = outputPath !== undefined;
     return runCodexProcess({
       args: managedOutput ? managedCodexStdoutArgs(args) : args,
       cwd: options.cwd,
@@ -112,7 +115,8 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
       ...(managedOutput
         ? {
             outputLastMessagePath: outputPath,
-            outputLastMessageBytes: options.outputLastMessageBytes,
+            outputLastMessageBytes:
+              options.outputLastMessageBytes ?? DEFAULT_CODEX_OUTPUT_FILE_BYTES,
           }
         : {}),
       ...(options.stdoutPath ? { stdoutPath: options.stdoutPath } : {}),
@@ -136,6 +140,8 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     ...(options.stderrPath ? { stderrPath: options.stderrPath } : {}),
   });
   const result = redactOpenclawFailure(rawResult, model);
+  result.stdout = redactPublication(result.stdout).value;
+  result.stderr = redactPublication(result.stderr).value;
   if (!result.error && result.status === 0 && outputPath) {
     if (
       options.outputLastMessageBytes !== undefined &&

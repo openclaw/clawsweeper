@@ -1,4 +1,8 @@
-import { publicationDecision } from "./publication-dlp.js";
+import {
+  publicationDecision,
+  redactPublication,
+  blockCredentialPublication,
+} from "./publication-dlp.js";
 import { isDeepStrictEqual } from "node:util";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import { parseOversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
@@ -121,6 +125,23 @@ export function readReviewRecord(markdown: string): ReviewRecord | null {
     decision: parseStoredDecision(decision, reviewRecordSubject(markdown)),
     ...(origin ? { origin } : {}),
   };
+}
+
+/** Persist the same failed/keep-open receipt when only rendered report text matched. */
+export function publicationSafeReport(markdown: string, renderedRedactions = 0): string {
+  const safe = redactPublication(markdown);
+  if (!safe.redactions && !renderedRedactions && !markdown.includes("[redacted credential]"))
+    return markdown;
+  let result = updateReviewRecordDecision(safe.value, (decision) =>
+    blockCredentialPublication(decision, Math.max(1, safe.redactions + renderedRedactions)),
+  );
+  result = replaceFrontMatterValue(result, "review_status", "failed");
+  result = replaceFrontMatterValue(result, "decision", "keep_open");
+  result = replaceFrontMatterValue(result, "confidence", "low");
+  result = replaceFrontMatterValue(result, "local_checkout_access", "unverified");
+  result = replaceFrontMatterValue(result, "close_reason", "none");
+  result = replaceFrontMatterValue(result, "action_taken", "kept_open");
+  return result;
 }
 
 /** Requires a readable decision; missing and corrupt records both need a fresh review. */

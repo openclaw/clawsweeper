@@ -37,6 +37,7 @@ export interface OpenClawProcessOptions {
 }
 
 export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProcessResult {
+  options = { ...options, env: { ...options.env, CLAWSWEEPER_OPENCLAW_MODEL: options.model } };
   const stateDir = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-process-"));
   const configPath = join(stateDir, "openclaw.json");
   const promptPath = join(stateDir, "prompt.md");
@@ -80,7 +81,11 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
     // through — mirroring the codex lane, which keeps OPENAI_API_KEY out of
     // subprocesses via its proxy auth mode.
     const childEnv: NodeJS.ProcessEnv = {
-      ...pickEnv(options.env, OPENCLAW_CHILD_ENV_ALLOWLIST),
+      ...pickEnv(
+        options.env,
+        OPENCLAW_CHILD_ENV_ALLOWLIST.filter((name) => !name.endsWith("_API_KEY")),
+      ),
+      ...openclawProviderEnv(options.env),
       OPENCLAW_STATE_DIR: stateDir,
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_WORKSPACE_DIR: options.cwd,
@@ -198,7 +203,12 @@ function openclawConfig(
   const providersJson = env.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON?.trim();
   if (!providersJson) {
     const builtin = builtinProviderBlock(env.CLAWSWEEPER_OPENCLAW_MODEL?.trim() || "");
-    if (builtin) config.models = { mode: "merge", providers: builtin };
+    if (builtin) {
+      if (builtin.kimi && !env.KIMI_API_KEY && env.KIMICODE_API_KEY) {
+        (builtin.kimi as { apiKey: string }).apiKey = "${KIMICODE_API_KEY}";
+      }
+      config.models = { mode: "merge", providers: builtin };
+    }
     return config;
   }
   let providers: unknown;
@@ -212,7 +222,9 @@ function openclawConfig(
   }
   // OpenClaw config validation requires models[].name; default it to the id so
   // provider blocks stay minimal.
-  for (const provider of Object.values(providers)) {
+  const selected = env.CLAWSWEEPER_OPENCLAW_MODEL?.trim().split("/", 1)[0] || "";
+  providers = Object.fromEntries(Object.entries(providers).filter(([name]) => name === selected));
+  for (const provider of Object.values(providers as Record<string, unknown>)) {
     if (!isRecord(provider) || !Array.isArray(provider.models)) continue;
     for (const model of provider.models) {
       if (isRecord(model) && typeof model.id === "string" && model.name === undefined) {
@@ -415,6 +427,43 @@ const OPENCLAW_CHILD_ENV_ALLOWLIST = [
   "DEEPSEEK_API_KEY",
   "MISTRAL_API_KEY",
 ] as const;
+
+/** Select credentials using the same provider block as the runtime config. */
+export function openclawProviderEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const provider = env.CLAWSWEEPER_OPENCLAW_MODEL?.trim().split("/", 1)[0] || "";
+  const config = openclawConfig(env, 1, false);
+  const models = config.models as { providers?: Record<string, unknown> } | undefined;
+  const block = models?.providers?.[provider];
+  const names = new Set<string>();
+  if (block) {
+    const visit = (value: unknown): void => {
+      if (typeof value === "string") {
+        for (const match of value.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) names.add(match[1]!);
+      } else if (value && typeof value === "object") Object.values(value).forEach(visit);
+    };
+    visit(block);
+  } else {
+    const name = `${provider.toUpperCase().replaceAll("-", "_")}_API_KEY`;
+    if ((OPENCLAW_CHILD_ENV_ALLOWLIST as readonly string[]).includes(name)) names.add(name);
+    if (provider === "kimi-coding")
+      names.add(env.KIMI_API_KEY ? "KIMI_API_KEY" : "KIMICODE_API_KEY");
+    if (provider === "google" || provider === "gemini") {
+      names.delete("GOOGLE_API_KEY");
+      names.delete("GEMINI_API_KEY");
+      names.add(env.GEMINI_API_KEY ? "GEMINI_API_KEY" : "GOOGLE_API_KEY");
+    }
+  }
+  if (provider === "openai" && !block && !env.OPENAI_API_KEY)
+    names.add("CLAWSWEEPER_OPENCLAW_OPENAI_KEY");
+  return {
+    ...Object.fromEntries(
+      [...names].filter((name) => env[name] !== undefined).map((name) => [name, env[name]]),
+    ),
+    ...(env.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON
+      ? { CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON: JSON.stringify(models?.providers ?? {}) }
+      : {}),
+  };
+}
 
 function pickEnv(env: NodeJS.ProcessEnv, names: readonly string[]): NodeJS.ProcessEnv {
   const picked: NodeJS.ProcessEnv = {};

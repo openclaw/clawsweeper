@@ -1,3 +1,4 @@
+import { redactPublication } from "./publication-dlp.js";
 import { closeSync, ftruncateSync, openSync, writeSync } from "node:fs";
 
 export const DEFAULT_CODEX_OUTPUT_FILE_BYTES = 128 * 1024 * 1024;
@@ -10,6 +11,9 @@ const TRUNCATION_MARKER = Buffer.from(
 
 export interface CodexOutputCapture {
   file: number;
+  pending: Buffer[];
+  pendingBytes: number;
+  omitted: boolean;
   maxFileBytes: number;
   tailBytes: number;
   writtenBytes: number;
@@ -23,6 +27,9 @@ export function openCodexOutputCapture(
 ): CodexOutputCapture {
   return {
     file: openSync(filePath, "w"),
+    pending: [],
+    pendingBytes: 0,
+    omitted: false,
     maxFileBytes: normalizedMaxFileBytes(options.maxFileBytes),
     tailBytes: normalizedTailBytes(options.tailBytes),
     writtenBytes: 0,
@@ -32,6 +39,23 @@ export function openCodexOutputCapture(
 }
 
 export function appendCodexOutputCapture(capture: CodexOutputCapture, chunk: Buffer): void {
+  // Hold complete frames until redaction; chunk boundaries can split credentials.
+  // Oversized diagnostic streams fail closed instead of retaining partial secrets.
+  if (capture.omitted) return;
+  if (
+    capture.pendingBytes + chunk.length >
+    Math.max(DEFAULT_CODEX_OUTPUT_FILE_BYTES, capture.maxFileBytes)
+  ) {
+    capture.pending = [];
+    capture.pendingBytes = 0;
+    capture.omitted = true;
+    return;
+  }
+  capture.pending.push(Buffer.from(chunk));
+  capture.pendingBytes += chunk.length;
+}
+
+function appendSafeOutput(capture: CodexOutputCapture, chunk: Buffer): void {
   capture.tail = appendTail(capture.tail, chunk, capture.tailBytes);
   const remaining = capture.maxFileBytes - capture.writtenBytes;
   const retained = chunk.subarray(0, Math.max(0, remaining));
@@ -42,6 +66,13 @@ export function appendCodexOutputCapture(capture: CodexOutputCapture, chunk: Buf
 
 export function closeCodexOutputCapture(capture: CodexOutputCapture): void {
   try {
+    const raw = capture.omitted
+      ? "[diagnostic output omitted: stream exceeded redaction buffer]\n"
+      : Buffer.concat(capture.pending, capture.pendingBytes).toString("utf8");
+    const safe = redactPublication(raw).value;
+    capture.pending = [];
+    capture.pendingBytes = 0;
+    appendSafeOutput(capture, Buffer.from(safe));
     if (capture.truncated) {
       const tail = capture.tail.subarray(
         Math.max(0, capture.tail.length - availableTailBytes(capture.maxFileBytes)),

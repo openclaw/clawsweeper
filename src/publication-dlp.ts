@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Decision } from "./clawsweeper-types.js";
 
 const REDACTED = "[redacted credential]";
@@ -19,7 +22,40 @@ const explicitCapabilities = new Set<string>();
 
 /** Remember credentials passed as arguments rather than inherited from the publisher. */
 export function registerPublicationCapability(value: string | undefined): void {
-  if (value) explicitCapabilities.add(value);
+  if (credentialLike(value)) explicitCapabilities.add(value!);
+}
+
+function credentialLike(value: string | undefined): boolean {
+  return Boolean(
+    value &&
+    value.length >= 20 &&
+    !/^[a-z]+$/.test(value) &&
+    !/^[\d. +-]+$/.test(value) &&
+    !/^(?:[A-Za-z]:[\\/]|[\\/]|~[\\/])/.test(value),
+  );
+}
+
+/** Snapshot file-backed auth before temporary Codex homes are removed. */
+export function registerCodexAuthCapabilities(env: NodeJS.ProcessEnv = process.env): void {
+  try {
+    const auth: unknown = JSON.parse(
+      readFileSync(
+        join(env.CODEX_HOME || join(env.HOME || homedir(), ".codex"), "auth.json"),
+        "utf8",
+      ),
+    );
+    const visit = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      for (const [key, child] of Object.entries(value)) {
+        if (/token|key|secret|password/i.test(key) && typeof child === "string")
+          registerPublicationCapability(child);
+        else visit(child);
+      }
+    };
+    visit(auth);
+  } catch {
+    // Missing or invalid file auth is handled by Codex; never log auth material.
+  }
 }
 
 /** Inline provider keys become agent-visible config files in the OpenClaw lane. */
@@ -55,18 +91,20 @@ export function registerOpenclawProviderCapabilities(
 
 function credentialPattern(): RegExp {
   registerOpenclawProviderCapabilities(process.env.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON);
+  registerCodexAuthCapabilities();
   const values = new Set(explicitCapabilities);
   for (const [name, value] of Object.entries(process.env)) {
     if (value && /^(?:https?|all)_proxy$/i.test(name)) {
       try {
         const proxy = new URL(value);
         if (proxy.username || proxy.password) {
-          values.add(value);
+          if (credentialLike(value)) values.add(value);
           for (const component of [proxy.username, proxy.password]) {
             if (!component) continue;
-            values.add(component);
+            if (credentialLike(component)) values.add(component);
             try {
-              values.add(decodeURIComponent(component));
+              const decoded = decodeURIComponent(component);
+              if (credentialLike(decoded)) values.add(decoded);
             } catch {
               // Malformed escapes still have their literal value protected.
             }
@@ -81,7 +119,7 @@ function credentialPattern(): RegExp {
       !CODEX_NON_CAPABILITIES.has(name) &&
       /TOKEN|SECRET|PASSWORD|PASSWD|(?:^|_)KEY(?:_|$)|^CODEX_/i.test(name)
     ) {
-      values.add(value);
+      if (credentialLike(value)) values.add(value);
     }
   }
   const exact = [...values]
@@ -105,10 +143,41 @@ export function redactPublication<T>(value: T): { value: T; redactions: number }
   let redactions = 0;
   const visit = (entry: unknown): unknown => {
     if (typeof entry === "string") {
-      return entry.replace(pattern, () => {
-        redactions += 1;
-        return REDACTED;
-      });
+      // Process serialized objects as values, including JSONL and report records.
+      // Never run credential substitution over object keys or JSON punctuation.
+      const structured = (text: string): string | undefined => {
+        if (!/^\s*["[{]/.test(text)) return undefined;
+        try {
+          const before = redactions;
+          const safe = visit(JSON.parse(text));
+          return before === redactions
+            ? text
+            : JSON.stringify(safe) + text.slice(text.trimEnd().length);
+        } catch {
+          return undefined;
+        }
+      };
+      const parsed = structured(entry);
+      if (parsed !== undefined) return parsed;
+      const replace = (text: string) => {
+        return text.replace(pattern, () => {
+          redactions += 1;
+          return REDACTED;
+        });
+      };
+      let pending = "";
+      let output = "";
+      for (const line of entry.split(/(?<=\n)/)) {
+        const prefix = line.match(/^[A-Za-z_][A-Za-z0-9_]*:\s+/)?.[0] ?? "";
+        const json = structured(prefix ? line.slice(prefix.length) : line);
+        if (json === undefined) {
+          pending += line;
+          continue;
+        }
+        output += replace(pending) + prefix + json;
+        pending = "";
+      }
+      return output + replace(pending);
     }
     if (Array.isArray(entry)) return entry.map(visit);
     if (entry !== null && typeof entry === "object") {
@@ -131,7 +200,12 @@ export function credentialPublicationBlocked(decision: Pick<Decision, "summary">
 }
 
 export function blockCredentialPublication(decision: Decision, redactions: number): Decision {
-  if (!redactions && !credentialPublicationBlocked(decision)) return decision;
+  if (
+    !redactions &&
+    !credentialPublicationBlocked(decision) &&
+    !JSON.stringify(decision).includes(REDACTED)
+  )
+    return decision;
   return {
     ...decision,
     decision: "keep_open",

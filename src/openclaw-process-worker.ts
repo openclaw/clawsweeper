@@ -1,3 +1,4 @@
+import { redactPublication, registerOpenclawProviderCapabilities } from "./publication-dlp.js";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import {
@@ -18,6 +19,11 @@ interface WorkerOptions {
   stderrPath: string;
   tailBytes: number;
   maxOutputFileBytes: number;
+}
+
+if (process.env.OPENCLAW_CONFIG_PATH) {
+  const config = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8"));
+  registerOpenclawProviderCapabilities(JSON.stringify(config.models?.providers));
 }
 
 const options = JSON.parse(readFileSync(process.argv[2] ?? "", "utf8")) as WorkerOptions;
@@ -117,7 +123,7 @@ function terminateProcessTree(
 function serializedError(error: Error): { message: string; code?: string } {
   const code = "code" in error ? (error as NodeJS.ErrnoException).code : undefined;
   return {
-    message: error.message,
+    message: redactPublication(error.message).value,
     ...(typeof code === "string" ? { code } : {}),
   };
 }

@@ -1,3 +1,4 @@
+import { publicationSafeReport } from "./review-record.js";
 import { redactPublication } from "./publication-dlp.js";
 import type {
   CloseReason,
@@ -620,5 +621,11 @@ export function renderReviewCommentFromReport(
   reason: CloseReason,
   options: ReviewCommentRenderOptions = {},
 ): string {
-  return redactPublication(renderReviewComment(markdown, reason, options)).value;
+  const safe = publicationSafeReport(markdown);
+  const rendered = redactPublication(renderReviewComment(safe, reason, options));
+  return rendered.redactions
+    ? redactPublication(
+        renderReviewComment(publicationSafeReport(safe, rendered.redactions), "none", options),
+      ).value
+    : rendered.value;
 }

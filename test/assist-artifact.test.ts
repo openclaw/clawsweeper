@@ -53,7 +53,7 @@ ${admission === "invalid-output" ? "process.exit(183);" : ""}
 const fs = require('node:fs');
 fs.writeFileSync(${JSON.stringify(providerArgs)}, JSON.stringify(process.argv.slice(2)));
 fs.writeFileSync(${JSON.stringify(providerInput)}, fs.readFileSync(0));
-fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1], 'Useful assist answer.');
+process.stdout.write('Useful assist answer.\\n');
 `,
       { mode: 0o755 },
     );
@@ -330,7 +330,7 @@ test("assist publication bounds the artifact and patches only an owned marker co
     `#!${process.execPath}
 const fs = require('node:fs');
 fs.readFileSync(0);
-fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1], 'Useful assist answer.');
+process.stdout.write('Useful assist answer.\\n');
 `,
     { mode: 0o755 },
   );

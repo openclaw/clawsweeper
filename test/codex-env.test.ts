@@ -145,7 +145,7 @@ test("Codex auth is opt-in and OpenClaw receives only its supported provider cre
       CODEX_ACCESS_TOKEN: "fake-access",
       ANTHROPIC_API_KEY: "fake-anthropic",
       UNRELATED_API_KEY: "fake-unrelated",
-      CLAWSWEEPER_OPENCLAW_MODEL: "provider/model",
+      CLAWSWEEPER_OPENCLAW_MODEL: "anthropic/model",
       CLAWSWEEPER_OPENCLAW_OPENAI_KEY: "fake-fallback",
       CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON: "{}",
       CLAWSWEEPER_OPENCLAW_BIN: "/fake/openclaw",
@@ -163,8 +163,8 @@ test("Codex auth is opt-in and OpenClaw receives only its supported provider cre
     process.env.CLAWSWEEPER_RUNNER = "openclaw";
     const openclaw = codexEnv();
     assert.equal(openclaw.ANTHROPIC_API_KEY, "fake-anthropic");
-    assert.equal(openclaw.OPENAI_API_KEY, "fake-openai");
-    assert.equal(openclaw.CLAWSWEEPER_OPENCLAW_OPENAI_KEY, "fake-fallback");
+    assert.equal(openclaw.OPENAI_API_KEY, undefined);
+    assert.equal(openclaw.CLAWSWEEPER_OPENCLAW_OPENAI_KEY, undefined);
     assert.equal(openclaw.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON, "{}");
     assert.equal(openclaw.CLAWSWEEPER_OPENCLAW_BIN, "/fake/openclaw");
     for (const env of [normal, local, openclaw]) {
@@ -173,6 +173,60 @@ test("Codex auth is opt-in and OpenClaw receives only its supported provider cre
     }
     assert.equal(openclaw.CODEX_API_KEY, undefined);
     assert.equal(openclaw.CODEX_ACCESS_TOKEN, undefined);
+  } finally {
+    process.env = original;
+  }
+});
+
+test("OpenClaw forwards only selected builtin or custom provider credentials", () => {
+  const original = process.env;
+  try {
+    process.env = {
+      CLAWSWEEPER_RUNNER: "openclaw",
+      CLAWSWEEPER_OPENCLAW_MODEL: "kimi/k3",
+      KIMI_API_KEY: "fake-kimi",
+      OPENAI_API_KEY: "fake-openai",
+      ANTHROPIC_API_KEY: "fake-anthropic",
+    };
+    const kimi = codexEnv({ preserveCodexAuth: true });
+    assert.equal(kimi.KIMI_API_KEY, "fake-kimi");
+    assert.equal(kimi.OPENAI_API_KEY, undefined);
+    assert.equal(kimi.ANTHROPIC_API_KEY, undefined);
+    process.env.CLAWSWEEPER_OPENCLAW_MODEL = "custom/model";
+    process.env.CUSTOM_PROVIDER_TOKEN = "fake-custom";
+    process.env.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON = JSON.stringify({
+      custom: { apiKey: "${CUSTOM_PROVIDER_TOKEN}" },
+      other: { apiKey: "${ANTHROPIC_API_KEY}" },
+    });
+    const custom = codexEnv();
+    assert.equal(custom.CUSTOM_PROVIDER_TOKEN, "fake-custom");
+    assert.deepEqual(Object.keys(JSON.parse(custom.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON!)), [
+      "custom",
+    ]);
+    assert.equal(custom.KIMI_API_KEY, undefined);
+    assert.equal(custom.OPENAI_API_KEY, undefined);
+    assert.equal(custom.ANTHROPIC_API_KEY, undefined);
+  } finally {
+    process.env = original;
+  }
+});
+
+test("selected Kimi providers preserve either supported credential alias", () => {
+  const original = process.env;
+  try {
+    for (const provider of ["kimi", "kimi-coding"]) {
+      for (const key of ["KIMI_API_KEY", "KIMICODE_API_KEY"]) {
+        process.env = {
+          CLAWSWEEPER_RUNNER: "openclaw",
+          CLAWSWEEPER_OPENCLAW_MODEL: `${provider}/k3`,
+          [key]: "synthetic-kimi-provider-token",
+          OPENAI_API_KEY: "unrelated-provider-token",
+        };
+        const selected = codexEnv();
+        assert.equal(selected[key], process.env[key], `${provider}: ${key}`);
+        assert.equal(selected.OPENAI_API_KEY, undefined);
+      }
+    }
   } finally {
     process.env = original;
   }

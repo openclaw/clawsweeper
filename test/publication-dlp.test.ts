@@ -186,9 +186,145 @@ test("authenticated proxy capabilities are redacted and block review publication
     assert.ok(!markdown.includes("synthetic%2Dproxy-password"));
     assert.match(markdown, /^review_status: failed$/m);
     assert.equal(isApplyCloseCandidateReport(markdown), false);
-    assert.ok(
-      report("Use http://public.proxy.example:8080").includes("http://public.proxy.example:8080"),
+    assert.equal(
+      readReviewRecord(report("Use http://public.proxy.example:8080"))?.decision.summary,
+      "Use http://public.proxy.example:8080",
     );
+  } finally {
+    process.env = original;
+  }
+});
+
+test("short capability values preserve structured keys and common content", async () => {
+  const { redactPublication, registerPublicationCapability } =
+    await import("../dist/publication-dlp.js");
+  const original = process.env;
+  try {
+    for (const value of [
+      "root",
+      "true",
+      "1",
+      "/tmp",
+      "/a/long/path/that/is/not/a/credential",
+      "123456789012345678901234",
+      "ordinarycommonwordvalue",
+    ]) {
+      process.env = { CODEX_UNKNOWN_CAPABILITY: value };
+      registerPublicationCapability(value);
+      const input = { rootCauseCluster: value, unchanged: "root true 1 /tmp" };
+      assert.deepEqual(redactPublication(input), { value: input, redactions: 0 });
+      assert.deepEqual(redactPublication(JSON.stringify(input)), {
+        value: JSON.stringify(input),
+        redactions: 0,
+      });
+    }
+    process.env = { CODEX_UNKNOWN_CAPABILITY: "rootCauseClusterToken123456" };
+    const json = '{"rootCauseClusterToken123456":"rootCauseClusterToken123456"}';
+    assert.deepEqual(JSON.parse(redactPublication(json).value), {
+      rootCauseClusterToken123456: "[redacted credential]",
+    });
+    assert.equal(
+      redactPublication(`metadata: ${json}\n`).value,
+      'metadata: {"rootCauseClusterToken123456":"[redacted credential]"}\n',
+    );
+    const quotedToken = 'synthetic-"quoted"-token-123456';
+    process.env.CODEX_UNKNOWN_CAPABILITY = quotedToken;
+    assert.equal(
+      JSON.parse(redactPublication(JSON.stringify(quotedToken)).value),
+      "[redacted credential]",
+    );
+  } finally {
+    process.env = original;
+  }
+});
+
+test("file-backed Codex auth tokens stay registered after the auth store is removed", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { codexEnv } = await import("../dist/codex-env.js");
+  const original = process.env;
+  const home = mkdtempSync(join(tmpdir(), "dlp-auth-"));
+  const token = "synthetic-file-auth-capability-123456";
+  try {
+    writeFileSync(
+      join(home, "auth.json"),
+      JSON.stringify({ tokens: { access_token: token, refresh_token: "root" } }),
+    );
+    process.env = { CODEX_HOME: home };
+    codexEnv({ preserveCodexAuth: true });
+    rmSync(home, { recursive: true, force: true });
+    process.env = {};
+    const markdown = report(`Evidence ${token}`);
+    assert.ok(!markdown.includes(token));
+    assert.match(markdown, /^review_status: failed$/m);
+  } finally {
+    process.env = original;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("render-time body redaction invalidates the persisted close decision", async () => {
+  const { publicationSafeReport } = await import("../dist/review-record.js");
+  const { validateReportClose } = await import("../dist/clawsweeper-apply-close-decision.js");
+  const { validateCloseDecision } = await import("../dist/clawsweeper-close-decision.js");
+  const original = process.env;
+  const token = "synthetic-late-body-capability-123456";
+  try {
+    process.env = {};
+    const stored = report("Already implemented.") + `\n## Extra evidence\n${token}\n`;
+    assert.equal(readReviewRecord(stored)?.decision.decision, "close");
+    process.env = { GH_TOKEN: token };
+    const safe = publicationSafeReport(stored);
+    const comment = renderReviewCommentFromReport(safe, "implemented_on_main");
+    assert.ok(!safe.includes(token));
+    assert.ok(!comment.includes(token));
+    assert.match(safe, /^review_status: failed$/m);
+    process.env = {};
+    assert.equal(readReviewRecord(safe)?.decision.decision, "keep_open");
+    assert.equal(
+      validateReportClose({ validateCloseDecision }, item(), safe, "implemented_on_main", {
+        requireCloseComment: false,
+      }).ok,
+      false,
+    );
+  } finally {
+    process.env = original;
+  }
+});
+
+test("render-time compromised reports cannot synchronize PR labels", async () => {
+  const { publicationSafeReport } = await import("../dist/review-record.js");
+  const { syncApplyPullRequestLabels } =
+    await import("../dist/clawsweeper-apply-pull-request-labels.js");
+  const original = process.env;
+  const token = "synthetic-label-body-capability-123456";
+  try {
+    process.env = {};
+    const stored = report("Already implemented.") + `\n## Extra evidence\n${token}\n`;
+    process.env = { GH_TOKEN: token };
+    const safe = publicationSafeReport(stored);
+    const result = syncApplyPullRequestLabels(
+      new Proxy(
+        {},
+        {
+          get() {
+            return () => assert.fail("No label operation is allowed");
+          },
+        },
+      ) as Parameters<typeof syncApplyPullRequestLabels>[0],
+      {
+        markdown: safe,
+        item: item({ kind: "pull_request" }),
+        number: 123,
+        dryRun: false,
+        staleReviewHead: null,
+        labelSyncFreshEnough: () => true,
+        currentItemContext: () => ({ issue: {}, comments: [], timeline: [] }),
+        onMutation: () => assert.fail("No mutation is allowed"),
+      },
+    );
+    assert.equal(result.changed, false);
   } finally {
     process.env = original;
   }

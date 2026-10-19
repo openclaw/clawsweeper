@@ -84,32 +84,34 @@ try {
   assert.match(guard.reason, /attempted to publish a credential/);
   const denyGh = join(root, "deny-github.mjs");
   writeFileSync(denyGh, 'throw new Error("Proof forbids every GitHub request");\n');
-  const apply = spawnSync(
-    process.execPath,
-    [
-      "dist/clawsweeper.js",
-      "apply-decisions",
-      "--target-repo",
-      subject.repo,
-      "--items-dir",
-      itemsDir,
-      "--closed-dir",
-      join(root, "closed"),
-      "--plans-dir",
-      join(root, "plans"),
-      "--report-path",
-      join(root, "apply.json"),
-      "--skip-dashboard",
-      "--item-number",
-      String(subject.number),
-      "--dry-run",
-    ],
-    {
-      encoding: "utf8",
-      timeout: 30_000,
-      env: { ...process.env, GH_BIN: process.execPath, GH_BIN_ARGS: JSON.stringify([denyGh]) },
-    },
-  );
+  const runApply = () =>
+    spawnSync(
+      process.execPath,
+      [
+        "dist/clawsweeper.js",
+        "apply-decisions",
+        "--target-repo",
+        subject.repo,
+        "--items-dir",
+        itemsDir,
+        "--closed-dir",
+        join(root, "closed"),
+        "--plans-dir",
+        join(root, "plans"),
+        "--report-path",
+        join(root, "apply.json"),
+        "--skip-dashboard",
+        "--item-number",
+        String(subject.number),
+        "--dry-run",
+      ],
+      {
+        encoding: "utf8",
+        timeout: 30_000,
+        env: { ...process.env, GH_BIN: process.execPath, GH_BIN_ARGS: JSON.stringify([denyGh]) },
+      },
+    );
+  const apply = runApply();
   writeFileSync(join(root, "apply.log"), `${apply.stdout}\n${apply.stderr}`);
   assert.equal(apply.status, 0, `apply failed: ${apply.stderr}`);
   const applied = JSON.parse(readFileSync(join(root, "apply.json"), "utf8"));
@@ -117,6 +119,34 @@ try {
   assert.equal(applied.length, 1);
   assert.equal(applied[0].number, subject.number);
   assert.equal(applied[0].action, "kept_open");
+  writeFileSync(join(root, "decision-time.md"), markdown);
+  const lateReport =
+    markdownFor({
+      item: subject,
+      decision: {
+        ...closeDecision({ summary: "Already implemented." }),
+        localCheckoutAccess: "verified",
+      },
+      context: { issue: {}, comments: [], timeline: [] },
+      git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true },
+      action: { actionTaken: "proposed_close" },
+      reviewMode: "propose",
+      snapshotHash: "synthetic-snapshot",
+      contentDigest: "synthetic-content",
+      reviewPolicy: "synthetic-policy",
+      runtime: { model: "Codex", reasoningEffort: "high" },
+    }) + `\n## Additional evidence\n${token}\n`;
+  assert.equal(readReviewRecord(lateReport).decision.decision, "close");
+  writeFileSync(result.reportPath, lateReport);
+  const lateApply = runApply();
+  writeFileSync(join(root, "late-apply.log"), `${lateApply.stdout}\n${lateApply.stderr}`);
+  assert.equal(lateApply.status, 0, lateApply.stderr);
+  const persistedLate = readFileSync(result.reportPath, "utf8");
+  assert.ok(!persistedLate.includes(token));
+  assert.match(persistedLate, /^review_status: failed$/m);
+  assert.equal(readReviewRecord(persistedLate).decision.decision, "keep_open");
+  const lateActions = JSON.parse(readFileSync(join(root, "apply.json"), "utf8"));
+  assert.equal(lateActions[0].action, "kept_open");
   const sourceHead = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const diff = execFileSync("git", ["diff", "HEAD"], { encoding: "utf8" });
   const proof = {
@@ -133,6 +163,8 @@ try {
     applyGuard: guard,
     applyExit: apply.status,
     githubRequests: 0,
+    lateBodyRedactionPersisted: true,
+    lateBodyApplyAction: lateActions[0].action,
     limits:
       "Synthetic decision through the production report writer/renderer and dry-run apply CLI; no inference or live GitHub writes.",
   };

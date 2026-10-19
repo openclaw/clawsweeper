@@ -1,3 +1,4 @@
+import { redactPublication } from "./publication-dlp.js";
 import {
   closeSync,
   fstatSync,
@@ -113,7 +114,7 @@ if (
   options.outputLastMessagePath
 ) {
   try {
-    writeManagedResult(options.outputLastMessagePath, turn.text);
+    writeManagedResult(options.outputLastMessagePath, redactPublication(turn.text).value);
   } catch (error) {
     outputLastMessageError = error instanceof Error ? error : new Error(String(error));
   }
@@ -127,7 +128,9 @@ writeFileSync(
     // A native failure can also omit the final stdout frame. Preserve whether
     // the process itself failed so callers cannot trust interrupted stderr.
     ...(error ? { error: serializedError(error), processError: Boolean(turn.processError) } : {}),
-    ...(decisionRepairError ? { decisionRepairError } : {}),
+    ...(decisionRepairError
+      ? { decisionRepairError: redactPublication(decisionRepairError).value }
+      : {}),
     stdout: codexOutputTail(stdout),
     stderr: codexOutputTail(stderr),
   }),
@@ -232,7 +235,7 @@ function writeManagedResult(path: string, text: string): void {
 function serializedError(error: Error): { message: string; code?: string } {
   const code = "code" in error ? (error as NodeJS.ErrnoException).code : undefined;
   return {
-    message: error.message,
+    message: redactPublication(error.message).value,
     ...(typeof code === "string" ? { code } : {}),
   };
 }

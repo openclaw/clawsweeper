@@ -1,3 +1,4 @@
+import { publicationSafeReport } from "./review-record.js";
 import { sha256 } from "./content-hash.js";
 import { GitHubItemMovedError } from "./github-item-identity.js";
 import {
@@ -529,7 +530,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         runtimeBudget.onYield?.(reason, false);
         return;
       }
-      let markdown = entry.markdown;
+      let markdown = publicationSafeReport(entry.markdown);
+      if (markdown !== entry.markdown) {
+        writeFileSync(path, markdown, "utf8");
+        entry.markdown = markdown;
+      }
       const restrictedPublication = Boolean(reportPublicationPolicy(markdown));
       // Background apply has no publication claim. Canonical restrictions outlive
       // queue completion, so only the exact publisher can sync this report.

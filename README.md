@@ -760,14 +760,22 @@ publication, and queue lifecycle.
   [`src/codex-env.ts`](src/codex-env.ts): OS/locale/temp paths, CI metadata,
   proxy/CA settings, read-only Git isolation controls, and the reviewer tool
   paths. The target read token is admitted only through an explicit `GH_TOKEN`
-  override. OpenClaw retains its supported provider keys; local-only Codex
+  override. OpenClaw retains only credentials referenced by the selected provider, including
+  custom provider blocks; local-only Codex
   review retains its explicit authentication preservation behavior. Unknown
   job-level variables and secrets are dropped.
 - [`src/publication-dlp.ts`](src/publication-dlp.ts) redacts exact runtime
-  capability values and known GitHub, OpenAI, private-key, and AWS credential
+  credential-like capability values (at least 20 characters, excluding common
+  words, paths, and numeric values), including file-backed Codex auth, and known
+  GitHub, OpenAI, private-key, and AWS credential
   shapes before report/comment publication. Redactions emit a value-free JSON
   counter. A review with a redaction is failed, retained as a keep-open decision,
-  and blocked from close/apply even after reload. This is a literal-value and
+  and blocked from close/apply even after reload. Render-time detection also
+  invalidates the persisted decision before apply can change labels or close.
+  Final-message files and shared Codex/OpenClaw stdout/stderr captures are
+  redacted before writing; diagnostic streams above the bounded memory buffer
+  are omitted. Structured redaction preserves object keys and JSON syntax.
+  This is a literal-value and
   credential-shape boundary, not a detector for encoded or fragmented secrets.
 - Reviews fail if Codex leaves tracked or untracked changes behind.
 - Snapshot changes block apply unless the only change is the bot’s own review

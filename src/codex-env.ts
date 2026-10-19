@@ -1,6 +1,8 @@
+import { openclawProviderEnv } from "./openclaw-process.js";
 import {
   registerOpenclawProviderCapabilities,
   registerPublicationCapability,
+  registerCodexAuthCapabilities,
 } from "./publication-dlp.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -132,27 +134,12 @@ const OPENCLAW_ENV_ALLOWLIST = new Set([
   "CLAWSWEEPER_OPENCLAW_MODEL",
   "CLAWSWEEPER_OPENCLAW_BIN",
   "CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON",
-  "CLAWSWEEPER_OPENCLAW_OPENAI_KEY",
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-  "OPENROUTER_API_KEY",
-  "XAI_API_KEY",
-  "GROQ_API_KEY",
-  "MINIMAX_API_KEY",
-  "KIMI_API_KEY",
-  "KIMICODE_API_KEY",
-  "MOONSHOT_API_KEY",
-  "CEREBRAS_API_KEY",
-  "ZAI_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "MISTRAL_API_KEY",
 ]);
 
 export function codexEnv(options: CodexEnvOptions = {}): NodeJS.ProcessEnv {
+  registerCodexAuthCapabilities();
   const env: NodeJS.ProcessEnv = {};
-  const openclaw = process.env.CLAWSWEEPER_RUNNER === "openclaw";
+  const openclaw = process.env.CLAWSWEEPER_RUNNER?.trim() === "openclaw";
   if (openclaw)
     registerOpenclawProviderCapabilities(process.env.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON);
   for (const [key, value] of Object.entries(process.env)) {
@@ -160,12 +147,14 @@ export function codexEnv(options: CodexEnvOptions = {}): NodeJS.ProcessEnv {
       CODEX_ENV_ALLOWLIST.has(key) ||
       /^LC_[A-Z_]+$/.test(key) ||
       (openclaw && OPENCLAW_ENV_ALLOWLIST.has(key)) ||
-      (options.preserveCodexAuth &&
+      (!openclaw &&
+        options.preserveCodexAuth &&
         ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"].includes(key))
     ) {
       env[key] = value;
     }
   }
+  if (openclaw) Object.assign(env, openclawProviderEnv(process.env));
   const ghToken = options.ghToken?.trim();
   if (ghToken) {
     env.GH_TOKEN = ghToken;
