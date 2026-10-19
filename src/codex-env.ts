@@ -153,7 +153,8 @@ export function codexEnv(options: CodexEnvOptions = {}): NodeJS.ProcessEnv {
         options.preserveCodexAuth &&
         ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"].includes(name))
     ) {
-      env[key] = value;
+      // Store the canonical spelling so later case-sensitive filters (pickEnv) keep it.
+      env[name] = value;
     }
   }
   if (openclaw) Object.assign(env, openclawProviderEnv(process.env));

@@ -322,8 +322,10 @@ test("Windows env names match the allowlist case-insensitively", () => {
       Some_New_Secret: "synthetic-secret",
     };
     const env = codexEnv();
-    assert.equal(env.Path, "C:\\Windows\\System32");
+    assert.equal(env.PATH, "C:\\Windows\\System32");
+    assert.equal(env.Path, undefined);
     assert.equal(env.Some_New_Secret, undefined);
+    assert.equal(env.SOME_NEW_SECRET, undefined);
   } finally {
     Object.defineProperty(process, "platform", platform);
     process.env = original;
