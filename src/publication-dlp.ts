@@ -104,12 +104,8 @@ export function registerOpenclawProviderCapabilities(
         registerComponent(url.username);
         registerComponent(url.password);
         for (const parameter of url.search.slice(1).split("&")) {
-          const [name, credential] = new URLSearchParams(parameter).entries().next().value ?? [];
-          if (
-            name &&
-            credential &&
-            /^(?:sig|signature|token|key|api_key|access_token|x-amz-signature|code)$/i.test(name)
-          ) {
+          const [, credential] = new URLSearchParams(parameter).entries().next().value ?? [];
+          if (credential && credentialLike(credential)) {
             registerComponent(credential);
             registerPublicationCapability(encodeURIComponent(credential));
             registerPublicationCapability(parameter.slice(parameter.indexOf("=") + 1));

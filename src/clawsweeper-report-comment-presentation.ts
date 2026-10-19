@@ -629,11 +629,3 @@ export function prepareReviewCommentFromReport(
   const failed = redactPublication(renderReviewComment(safe, "none", options));
   return { markdown: safe, comment: failed.value };
 }
-
-export function renderReviewCommentFromReport(
-  markdown: string,
-  reason: CloseReason,
-  options: ReviewCommentRenderOptions = {},
-): string {
-  return prepareReviewCommentFromReport(markdown, reason, options).comment;
-}

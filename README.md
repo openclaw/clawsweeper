@@ -766,7 +766,9 @@ publication, and queue lifecycle.
   job-level variables and secrets are dropped. Hosted Codex and OpenClaw children
   get a fresh credential-free HOME and XDG config/cache directories inside their
   per-review temporary root, removed after exit; explicit local Codex auth keeps
-  the real HOME. CODEX_HOME retains its existing authentication/config location.
+  the real HOME. Hosted Git and GitHub CLI config paths point to empty files or
+  directories under that temporary HOME, with system Git config disabled; parent
+  config pointers are withheld. CODEX_HOME retains its existing authentication/config location.
 - [`src/publication-dlp.ts`](src/publication-dlp.ts) redacts exact runtime
   credential-like capability values (at least 20 characters, excluding common
   words, paths, and numeric values), including file-backed Codex auth, and known
@@ -774,7 +776,8 @@ publication, and queue lifecycle.
   shapes before report/comment publication. Redactions emit a value-free JSON
   counter. A review with a redaction is failed, retained as a keep-open decision,
   and blocked from close/apply even after reload. Render-time detection also
-  invalidates the persisted decision before apply can change labels or close.
+  invalidates the persisted decision in report writing and local-history bootstrap,
+  as well as before apply can change labels or close.
   Final-message files and shared Codex/OpenClaw stdout/stderr captures are
   redacted before writing; redaction in any captured turn (including an earlier
   turn before decision repair) fails the final review. Diagnostic streams above
@@ -782,8 +785,9 @@ publication, and queue lifecycle.
   syntax; matching keys become `[redacted credential]` with numbered suffixes
   when needed to retain colliding fields. Selected OpenClaw provider headers
   register embedded environment references and authorization payloads as well
-  as complete credential values. URL leaves also register userinfo and authentication
-  query values, including URL-encoded forms, without registering plain URLs or model IDs.
+  as complete credential values. URL leaves also register userinfo and every
+  credential-like query value regardless of parameter name, including URL-encoded
+  forms, without registering plain URLs or model IDs.
   This is a literal-value and
   credential-shape boundary, not a detector for encoded or fragmented secrets.
 - Reviews fail if Codex leaves tracked or untracked changes behind.

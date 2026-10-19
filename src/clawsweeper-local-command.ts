@@ -39,7 +39,7 @@ export type LocalRangeCommandDependencies = PrepareReviewDependencies &
     | "reviewActionForDecision"
     | "reportFileName"
     | "markdownFor"
-    | "renderReviewCommentFromReport"
+    | "prepareReviewCommentFromReport"
     | "updateBulkFilerDetectedFrontMatter"
   > & { resolveProvenancePull: CommitPullResolver };
 

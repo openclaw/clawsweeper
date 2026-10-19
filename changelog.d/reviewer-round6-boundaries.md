@@ -1,0 +1,1 @@
+- Register credential-like provider URL query values regardless of parameter name, isolate hosted Git/GitHub config pointers, and persist render-time credential failures in report and local-history paths before apply.

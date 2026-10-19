@@ -1,4 +1,4 @@
-import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { renderReviewCommentFromReport } from "./helpers.ts";
 import { markdownFor } from "../dist/clawsweeper-report-document.js";
 import { parseDecision } from "../dist/clawsweeper.js";
 import { sectionValue } from "../dist/report-front-matter.js";

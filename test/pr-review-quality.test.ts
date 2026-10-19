@@ -1,4 +1,4 @@
-import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { renderReviewCommentFromReport } from "./helpers.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseDecision, reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";

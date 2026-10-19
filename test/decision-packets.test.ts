@@ -13,7 +13,7 @@ import {
   syncDecisionPacketRecord,
 } from "../dist/decision-packets.js";
 import { parseDecision } from "../dist/clawsweeper.js";
-import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { renderReviewCommentFromReport } from "./helpers.ts";
 import { reviewRecordFrontMatterLine } from "../dist/review-record.js";
 import { closeDecision, item, tmpPrefix, withReviewRecord } from "./helpers.ts";
 

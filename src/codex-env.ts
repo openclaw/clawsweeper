@@ -159,6 +159,8 @@ export function codexEnv(options: CodexEnvOptions = {}): NodeJS.ProcessEnv {
     // Keep Codex configuration/auth at its existing explicit location, not under the new HOME.
     env.CODEX_HOME ||= join(process.env.HOME || homedir(), ".codex");
     for (const key of ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"]) delete env[key];
+    for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GH_CONFIG_DIR"]) delete env[key];
+    env.GIT_CONFIG_NOSYSTEM = "1";
   }
   const ghToken = options.ghToken?.trim();
   if (ghToken) {

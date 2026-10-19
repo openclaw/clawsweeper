@@ -1,4 +1,4 @@
-import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { prepareReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -1444,4 +1444,11 @@ export function mockGhBinEnv(ghPath: string, binDir?: string): NodeJS.ProcessEnv
         }),
     ...(binDir ? { PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}` } : {}),
   };
+}
+
+// Test-only presentation convenience; production owners must persist prepared markdown.
+export function renderReviewCommentFromReport(
+  ...args: Parameters<typeof prepareReviewCommentFromReport>
+): string {
+  return prepareReviewCommentFromReport(...args).comment;
 }

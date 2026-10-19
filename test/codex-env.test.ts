@@ -1,12 +1,49 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { codexEnv } from "../dist/codex-env.js";
 
 const builder = codexEnv;
+test("hosted config pointers cannot expose parent credential files", async () => {
+  const { isolatedReviewerHome } = await import("../dist/reviewer-home.js");
+  const original = process.env;
+  const root = mkdtempSync(join(tmpdir(), "config-pointers-"));
+  const credentialFile = join(root, "parent-config");
+  writeFileSync(credentialFile, "synthetic-parent-config-token-123456");
+  const keys = [
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GH_CONFIG_DIR",
+    "XDG_CONFIG_HOME",
+    "NPM_CONFIG_USERCONFIG",
+    "DOCKER_CONFIG",
+  ];
+  try {
+    process.env = { ...original, ...Object.fromEntries(keys.map((key) => [key, credentialFile])) };
+    for (const runner of ["codex", "openclaw"]) {
+      process.env.CLAWSWEEPER_RUNNER = runner;
+      const child = codexEnv({ preserveCodexAuth: runner === "openclaw" });
+      for (const key of keys) assert.notEqual(child[key], credentialFile, `${runner}: ${key}`);
+      const isolated = isolatedReviewerHome(child, join(root, runner));
+      assert.equal(isolated.GIT_CONFIG_NOSYSTEM, "1");
+      for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]) {
+        assert.ok(isolated[key]!.startsWith(isolated.HOME!));
+        assert.equal(readFileSync(isolated[key]!, "utf8"), "");
+      }
+      assert.ok(isolated.GH_CONFIG_DIR!.startsWith(isolated.HOME!));
+    }
+    process.env.CLAWSWEEPER_RUNNER = "codex";
+    const local = codexEnv({ preserveCodexAuth: true });
+    for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GH_CONFIG_DIR"])
+      assert.equal(local[key], credentialFile);
+  } finally {
+    process.env = original;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 test(
   `${builder.name} removes inherited Git configuration before native Git runs`,
   {
@@ -58,9 +95,9 @@ test(
         "explicit",
       );
       git(env, "status", "--porcelain");
-      for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"]) {
-        assert.equal(env[key], process.env[key]);
-      }
+      assert.equal(env.GIT_CONFIG_GLOBAL, undefined);
+      assert.equal(env.GIT_CONFIG_SYSTEM, undefined);
+      assert.equal(env.GIT_CONFIG_NOSYSTEM, "1");
       for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "CLAWSWEEPER_TEST_GH_TOKEN"])
         assert.equal(env[key], undefined);
       assert.ok(
@@ -129,6 +166,7 @@ test("codexEnv admits only known runtime variables and an explicit read token", 
       CODEX_HOME: "/synthetic/codex",
       GH_TOKEN: "explicit-read",
       GIT_OPTIONAL_LOCKS: "0",
+      GIT_CONFIG_NOSYSTEM: "1",
     });
   } finally {
     process.env = original;

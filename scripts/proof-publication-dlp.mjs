@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, join, delimiter } from "node:path";
 import { writePreparedReviewReport } from "../dist/clawsweeper-review-item.js";
 import { markdownFor } from "../dist/clawsweeper-report-document.js";
-import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { prepareReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import { reviewActionForDecision } from "../dist/clawsweeper-review-action.js";
 import { validateReportClose } from "../dist/clawsweeper-apply-close-decision.js";
 import { validateCloseDecision } from "../dist/clawsweeper-close-decision.js";
@@ -60,11 +60,11 @@ try {
       reviewActionForDecision,
       reportFileName: (_repo, number) => `${number}.md`,
       markdownFor,
-      renderReviewCommentFromReport,
+      prepareReviewCommentFromReport,
     },
   );
   const markdown = readFileSync(result.reportPath, "utf8");
-  const comment = renderReviewCommentFromReport(markdown, "none");
+  const comment = prepareReviewCommentFromReport(markdown, "none").comment;
   writeFileSync(join(root, "comment.md"), comment);
   for (const content of [markdown, comment]) {
     assert.ok(content.includes("[redacted credential]"));
@@ -252,6 +252,56 @@ if (process.argv.includes("resume")) {
   const renderPrefix = "synthetic-render-proof-capability-123456";
   const renderToken = `${renderPrefix}.`;
   const renderOnlyResults = [];
+  const writerRenderResults = [];
+  for (const history of [null, join(root, "writer-history.md")]) {
+    process.env.GH_TOKEN = renderToken;
+    const written = writePreparedReviewReport(
+      {
+        item: subject,
+        context: { issue: {}, comments: [], timeline: [] },
+        decision: { ...closeDecision({ summary: renderPrefix }), localCheckoutAccess: "verified" },
+        git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true },
+        runtime: { model: "Codex", reasoningEffort: "high" },
+        artifactDir: itemsDir,
+        snapshotHash: "synthetic-snapshot",
+        contentDigest: "synthetic-content",
+        reviewPolicy: "synthetic-policy",
+        structuralRecord: null,
+        itemLocalReviewHistoryPath: history,
+        previousLocalReviewCommentBody: "",
+        localRange: false,
+        metadataBytes: 1024 * 1024,
+        writeOutputReport: (_item, path, markdown) => writeFileSync(path, markdown),
+        writeOutputMetadata: (path, markdown) => writeFileSync(path, markdown),
+      },
+      {
+        reviewActionForDecision,
+        reportFileName: () => `${subject.number}.md`,
+        markdownFor,
+        prepareReviewCommentFromReport,
+      },
+    );
+    const persisted = readFileSync(written.reportPath, "utf8");
+    assert.match(persisted, /^review_status: failed$/m);
+    assert.equal(readReviewRecord(persisted).decision.decision, "keep_open");
+    const applied = runApply();
+    assert.equal(applied.status, 0, applied.stderr);
+    const actions = JSON.parse(readFileSync(join(root, "apply.json"), "utf8"));
+    assert.equal(actions[0].action, "kept_open");
+    const suffix = history ? "history" : "no-history";
+    writeFileSync(join(root, `writer-render-${suffix}.md`), persisted);
+    writeFileSync(
+      join(root, `writer-render-${suffix}-apply.log`),
+      `${applied.stdout}\n${applied.stderr}`,
+    );
+    writerRenderResults.push({
+      history: Boolean(history),
+      persistedFailed: true,
+      decision: "keep_open",
+      applyAction: actions[0].action,
+      githubRequests: 0,
+    });
+  }
   for (const kind of ["issue", "pull_request"]) {
     const stored = markdownFor({
       item: { ...subject, kind },
@@ -316,6 +366,7 @@ if (process.argv.includes("resume")) {
     lateBodyRedactionPersisted: true,
     lateBodyApplyAction: lateActions[0].action,
     renderOnlyResults,
+    writerRenderResults,
     limits:
       "Synthetic decision through the production report writer/renderer and dry-run apply CLI; no inference or live GitHub writes.",
   };

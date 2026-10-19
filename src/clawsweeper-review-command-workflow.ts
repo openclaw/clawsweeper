@@ -110,7 +110,11 @@ export function withRunnerPreflightProvenance(markdown: string): string {
 export function localExactBootstrapReviewCommentBody(
   markdown: string,
   item: Pick<Item, "repo" | "number">,
-  renderReviewCommentFromReport: (markdown: string, reason: "none") => string,
+  prepareReviewCommentFromReport: (
+    markdown: string,
+    reason: "none",
+  ) => { markdown: string; comment: string },
+  persistReport: (markdown: string) => void,
 ): string {
   if (
     frontMatterValue(markdown, "repository")?.toLowerCase() !== item.repo.toLowerCase() ||
@@ -118,7 +122,9 @@ export function localExactBootstrapReviewCommentBody(
   ) {
     return "";
   }
-  return renderReviewCommentFromReport(markdown, "none");
+  const prepared = prepareReviewCommentFromReport(markdown, "none");
+  if (prepared.markdown !== markdown) persistReport(prepared.markdown);
+  return prepared.comment;
 }
 
 export function restoreVerifiedMaintainerAuthorAssociation(
@@ -185,7 +191,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     pullRequestHeadSha,
     recordReviewLogPublication,
     removePullRequestReviewTree,
-    renderReviewCommentFromReport,
+    prepareReviewCommentFromReport,
     reportFileName,
     restoreTreeModes,
     reviewActionForDecision,
@@ -662,7 +668,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           previousLocalReviewCommentBody = localExactBootstrapReviewCommentBody(
             bootstrapReport,
             item,
-            renderReviewCommentFromReport,
+            prepareReviewCommentFromReport,
+            (safe) => writeOutputReport(item, join(artifactDir, reportFileName(item.repo, item.number)), safe),
           );
         }
         const existingPriorReview = existingReview(item, itemsDir);

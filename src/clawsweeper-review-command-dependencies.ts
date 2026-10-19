@@ -253,11 +253,11 @@ export interface CreateReviewCommandWorkflowDependencies {
     retryable?: boolean;
   }) => ActionEvent | null;
   removePullRequestReviewTree: (options: { targetDir: string; worktreeDir: string }) => boolean;
-  renderReviewCommentFromReport: (
+  prepareReviewCommentFromReport: (
     markdown: string,
     reason: "none",
     options?: { previousReviewCommentBody?: string },
-  ) => string;
+  ) => { markdown: string; comment: string };
   repoFromArgs: (args: Args) => RepositoryProfile;
   reportFileName: (repo: string, number: number) => string;
   resolveReviewCheckout: (options: {

@@ -41,6 +41,11 @@ const record = {
   xdgConfig: process.env.XDG_CONFIG_HOME,
   xdgCache: process.env.XDG_CACHE_HOME,
   homeFiles: fs.readdirSync(process.env.HOME),
+  gitConfig: process.env.GIT_CONFIG_GLOBAL,
+  gitSystemConfig: process.env.GIT_CONFIG_SYSTEM,
+  gitNoSystem: process.env.GIT_CONFIG_NOSYSTEM,
+  ghConfig: process.env.GH_CONFIG_DIR,
+  gitConfigContent: process.env.GIT_CONFIG_GLOBAL ? fs.readFileSync(process.env.GIT_CONFIG_GLOBAL, "utf8") : null,
   configPath: process.env.OPENCLAW_CONFIG_PATH,
   workspaceDir: process.env.OPENCLAW_WORKSPACE_DIR,
   config: JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8")),
@@ -96,6 +101,8 @@ test("OpenClaw process emits isolated config and invocation, joins payloads, and
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-test-"));
   const recordPath = join(root, "record.json");
   const binary = fakeOpenclaw(root);
+  const parentConfig = join(root, "parent-config");
+  writeFileSync(parentConfig, "synthetic-parent-config-capability-123456");
   try {
     const result = runOpenclawProcess({
       label: "Review #42",
@@ -105,6 +112,9 @@ test("OpenClaw process emits isolated config and invocation, joins payloads, and
       cwd: root,
       env: {
         ...process.env,
+        GIT_CONFIG_GLOBAL: parentConfig,
+        GIT_CONFIG_SYSTEM: parentConfig,
+        GH_CONFIG_DIR: root,
         CLAWSWEEPER_OPENCLAW_BIN: binary,
         CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON: JSON.stringify({
           kimi: {
@@ -131,6 +141,11 @@ test("OpenClaw process emits isolated config and invocation, joins payloads, and
     assert.equal(record.xdgConfig, join(record.home, ".config"));
     assert.equal(record.xdgCache, join(record.home, ".cache"));
     assert.deepEqual(record.homeFiles.sort(), [".cache", ".config"]);
+    assert.equal(record.gitConfig, join(record.xdgConfig, "gitconfig"));
+    assert.equal(record.gitSystemConfig, join(record.xdgConfig, "gitconfig-system"));
+    assert.equal(record.gitConfigContent, "");
+    assert.equal(record.gitNoSystem, "1");
+    assert.equal(record.ghConfig, join(record.xdgConfig, "gh"));
     assert.equal(existsSync(record.home), false);
     assert.equal(record.prompt, "Inspect this patch.");
     assert.deepEqual(record.config, {

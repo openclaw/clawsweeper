@@ -126,7 +126,9 @@ import { lockedConversationApplyReason } from "./clawsweeper-item-policy.js";
 import { prAutoCloseExemptDecisionReason } from "./clawsweeper-apply-guard-activity.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 
-export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWorkflowDependencies) {
+export function createApplyDecisionWorkflow(
+  dependencies: Omit<CreateApplyDecisionWorkflowDependencies, "renderReviewCommentFromReport">,
+) {
   const {
     actionLedgerItemKey,
     applyBlockingProtectedLabels,
@@ -1799,7 +1801,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         }
         const needsLockedCommentMutation =
           lockedIssueReason &&
-          requiresLockedReviewCommentMutation(dependencies, {
+          requiresLockedReviewCommentMutation(applyReadDependencies, {
             action,
             closeReason: closeReason ?? "none",
             commentSyncMinAgeDays,

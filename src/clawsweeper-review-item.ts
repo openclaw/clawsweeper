@@ -248,7 +248,7 @@ export function writePreparedReviewReport(
   },
   dependencies: Pick<
     CreateReviewCommandWorkflowDependencies,
-    "reviewActionForDecision" | "reportFileName" | "markdownFor" | "renderReviewCommentFromReport"
+    "reviewActionForDecision" | "reportFileName" | "markdownFor" | "prepareReviewCommentFromReport"
   >,
 ) {
   const {
@@ -272,7 +272,7 @@ export function writePreparedReviewReport(
     transformReport,
     onReport,
   } = options;
-  const { reviewActionForDecision, reportFileName, markdownFor, renderReviewCommentFromReport } =
+  const { reviewActionForDecision, reportFileName, markdownFor, prepareReviewCommentFromReport } =
     dependencies;
   const action = reviewActionForDecision({ item, decision, git, runtime });
   const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
@@ -295,19 +295,20 @@ export function writePreparedReviewReport(
         }
       : {}),
   });
-  const reportMarkdown = transformReport ? transformReport(markdown) : markdown;
+  const prepared = prepareReviewCommentFromReport(
+    transformReport ? transformReport(markdown) : markdown,
+    "none",
+    previousLocalReviewCommentBody
+      ? { previousReviewCommentBody: previousLocalReviewCommentBody }
+      : undefined,
+  );
+  const reportMarkdown = prepared.markdown;
   writeOutputReport(item, reportPath, reportMarkdown);
   onReport?.();
   if (itemLocalReviewHistoryPath) {
     const nextLocalReviewCommentBody =
       reviewStatusForDecision(decision) === "complete"
-        ? renderReviewCommentFromReport(
-            reportMarkdown,
-            "none",
-            previousLocalReviewCommentBody
-              ? { previousReviewCommentBody: previousLocalReviewCommentBody }
-              : undefined,
-          )
+        ? prepared.comment
         : previousLocalReviewCommentBody;
     if (nextLocalReviewCommentBody) {
       if (localRange) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { markdownFor } from "../dist/clawsweeper-report-document.js";
-import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { renderReviewCommentFromReport } from "./helpers.ts";
 import { readReviewRecord } from "../dist/review-record.js";
 import { isApplyCloseCandidateReport } from "../dist/clawsweeper-record-metadata.js";
 import { closeDecision, item } from "./helpers.ts";
@@ -449,6 +449,10 @@ test("literal provider URL authentication registers encoded and decoded componen
     "access_token",
     "X-Amz-Signature",
     "code",
+    "auth",
+    "apikey",
+    "client_secret",
+    "x-amz-security-token",
   ];
   const values = keys.map((_, index) => `Synthetic:URL:query:${index}:123456`);
   const url = new URL("https://provider.example.invalid/v1");
@@ -477,9 +481,129 @@ test("literal provider URL authentication registers encoded and decoded componen
     capabilities.map(() => "[redacted credential]"),
   );
   assert.equal(result.redactions, capabilities.length);
+  const benign = [
+    "ordinarywordwithmanyletters",
+    "1234567890123456789012345",
+    "/ordinary/path/with/many/segments",
+  ];
+  const benignUrl = new URL("https://ordinary.example.invalid");
+  benign.forEach((value, index) => benignUrl.searchParams.set(`param${index}`, value));
+  registerOpenclawProviderCapabilities(JSON.stringify({ custom: { baseUrl: benignUrl.href } }));
+  assert.equal(redactPublication(benign).redactions, 0);
   assert.equal(
     redactPublication("https://public.example.invalid/v1?model=ordinary-model-1234567890")
       .redactions,
     0,
   );
+});
+
+test("local history bootstrap persists a render-only failed record", async () => {
+  const { localExactBootstrapReviewCommentBody } =
+    await import("../dist/clawsweeper-review-command-workflow.js");
+  const { prepareReviewCommentFromReport } =
+    await import("../dist/clawsweeper-report-comment-presentation.js");
+  const original = process.env;
+  const prefix = "synthetic-bootstrap-render-capability-123456";
+  try {
+    process.env = {};
+    const stored = report(prefix).replaceAll(`${prefix}.`, prefix);
+    let persisted = stored;
+    process.env = { GH_TOKEN: `${prefix}.` };
+    const comment = localExactBootstrapReviewCommentBody(
+      stored,
+      item(),
+      prepareReviewCommentFromReport,
+      (markdown) => {
+        persisted = markdown;
+      },
+    );
+    assert.ok(!comment.includes(`${prefix}.`));
+    assert.match(persisted, /^review_status: failed$/m);
+    assert.equal(readReviewRecord(persisted).decision.decision, "keep_open");
+    assert.equal(isApplyCloseCandidateReport(persisted), false);
+  } finally {
+    process.env = original;
+  }
+});
+
+test("production report writer persists render-only compromise before history and apply", async () => {
+  const { writePreparedReviewReport } = await import("../dist/clawsweeper-review-item.js");
+  const { prepareReviewCommentFromReport } =
+    await import("../dist/clawsweeper-report-comment-presentation.js");
+  const { reviewActionForDecision } = await import("../dist/clawsweeper-review-action.js");
+  const { validateReportClose } = await import("../dist/clawsweeper-apply-close-decision.js");
+  const { validateCloseDecision } = await import("../dist/clawsweeper-close-decision.js");
+  const { syncApplyPullRequestLabels } =
+    await import("../dist/clawsweeper-apply-pull-request-labels.js");
+  const original = process.env;
+  const prefix = "synthetic-writer-render-capability-123456";
+  const token = `${prefix}.`;
+  try {
+    process.env = { GH_TOKEN: token };
+    for (const history of [null, "history.md"]) {
+      let persisted = "";
+      const result = writePreparedReviewReport(
+        {
+          item: item({ kind: "pull_request" }),
+          context: { issue: {}, comments: [], timeline: [] },
+          decision: { ...closeDecision({ summary: prefix }), localCheckoutAccess: "verified" },
+          git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true },
+          runtime: { model: "Codex", reasoningEffort: "high" },
+          artifactDir: ".",
+          snapshotHash: "synthetic",
+          contentDigest: "synthetic",
+          reviewPolicy: "synthetic",
+          structuralRecord: null,
+          itemLocalReviewHistoryPath: history,
+          previousLocalReviewCommentBody: "",
+          localRange: false,
+          metadataBytes: 1024 * 1024,
+          writeOutputReport: (_item, _path, markdown) => {
+            persisted = markdown;
+          },
+          writeOutputMetadata: () => {},
+        },
+        {
+          markdownFor,
+          reviewActionForDecision,
+          reportFileName: () => "123.md",
+          prepareReviewCommentFromReport,
+        },
+      );
+      assert.equal(result.reportMarkdown, persisted);
+      assert.match(persisted, /^review_status: failed$/m);
+      assert.equal(readReviewRecord(persisted).decision.decision, "keep_open");
+      assert.equal(
+        validateReportClose({ validateCloseDecision }, item(), persisted, "implemented_on_main", {
+          requireCloseComment: false,
+        }).ok,
+        false,
+      );
+      assert.equal(
+        syncApplyPullRequestLabels(
+          new Proxy(
+            {},
+            {
+              get() {
+                return () => assert.fail("Compromised report must not access labels");
+              },
+            },
+          ),
+          {
+            markdown: persisted,
+            item: item({ kind: "pull_request" }),
+            number: 123,
+            dryRun: false,
+            staleReviewHead: null,
+            labelSyncFreshEnough: () => true,
+            currentItemContext: () => ({ issue: {}, comments: [], timeline: [] }),
+            onMutation: () => assert.fail("No mutation allowed"),
+          },
+        ).changed,
+        false,
+      );
+    }
+  } finally {
+    process.env = original;
+  }
 });

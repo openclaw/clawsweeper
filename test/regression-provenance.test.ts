@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import * as provenance from "../dist/clawsweeper-regression-provenance.js";
 import { parseDecision } from "../dist/clawsweeper.js";
-import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { renderReviewCommentFromReport } from "./helpers.ts";
 import { ReviewRecordFormatError } from "../dist/review-record.js";
 import { closeDecision, reportFrontMatter, withReviewRecord } from "./helpers.ts";
 import { maintainerDecisionFromReport } from "../dist/decision-packets.js";
