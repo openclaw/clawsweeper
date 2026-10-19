@@ -128,7 +128,7 @@ test("apply does not close an item after it loses its mutation lease during clos
         type: "issue",
         item_updated_at: "2026-05-01T00:00:00Z",
       }),
-      { decision: "close", closeReason: "not_actionable_in_repo", closeComment: "Closing." },
+      { decision: "close", closeReason: "stale_insufficient_info", closeComment: "Closing." },
     );
     executeApplyClose(
       strict("dependency", {
@@ -138,6 +138,7 @@ test("apply does not close an item after it loses its mutation lease during clos
         implementedOnMainPullRequestProvenanceApplyBlock: () => null,
         validateCloseDecision: () => ({ ok: true }),
         closeReasonApplyAgeSkipReason: () => null,
+        issueRecentHumanCommentBlockSafe: () => null,
         normalizeLabelName: (label: string) => label,
         resetGuardReadCache: () => undefined,
         withGuardReadOptions: (_options: unknown, run: () => unknown) => run(),
@@ -148,7 +149,7 @@ test("apply does not close an item after it loses its mutation lease during clos
       strict("option", {
         applyCloseReasons: null,
         applyKind: "all",
-        closeReason: "not_actionable_in_repo",
+        closeReason: "stale_insufficient_info",
         closeLimitReached: false,
         requiredMaintainerDecision: null,
         item: {

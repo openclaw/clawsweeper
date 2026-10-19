@@ -85,7 +85,11 @@ not split reports into issue/PR subtrees.
 - For apply-path repros, copy one report into a temp `items/` dir and pass
   `--skip-dashboard`, `--item-number`, and a temp `--closed-dir`.
 - Treat maintainer-authored and protected-label items as non-closeable, except
-  for the maintainer-approved metadata-only `oversized_pull_request` policy:
+  for `implemented_on_main` with its existing
+  source/history/release evidence and fresh apply guards (PRs additionally need
+  GitHub-verified merged same-repository fixing provenance and paired-issue
+  relationship checks; see `docs/implemented-on-main-close-policy.md`), and
+  the maintainer-approved metadata-only `oversized_pull_request` policy:
   drafts, maintainer authorship, and the `maintainer` label do not exempt that
   reason. Its explicit PR exemption labels, `size: accepted-large`, other
   protected labels, live freshness checks, and apply gates still apply.

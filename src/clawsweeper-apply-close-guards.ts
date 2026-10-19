@@ -30,6 +30,10 @@ import {
 import { lockedConversationApplyReason } from "./clawsweeper-item-policy.js";
 import { markdownRepository } from "./clawsweeper-repository-paths.js";
 import { reportReviewDecision } from "./report-review-decision.js";
+import {
+  requiresPrCloseCoverageProof,
+  requiresMaintainerProductClose,
+} from "./clawsweeper-policy.js";
 
 export function markLockedConversationApplySkipped(
   reason: string | null,
@@ -217,11 +221,7 @@ export function createApplyCloseGuards(
 
   const currentCloseGatesPassed = (): boolean => {
     const { closeReason, markdown, needsReviewCommentSync, storedUpdatedAt } = currentCloseState();
-    if (
-      requiredMaintainerDecision?.required &&
-      closeReason !== "unsponsored_feature_request" &&
-      closeReason !== "author_pr_budget_exceeded"
-    )
+    if (requiredMaintainerDecision?.required || requiresMaintainerProductClose(closeReason))
       return false;
     if (!closeReason || !closeReasonEnabled(closeReason, applyCloseReasons)) return false;
     if (needsReviewCommentSync) return false;
@@ -242,7 +242,7 @@ export function createApplyCloseGuards(
       return false;
     }
     if (
-      closeReason === "duplicate_or_superseded" &&
+      requiresPrCloseCoverageProof(closeReason) &&
       duplicateCanonicalPullRequestBlockReason(markdown, item, {
         reportDirs: [itemsDir, closedDir],
       })

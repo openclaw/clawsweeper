@@ -1,0 +1,1 @@
+- Require current-main-bound independent scope coverage for obsolete PR closes, preserve recent human engagement, and keep product-scope rejection recommendations on the manual maintainer route.

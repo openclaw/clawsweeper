@@ -7,6 +7,7 @@ import {
   PR_AUTO_CLOSE_EXEMPT_LABELS,
   STALLED_UNPROVEN_PROOF_STATUSES,
   isGitHubVerifiedFixedPullRequestSource,
+  requiresMaintainerProductClose,
 } from "./clawsweeper-policy.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
 import type { ActionTaken, CloseReason, Decision, Item } from "./clawsweeper-types.js";
@@ -281,6 +282,18 @@ export function validateCloseDecision(
       ok: false,
       actionTaken: "skipped_invalid_decision",
       reason: `${decision.closeReason} is not allowed for ${profile.targetRepo} ${item.kind} apply policy`,
+    };
+  }
+  if (
+    requiresMaintainerProductClose(decision.closeReason) &&
+    (!decision.maintainerDecision.required ||
+      decision.maintainerDecision.kind !== "product_direction")
+  ) {
+    return {
+      ok: false,
+      actionTaken: "skipped_invalid_decision",
+      reason:
+        "product-scope close proposal requires an outstanding product-direction maintainer decision",
     };
   }
   if (item.kind !== "pull_request" && decision.closeReason === "mostly_implemented_on_main") {

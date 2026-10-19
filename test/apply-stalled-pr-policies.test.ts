@@ -157,6 +157,8 @@ function stalledPrApplyGhMock(
     viewerDependentMaintainerComment?: boolean;
     tokenLogPath?: string;
     proofRequestedAt?: string;
+    proofRequestedAgainAt?: string;
+    humanCommentAt?: string;
     mergeable?: boolean | null;
     mergeableState?: string | null;
   } = {},
@@ -186,6 +188,20 @@ function stalledPrApplyGhMock(
       created_at: ${JSON.stringify(options.forcePushAt)}
     }`
     : "";
+  const humanComment = options.humanCommentAt
+    ? `,{
+    id: 9902, node_id: "IC_9902", created_at: "2026-05-01T00:00:00Z",
+    updated_at: ${JSON.stringify(options.humanCommentAt)},
+    author_association: "CONTRIBUTOR", user: { login: "reporter", type: "User" },
+    body: "I am working on the requested proof."
+  }`
+    : "";
+  const newProofRequest = options.proofRequestedAgainAt
+    ? `,{
+    event: "labeled", label: { name: "triage: needs-real-behavior-proof" },
+    created_at: ${JSON.stringify(options.proofRequestedAgainAt)}
+  }`
+    : "";
   const maintainerComment = options.maintainerComment
     ? `,{
       id: 9901,
@@ -210,24 +226,35 @@ ${
     ? `require("node:fs").appendFileSync(${JSON.stringify(options.tokenLogPath)}, JSON.stringify({ path, token: process.env.GH_TOKEN, method: args.includes("--method") ? args[args.indexOf("--method") + 1] : null }) + "\\n");`
     : ""
 }
-if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
+if (args[0] === "api" && args[1] === "graphql") {
+  const query = args.find(arg => arg.startsWith("query=")) || "";
+  if (query.includes("nodes(ids:")) {
+    const ids = JSON.parse(query.split("nodes(ids:")[1].split(")")[0]);
+    console.log(JSON.stringify({ data: { nodes: ids.map(id => {
+      const at = id === "IC_9902" ? ${JSON.stringify(options.humanCommentAt ?? null)} : null;
+      return { id, lastEditedAt: at, userContentEdits: { totalCount: at ? 1 : 0,
+        nodes: at ? [{ id: "edit-human", editedAt: at, editor: { __typename: "User", id: 123 } }] : [],
+        pageInfo: { hasNextPage: false, endCursor: null } } };
+    }) } }));
+  } else console.log(JSON.stringify({ data: { repository: { pullRequest: { id: "PR_321", lastEditedAt: null } } } }));
+} else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[{
-    id: 9321,
+    id: 9321, node_id: "IC_9321",
     html_url: "https://github.com/openclaw/openclaw/pull/321#issuecomment-9321",
     created_at: "2026-05-10T00:00:00Z",
     updated_at: "2026-05-10T00:00:00Z",
     author_association: "NONE",
-    user: { login: "clawsweeper[bot]" },
+    user: { login: "clawsweeper[bot]", type: "Bot" },
     body: ${JSON.stringify(reviewComment)}
-  }${maintainerComment}]]));
+  }${maintainerComment}${humanComment}]]));
 } else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[{
     event: "labeled",
     label: { name: "triage: needs-real-behavior-proof" },
     created_at: ${JSON.stringify(proofRequestedAt)}
-  }${forcePushEvent}]]));
+  }${forcePushEvent}${newProofRequest}]]));
 } else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
   console.log(JSON.stringify({
     number: 321,
@@ -511,6 +538,30 @@ test("stalled-unproven apply keeps a PR open when the proof request is too fresh
   ]);
   assert.equal(result.closedExists, false);
 });
+
+test("a renewed proof request starts a fresh response window", () => {
+  const result = runStalledPrApply({
+    report: stalledUnprovenCloseReport(),
+    closeReason: "stalled_unproven_pr",
+    ghOptions: { proofRequestedAgainAt: new Date().toISOString() },
+  });
+  assert.equal(result.entries[0]?.action, "kept_open");
+  assert.match(result.entries[0]?.reason ?? "", /proof request to be visible for 14 days/);
+});
+
+for (const closeReason of ["stalled_unproven_pr", "abandoned_pr"] as const) {
+  test(`${closeReason} preserves an ordinary author's recent edited reply`, () => {
+    const result = runStalledPrApply({
+      report:
+        closeReason === "abandoned_pr" ? abandonedCloseReport() : stalledUnprovenCloseReport(),
+      closeReason,
+      ghOptions: { humanCommentAt: new Date().toISOString() },
+    });
+    assert.equal(result.entries[0]?.action, "kept_open");
+    assert.match(result.entries[0]?.reason ?? "", /human edit activity/);
+    assert.equal(result.closedExists, false);
+  });
+}
 
 test("stalled-unproven apply keeps a PR open when a maintainer commented", () => {
   const result = runStalledPrApply({

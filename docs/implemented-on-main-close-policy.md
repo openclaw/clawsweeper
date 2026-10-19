@@ -9,6 +9,14 @@
 paths. A review may identify semantic equivalence, but `apply-decisions` closes
 only after fresh GitHub reads prove every required relationship.
 
+Only `implemented_on_main` intentionally has an exception to the generic
+maintainer-author / `maintainer` label close hold. It does not exempt security
+labels, explicit manual holds, locks, outstanding human decisions,
+freshness, or any implementation evidence. Issue-only proposals still require
+current source, history provenance, and release or current-main timing evidence;
+PR and paired-issue proposals additionally require the GitHub relationships
+below. This is not an exception for model-generated product rejection.
+
 ## Required relationship
 
 For a PR and exactly one same-repository linked issue, both independently

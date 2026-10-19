@@ -14,6 +14,8 @@ import {
   EVENT_GUARDED_OPEN_ACTIONS,
   REVIEW_SECTIONS,
   isGitHubVerifiedFixedPullRequestSource,
+  requiresPrCloseCoverageProof,
+  requiresMaintainerProductClose,
 } from "./clawsweeper-policy.js";
 import type {
   ApplyCloseGuardBlock,
@@ -341,14 +343,12 @@ export function executeApplyClose(
     }
   };
 
-  if (
-    requiredMaintainerDecision?.required &&
-    closeReason !== "unsponsored_feature_request" &&
-    closeReason !== "author_pr_budget_exceeded"
-  ) {
-    return skip(
+  // A recommendation and a repository-wide enable flag cannot answer an
+  // outstanding human choice. Product rejection is a maintainer-owned close.
+  if (requiredMaintainerDecision?.required || requiresMaintainerProductClose(closeReason)) {
+    return recordSkip(
       "kept_open",
-      `maintainer decision required: ${requiredMaintainerDecision.question}`,
+      `maintainer decision required: ${requiredMaintainerDecision?.question || "product-scope rejection needs an item-specific human decision"}`,
     );
   }
   if (closeLimitReached) {
@@ -427,7 +427,7 @@ export function executeApplyClose(
     );
   }
   const duplicateCanonicalBlock = (): string | null =>
-    closeReason === "duplicate_or_superseded"
+    requiresPrCloseCoverageProof(closeReason)
       ? duplicateCanonicalPullRequestBlockReason(getMarkdown(), item, {
           reportDirs: [itemsDir, closedDir],
         })
@@ -442,8 +442,9 @@ export function executeApplyClose(
   });
   if (ageSkipReason) return recordSkip("kept_open", ageSkipReason);
 
-  const proofBlock =
-    closeReason === "duplicate_or_superseded" ? currentPrCloseCoverageProofGateBlock() : null;
+  const proofBlock = requiresPrCloseCoverageProof(closeReason)
+    ? currentPrCloseCoverageProofGateBlock()
+    : null;
   if (proofBlock) {
     if (proofBlock.actionTaken === "skipped_runtime_budget") {
       recordRuntimeBudgetYield(proofBlock.reason);
@@ -463,7 +464,7 @@ export function executeApplyClose(
   const closeoutActivityBaselineMs = Date.now();
   const freshnessBlock = postProofFreshnessBlock();
   if (freshnessBlock) return markChangedSinceReview(freshnessBlock) ? "stop" : "next";
-  if (closeReason === "duplicate_or_superseded") {
+  if (requiresPrCloseCoverageProof(closeReason)) {
     setMarkdown(applyPrCloseCoverageProofReportSection(getMarkdown(), proofResult()));
   }
 

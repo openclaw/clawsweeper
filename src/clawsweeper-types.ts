@@ -1374,6 +1374,7 @@ export interface PrCloseCoverageProofGateBlock {
 
 export interface PrCloseCoverageProofCoveringWitness {
   number: number;
+  mainSha?: string;
   provedAtMs: number;
   snapshotSha256: string;
   updatedAt: string | null;

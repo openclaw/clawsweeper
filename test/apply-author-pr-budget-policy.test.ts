@@ -161,6 +161,7 @@ function runBudgetApply(options: RunOptions = {}) {
     const comments = options.comments ?? [
       {
         id: 9321,
+        node_id: "IC_9321",
         html_url: "https://github.com/openclaw/openclaw/pull/321#issuecomment-9321",
         created_at: "2026-05-01T01:00:00Z",
         updated_at: "2026-05-01T01:00:00Z",

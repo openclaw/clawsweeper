@@ -551,6 +551,26 @@ export const ALLOWED_REASONS = new Set<CloseReason>([
   "incoherent",
   "stale_insufficient_info",
 ]);
+
+/** These proposals need a separate coverage witness, never just a relationship signal. */
+export const PR_CLOSE_COVERAGE_PROOF_REASONS = [
+  "duplicate_or_superseded",
+  "obsolete_fix_pr",
+] as const;
+export function requiresPrCloseCoverageProof(
+  reason: unknown,
+): reason is "duplicate_or_superseded" | "obsolete_fix_pr" {
+  return PR_CLOSE_COVERAGE_PROOF_REASONS.some((candidate) => candidate === reason);
+}
+
+export function requiresMaintainerProductClose(reason: unknown): boolean {
+  return [
+    "unconfirmed_product_direction",
+    "unsponsored_feature_request",
+    "clawhub",
+    "not_actionable_in_repo",
+  ].includes(String(reason));
+}
 export const ALL_REASONS = new Set<CloseReason>([...ALLOWED_REASONS, "none"]);
 export const DECISIONS = new Set<DecisionKind>(["close", "keep_open"]);
 export const WORK_CANDIDATES = new Set<WorkCandidateKind>([

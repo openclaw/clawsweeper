@@ -104,14 +104,39 @@ export function closeDecision(overrides = {}) {
     ],
     risks: [],
     bestSolution: "Keep the implementation as-is.",
-    maintainerDecision: {
-      required: false,
-      kind: "none",
-      question: "",
-      rationale: "",
-      options: [],
-      likelyOwner: { person: "", reason: "", confidence: "low" },
-    },
+    maintainerDecision: [
+      "unconfirmed_product_direction",
+      "unsponsored_feature_request",
+      "clawhub",
+      "not_actionable_in_repo",
+    ].includes(String((overrides as { closeReason?: unknown }).closeReason))
+      ? {
+          required: true,
+          kind: "product_direction",
+          question: "Should a maintainer close this scope?",
+          rationale: "Scope rejection needs a maintainer decision.",
+          options: [
+            { title: "Keep open", body: "Preserve this scope.", recommended: true },
+            {
+              title: "Close manually",
+              body: "A maintainer may reject this scope.",
+              recommended: false,
+            },
+          ],
+          likelyOwner: {
+            person: "@maintainer",
+            reason: "Repository product owner.",
+            confidence: "high",
+          },
+        }
+      : {
+          required: false,
+          kind: "none",
+          question: "",
+          rationale: "",
+          options: [],
+          likelyOwner: { person: "", reason: "", confidence: "low" },
+        },
     triagePriority: "P2",
     impactLabels: [],
     maturityLabels: [],
@@ -723,6 +748,7 @@ export function lowSignalCloseReport(overrides = {}) {
 
 export function promotionGhMock(options: {
   number: number;
+  kind?: "issue" | "pull_request";
   title?: string;
   body?: string;
   draft?: boolean;
@@ -777,12 +803,17 @@ export function promotionGhMock(options: {
   assignees?: unknown[];
   requestedReviewers?: unknown[];
   requestedTeams?: unknown[];
+  lastEditedAt?: string | null;
+  editorType?: "User" | "Bot";
   linkedPulls?: Record<number, unknown>;
   linkedPullsAfterProof?: Record<number, unknown>;
   linkedPullsAfterCommentRead?: Record<number, unknown>;
   linkedPullHangAfterProof?: boolean;
   linkedIssues?: Record<number, unknown>;
   defaultBranch?: string;
+  mainSha?: string;
+  mainComparisonStatus?: string;
+  mainShaAfterProof?: string;
   postHeadPathChanges?: Record<string, string | null>;
   deletedMainPaths?: string[];
   pathLookupError?: string;
@@ -793,12 +824,13 @@ export function promotionGhMock(options: {
   const comments = options.comments ?? [
     {
       id: 9000 + options.number,
+      node_id: `IC_${9000 + options.number}`,
       html_url: `https://github.com/openclaw/openclaw/pull/${options.number}#issuecomment-${
         9000 + options.number
       }`,
       created_at: "2026-05-01T01:00:00Z",
       updated_at: "2026-05-01T01:00:00Z",
-      user: { login: "clawsweeper[bot]" },
+      user: { login: "clawsweeper[bot]", type: "Bot" },
       body: options.comment,
     },
   ];
@@ -850,10 +882,11 @@ export function promotionGhMock(options: {
 	const reviewThreadReadStatePath = join(__dirname, "..", "review-thread-read-" + number);
 	const mutationComment = (id, body) => ({
 	  id,
+	  node_id: "IC_" + id,
 	  html_url: "https://github.com/openclaw/openclaw/pull/" + number + "#issuecomment-" + id,
 	  created_at: "2026-05-01T01:00:00Z",
 	  updated_at: "2026-05-01T02:00:00Z",
-	  user: { login: "clawsweeper[bot]" },
+	  user: { login: "clawsweeper[bot]", type: "Bot" },
 	  body
 	});
 	const writeMutationComment = () => {
@@ -936,6 +969,12 @@ export function promotionGhMock(options: {
 	  }
 	  console.log(JSON.stringify({ total_count: openPrCount, incomplete_results: authorSearchIncomplete, items: [] }));
 	} else if (args[0] === "api" && args[1] === "graphql") {
+	  const query = args.find(arg => arg.startsWith("query=")) || "";
+	  if (query.includes("nodes(ids:")) {
+	    const ids = JSON.parse(query.split("nodes(ids:")[1].split(")")[0]);
+	    console.log(JSON.stringify({ data: { nodes: ids.map(id => ({ id, lastEditedAt: null, userContentEdits: { totalCount: 0, nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } })) } }));
+	    process.exit(0);
+	  }
 	  const currentReviewThreads =
 	    reviewThreadsAfterFirstRead && existsSync(reviewThreadReadStatePath)
 	      ? reviewThreadsAfterFirstRead
@@ -945,6 +984,9 @@ export function promotionGhMock(options: {
 	    data: {
 	      repository: {
 	        pullRequest: {
+	          id: "PR_" + number,
+	          lastEditedAt: ${JSON.stringify(options.lastEditedAt ?? null)},
+	          editor: { __typename: ${JSON.stringify(options.editorType ?? "User")} },
 	          reviewThreads: {
 	            nodes: currentReviewThreads,
 	            pageInfo: { hasNextPage: false, endCursor: null }
@@ -1012,7 +1054,7 @@ export function promotionGhMock(options: {
     labels,
     assignees: ${JSON.stringify(options.assignees ?? [])},
     comments: ${options.trackCommentActivity ? "liveComments().length" : "issueCommentCount"},
-    pull_request: { url: "https://api.github.com/repos/openclaw/openclaw/pulls/" + number }
+    pull_request: ${options.kind === "issue" ? "null" : '{ url: "https://api.github.com/repos/openclaw/openclaw/pulls/" + number }'}
   }));
 } else if (args[0] === "api" && new RegExp("/pulls/" + number + "$").test(path)) {
   console.log(JSON.stringify({
@@ -1065,6 +1107,10 @@ export function promotionGhMock(options: {
 	  console.log(JSON.stringify({ commit: { committer: { date: headCommittedAt } } }));
 	} else if (args[0] === "api" && path === "repos/openclaw/openclaw") {
 	  console.log(JSON.stringify({ default_branch: defaultBranch }));
+	} else if (args[0] === "api" && path === "repos/openclaw/openclaw/commits/" + defaultBranch) {
+	  console.log(JSON.stringify({ sha: proofHasRun() ? ${JSON.stringify(options.mainShaAfterProof ?? options.mainSha ?? "a".repeat(40))} : ${JSON.stringify(options.mainSha ?? "a".repeat(40))} }));
+	} else if (args[0] === "api" && path.startsWith("repos/openclaw/openclaw/compare/")) {
+	  console.log(JSON.stringify({ status: ${JSON.stringify(options.mainComparisonStatus ?? "ahead")} }));
 	} else if (args[0] === "api" && path.startsWith("repos/openclaw/openclaw/commits?")) {
 	  if (pathLookupError) {
 	    console.error(pathLookupError);

@@ -33,6 +33,37 @@ import {
 
 const { fixedPullRequestFromCommitPulls } = createFixedPullRequestContext();
 
+for (const closeReason of [
+  "unconfirmed_product_direction",
+  "unsponsored_feature_request",
+  "clawhub",
+  "not_actionable_in_repo",
+] as const) {
+  for (const packet of [
+    { required: false, kind: "none" },
+    { required: true, kind: "manual_review" },
+  ]) {
+    test(`${closeReason} rejects ${packet.required ? "wrong-kind" : "required=false"} product packet`, () => {
+      const decision = closeDecision({
+        closeReason,
+        maintainerDecision: {
+          ...packet,
+          question: "",
+          rationale: "",
+          options: [],
+          likelyOwner: { person: "", reason: "", confidence: "low" },
+        },
+      });
+      const result = validateCloseDecision(
+        item({ kind: closeReason === "unconfirmed_product_direction" ? "pull_request" : "issue" }),
+        decision,
+      );
+      assert.equal(result.ok, false);
+      assert.match(result.reason ?? "", /outstanding product-direction maintainer decision/);
+    });
+  }
+}
+
 function renderedCloseReasons(prompt: string): string[] {
   const section = prompt.slice(
     prompt.indexOf("### Close reasons"),

@@ -85,11 +85,15 @@ export function createApplyGuardCapacity(
     ]);
     const protectedLabel = protectedLabels(labelNames(issue.labels))[0];
     if (protectedLabel) return { reason: `protected label: ${protectedLabel}` };
-    const engagementBlock = pullRequestHumanEngagementBlockReason(number, {
-      assignees: issue.assignees ?? [],
-      requestedReviewers: activity.requestedReviewers,
-      requestedTeams: activity.requestedTeams,
-    });
+    const engagementBlock = pullRequestHumanEngagementBlockReason(
+      number,
+      {
+        assignees: issue.assignees ?? [],
+        requestedReviewers: activity.requestedReviewers,
+        requestedTeams: activity.requestedTeams,
+      },
+      OBSOLETE_FIX_PR_MIN_INACTIVE_DAYS,
+    );
     if (engagementBlock) return { reason: engagementBlock };
 
     const repository = ghJson<{ default_branch?: string }>(["api", `repos/${targetRepo()}`]);
@@ -214,7 +218,11 @@ export function createApplyGuardCapacity(
       };
     }
 
-    const engagementBlock = pullRequestHumanEngagementBlockReason(number);
+    const engagementBlock = pullRequestHumanEngagementBlockReason(
+      number,
+      undefined,
+      AUTHOR_PR_BUDGET_MIN_INACTIVE_DAYS,
+    );
     if (engagementBlock) return { allowed: false, reason: engagementBlock };
 
     const budget = authorPrBudget();

@@ -49,11 +49,11 @@ export function createApplyGuardProof(
   { pullRequestHumanEngagementBlockReason, pullRequestLiveActivity }: ApplyGuardActivity,
 ) {
   function stalledUnprovenProofRequestBlockReason(number: number, now = Date.now()): string | null {
-    let earliestRequestAtMs: number | null = null;
+    let latestRequestAtMs: number | null = null;
     const observe = (value: unknown): void => {
       const ms = Date.parse(typeof value === "string" ? value : "");
-      if (Number.isFinite(ms) && (earliestRequestAtMs === null || ms < earliestRequestAtMs)) {
-        earliestRequestAtMs = ms;
+      if (Number.isFinite(ms) && (latestRequestAtMs === null || ms > latestRequestAtMs)) {
+        latestRequestAtMs = ms;
       }
     };
     for (const event of ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/timeline`)) {
@@ -69,11 +69,12 @@ export function createApplyGuardProof(
       const body = typeof record.body === "string" ? record.body : "";
       if (!body.includes(PROOF_NUDGE_MARKER_PREFIX)) continue;
       observe(record.created_at);
+      observe(record.updated_at);
     }
-    if (earliestRequestAtMs === null) {
+    if (latestRequestAtMs === null) {
       return "no visible dated proof request (needs-proof label event or proof nudge) on the live PR";
     }
-    if (now - earliestRequestAtMs <= STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS * DAY_MS) {
+    if (now - latestRequestAtMs <= STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS * DAY_MS) {
       return `stalled_unproven_pr requires the proof request to be visible for ${STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS} days`;
     }
     return null;
@@ -105,7 +106,11 @@ export function createApplyGuardProof(
     ) {
       return `stalled_unproven_pr requires ${STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS} days without source activity on the current head`;
     }
-    return pullRequestHumanEngagementBlockReason(number);
+    return pullRequestHumanEngagementBlockReason(
+      number,
+      undefined,
+      STALLED_UNPROVEN_PR_MIN_INACTIVE_DAYS,
+    );
   }
   function stalledUnprovenPrApplyBlockReasonSafe(
     number: number,
@@ -142,7 +147,7 @@ export function createApplyGuardProof(
     if (!stalledState) {
       return "live PR is not draft, waiting-on-author, failing checks, or merge-conflicted; abandonment is not confirmed";
     }
-    return pullRequestHumanEngagementBlockReason(number);
+    return pullRequestHumanEngagementBlockReason(number, undefined, ABANDONED_PR_MIN_INACTIVE_DAYS);
   }
   function abandonedPrApplyBlockReasonSafe(
     number: number,

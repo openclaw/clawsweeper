@@ -17,24 +17,16 @@ ClawSweeper can propose `unconfirmed_product_direction` only for
 - no `clawsweeper:human-review`, `clawsweeper:manual-only`,
   `clawsweeper:autofix`, or `clawsweeper:automerge` label
 
-The review lane only writes a durable close proposal. Apply is default-off and
-requires the repository variable
-`CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED=true`.
-When the gate is disabled, apply records the skip without consuming or
-rewriting the durable proposal.
+The review lane may recommend closing, with
+`maintainer_decision.required: true` and `kind: product_direction`. This packet
+records an outstanding decision; it is not authenticated human approval.
+Apply always preserves the proposal and keeps the PR open. Neither
+`CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED=true` nor an `all`
+close-reason allowlist authorizes an automated product rejection.
 
-Even when enabled, apply fails closed unless the PR is older than 14 days and
-the source snapshot was inactive for seven days before review. It re-fetches
-live state and keeps the PR open when it finds an assignee, requested reviewer
-or team, maintainer issue comment, maintainer review, maintainer inline review
-comment, an exemption label, changed source state, missing pagination data, or
-any GitHub fetch failure.
-
-A verified 14-day age or seven-day inactivity hold completes publication as
-`guarded_open`, after a fresh read confirms the PR is open and its reviewed
-source, head, and activity receipt still match. Missing or contradictory dates,
-incomplete receipts, and failed reads do not prove a completed hold.
-
-The policy does not merge a PR, add public labels, infer product acceptance
-from passing tests, or treat an existing issue as permission to add product
-surface. Maintainer calibration remains explicit and reversible.
+A maintainer evaluates the specific item and uses the ordinary manual GitHub
+close workflow if they reject the direction. A model's `required: false`,
+passing tests, or a repository-wide flag cannot make that decision. The same
+manual route applies to `unsponsored_feature_request`, `clawhub`, and
+`not_actionable_in_repo` recommendations. No new approval command or automatic
+close route is introduced.
