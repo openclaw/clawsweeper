@@ -102,11 +102,14 @@ test("activity notifications reject workflow runs from another repository", () =
     "fromJSON",
     `return (${workflow.jobs.notify.if.slice(3, -2)});`,
   );
-  for (const [eventName, repo, conclusion, expected] of [
-    ["workflow_run", "openclaw/clawsweeper", "failure", true],
-    ["workflow_run", "someone/fork", "failure", false],
-    ["workflow_run", "openclaw/clawsweeper", "success", false],
-    ["issues", "someone/fork", "failure", true],
+  for (const [eventName, repo, conclusion, runEvent, expected] of [
+    ["workflow_run", "openclaw/clawsweeper", "failure", "schedule", true],
+    ["workflow_run", "openclaw/clawsweeper", "failure", "repository_dispatch", true],
+    ["workflow_run", "someone/fork", "failure", "schedule", false],
+    ["workflow_run", "openclaw/clawsweeper", "success", "schedule", false],
+    // pull_request_target runs report the base repository as head_repository.
+    ["workflow_run", "openclaw/clawsweeper", "failure", "pull_request_target", false],
+    ["issues", "someone/fork", "failure", "schedule", true],
   ]) {
     assert.equal(
       evaluate(
@@ -115,7 +118,7 @@ test("activity notifications reject workflow runs from another repository", () =
           event_name: eventName,
           event: {
             action: "opened",
-            workflow_run: { head_repository: { full_name: repo }, conclusion },
+            workflow_run: { head_repository: { full_name: repo }, conclusion, event: runEvent },
           },
         },
         (values: string[], value: string) => values.includes(value),
