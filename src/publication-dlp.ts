@@ -108,16 +108,17 @@ export function registerOpenclawProviderCapabilities(
     if (typeof value === "string") {
       try {
         const url = new URL(value);
-        const registerComponent = (component: string) => {
-          registerPublicationCapability(component);
+        const registerComponent = (component: string, known = false) => {
+          registerPublicationCapability(component, known);
           try {
-            registerPublicationCapability(decodeURIComponent(component));
+            registerPublicationCapability(decodeURIComponent(component), known);
           } catch {
             // Preserve the literal even if a URL component has malformed escapes.
           }
         };
-        registerComponent(url.username);
-        registerComponent(url.password);
+        // Userinfo is explicit authentication; query values stay heuristic.
+        registerComponent(url.username, true);
+        registerComponent(url.password, true);
         for (const parameter of url.search.slice(1).split("&")) {
           const [, credential] = new URLSearchParams(parameter).entries().next().value ?? [];
           if (credential && credentialLike(credential)) {
@@ -158,10 +159,10 @@ function credentialPattern(): RegExp {
           if (credentialLike(value)) values.add(value);
           for (const component of [proxy.username, proxy.password]) {
             if (!component) continue;
-            if (credentialLike(component)) values.add(component);
+            if (knownCredentialValue(component)) values.add(component);
             try {
               const decoded = decodeURIComponent(component);
-              if (credentialLike(decoded)) values.add(decoded);
+              if (knownCredentialValue(decoded)) values.add(decoded);
             } catch {
               // Malformed escapes still have their literal value protected.
             }
@@ -176,7 +177,9 @@ function credentialPattern(): RegExp {
       !CODEX_NON_CAPABILITIES.has(name) &&
       /TOKEN|SECRET|PASSWORD|PASSWD|(?:^|_)KEY(?:_|$)|^CODEX_/i.test(name)
     ) {
-      if (credentialLike(value)) values.add(value);
+      // Credential-named variables are identified; other CODEX_* names stay heuristic.
+      const identified = /TOKEN|SECRET|PASSWORD|PASSWD|(?:^|_)KEY(?:_|$)/i.test(name);
+      if (identified ? knownCredentialValue(value) : credentialLike(value)) values.add(value);
     }
   }
   const exact = [...values]

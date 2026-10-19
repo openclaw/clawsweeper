@@ -622,3 +622,27 @@ test("known provider credentials register even when all lowercase", async () => 
     redactions: 2,
   });
 });
+
+test("credential-named env values and URL userinfo use the known-credential gate", async () => {
+  const { registerOpenclawProviderCapabilities, redactPublication } =
+    await import("../dist/publication-dlp.js");
+  const original = process.env;
+  const apiKey = "lowercaseforwardedopenaikey";
+  const user = "basicusershort";
+  const password = "lowercasepass16ch";
+  try {
+    process.env = { ...original, OPENAI_API_KEY: apiKey };
+    registerOpenclawProviderCapabilities(
+      JSON.stringify({ basic: { baseUrl: `https://${user}:${password}@llm.example.invalid/v1` } }),
+      {},
+    );
+    const result = redactPublication([apiKey, password, "ordinarylowercaseprose"]);
+    assert.deepEqual(result.value, [
+      "[redacted credential]",
+      "[redacted credential]",
+      "ordinarylowercaseprose",
+    ]);
+  } finally {
+    process.env = original;
+  }
+});
