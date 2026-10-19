@@ -726,3 +726,12 @@ test("diagnostic pending bytes respect small and zero stream budgets", async () 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("ordinary identifier substrings do not impersonate an OpenAI credential", async () => {
+  const { redactPublication } = await import("../dist/publication-dlp.js");
+  const summary = "Inspect src/mask-sensitive-headers.ts and mask-sensitive-headers behavior.";
+  assert.deepEqual(redactPublication(summary), { value: summary, redactions: 0 });
+  assert.match(report(summary), /^review_status: complete$/m);
+  const credential = ["sk", "proj", "a".repeat(40)].join("-");
+  assert.equal(redactPublication(`Value: (${credential})`).redactions, 1);
+});

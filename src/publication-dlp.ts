@@ -196,7 +196,7 @@ function credentialPattern(): RegExp {
     [
       "-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\\s\\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----",
       "(?:gh[sopur]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)",
-      "sk-[A-Za-z0-9_-]{16,}",
+      "\\bsk-[A-Za-z0-9_-]{16,}",
       "(?:AKIA|ASIA)[A-Z0-9]{16}",
       ...exact,
     ].join("|"),
