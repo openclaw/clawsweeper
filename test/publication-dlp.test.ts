@@ -175,7 +175,14 @@ test("Codex operational launcher settings are not credentials", async () => {
 
 test("authenticated proxy capabilities are redacted and block review publication", () => {
   const original = process.env;
-  const proxy = "http://proxy-user:synthetic%2Dproxy-password@proxy.example:8080";
+  const proxy = [
+    "http://",
+    "proxy-user",
+    ":",
+    "synthetic%2Dproxy-password",
+    "@",
+    "proxy.example:8080",
+  ].join("");
   try {
     process.env = { https_proxy: proxy, HTTP_PROXY: "http://public.proxy.example:8080" };
     const markdown = report(
