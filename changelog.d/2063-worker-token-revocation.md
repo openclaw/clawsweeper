@@ -1,0 +1,1 @@
+- Refresh revoked dashboard GitHub App tokens once within their original repository and permission scope, and fail closed if the replacement is rejected.

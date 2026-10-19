@@ -9092,9 +9092,7 @@ function createGithubJsonCache(env): GithubJsonReader {
 }
 
 async function githubJson(env, path) {
-  const token = await statusOperation(env, "github_auth", () =>
-    githubAuthToken(env, githubReadScope(env, path)),
-  );
+  const scope = githubReadScope(env, path);
   const key = githubEtagCacheKey({
     credentialPool: env.GITHUB_TOKEN ? "repository_actions" : "target_app",
     route: path,
@@ -9113,7 +9111,9 @@ async function githubJson(env, path) {
       cachedEntry = null;
     }
   }
-  let response = await githubJsonResponse(env, path, token, String(cachedEntry?.etag || ""));
+  const read = (etag: string) =>
+    githubRequestWithAuth(env, scope, (token) => githubJsonResponse(env, path, token, etag));
+  let response = await read(String(cachedEntry?.etag || ""));
   if (response.status === 304 && etagBrokerEnabled && requestBody && cachedEntry) {
     try {
       const confirmed = await githubEtagCachePost(env, "confirm", {
@@ -9135,7 +9135,7 @@ async function githubJson(env, path) {
     } catch {
       // The final guard may use a 304, but it never consumes an unconfirmed body.
     }
-    response = await githubJsonResponse(env, path, token, "");
+    response = await read("");
   }
   if (!response.ok) throw new Error(`GitHub ${response.status} for ${path}`);
   const body = await response.text();
@@ -9204,30 +9204,56 @@ async function sha256Utf8(value: string): Promise<string> {
 }
 
 async function githubGraphql(env, query, variables) {
-  const token = await statusOperation(env, "github_auth", () =>
-    githubAuthToken(env, {
+  const response = await githubRequestWithAuth(
+    env,
+    {
       repos: [`${variables.owner}/${variables.name}`],
       permissions: { issues: "read", pull_requests: "read" },
-    }),
-  );
-  if (!token) throw new Error("GitHub auth is required for GraphQL");
-  const response = await fetch(githubApiUrl(env, "/graphql"), {
-    method: "POST",
-    signal: statusRequestSignal(env, AbortSignal.timeout(OPTIONAL_SECTION_TIMEOUT_MS)),
-    headers: {
-      Accept: "application/vnd.github+json",
-      "Content-Type": "application/json",
-      "User-Agent": "openclaw-clawsweeper-status",
-      Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ query, variables }),
-  });
+    (token) => {
+      if (!token) throw new Error("GitHub auth is required for GraphQL");
+      return fetch(githubApiUrl(env, "/graphql"), {
+        method: "POST",
+        signal: statusRequestSignal(env, AbortSignal.timeout(OPTIONAL_SECTION_TIMEOUT_MS)),
+        headers: {
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json",
+          "User-Agent": "openclaw-clawsweeper-status",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+    },
+  );
   if (!response.ok) throw new Error(`GitHub GraphQL ${response.status}`);
   const payload = await response.json();
   if (Array.isArray(payload.errors) && payload.errors.length) {
     throw new Error(payload.errors.map((error) => error.message).join("; "));
   }
   return payload.data;
+}
+
+export const githubGraphqlForTest = githubGraphql;
+
+async function githubRequestWithAuth(env, scope, request: (token: string) => Promise<Response>) {
+  const tokenForScope = () =>
+    statusOperation(env, "github_auth", () => githubAuthToken(env, scope));
+  let token = await tokenForScope();
+  let response = await request(token);
+  if (response.status !== 401 || env.GITHUB_TOKEN || !token) return response;
+
+  // A delayed 401 must not evict a replacement minted by another request.
+  const evictRejectedToken = () => {
+    for (const [key, entry] of githubAppTokenCache) {
+      if (entry.token === token) githubAppTokenCache.delete(key);
+    }
+  };
+  evictRejectedToken();
+  await response.body?.cancel();
+  token = await tokenForScope();
+  response = await request(token);
+  if (response.status === 401) evictRejectedToken();
+  return response;
 }
 
 function hasGithubAuth(env) {
