@@ -37,32 +37,100 @@ export class Queue extends DurableObject {
   faultKey = "";
   retained: any = null;
   batches: any;
+  bucket: any;
+  deployment: string;
+  r2 = { delayMs: 0, failAt: 0, calls: 0, active: 0, peak: 0, failed: false, putsAfterFailure: 0 };
+  r2Started: (() => void) | null = null;
   constructor(ctx: any, env: any) {
     super(ctx, env);
+    this.deployment = env.PROOF_DEPLOYMENT_SHA || deployment;
     const bucket = {
       put: async (...args: any[]) => {
-        if (this.failR2) throw Error("synthetic R2 outage");
-        return env.STATE_SNAPSHOTS.put(...args);
+        const finish = await this.beginR2("put");
+        try {
+          return await env.STATE_SNAPSHOTS.put(...args);
+        } finally {
+          finish();
+        }
       },
       get: async (...args: any[]) => {
-        if (this.failR2) throw Error("synthetic R2 outage");
-        const result = await env.STATE_SNAPSHOTS.get(...args);
-        this.injectFault();
-        return result;
+        const finish = await this.beginR2("get");
+        try {
+          const result = await env.STATE_SNAPSHOTS.get(...args);
+          this.injectFault();
+          if (!result?.body) {
+            finish();
+            return result;
+          }
+          const reader = result.body.getReader();
+          return {
+            size: result.size,
+            body: new ReadableStream({
+              async pull(controller) {
+                try {
+                  const chunk = await reader.read();
+                  if (chunk.done) {
+                    finish();
+                    reader.releaseLock();
+                    controller.close();
+                  } else controller.enqueue(chunk.value);
+                } catch (error) {
+                  finish();
+                  controller.error(error);
+                }
+              },
+              async cancel(reason) {
+                try {
+                  await reader.cancel(reason);
+                } finally {
+                  finish();
+                  reader.releaseLock();
+                }
+              },
+            }),
+          };
+        } catch (error) {
+          finish();
+          throw error;
+        }
       },
       head: (...args: any[]) => env.STATE_SNAPSHOTS.head(...args),
       delete: (...args: any[]) => env.STATE_SNAPSHOTS.delete(...args),
       createMultipartUpload: (...args: any[]) => env.STATE_SNAPSHOTS.createMultipartUpload(...args),
     };
+    this.bucket = bucket;
     this.queue = new ExactReviewQueue(ctx, {
       ...env,
       STATE_SNAPSHOTS: bucket,
-      CLAWSWEEPER_DEPLOY_SHA: deployment,
+      CLAWSWEEPER_DEPLOY_SHA: this.deployment,
       hostedTargetPredicate: () => true,
       hostedPublicTargetProbe: async () => "public",
     });
     this.records = new ExactReviewDirectPublicationStore(ctx.storage, bucket);
     this.batches = new ExactReviewPublicationBatchStore(ctx.storage);
+  }
+  async beginR2(kind: "put" | "get") {
+    if (this.failR2) throw Error("synthetic R2 outage");
+    const metrics = this.r2,
+      call = ++metrics.calls;
+    if (metrics.failed && kind === "put") metrics.putsAfterFailure++;
+    metrics.active++;
+    metrics.peak = Math.max(metrics.peak, metrics.active);
+    this.r2Started?.();
+    let finished = false;
+    const finish = () => {
+      if (!finished) {
+        finished = true;
+        metrics.active--;
+      }
+    };
+    if (metrics.delayMs) await new Promise((resolve) => setTimeout(resolve, metrics.delayMs));
+    if (metrics.failAt === call) {
+      metrics.failed = true;
+      finish();
+      throw Error("synthetic operation failure");
+    }
+    return finish;
   }
   async alarm() {
     await this.ctx.storage.deleteAlarm();
@@ -199,7 +267,7 @@ export class Queue extends DurableObject {
         transactionSync: (callback: any) => this.ctx.storage.transactionSync(callback),
         kv: this.ctx.storage.kv,
       } as any,
-      this.env.STATE_SNAPSHOTS,
+      this.bucket,
     );
   }
   async fetch(request: Request) {
@@ -210,6 +278,51 @@ export class Queue extends DurableObject {
     }
     const route = incoming.pathname;
     const body = request.method === "POST" ? ((await request.json()) as any) : {};
+    if (route === "/r2-controls") {
+      if (this.r2.active) throw Error("R2 still active");
+      this.r2 = {
+        delayMs: body.delayMs ?? 0,
+        failAt: body.failAt ?? 0,
+        calls: 0,
+        active: 0,
+        peak: 0,
+        failed: false,
+        putsAfterFailure: 0,
+      };
+      return Response.json(this.r2);
+    }
+    if (route === "/r2-metrics") return Response.json(this.r2);
+    if (route === "/warm-throughput") {
+      for (const content of [
+        "shared plan",
+        ...Array.from({ length: 24 }, (_, i) => `body-${i + 1}`),
+      ]) {
+        const bytes = new TextEncoder().encode(content);
+        const digest = await sha256Hex(bytes);
+        await this.env.STATE_SNAPSHOTS.put("records/bodies/v1/sha256/" + digest, bytes, {
+          onlyIf: { etagDoesNotMatch: "*" },
+        });
+      }
+      return Response.json({ objects: 25 });
+    }
+    if (route === "/seed-throughput") {
+      await this.initialize();
+      for (let id = 1; id <= 24; id++) {
+        const mutation = await validateCanonicalRecordTupleMutation({
+          deliveryId: `throughput-${id}`,
+          key: `${repo}/${id}`,
+          operations: ["items", "closed", "plans", "decision-packets"].map((section) => ({
+            path: `records/${repo}/${section}/${id}.${section === "decision-packets" ? "json" : "md"}`,
+            expectedDigest: null,
+            ...(["items", "plans"].includes(section)
+              ? { contentBase64: base64(section === "plans" ? "shared plan" : `body-${id}`) }
+              : {}),
+          })),
+        });
+        this.records.acceptCanonicalTupleMutation(mutation, 1792108800000);
+      }
+      return Response.json({ ok: true });
+    }
     if (route === "/seed") {
       await this.initialize();
       const cases = ["", "snow 雪🦊\0", "x".repeat(1572865), "z".repeat(2097152)];
@@ -417,8 +530,11 @@ export class Queue extends DurableObject {
           new Request("http://queue/canonical-bodies/maintenance", {
             method: "POST",
             body: JSON.stringify({
-              expectedDeploymentSha: deployment,
-              attestation: gates,
+              expectedDeploymentSha: this.deployment,
+              attestation: {
+                ...gates,
+                rollbackFloor: { ...gates.rollbackFloor, sha: this.deployment },
+              },
               ...body,
             }),
           }),
@@ -473,6 +589,37 @@ export class Queue extends DurableObject {
         bytes: this.retained.bytes,
         scanned: this.retained.scanned,
         tuples: this.retained.tuples.length,
+      });
+    }
+    if (route === "/prepare-failure") {
+      try {
+        await this.records.prepareTieringPass();
+        return Response.json({ failed: false });
+      } catch {
+        return Response.json({ failed: true, metrics: this.r2 });
+      }
+    }
+    if (route === "/prepare-interleave") {
+      let started!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      this.r2Started = started;
+      const preparing = this.records.prepareTieringPass();
+      await entered;
+      this.r2Started = null;
+      const owner = await this.lease(4);
+      const published = await this.queue.fetch(
+        new Request("http://queue/publication-results", {
+          method: "POST",
+          body: JSON.stringify(await this.publication(4, "foreground replacement", 1, owner)),
+        }),
+      );
+      const pass = await preparing;
+      return Response.json({
+        publicationStatus: published.status,
+        captured: pass.tuples[3]?.bodies.get("items"),
+        checkpoint: this.records.commitTieringPassSync(pass, Date.now()),
       });
     }
     if (route === "/commit")

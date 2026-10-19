@@ -1176,6 +1176,21 @@ export class ExactReviewQueue {
       const deploymentSha = String(this.env.CLAWSWEEPER_DEPLOY_SHA || "");
       if (body.expectedDeploymentSha !== deploymentSha || !/^[a-f0-9]{40}$/.test(deploymentSha))
         return json({ error: "canonical_tiering_deployment_mismatch" }, 409);
+      if (body.action === "requalify-preview" || body.action === "requalify") {
+        const preview = await this.directPublicationStore.tieringRequalificationPreview(
+          deploymentSha,
+          body.attestation,
+          body.previousPlanSha256,
+        );
+        if (body.action === "requalify-preview") return json({ ok: true, ...preview });
+        if (body.execute !== true || body.reviewedPreviewSha256 !== preview.sha256)
+          return json({ error: "canonical_tiering_reviewed_preview_required" }, 409);
+        return json({
+          ok: true,
+          checkpoint: this.directPublicationStore.requalifyTieringSync(preview),
+          nextPlanSha256: preview.packet.nextPlanSha256,
+        });
+      }
       const preview = await this.directPublicationStore.tieringPreview(
         deploymentSha,
         body.attestation,

@@ -155,13 +155,16 @@ async function maintainCanonicalBodies() {
       "expected-deployment-sha": { type: "string" },
       "attestation-file": { type: "string" },
       "reviewed-plan-sha256": { type: "string" },
+      "previous-plan-sha256": { type: "string" },
     },
   });
   const action = values.action;
+  const preview = action === "preview" || action === "requalify-preview";
+  const requalification = action === "requalify-preview" || action === "requalify";
   if (
-    !["preview", "activate", "migrate"].includes(action) ||
-    (action !== "preview" && !values.apply) ||
-    (action === "preview" && values.apply)
+    !["preview", "activate", "migrate", "requalify-preview", "requalify"].includes(action) ||
+    preview === values.apply ||
+    (requalification && !/^[a-f0-9]{64}$/.test(values["previous-plan-sha256"] ?? ""))
   )
     throw new Error("invalid canonical tiering action");
   if (!values["attestation-file"] || statSync(values["attestation-file"]).size > 8192)
@@ -195,6 +198,7 @@ async function maintainCanonicalBodies() {
       execute: values.apply,
       expectedDeploymentSha: values["expected-deployment-sha"],
       reviewedPreviewSha256: values["reviewed-plan-sha256"],
+      previousPlanSha256: values["previous-plan-sha256"],
       attestation,
     });
     passes++;

@@ -61,10 +61,13 @@ on:
         type: string
 
       canonical_action:
-        description: "Canonical bodies only: preview, activation, or bounded resumable migration"
+        description: "Canonical bodies only: preview, activation, migration, or explicit deployment requalification"
         type: choice
-        options: [preview, activate, migrate]
+        options: [preview, activate, migrate, requalify-preview, requalify]
         default: preview
+      previous_plan_sha256:
+        description: "Canonical requalification only: exact existing checkpoint plan SHA256"
+        type: string
       expected_deployment_sha:
         description: "Canonical bodies: exact deployed capable Worker SHA"
         type: string
@@ -300,6 +303,7 @@ jobs:
           EXPECTED_DEPLOYMENT_SHA: ${{ inputs.expected_deployment_sha }}
           CANONICAL_ATTESTATION_JSON: ${{ inputs.canonical_attestation_json }}
           REVIEWED_PLAN_SHA256: ${{ inputs.reviewed_plan_sha256 }}
+          PREVIOUS_PLAN_SHA256: ${{ inputs.previous_plan_sha256 }}
         run: |
           set -euo pipefail
           printf '%s' "$CANONICAL_ATTESTATION_JSON" > "$RUNNER_TEMP/canonical-attestation.json"
@@ -309,7 +313,8 @@ jobs:
             --action "$CANONICAL_ACTION" "${args[@]}" \
             --expected-deployment-sha "$EXPECTED_DEPLOYMENT_SHA" \
             --attestation-file "$RUNNER_TEMP/canonical-attestation.json" \
-            --reviewed-plan-sha256 "$REVIEWED_PLAN_SHA256"
+            --reviewed-plan-sha256 "$REVIEWED_PLAN_SHA256" \
+            --previous-plan-sha256 "$PREVIOUS_PLAN_SHA256"
 
   usage-read:
     if: >-

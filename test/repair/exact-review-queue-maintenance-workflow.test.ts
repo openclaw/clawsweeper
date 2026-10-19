@@ -59,6 +59,7 @@ test("queue maintenance is explicit, bounded, and non-cancelling", () => {
     "queue_revision",
     "reviewed_plan_sha256",
     "canonical_action",
+    "previous_plan_sha256",
     "expected_deployment_sha",
     "canonical_attestation_json",
     "canonical_verification_phase",

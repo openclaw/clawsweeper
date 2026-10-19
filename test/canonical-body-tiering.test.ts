@@ -118,6 +118,282 @@ const exportOptions = {
   maxRecords: 200,
 };
 
+function barrier() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+async function seedConcurrentPass(store: ExactReviewDirectPublicationStore) {
+  for (let id = 1; id <= 4; id++) {
+    const mutation = await validateCanonicalRecordTupleMutation({
+      deliveryId: `concurrent-${id}`,
+      key: `${repo}/${id}`,
+      operations: ["items", "closed", "plans", "decision-packets"].map((section) => ({
+        path: `records/${repo}/${section}/${id}.${section === "decision-packets" ? "json" : "md"}`,
+        expectedDigest: null,
+        ...(["items", "plans"].includes(section)
+          ? {
+              contentBase64: Buffer.from(
+                section === "plans" ? "shared plan" : `body-${id}`,
+              ).toString("base64"),
+            }
+          : {}),
+      })),
+    });
+    store.acceptCanonicalTupleMutation(mutation, Date.now());
+  }
+  await activate(store);
+}
+
+test(
+  "migration captures the whole pass, deduplicates bodies and caps verified pipelines at four",
+  { timeout: 5000 },
+  async () => {
+    const { store, bucket } = setup();
+    await seedConcurrentPass(store);
+    const entered = barrier(),
+      resume = barrier();
+    let active = 0,
+      peak = 0;
+    bucket.beforeGet = async () => {
+      active++;
+      peak = Math.max(peak, active);
+      if (active === 4) entered.release();
+      await resume.promise;
+      active--;
+    };
+    const preparing = store.prepareTieringPass();
+    await entered.promise;
+    assert.equal(bucket.puts, 4);
+    // A foreground write to the last tuple races the first upload: its source
+    // must already be captured, so the original complete-tuple CAS rejects it.
+    bucket.beforeGet = null;
+    const replacement = await plan(4, "foreground replacement", 2);
+    store.accept(
+      replacement,
+      Date.now(),
+      await store.prepareCanonicalWrites(replacement.operations),
+    );
+    resume.release();
+    const pass = await preparing;
+    assert.equal(pass.tuples.length, 4);
+    assert.equal(pass.tuples[3]?.bodies.get("items"), "body-4");
+    assert.equal(peak, 4);
+    assert.equal(bucket.puts, 6); // five unique migration bodies plus foreground
+    assert.equal(bucket.gets, 6);
+    const committed = store.commitTieringPassSync(pass, Date.now());
+    assert.equal(committed?.conflicts, 1);
+    assert.equal(
+      (await store.readCanonicalAsync(repo, "items", 4))?.content,
+      "foreground replacement",
+    );
+  },
+);
+
+test(
+  "failed migration stops new pipelines and drains all started I/O before rejecting",
+  { timeout: 5000 },
+  async () => {
+    const { store, bucket, storage } = setup();
+    await seedConcurrentPass(store);
+    const allStarted = barrier(),
+      failed = barrier(),
+      drain = barrier();
+    let started = 0,
+      settled = false;
+    bucket.beforeGet = async () => {
+      const index = started++;
+      if (started === 4) allStarted.release();
+      await allStarted.promise;
+      if (index === 0) {
+        failed.release();
+        throw new Error("synthetic readback failure");
+      }
+      await drain.promise;
+    };
+    const checkpoint = store.tieringStatusSync();
+    const preparing = store.prepareTieringPass().finally(() => {
+      settled = true;
+    });
+    const rejected = assert.rejects(preparing, CanonicalBodyUnavailableError);
+    await failed.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+    assert.equal(bucket.puts, 4);
+    drain.release();
+    await rejected;
+    assert.equal(bucket.puts, 4);
+    assert.equal(started, 4);
+    assert.deepEqual(store.tieringStatusSync(), checkpoint);
+    assert.equal(
+      storage.scalar("SELECT COUNT(*) AS value FROM exact_review_canonical_records"),
+      16,
+    );
+  },
+);
+
+test("same digest with disagreeing source bytes or content fails before any upload", async () => {
+  for (const differentLength of [false, true]) {
+    const { store, bucket, storage } = setup();
+    store.accept(await plan(1, "first"), Date.now());
+    store.accept(await plan(2, differentLength ? "different length" : "other"), Date.now());
+    storage.sql.exec(
+      "UPDATE exact_review_canonical_records SET digest=? WHERE item_id=2 AND section='items'",
+      hash("first"),
+    );
+    await activate(store);
+    await assert.rejects(store.prepareTieringPass(), /digest collision/);
+    assert.equal(bucket.puts, 0);
+    assert.equal(bucket.gets, 0);
+  }
+});
+
+test("checkpoint requalification preserves progress, rejects old prepared passes and resumes after restart", async () => {
+  const { store, bucket, storage } = setup();
+  for (let id = 1; id <= 9; id++) store.accept(await plan(id, `body-${id}`), Date.now());
+  const original = await store.tieringPreview(sha, gates);
+  store.activateTieringSync(original, Date.now());
+  await migrate(store);
+  const before = store.tieringStatusSync()!;
+  const inFlight = await store.prepareTieringPass();
+  const nextSha = "b".repeat(40);
+  const nextGates = {
+    ...gates,
+    rollbackFloor: { ...gates.rollbackFloor, sha: nextSha, proof: "qualified next deployment" },
+    bucketLifecycle: { ...gates.bucketLifecycle, observedAt: "2026-10-19T00:00:00Z" },
+  };
+  await assert.rejects(store.tieringPreview(nextSha, nextGates), /approved plan changed/);
+  const preview = await store.tieringRequalificationPreview(nextSha, nextGates, original.sha256);
+  assert.equal(preview.packet.checkpointSha256, hash(JSON.stringify(before)));
+  assert.equal(preview.sha256, hash(JSON.stringify(preview.packet)));
+  assert.notEqual(preview.sha256, preview.packet.nextPlanSha256);
+  const after = store.requalifyTieringSync(preview)!;
+  assert.deepEqual(
+    { ...after },
+    {
+      ...before,
+      deployment_sha: nextSha,
+      preview_sha256: preview.packet.nextPlanSha256,
+      plan_json: JSON.stringify(preview.packet.nextPlan),
+    },
+  );
+  assert.throws(() => store.commitTieringPassSync(inFlight, Date.now()), /checkpoint changed/);
+  assert.throws(() => store.requalifyTieringSync(preview), /checkpoint changed/);
+  await assert.rejects(
+    store.tieringRequalificationPreview(nextSha, nextGates, original.sha256),
+    /integrity mismatch/,
+  );
+  const restarted = new ExactReviewDirectPublicationStore(storage, bucket);
+  restarted.ensureSchemaSync();
+  assert.deepEqual(restarted.tieringStatusSync(), after);
+  assert.equal(
+    (await restarted.tieringPreview(nextSha, nextGates)).sha256,
+    preview.packet.nextPlanSha256,
+  );
+  while (!restarted.tieringStatusSync()?.completed_at) await migrate(restarted);
+  assert.equal(restarted.tieringStatusSync()?.upper_rowid, before.upper_rowid);
+  assert.equal((await restarted.readCanonicalAsync(repo, "items", 9))?.content, "body-9");
+  await assert.rejects(
+    restarted.tieringRequalificationPreview("c".repeat(40), nextGates, after.preview_sha256),
+    /incomplete checkpoint required/,
+  );
+});
+
+test("requalification rejects stale checkpoints, corrupted plans and every unapproved plan change", async () => {
+  const { store, storage } = setup();
+  for (let id = 1; id <= 9; id++) store.accept(await plan(id, `body-${id}`), Date.now());
+  const original = await store.tieringPreview(sha, gates);
+  store.activateTieringSync(original, Date.now());
+  const nextSha = "b".repeat(40);
+  const nextGates = { ...gates, rollbackFloor: { ...gates.rollbackFloor, sha: nextSha } };
+  for (const changed of [
+    { ...nextGates, operator: "different-operator" },
+    {
+      ...nextGates,
+      bucketLifecycle: {
+        ...nextGates.bucketLifecycle,
+        rulesJson: '{"rules":[{"id":"safe","enabled":false,"conditions":{}}]}',
+      },
+    },
+  ])
+    await assert.rejects(
+      store.tieringRequalificationPreview(nextSha, changed, original.sha256),
+      /scope changed/,
+    );
+  await assert.rejects(
+    store.tieringRequalificationPreview(nextSha, nextGates, "0".repeat(64)),
+    /integrity mismatch/,
+  );
+  const preview = await store.tieringRequalificationPreview(nextSha, nextGates, original.sha256);
+  await migrate(store);
+  assert.throws(() => store.requalifyTieringSync(preview), /checkpoint changed/);
+  const checkpoint = store.tieringStatusSync()!;
+  for (const mutate of [
+    (packet: any) => {
+      packet.limits.tuples = 5;
+    },
+    (packet: any) => {
+      packet.scope.rows = "unbounded";
+    },
+    (packet: any) => {
+      packet.version = 2;
+    },
+    (packet: any) => {
+      packet.extra = true;
+    },
+  ]) {
+    const packet = JSON.parse(String(checkpoint.plan_json));
+    mutate(packet);
+    const serialized = JSON.stringify(packet),
+      digest = hash(serialized);
+    storage.sql.exec(
+      "UPDATE exact_review_canonical_body_tiering SET plan_json=?,preview_sha256=?",
+      serialized,
+      digest,
+    );
+    await assert.rejects(
+      store.tieringRequalificationPreview(nextSha, nextGates, digest),
+      /not canonical/,
+    );
+  }
+  for (const mutate of [
+    (packet: any) => {
+      packet.gates.rollbackFloor.proof = "";
+    },
+    (packet: any) => {
+      packet.gates.bucketLifecycle.observedAt = "invalid";
+    },
+    (packet: any) => {
+      packet.deploymentSha = packet.gates.rollbackFloor.sha = "invalid";
+    },
+  ]) {
+    const packet = JSON.parse(String(checkpoint.plan_json));
+    mutate(packet);
+    const serialized = JSON.stringify(packet),
+      digest = hash(serialized);
+    storage.sql.exec(
+      "UPDATE exact_review_canonical_body_tiering SET plan_json=?,preview_sha256=?",
+      serialized,
+      digest,
+    );
+    await assert.rejects(
+      store.tieringRequalificationPreview(nextSha, nextGates, digest),
+      /invalid canonical tiering attestation/,
+    );
+  }
+  storage.sql.exec(
+    "UPDATE exact_review_canonical_body_tiering SET plan_json=?",
+    checkpoint.plan_json,
+  );
+  await assert.rejects(
+    store.tieringRequalificationPreview(nextSha, nextGates, original.sha256),
+    /integrity mismatch/,
+  );
+});
+
 test("dormant schema1 writes have no R2 effects; physical migration preserves bytes and all logical metadata", async () => {
   const { storage, bucket, store } = setup();
   for (const [i, content] of [
