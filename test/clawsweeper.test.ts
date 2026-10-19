@@ -2202,6 +2202,7 @@ test("OpenClaw subprocess env preserves provider auth without exposing Codex aut
   const originalEnv = { ...process.env };
   try {
     process.env.CLAWSWEEPER_RUNNER = "openclaw";
+    process.env.CLAWSWEEPER_OPENCLAW_MODEL = "openai/test";
     process.env.OPENAI_API_KEY = "openai";
     process.env.CODEX_API_KEY = "codex";
     process.env.CODEX_ACCESS_TOKEN = "codex-access";

@@ -15,6 +15,7 @@ import {
   closeCodexOutputCapture,
   codexOutputTail,
   openCodexOutputCapture,
+  resetCodexOutputTail,
 } from "./codex-output-capture.js";
 import { OutputLastMessageParser } from "./codex-output-last-message.js";
 import { spawnCodex, terminateCodexProcessTree } from "./codex-spawn.js";
@@ -98,8 +99,8 @@ if (repairError && repairThreadId && options.args.at(-1) === "-" && !terminating
   decisionRepairError = repairError;
   appendCodexOutputCapture(stderr, Buffer.from("\n[clawsweeper] decision repair turn\n"));
   // The log files keep both turns; the returned tails classify only the repair turn's outcome.
-  stdout.tail = Buffer.alloc(0);
-  stderr.tail = Buffer.alloc(0);
+  resetCodexOutputTail(stdout);
+  resetCodexOutputTail(stderr);
   input = Readable.from([decisionRepairPrompt(repairError)]);
   turn = await runTurn([...options.args.slice(0, -1), "resume", repairThreadId, "-"]);
 }

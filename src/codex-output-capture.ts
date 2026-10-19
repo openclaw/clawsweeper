@@ -13,6 +13,7 @@ export interface CodexOutputCapture {
   file: number;
   pending: Buffer[];
   pendingBytes: number;
+  tailOffset: number;
   omitted: boolean;
   maxFileBytes: number;
   tailBytes: number;
@@ -29,6 +30,7 @@ export function openCodexOutputCapture(
     file: openSync(filePath, "w"),
     pending: [],
     pendingBytes: 0,
+    tailOffset: 0,
     omitted: false,
     maxFileBytes: normalizedMaxFileBytes(options.maxFileBytes),
     tailBytes: normalizedTailBytes(options.tailBytes),
@@ -66,10 +68,15 @@ function appendSafeOutput(capture: CodexOutputCapture, chunk: Buffer): void {
 
 export function closeCodexOutputCapture(capture: CodexOutputCapture): void {
   try {
+    const bytes = Buffer.concat(capture.pending, capture.pendingBytes);
     const raw = capture.omitted
       ? "[diagnostic output omitted: stream exceeded redaction buffer]\n"
-      : Buffer.concat(capture.pending, capture.pendingBytes).toString("utf8");
+      : bytes.toString("utf8");
     const safe = redactPublication(raw).value;
+    const turnTail =
+      !capture.omitted && capture.tailOffset > 0
+        ? redactPublication(bytes.subarray(capture.tailOffset).toString("utf8")).value
+        : undefined;
     capture.pending = [];
     capture.pendingBytes = 0;
     appendSafeOutput(capture, Buffer.from(safe));
@@ -82,9 +89,16 @@ export function closeCodexOutputCapture(capture: CodexOutputCapture): void {
       writeAll(capture.file, TRUNCATION_MARKER, headBytes);
       writeAll(capture.file, tail, headBytes + TRUNCATION_MARKER.length);
     }
+    if (turnTail !== undefined)
+      capture.tail = appendTail(Buffer.alloc(0), Buffer.from(turnTail), capture.tailBytes);
   } finally {
     closeSync(capture.file);
   }
+}
+
+/** Keep both turns on disk, but classify failures from the current turn only. */
+export function resetCodexOutputTail(capture: CodexOutputCapture): void {
+  capture.tailOffset = capture.pendingBytes;
 }
 
 export function codexOutputTail(capture: CodexOutputCapture): string {
