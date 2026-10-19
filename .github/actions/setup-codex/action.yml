@@ -110,8 +110,9 @@ runs:
         else
           codex_home="$HOME/.clawsweeper-repair/codex-home/${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
         fi
-        if [[ ! "$codex_home" =~ ^(/|[A-Za-z0-9_.])[^$'\r\n']*$ ]]; then
-          echo "::error::Invalid Codex home: expected an absolute or workspace-relative path without CR/LF." >&2
+        if [[ ! "$codex_home" =~ ^(/|[A-Za-z0-9_.])[^$'\r\n']*$ ]] ||
+          [[ "/$codex_home/" == */../* ]]; then
+          echo "::error::Invalid Codex home: expected an absolute or workspace-relative path without CR/LF or parent traversal." >&2
           exit 1
         fi
         mkdir -p "$codex_home"

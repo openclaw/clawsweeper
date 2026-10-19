@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
@@ -18,7 +18,7 @@ import YAML from "yaml";
 
 type Step = { name?: string; id?: string; run?: string; env?: Record<string, unknown> };
 const untrusted =
-  /client_payload|\binputs(?:\.|\[)|github\.event\.inputs|github\.head_ref|github\.event\.(?:comment|issue|pull_request|review)/;
+  /client_payload|\binputs(?:\.|\[)|github\.event\.inputs|github\.head_ref|github\.event\.(?:comment|issue|pull_request|review)|\b(?:steps|needs)(?:\.[\w-]+|\[['"][^'"]+['"]\])(?:\.outputs|\[['"]outputs['"]\])/;
 const repository = resolve(".");
 const leaseId = "54ea52c2-c45e-40c9-9ddc-0923832e2a53";
 
@@ -33,15 +33,16 @@ function candidates() {
   ];
   return paths.flatMap((file) => {
     const doc = YAML.parse(readFileSync(file, "utf8"));
-    const jobs: Record<string, { steps?: Step[] }> = doc.jobs ?? { composite: doc.runs };
+    const jobs: Record<string, { steps?: Step[]; env?: Record<string, unknown> }> = doc.jobs ?? {
+      composite: doc.runs,
+    };
     return Object.entries(jobs).flatMap(([job, definition]) =>
-      (definition.steps ?? []).flatMap((step) => {
+      (definition.steps ?? []).flatMap((rawStep) => {
+        const step = { ...rawStep, env: { ...doc.env, ...definition.env, ...rawStep.env } };
         const variables = Object.entries(step.env ?? {})
           .filter(([, value]) => untrusted.test(String(value)))
           .map(([key]) => key);
-        return step.run && /GITHUB_(?:OUTPUT|ENV)/.test(step.run) && variables.length
-          ? [{ file, job, step, variables }]
-          : [];
+        return step.run && variables.length ? [{ file, job, step, variables }] : [];
       }),
     );
   });
@@ -61,6 +62,40 @@ function valueFor(name: string): string {
     ITEM_KEY: "openclaw/openclaw#42",
     EXACT_REVIEW_ITEM_KEY: "openclaw/openclaw#42",
     TERMINAL_FINALIZATION_ITEM_KEY: "openclaw/openclaw#42",
+    SUPERSEDES_IN_PROGRESS: "false",
+    CRABBOX_ID: "fixture",
+    CRABBOX_KEEP_ALIVE_MINUTES: "0",
+    STEPS_TARGET_OUTPUTS_CODEX_TIMEOUT_MS: "120000",
+    STEPS_TARGET_OUTPUTS_MEDIA_PROOF_TIMEOUT_MS: "120000",
+    STEPS_TARGET_OUTPUTS_MEDIA_PREPROCESSING_RESERVE_SECONDS: "60",
+    MEDIA_PROOF_TIMEOUT_MS: "120000",
+    MEDIA_PREPROCESSING_RESERVE_SECONDS: "60",
+    STEPS_PROOF_ARTIFACT_OUTPUTS_ACTION_LEDGER_NAME: "action-ledger-apply-proof-123-1",
+    PRIMARY_TOKEN: "",
+    PRODUCER_RUN_ID: "123",
+    PRODUCER_RUN_ATTEMPT: "1",
+    COMPLETION_COMPLETED_AT: "2026-10-18T00:00:00Z",
+    PRIMARY_OUTCOME: "success",
+    COMPLETION_KIND: "published",
+    REASON_CODE: "publication_applied",
+    ARTIFACT_NAME: "exact-review-123-1",
+    DIRECT_OUTCOME: "direct-outcome.json",
+    LIVE_PROCEEDED: "false",
+    LIVE_TERMINAL_NOOP: "false",
+    LIVE_TERMINAL_MISSING: "false",
+    LIVE_GUARDED_OPEN: "false",
+    RESERVATION_STATUS: "posted",
+    REVIEW_EXIT_CODE: "0",
+    CLASSIFICATION: "success",
+    INPUTS_WORKTREE_PATH: ".",
+    INPUTS_AUTH_MODE: "proxy",
+    INPUTS_CODEX_VERSION: "0.162.1",
+    INPUTS_PROXY_VERSION: "0.159.2",
+    HYDRATE_STATE_BLOBS: "true",
+    HYDRATE_RECORDS: "true",
+    HYDRATE_GIT_STATE: "true",
+    DIRECT_LIFECYCLE_PLAN: '{"kind":"router"}',
+    DIRECT_LIFECYCLE_RECEIPT_OUTCOME: "accepted",
     INPUTS_WORKING_DIRECTORY: ".",
     INPUTS_TARGET_DIR: "target",
     INPUTS_STATE_PATH: "state with spaces",
@@ -116,12 +151,26 @@ function valueFor(name: string): string {
     SCHEDULED_COMMENT_SYNC: "false",
   };
   if (Object.hasOwn(values, name)) return values[name];
+  if (/DECISION/.test(name))
+    return JSON.stringify({
+      targetRepo: "openclaw/openclaw",
+      targetBranch: "release/1.2",
+      itemNumber: 42,
+      itemKind: "pull_request",
+      sourceEvent: "pull_request",
+      sourceAction: "opened",
+    });
+  if (name.endsWith("SLUG")) return "openclaw-openclaw";
+  if (/ITEM_KIND/.test(name)) return "pull_request";
+  if (/BRANCH/.test(name)) return "release/1.2";
+  if (/ITEM_KEY/.test(name)) return "openclaw/openclaw#42";
+  if (/PROTOCOL_VERSION/.test(name)) return "2";
   if (/REPO|REPOSITORY/.test(name)) return "openclaw/openclaw";
   if (/LEASE_ID/.test(name)) return leaseId;
   if (/REVISION|GENERATION/.test(name)) return "1";
   if (/ITEM_NUMBERS|ITEM_NUMBER/.test(name)) return "42";
   if (/COMMENT_ID/.test(name)) return "7";
-  if (/TOKEN/.test(name)) return "fixture-token";
+  if (/TOKEN|SECRET/.test(name)) return "fixture-token";
   if (/QUEUE_URL/.test(name)) return "https://queue.invalid";
   return "";
 }
@@ -129,9 +178,20 @@ function valueFor(name: string): string {
 // Keep production parsers and Bash bodies intact. Only network/process boundaries
 // are fixtures; an unknown external invocation fails instead of reaching live APIs.
 function fixture(root: string) {
-  for (const dir of ["bin", "scripts", "target/extensions/codex", "action", "runner"])
+  for (const dir of [
+    "bin",
+    "scripts",
+    "target/extensions/codex",
+    "action",
+    "runner",
+    ".artifacts",
+    "results",
+    ".artifacts/exact-review-batch",
+    "artifacts/event",
+  ])
     mkdirSync(join(root, dir), { recursive: true });
   symlinkSync(join(repository, "src"), join(root, "src"), "dir");
+  symlinkSync(join(repository, "dist"), join(root, "dist"), "dir");
   const write = (path: string, content: string) =>
     writeFileSync(join(root, path), content, { mode: 0o755 });
   const sourceRoot = "home/.clawsweeper-repair/openclaw-source";
@@ -152,6 +212,19 @@ function fixture(root: string) {
     ".github/actions/setup-openclaw-codex-source/validate-pin.mjs",
     join(root, "action/validate-pin.mjs"),
   );
+  mkdirSync(join(root, "home/.crabbox/actions"), { recursive: true });
+  write("home/.crabbox/actions/fixture.stop", "");
+  write("event.json", "{}");
+  write("artifacts/event/42.md", "fixture review\n");
+  write(
+    ".artifacts/direct-publication-outcome.json",
+    '{"kind":"eligible","disposition":{"policyNoopExpected":true}}',
+  );
+  write("plan.json", "{}");
+  write(".artifacts/exact-review-batch/manifest.json", '{"items":[]}');
+  write("scripts/review-target-checkout.sh", "#!/bin/bash\nexit 0\n");
+  for (const command of ["npm", "npx", "corepack", "codex", "openclaw", "setsid", "timeout"])
+    write(`bin/${command}`, "#!/bin/bash\nexit 0\n");
   write("action/install.sh", "#!/bin/bash\nexit 0\n");
   write("scripts/dispatch-receipt-owner.sh", "#!/bin/bash\nprintf 'none\\n'\n");
   const decision = {
@@ -186,6 +259,10 @@ function fixture(root: string) {
     "response.json",
     JSON.stringify({
       claimed: true,
+      queued: true,
+      accepted: true,
+      completed: true,
+      requeued: true,
       protocol_version: 2,
       decision: publication,
       item_key: "openclaw/openclaw#42",
@@ -208,7 +285,24 @@ function fixture(root: string) {
     "preload.mjs",
     `globalThis.fetch = async (url) => ({ status: 200, json: async () => String(url).includes('raw.githubusercontent') ? { schema_version: 1, repositories: [{target_repo:'openclaw/openclaw'}] } : {full_name:'openclaw/openclaw', private:false, visibility:'public'} });\n`,
   );
-  const curl = `control_plane_curl() {\n  local out=""\n  while [ "$#" -gt 0 ]; do\n    if [ "$1" = --output ]; then out="$2"; shift; fi\n    shift\n  done\n  [ -z "$out" ] || cp "$FIXTURE_ROOT/response.json" "$out"\n  printf 200\n}\ncontrol_plane_signed_post() { return 0; }\n`;
+  const curl = `control_plane_curl() {
+  local out="" code=false body="$FIXTURE_ROOT/response.json"
+  case "$*" in
+    *'/command-ack/observed'*) jq '.acknowledgement_state="observed"' "$body" > "$FIXTURE_ROOT/route.json"; body="$FIXTURE_ROOT/route.json" ;;
+    *'/terminal-finalization/skip'*) jq '.acknowledgement_state="skipped_locked"' "$body" > "$FIXTURE_ROOT/route.json"; body="$FIXTURE_ROOT/route.json" ;;
+  esac
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --output) out="$2"; shift ;;
+      --write-out) code=true; shift ;;
+    esac
+    shift
+  done
+  if [ -n "$out" ]; then cp "$body" "$out"; fi
+  if [ "$code" = true ]; then printf 200; elif [ -z "$out" ]; then cat "$body"; fi
+}
+control_plane_signed_post() { control_plane_curl "$@"; }
+`;
   write("scripts/control-plane-curl.sh", curl);
   write("runner/control-plane-curl.sh", curl);
   write(
@@ -218,11 +312,19 @@ function fixture(root: string) {
   );
   write(
     "bin/gh",
-    `#!/bin/bash\nprintf '%s\\n' '[{"id":7,"user":{"login":"clawsweeper[bot]"},"body":"<!-- clawsweeper-pr-ack:opened item=42 -->"}]'\n`,
+    `#!/bin/bash
+case "$*" in
+  *'actions/caches'*) echo '{"actions_caches":[]}' ;;
+  *'.state'*) echo closed ;;
+  *'.default_branch'*) echo main ;;
+  *'--jq'*) : ;;
+  *) printf '%s\\n' '[{"id":7,"user":{"login":"clawsweeper[bot]"},"body":"<!-- clawsweeper-pr-ack:opened item=42 -->"}]' ;;
+esac
+`,
   );
   write("bin/git", "#!/bin/bash\nprintf '%040d\\n' 1\n");
   write("bin/curl", "#!/bin/bash\nexit 97\n");
-  write("bin/sleep", "#!/bin/bash\nexit 0\n");
+  write("bin/sleep", "#!/bin/bash\n/bin/sleep 0.01\n");
   write(
     "bin/pnpm",
     `#!/bin/bash
@@ -234,7 +336,16 @@ case " $* " in
   *' proposed-pr-close-coverage-item-numbers '*) printf '42\\n' ;;
   *' proposed-item-quality-summary '*) printf 'candidate_quality_summary=fixture\\n' ;;
   *' repair:update-command-status '*) printf 'fixture status updated\\n' ;;
+  *' reserve-review-lease '*) echo '{"status":"posted","owner":"fixture","commentId":7,"queueOnly":true}' ;;
+  *' repair:exact-review-bundle create '*) echo '{"manifest":{"artifactName":"review"}}' ;;
+  *' exact-review-admission '*) echo 'proceed=true' ;;
+  *' exact-review-live-item '*) echo '{"state":"open","locked":false}' ;;
+  *' count-csv '*) echo 1 ;;
   *' merge-apply-reports '*) : ;;
+  *' plan '*) echo '{}' > plan.json ;;
+  *' plan-output '*) echo 'proceed=true' ;;
+  *' repair:scheduled-review-enqueue '*) echo '{"offered":1,"attempted":1,"queued":1,"deduped":0,"shed":0,"rejected":0,"deferred":0}' ;;
+  *' audit '*|*' repair:'*|*' finalize-action-events '*|*' target-fanout '*|*' install '*|*' build '*) : ;;
   *' reconcile '*|*' summarize-apply-report '*|*' status '*) printf '{}\\n' ;;
   *) echo "Unexpected pnpm invocation: $*" >&2; exit 97 ;;
 esac
@@ -244,39 +355,94 @@ esac
     "bin/node",
     `#!/bin/bash
 case "$1" in
-  --input-type=module) exec "$REAL_NODE" --import "$FIXTURE_ROOT/preload.mjs" "$@" ;;
+  --input-type=module|-e|"") exec "$REAL_NODE" --import "$FIXTURE_ROOT/preload.mjs" "$@" ;;
   "$FIXTURE_ROOT/home/.clawsweeper-repair/openclaw-source/checkout/dist/index.js") exec "$REAL_NODE" "$@" ;;
   dist/clawsweeper.js)
     if [ "$2" = assist-target ]; then exec "$REAL_NODE" "$SOURCE_ROOT/$1" "\${@:2}"; fi
-    if [ "$2" = assist-generate ]; then exit 0; fi ;;
+    case "$2" in assist-generate|assist-validate|assist-publish|expire-review-lease) exit 0 ;; *) echo "Unexpected CLI invocation: $*" >&2; exit 97 ;; esac ;;
   dist/repair/exact-review-queue-request.js) shift; exec "$REAL_NODE" "$FIXTURE_ROOT/runner/exact-review-queue-request.mts" "$@" ;;
-  "$FIXTURE_ROOT/runner/"*.mts|"$FIXTURE_ROOT/action/validate-pin.mjs") exec "$REAL_NODE" "$@" ;;
+  "$FIXTURE_ROOT/runner/"*.mts|"$FIXTURE_ROOT/action/validate-pin.mjs"|src/repair/exact-review-queue-response.ts|src/repair/exact-review-queue-context.ts|src/workflow-bot-comments.ts) exec "$REAL_NODE" "$@" ;;
+  "$FIXTURE_ROOT/action/validate-install.mjs"|"$FIXTURE_ROOT/action/configure-api-context.mjs"|dist/intake-triage-workflow.js|dist/github-egress-observer-cli.js|dist/review-placeholder-recovery.js|dist/repair/state-repo-size.js|dist/repair/manual-review-enqueue.js) exit 0 ;;
+  scripts/build-data.ts|scripts/prepare-exact-review-batch.mjs|scripts/exact-review-dead-letter-operator.mjs|scripts/stuck-queued-run-remediation.mjs|scripts/queue-storage-census.mjs|scripts/canonical-record-verification.ts|scripts/review-usage-operator.mjs|scripts/publish-apply-observability.mjs|./scripts/prepare-worker-record-cache.ts|--max-old-space-size=12288) exit 0 ;;
+  scripts/worker-records.ts) echo '{"ok":true}' ;;
+  *) echo "Unexpected node invocation: $*" >&2; exit 97 ;;
 esac
-echo "Unexpected node invocation: $*" >&2
-exit 97
+exit 0
+
 `,
   );
 }
 
 // No exemptions: every matching workflow/action step is executed. A clean baseline
 // is mandatory so missing fixtures or an early unrelated failure cannot fake safety.
-test("workflow output files cannot acquire records from untrusted env values", async (t) => {
+test("untrusted env matching includes dot and bracket step/job outputs", () => {
+  for (const expression of [
+    "steps.target.outputs.value",
+    "needs.build.outputs.value",
+    "steps['target']['outputs']['value']",
+    'needs["build"].outputs.value',
+    "fromJSON(steps.claim.outputs.decision).itemNumber",
+  ])
+    assert.match(expression, untrusted);
+});
+
+test("arithmetic probe executes with the harness scalar present", () => {
+  const root = mkdtempSync(join(tmpdir(), "arithmetic-control-"));
+  const marker = join(root, "marker");
+  try {
+    execFileSync(
+      "bash",
+      [
+        "--noprofile",
+        "--norc",
+        "-euo",
+        "pipefail",
+        "-c",
+        'value=\'x[$(touch "$PROBE_MARKER")]\'; : "$((value + 1))"',
+      ],
+      {
+        env: { PATH: process.env.PATH, x: "0", PROBE_MARKER: marker },
+        timeout: 10_000,
+      },
+    );
+    assert.ok(existsSync(marker), "the exploit must execute in the positive control");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("workflow shell boundaries", { concurrency: 4 }, async (t) => {
   const rows = candidates();
   assert.ok(rows.length >= 30, "enumerate workflows and composite actions");
   t.diagnostic(
     `${rows.length} steps; ${rows.reduce((count, row) => count + row.variables.length, 0)} untrusted variables; no exemptions`,
   );
+  let arithmeticProbes = 0;
+  let recordProbes = 0;
+  let traversalProbes = 0;
+  const checks: Promise<void>[] = [];
   for (const { file, job, step, variables } of rows) {
-    await t.test(`${file}:${job}:${step.name ?? step.id}`, () => {
-      const root = mkdtempSync(join(tmpdir(), "actions-output-"));
+    const check = t.test(`${file}:${job}:${step.name ?? step.id}`, async () => {
+      const scratch = mkdtempSync(join(tmpdir(), "actions-output-"));
+      const root = join(scratch, "workspace");
       try {
+        mkdirSync(root);
         fixture(root);
         const base: Record<string, string> = {
+          // With nounset, an undeclared x would stop before its subscript runs.
+          x: "0",
           PATH: `${root}/bin:${process.env.PATH}`,
           HOME: join(root, "home"),
           REAL_NODE: process.execPath,
           SOURCE_ROOT: repository,
           FIXTURE_ROOT: root,
+          CODEX_HOME: join(root, "home/codex"),
+          GITHUB_SHA: "a".repeat(40),
+          GITHUB_EVENT_PATH: join(root, "event.json"),
+          GITHUB_STEP_SUMMARY: join(root, "summary"),
+          GITHUB_REPOSITORY: "openclaw/clawsweeper",
+          WORKFLOW_ACTION_PATH: join(root, "action"),
+          OPENAI_API_KEY: "fixture",
           GITHUB_OUTPUT: join(root, "output"),
           GITHUB_ENV: join(root, "env"),
           GITHUB_PATH: join(root, "path"),
@@ -293,22 +459,63 @@ test("workflow output files cannot acquire records from untrusted env values", a
           CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: "false",
           CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED: "false",
         };
-        for (const name of Object.keys(step.env ?? {})) base[name] = valueFor(name);
+        for (const [name, value] of Object.entries(step.env ?? {}))
+          base[name] = String(value).includes("github.action_path")
+            ? join(root, "action")
+            : !String(value).includes("${{")
+              ? String(value ?? "")
+              : valueFor(name);
         const run = (env: Record<string, string>) => {
           writeFileSync(base.GITHUB_OUTPUT, "");
           writeFileSync(base.GITHUB_ENV, "");
-          return spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", step.run!], {
-            cwd: root,
-            env,
-            encoding: "utf8",
-            timeout: 120_000,
+          return new Promise<{
+            status: number | null;
+            stdout: string;
+            stderr: string;
+            error?: Error;
+          }>((resolveRun) => {
+            execFile(
+              "bash",
+              ["--noprofile", "--norc", "-eo", "pipefail", "-c", step.run!],
+              {
+                cwd: root,
+                env,
+                encoding: "utf8",
+                timeout: 120_000,
+              },
+              (error, stdout, stderr) =>
+                resolveRun({
+                  status: error ? (typeof error.code === "number" ? error.code : null) : 0,
+                  stdout,
+                  stderr,
+                  error: error && typeof error.code !== "number" ? error : undefined,
+                }),
+            );
           });
         };
-        const baseline = run(base);
-        assert.equal(baseline.status, 0, `baseline failed: ${baseline.stdout}\n${baseline.stderr}`);
+        const baseline = await run(base);
+        if (process.env.ACTIONS_PROBE_DEBUG)
+          console.error(
+            `${file}:${job}:${step.name ?? step.id}: baseline ${baseline.status} ${baseline.stderr}`,
+          );
+        const expectedExit = [
+          "Reject unknown Codex auth mode",
+          "Restore failed-review retry outcome",
+          "Fail unsuccessful exact review generation",
+        ].includes(step.name ?? "")
+          ? 1
+          : 0;
+        assert.equal(
+          baseline.status,
+          expectedExit,
+          `baseline failed: ${baseline.stdout}\n${baseline.stderr}`,
+        );
         const normalOutput = readFileSync(base.GITHUB_OUTPUT, "utf8");
         const normalEnv = readFileSync(base.GITHUB_ENV, "utf8");
-        if (step.name !== "Update final command status once") {
+        if (
+          /GITHUB_(?:OUTPUT|ENV)/.test(step.run!) &&
+          step.name !== "Update final command status once"
+        ) {
           assert.ok(normalOutput || normalEnv, "baseline must reach output serialization");
         }
         if (step.id === "target" && normalOutput.includes("target_branch=")) {
@@ -320,14 +527,14 @@ test("workflow output files cannot acquire records from untrusted env values", a
         if (step.name === "Resolve Codex home") {
           assert.match(normalEnv, /^CODEX_HOME=codex home$/m);
           for (const home of ["", ".codex-home", "./relative home", join(root, "absolute home")]) {
-            const result = run({ ...base, INPUTS_CODEX_HOME: home });
+            const result = await run({ ...base, INPUTS_CODEX_HOME: home });
             assert.equal(result.status, 0, result.stderr);
             const expected = home || `${base.HOME}/.clawsweeper-repair/codex-home/123-1`;
             assert.equal(readFileSync(base.GITHUB_ENV, "utf8"), `CODEX_HOME=${expected}\n`);
           }
         }
         if (step.name === "Install observer shim") {
-          const optionalDefaults = run({
+          const optionalDefaults = await run({
             ...base,
             SOURCE_ACTION: "",
             CLAIM_GENERATION: "",
@@ -337,20 +544,18 @@ test("workflow output files cannot acquire records from untrusted env values", a
         }
         const failures: string[] = [];
         for (const name of variables) {
-          const result = run({ ...base, [name]: `${base[name]}\nforged_key=x` });
-          assert.equal(result.error, undefined, `${name}: ${result.error}`);
-          if (
-            [
-              "Select bounded coverage proof work",
-              "Apply unchanged proposed decisions with checkpoints",
-              "Resolve Codex home",
-              "Install observer shim",
-              "Build OpenClaw CLI from source",
-            ].includes(step.name ?? "")
-          ) {
-            assert.equal(result.status, 1, `${name}: must fail closed`);
-            assert.match(result.stderr, /::error::/, `${name}: must explain invalid input`);
+          for (const probe of ['x[$(touch "$PROBE_MARKER")]', '$(touch "$PROBE_MARKER")']) {
+            const marker = join(root, "probe-marker");
+            rmSync(marker, { force: true });
+            const result = await run({ ...base, PROBE_MARKER: marker, [name]: probe });
+            arithmeticProbes += 1;
+            assert.equal(result.error, undefined, `${name}: ${result.error}`);
+            if (existsSync(marker)) failures.push(`${name}: executed ${probe}`);
           }
+          if (!/GITHUB_(?:OUTPUT|ENV)/.test(step.run!) && !normalOutput && !normalEnv) continue;
+          const result = await run({ ...base, [name]: `${base[name]}\nforged_key=x` });
+          recordProbes += 1;
+          assert.equal(result.error, undefined, `${name}: ${result.error}`);
           for (const destination of [base.GITHUB_OUTPUT, base.GITHUB_ENV]) {
             if (/^forged_key=/m.test(readFileSync(destination, "utf8")))
               failures.push(
@@ -358,10 +563,82 @@ test("workflow output files cannot acquire records from untrusted env values", a
               );
           }
         }
-        assert.deepEqual(failures, [], `forged records: ${failures.join(", ")}`);
+        const pathVariables: Record<string, string[]> = {
+          "Install observer shim": ["METRICS_PATH", "RATE_LIMIT_PATH"],
+          "Resolve Codex home": ["INPUTS_CODEX_HOME"],
+          "Export state configuration": ["INPUTS_STATE_PATH"],
+        };
+        for (const name of pathVariables[step.name ?? ""] ?? []) {
+          const validPath = /METRICS|RATE_LIMIT/.test(name)
+            ? ".artifacts/nested/valid..jsonl"
+            : "nested/path..with spaces";
+          const valid = await run({ ...base, [name]: validPath });
+          assert.equal(
+            valid.status,
+            0,
+            `${name}: non-parent dot sequences stay valid: ${valid.stderr}`,
+          );
+          for (const path of [
+            ".artifacts/../../runner/traversal.jsonl",
+            "../runner/traversal.jsonl",
+            ".artifacts/..",
+            "..",
+          ]) {
+            const result = await run({ ...base, [name]: path });
+            traversalProbes += 1;
+            assert.equal(result.error, undefined, `${name}: ${result.error}`);
+            if (result.status === 0) failures.push(`${name}: accepted traversal ${path}`);
+          }
+        }
+        assert.deepEqual(failures, [], `unsafe inputs: ${failures.join(", ")}`);
+        const budgetPrefix =
+          step.name === "Reserve exact review lease"
+            ? ""
+            : step.name === "Review exact event item"
+              ? "STEPS_TARGET_OUTPUTS_"
+              : null;
+        if (budgetPrefix !== null) {
+          for (const [field, max, min] of [
+            ["CODEX_TIMEOUT_MS", 2_700_000, 1],
+            ["MEDIA_PROOF_TIMEOUT_MS", 480_000, 0],
+            ["MEDIA_PREPROCESSING_RESERVE_SECONDS", 480, 1],
+          ] as const) {
+            const name = `${budgetPrefix}${field}`;
+            for (const valid of [String(min), String(max)]) {
+              const result = await run({ ...base, [name]: valid });
+              assert.equal(result.status, 0, `${name}=${valid}: ${result.stderr}`);
+            }
+            for (const invalid of ["-1", String(max + 1), "9".repeat(30), "08"]) {
+              const result = await run({ ...base, [name]: invalid });
+              assert.equal(result.status, 1, `${name}=${invalid}: must reject before arithmetic`);
+            }
+          }
+        }
+        if (step.name === "Export uploaded apply proof action ledger identity") {
+          for (const invalid of [
+            "review-123-1",
+            "action-ledger-apply-proof-0-1",
+            "action-ledger-apply-proof-123-1/suffix",
+          ]) {
+            const result = await run({
+              ...base,
+              STEPS_PROOF_ARTIFACT_OUTPUTS_ACTION_LEDGER_NAME: invalid,
+            });
+            assert.equal(result.status, 1, `${invalid}: must reject a different artifact shape`);
+          }
+        }
       } finally {
-        rmSync(root, { recursive: true, force: true });
+        rmSync(scratch, { recursive: true, force: true });
       }
     });
+    checks.push(check);
   }
+  await Promise.all(checks);
+  assert.equal(
+    arithmeticProbes,
+    rows.reduce((count, row) => count + row.variables.length * 2, 0),
+  );
+  t.diagnostic(
+    `${arithmeticProbes} arithmetic probes; ${recordProbes} newline probes; ${traversalProbes} traversal probes`,
+  );
 });

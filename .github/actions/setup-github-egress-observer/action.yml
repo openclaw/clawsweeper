@@ -43,7 +43,9 @@ runs:
       run: |
         set -euo pipefail
         if [[ ! "$METRICS_PATH" =~ ^\.artifacts/[A-Za-z0-9._/-]+\.jsonl$ ]] ||
+          [[ "/$METRICS_PATH/" == */../* ]] ||
           [[ ! "$RATE_LIMIT_PATH" =~ ^\.artifacts/[A-Za-z0-9._/-]+\.jsonl$ ]] ||
+          [[ "/$RATE_LIMIT_PATH/" == */../* ]] ||
           [[ ! "$POOL_CLASS" =~ ^(repository_actions|target_app|public_read_fallback)$ ]] ||
           [[ ! "$STAGE" =~ ^(publication_prepare|publication_apply|publication_router|publication_recovery)$ ]] ||
           [[ ! "$SOURCE_ACTION" =~ ^[A-Za-z0-9_.:-]{0,80}$ ]] ||

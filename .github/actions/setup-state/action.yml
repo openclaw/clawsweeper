@@ -111,8 +111,9 @@ runs:
         INPUTS_STATE_PATH: ${{ inputs.state-path }}
         INPUTS_COORDINATOR_CLASS: ${{ inputs.coordinator-class }}
       run: |
-        # Paths may contain spaces; only record separators are forbidden.
+        # Preserve spaces while rejecting record separators and parent traversal.
         if [[ ! "$INPUTS_STATE_PATH" =~ ^[^$'\r\n']+$ ]] ||
+          [[ "/$INPUTS_STATE_PATH/" == */../* ]] ||
           [[ ! "$STATE_COORDINATOR_URL" =~ ^https?://[^[:space:]]+$ ]] ||
           [[ ! "$INPUTS_COORDINATOR_CLASS" =~ ^[A-Za-z0-9_-]+$ ]]; then
           echo "::error::Invalid state configuration." >&2

@@ -121,13 +121,18 @@ jobs:
           PRIMARY_TOKEN: ${{ github.token }}
           APP_FALLBACK_TOKEN: ${{ steps.target-read-token.outputs.token }}
         run: |
+          token="$PRIMARY_TOKEN"
           if [ -n "$PRIMARY_TOKEN" ]; then
             echo "Using workflow token for public audit reads."
-            echo "token=$PRIMARY_TOKEN" >> "$GITHUB_OUTPUT"
           else
             echo "Using ClawSweeper App token fallback for audit reads."
-            echo "token=$APP_FALLBACK_TOKEN" >> "$GITHUB_OUTPUT"
+            token="$APP_FALLBACK_TOKEN"
           fi
+          if [[ ! "$token" =~ ^[A-Za-z0-9_-]*$ ]]; then
+            echo "::error::Invalid audit read token." >&2
+            exit 1
+          fi
+          echo "token=$token" >> "$GITHUB_OUTPUT"
 
       - name: Create state token
         id: state-token
