@@ -130,8 +130,7 @@ export function readReviewRecord(markdown: string): ReviewRecord | null {
 /** Persist the same failed/keep-open receipt when only rendered report text matched. */
 export function publicationSafeReport(markdown: string, renderedRedactions = 0): string {
   const safe = redactPublication(markdown);
-  if (!safe.redactions && !renderedRedactions && !markdown.includes("[redacted credential]"))
-    return markdown;
+  if (!safe.redactions && !renderedRedactions) return markdown;
   let result = updateReviewRecordDecision(safe.value, (decision) =>
     blockCredentialPublication(decision, Math.max(1, safe.redactions + renderedRedactions)),
   );

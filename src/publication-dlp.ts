@@ -293,12 +293,7 @@ export function credentialPublicationBlocked(decision: Pick<Decision, "summary">
 }
 
 export function blockCredentialPublication(decision: Decision, redactions: number): Decision {
-  if (
-    !redactions &&
-    !credentialPublicationBlocked(decision) &&
-    !JSON.stringify(decision).includes(REDACTED)
-  )
-    return decision;
+  if (!redactions && !credentialPublicationBlocked(decision)) return decision;
   return {
     ...decision,
     decision: "keep_open",

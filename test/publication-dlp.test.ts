@@ -50,6 +50,20 @@ test("benign token terminology remains unchanged", () => {
   assert.match(markdown, /^review_status: complete$/m);
 });
 
+test("literal redaction placeholders do not fail clean reviews or stored records", async () => {
+  const { publicationSafeReport } = await import("../dist/review-record.js");
+  const markdown = report("The logger uses [redacted credential] as its placeholder.");
+  assert.match(markdown, /^review_status: complete$/m);
+  assert.equal(readReviewRecord(markdown)?.decision.decision, "close");
+  assert.equal(publicationSafeReport(markdown), markdown);
+  assert.ok(
+    renderReviewCommentFromReport(markdown, "implemented_on_main").includes(
+      "[redacted credential]",
+    ),
+  );
+  assert.equal(isApplyCloseCandidateReport(markdown), true);
+});
+
 test("structured diagnostic prefixes are scanned before retaining JSON values", async () => {
   const { redactPublication, registerPublicationCapability } =
     await import("../dist/publication-dlp.js");
