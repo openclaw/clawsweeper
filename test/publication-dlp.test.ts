@@ -735,3 +735,22 @@ test("ordinary identifier substrings do not impersonate an OpenAI credential", a
   const credential = ["sk", "proj", "a".repeat(40)].join("-");
   assert.equal(redactPublication(`Value: (${credential})`).redactions, 1);
 });
+
+test("credential shape matching excludes short GitHub names and embedded AWS identifiers", async () => {
+  const { redactPublication, registerPublicationCapability } =
+    await import("../dist/publication-dlp.js");
+  const summary = [
+    ["github", "pat", "permissions"].join("_"),
+    ["ghp", "token"].join("_"),
+    ["task", "AKIA", "D".repeat(16)].join(""),
+  ].join(" ");
+  assert.deepEqual(redactPublication(summary), { value: summary, redactions: 0 });
+  assert.match(report(summary), /^review_status: complete$/m);
+  for (const prefix of ["ghs", "ghp", "gho", "ghu", "ghr", "github_pat"]) {
+    const credential = [prefix, "a".repeat(36)].join("_");
+    assert.equal(redactPublication(`Credential: ${credential}`).redactions, 1);
+  }
+  const knownShorter = ["ghp", "shorterregisteredvalue"].join("_");
+  registerPublicationCapability(knownShorter, true);
+  assert.equal(redactPublication(knownShorter).redactions, 1);
+});

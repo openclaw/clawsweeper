@@ -1029,7 +1029,7 @@ process.exit(1);
   }
 });
 
-test("runCodex keeps its managed decision when diagnostic capture truncates", () => {
+test("runCodex fails closed when diagnostics exceed the configured stream limit", () => {
   const root = mkdtempSync(tmpPrefix);
   const openclawDir = join(root, "openclaw");
   const workDir = join(root, "codex-work");
@@ -1083,9 +1083,16 @@ ${fakeManagedDecision}
       streamFileBytes: 128,
     });
 
-    assert.equal(decision.summary, "Review survived verbose Codex output.");
-    assert.equal(statSync(join(workDir, "83395.1.codex.stdout.log")).size, 128);
-    assert.equal(statSync(join(workDir, "83395.1.codex.stderr.log")).size, 128);
+    assert.match(decision.summary, /^Codex review failed: credential output was redacted/);
+    assert.match(decision.summary, /Review survived verbose Codex output/);
+    assert.equal(decision.decision, "keep_open");
+    assert.equal(decision.confidence, "low");
+    assert.equal(decision.localCheckoutAccess, "unverified");
+    for (const stream of ["stdout", "stderr"]) {
+      const path = join(workDir, `83395.1.codex.${stream}.log`);
+      assert.ok(statSync(path).size <= 128);
+      assert.match(readFileSync(path, "utf8"), /diagnostic output omitted/);
+    }
   } finally {
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
