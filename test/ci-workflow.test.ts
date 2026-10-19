@@ -33,6 +33,7 @@ test("CI keeps one pnpm check status that requires every check job", () => {
     "check-fast",
     "check-tests",
     "check-coverage",
+    "package-envelope",
     "installed-package",
   ]);
   const [gate] = check.steps;
