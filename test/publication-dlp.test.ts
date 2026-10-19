@@ -387,7 +387,7 @@ test("env references anywhere in a provider block register, plain literals do no
   registerOpenclawProviderCapabilities(
     JSON.stringify({
       signed: {
-        baseUrl: `${baseUrl}?sig=\${PROVIDER_AUTH}`,
+        baseUrl: baseUrl + "?sig=${PROVIDER_AUTH}",
         models: [{ id: model, options: { region: "${PROVIDER_REGION_TOKEN}" } }],
       },
     }),
