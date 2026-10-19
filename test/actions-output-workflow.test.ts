@@ -31,8 +31,17 @@ function candidates() {
       .map((name) => `.github/actions/${name}/action.yml`)
       .filter(existsSync),
   ];
-  return paths.flatMap((file) => {
-    const doc = YAML.parse(readFileSync(file, "utf8"));
+  const sources = paths.map((file) => ({ file, source: readFileSync(file, "utf8") }));
+  const template = readFileSync("docs/target-dispatcher.md", "utf8").match(
+    /```yaml\n(name: ClawSweeper Dispatch\n[\s\S]*?)\n```/g,
+  );
+  assert.equal(template?.length, 1, "expected one canonical dispatcher template");
+  sources.push({
+    file: "docs/target-dispatcher.md",
+    source: template[0]!.slice("```yaml\n".length, -"\n```".length),
+  });
+  return sources.flatMap(({ file, source }) => {
+    const doc = YAML.parse(source);
     const jobs: Record<string, { steps?: Step[]; env?: Record<string, unknown> }> = doc.jobs ?? {
       composite: doc.runs,
     };
@@ -326,7 +335,25 @@ esac
 `,
   );
   write("bin/git", "#!/bin/bash\nprintf '%040d\\n' 1\n");
-  write("bin/curl", "#!/bin/bash\nexit 97\n");
+  write(
+    "bin/curl",
+    `#!/bin/bash
+case "\${!#}" in
+  https://oidc.invalid/token) printf '%s\\n' '{"value":"fixture-oidc-token"}' ;;
+  https://queue.invalid/github/target-dispatch)
+    output=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = --output ]; then output="$2"; shift; fi
+      shift
+    done
+    [ -n "$output" ] || exit 97
+    printf '%s\\n' '{"ok":true,"queued":true}' > "$output"
+    printf 202
+    ;;
+  *) exit 97 ;;
+esac
+`,
+  );
   write("bin/sleep", "#!/bin/bash\n/bin/sleep 0.01\n");
   write(
     "bin/pnpm",
@@ -417,6 +444,7 @@ test("arithmetic probe executes with the harness scalar present", () => {
 test("workflow shell boundaries", { concurrency: 4 }, async (t) => {
   const rows = candidates();
   assert.ok(rows.length >= 30, "enumerate workflows and composite actions");
+  assert.ok(rows.some((row) => row.file === "docs/target-dispatcher.md"));
   t.diagnostic(
     `${rows.length} steps; ${rows.reduce((count, row) => count + row.variables.length, 0)} untrusted variables; no exemptions`,
   );
@@ -455,6 +483,8 @@ test("workflow shell boundaries", { concurrency: 4 }, async (t) => {
           RUNNER_OS: "Linux",
           GITHUB_RUN_ID: "123",
           GITHUB_RUN_ATTEMPT: "1",
+          ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.invalid/token",
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: "fixture-request-token",
           WORKFLOW_RUN_ID: "123",
           WORKFLOW_REPOSITORY: "openclaw/clawsweeper",
           CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS: String(Date.now()),
@@ -468,6 +498,11 @@ test("workflow shell boundaries", { concurrency: 4 }, async (t) => {
             : !String(value).includes("${{")
               ? String(value ?? "")
               : valueFor(name);
+        if (
+          file === ".github/workflows/clawsweeper-dispatch.yml" ||
+          file === "docs/target-dispatcher.md"
+        )
+          base.TARGET_DISPATCH_URL = "https://queue.invalid/github/target-dispatch";
         const run = (env: Record<string, string>) => {
           writeFileSync(base.GITHUB_OUTPUT, "");
           writeFileSync(base.GITHUB_ENV, "");

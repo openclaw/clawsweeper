@@ -1,0 +1,1 @@
+- Harden GitHub Actions by passing untrusted values through environment variables, rejecting forged output records, arithmetic payloads, and parent traversal, and limiting activity notifications to read-only access and same-repository workflow runs.

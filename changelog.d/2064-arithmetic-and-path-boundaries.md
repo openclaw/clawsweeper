@@ -1,1 +1,0 @@
-- Reject arithmetic payloads, forged step-output records, and parent traversal in GitHub Actions workflow inputs.

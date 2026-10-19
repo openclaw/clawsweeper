@@ -1,1 +1,0 @@
-- Reject forged GitHub Actions output and environment records from dispatch and workflow inputs before privileged steps consume them.
