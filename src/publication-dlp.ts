@@ -86,8 +86,21 @@ export function registerOpenclawProviderCapabilities(
     });
     registerAuthorization(resolved);
   };
+  // The OpenClaw lane forwards every `${ENV}` reference in a provider block (e.g. a signed
+  // baseUrl), so register each resolved value; plain literals such as URLs or model ids
+  // are not capabilities and would otherwise invalidate reviews that merely mention them.
+  const registerReferences = (value: unknown): void => {
+    if (typeof value === "string") {
+      for (const [, name] of value.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
+        registerPublicationCapability(env[name!]);
+      }
+    } else if (value && typeof value === "object") {
+      for (const nested of Object.values(value)) registerReferences(nested);
+    }
+  };
   for (const provider of Object.values(providers)) {
     if (!provider || typeof provider !== "object" || Array.isArray(provider)) continue;
+    registerReferences(provider);
     register(provider.apiKey);
     if (provider.headers && typeof provider.headers === "object") {
       for (const value of Object.values(provider.headers)) register(value);

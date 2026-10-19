@@ -378,6 +378,27 @@ test("composite provider references and authorization payloads register bare cap
   });
 });
 
+test("env references anywhere in a provider block register, plain literals do not", async () => {
+  const { registerOpenclawProviderCapabilities, redactPublication } =
+    await import("../dist/publication-dlp.js");
+  const signature = "S9i8G7n6E5d4U3r2L1s0Z9x8C7v6B5n4";
+  const baseUrl = "https://llm.example.invalid/v1/chat-completions";
+  const model = "provider-model-name-2026-10-preview";
+  registerOpenclawProviderCapabilities(
+    JSON.stringify({
+      signed: {
+        baseUrl: `${baseUrl}?sig=\${PROVIDER_AUTH}`,
+        models: [{ id: model, options: { region: "${PROVIDER_REGION_TOKEN}" } }],
+      },
+    }),
+    { PROVIDER_AUTH: signature, PROVIDER_REGION_TOKEN: "short" },
+  );
+  assert.deepEqual(redactPublication([signature, baseUrl, model]), {
+    value: ["[redacted credential]", baseUrl, model],
+    redactions: 1,
+  });
+});
+
 test("comment preparation returns a persistable failed report for render-only credentials", async () => {
   const { prepareReviewCommentFromReport } =
     await import("../dist/clawsweeper-report-comment-presentation.js");
