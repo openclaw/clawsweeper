@@ -25,15 +25,14 @@ export function hiddenPayloadSecurityReview(
     for (const token of html) {
       for (const match of token.content.matchAll(/<!--[\s\S]*?(?:-->|$)/g)) {
         const hidden = match[0];
-        // Deliberately coarse: shell grammar (quoting, paths, wrappers) is not modeled. Hidden
-        // comments almost never mention download tools, so one next to any shell syntax,
-        // interpreter word, or chmod is moderation-worthy. A false positive only keeps the
-        // item open for a human; workflows never execute this text.
-        const download = /\b(?:curl|wget)\b/i.test(hidden);
-        const execution = /[`|;&]|[$<]\(|\b(?:ba|da|z|k|a)?sh\b|\bchmod\b/i.test(hidden);
+        // Deliberately coarse: shell grammar is not modeled. People rarely write their own
+        // hidden comments and no org template mentions network tools in one, so any network
+        // tool there is moderation-worthy. A false positive only keeps the item open for a
+        // human; workflows never execute this text. Tool-free loaders are out of scope.
+        const network = /\b(?:curl|wget|nc|ncat|netcat)\b|\/dev\/(?:tcp|udp)\//i.test(hidden);
         const environment = /\b(?:env|printenv)\b|\/proc\/(?:self|\d+)\/environ/i.test(hidden);
         const encodedEnvironment = environment && /\bbase64\b/i.test(hidden);
-        if (!(download && execution) && !encodedEnvironment) continue;
+        if (!network && !encodedEnvironment) continue;
         return {
           status: "needs_attention",
           summary: PAYLOAD_SUMMARY,
