@@ -120,11 +120,18 @@ export function registerOpenclawProviderCapabilities(
         registerComponent(url.username, true);
         registerComponent(url.password, true);
         for (const parameter of url.search.slice(1).split("&")) {
-          const [, credential] = new URLSearchParams(parameter).entries().next().value ?? [];
-          if (credential && credentialLike(credential)) {
-            registerComponent(credential);
-            registerPublicationCapability(encodeURIComponent(credential));
-            registerPublicationCapability(parameter.slice(parameter.indexOf("=") + 1));
+          const [key, credential] = new URLSearchParams(parameter).entries().next().value ?? [];
+          // Credential-named parameters are identified; unknown names stay heuristic.
+          const known = /token|secret|password|passwd|key|sig|auth|credential|code/i.test(
+            key ?? "",
+          );
+          if (
+            credential &&
+            (known ? knownCredentialValue(credential) : credentialLike(credential))
+          ) {
+            registerComponent(credential, known);
+            registerPublicationCapability(encodeURIComponent(credential), known);
+            registerPublicationCapability(parameter.slice(parameter.indexOf("=") + 1), known);
           }
         }
       } catch {

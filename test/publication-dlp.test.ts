@@ -646,3 +646,17 @@ test("credential-named env values and URL userinfo use the known-credential gate
     process.env = original;
   }
 });
+
+test("credential-named provider URL parameters register lowercase values", async () => {
+  const { registerOpenclawProviderCapabilities, redactPublication } =
+    await import("../dist/publication-dlp.js");
+  const token = "lowercasequerytokenvalue";
+  const benign = "lowercasequeryregionvalue";
+  registerOpenclawProviderCapabilities(
+    JSON.stringify({
+      q: { baseUrl: `https://llm.example.invalid/v1?api_key=${token}&region=${benign}` },
+    }),
+    {},
+  );
+  assert.deepEqual(redactPublication([token, benign]).value, ["[redacted credential]", benign]);
+});
