@@ -11,6 +11,7 @@ const TRUNCATION_MARKER = Buffer.from(
 
 export interface CodexOutputCapture {
   file: number;
+  compromised: boolean;
   pending: Buffer[];
   pendingBytes: number;
   tailOffset: number;
@@ -28,6 +29,7 @@ export function openCodexOutputCapture(
 ): CodexOutputCapture {
   return {
     file: openSync(filePath, "w"),
+    compromised: false,
     pending: [],
     pendingBytes: 0,
     tailOffset: 0,
@@ -51,6 +53,7 @@ export function appendCodexOutputCapture(capture: CodexOutputCapture, chunk: Buf
     capture.pending = [];
     capture.pendingBytes = 0;
     capture.omitted = true;
+    capture.compromised = true;
     return;
   }
   capture.pending.push(Buffer.from(chunk));
@@ -72,14 +75,15 @@ export function closeCodexOutputCapture(capture: CodexOutputCapture): void {
     const raw = capture.omitted
       ? "[diagnostic output omitted: stream exceeded redaction buffer]\n"
       : bytes.toString("utf8");
-    const safe = redactPublication(raw).value;
+    const safe = redactPublication(raw);
+    capture.compromised ||= safe.redactions > 0;
     const turnTail =
       !capture.omitted && capture.tailOffset > 0
-        ? redactPublication(bytes.subarray(capture.tailOffset).toString("utf8")).value
+        ? redactPublication(bytes.subarray(capture.tailOffset).toString("utf8"))
         : undefined;
     capture.pending = [];
     capture.pendingBytes = 0;
-    appendSafeOutput(capture, Buffer.from(safe));
+    appendSafeOutput(capture, Buffer.from(safe.value));
     if (capture.truncated) {
       const tail = capture.tail.subarray(
         Math.max(0, capture.tail.length - availableTailBytes(capture.maxFileBytes)),
@@ -89,8 +93,10 @@ export function closeCodexOutputCapture(capture: CodexOutputCapture): void {
       writeAll(capture.file, TRUNCATION_MARKER, headBytes);
       writeAll(capture.file, tail, headBytes + TRUNCATION_MARKER.length);
     }
-    if (turnTail !== undefined)
-      capture.tail = appendTail(Buffer.alloc(0), Buffer.from(turnTail), capture.tailBytes);
+    if (turnTail !== undefined) {
+      capture.compromised ||= turnTail.redactions > 0;
+      capture.tail = appendTail(Buffer.alloc(0), Buffer.from(turnTail.value), capture.tailBytes);
+    }
   } finally {
     closeSync(capture.file);
   }

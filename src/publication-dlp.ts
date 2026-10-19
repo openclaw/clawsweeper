@@ -91,6 +91,33 @@ export function registerOpenclawProviderCapabilities(
   // are not capabilities and would otherwise invalidate reviews that merely mention them.
   const registerReferences = (value: unknown): void => {
     if (typeof value === "string") {
+      try {
+        const url = new URL(value);
+        const registerComponent = (component: string) => {
+          registerPublicationCapability(component);
+          try {
+            registerPublicationCapability(decodeURIComponent(component));
+          } catch {
+            // Preserve the literal even if a URL component has malformed escapes.
+          }
+        };
+        registerComponent(url.username);
+        registerComponent(url.password);
+        for (const parameter of url.search.slice(1).split("&")) {
+          const [name, credential] = new URLSearchParams(parameter).entries().next().value ?? [];
+          if (
+            name &&
+            credential &&
+            /^(?:sig|signature|token|key|api_key|access_token|x-amz-signature|code)$/i.test(name)
+          ) {
+            registerComponent(credential);
+            registerPublicationCapability(encodeURIComponent(credential));
+            registerPublicationCapability(parameter.slice(parameter.indexOf("=") + 1));
+          }
+        }
+      } catch {
+        // Only URL leaves can embed URL authentication.
+      }
       for (const [, name] of value.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
         registerPublicationCapability(env[name!]);
       }

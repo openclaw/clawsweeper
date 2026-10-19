@@ -73,16 +73,18 @@ child.once("close", (status, signal) => {
   clearTimeout(timeout);
   closeCodexOutputCapture(stdout);
   closeCodexOutputCapture(stderr);
+  const safe = redactPublication({
+    status,
+    signal,
+    ...(timeoutError || spawnError ? { error: serializedError(timeoutError ?? spawnError!) } : {}),
+    stdout: codexOutputTail(stdout),
+    stderr: codexOutputTail(stderr),
+  });
   writeFileSync(
     options.resultPath,
     JSON.stringify({
-      status,
-      signal,
-      ...(timeoutError || spawnError
-        ? { error: serializedError(timeoutError ?? spawnError!) }
-        : {}),
-      stdout: codexOutputTail(stdout),
-      stderr: codexOutputTail(stderr),
+      ...safe.value,
+      compromised: stdout.compromised || stderr.compromised || safe.redactions > 0,
     }),
     "utf8",
   );
@@ -123,7 +125,7 @@ function terminateProcessTree(
 function serializedError(error: Error): { message: string; code?: string } {
   const code = "code" in error ? (error as NodeJS.ErrnoException).code : undefined;
   return {
-    message: redactPublication(error.message).value,
+    message: error.message,
     ...(typeof code === "string" ? { code } : {}),
   };
 }

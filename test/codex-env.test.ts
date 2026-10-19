@@ -126,7 +126,6 @@ test("codexEnv admits only known runtime variables and an explicit read token", 
     };
     assert.deepEqual(codexEnv({ ghToken: "explicit-read" }), {
       PATH: "/bin",
-      HOME: "/synthetic/home",
       CODEX_HOME: "/synthetic/codex",
       GH_TOKEN: "explicit-read",
       GIT_OPTIONAL_LOCKS: "0",
@@ -227,6 +226,30 @@ test("selected Kimi providers preserve either supported credential alias", () =>
         assert.equal(selected.OPENAI_API_KEY, undefined);
       }
     }
+  } finally {
+    process.env = original;
+  }
+});
+
+test("hosted and OpenClaw environments withhold credential home paths", () => {
+  const original = process.env;
+  try {
+    process.env = {
+      HOME: "/synthetic/real-home",
+      USERPROFILE: "/synthetic/profile",
+      APPDATA: "/synthetic/appdata",
+      LOCALAPPDATA: "/synthetic/local",
+      CODEX_HOME: "/synthetic/codex",
+    };
+    for (const runner of ["codex", "openclaw"]) {
+      process.env.CLAWSWEEPER_RUNNER = runner;
+      const env = codexEnv({ preserveCodexAuth: runner === "openclaw" });
+      for (const key of ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"])
+        assert.equal(env[key], undefined, `${runner}: ${key}`);
+      assert.equal(env.CODEX_HOME, "/synthetic/codex");
+    }
+    process.env.CLAWSWEEPER_RUNNER = "codex";
+    assert.equal(codexEnv({ preserveCodexAuth: true }).HOME, process.env.HOME);
   } finally {
     process.env = original;
   }

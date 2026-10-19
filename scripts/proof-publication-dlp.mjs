@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve, join, delimiter } from "node:path";
 import { writePreparedReviewReport } from "../dist/clawsweeper-review-item.js";
 import { markdownFor } from "../dist/clawsweeper-report-document.js";
 import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
@@ -11,6 +11,8 @@ import { validateReportClose } from "../dist/clawsweeper-apply-close-decision.js
 import { validateCloseDecision } from "../dist/clawsweeper-close-decision.js";
 import { readReviewRecord } from "../dist/review-record.js";
 import { credentialPublicationBlocked } from "../dist/publication-dlp.js";
+import { runCodexForTest } from "../dist/clawsweeper.js";
+import { writeFakeScanner } from "../test/agent-input-scan-helpers.ts";
 import { closeDecision, item } from "../test/helpers.ts";
 
 const root = resolve(process.argv[2] ?? ".artifacts/publication-dlp-proof");
@@ -120,6 +122,106 @@ try {
   assert.equal(applied[0].number, subject.number);
   assert.equal(applied[0].action, "kept_open");
   writeFileSync(join(root, "decision-time.md"), markdown);
+  const checkout = join(root, "repair-checkout");
+  const bin = join(root, "bin");
+  mkdirSync(checkout, { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify({ type: "commonjs" }));
+  writeFakeScanner(bin);
+  const git = (...args) => execFileSync("git", args, { cwd: checkout, encoding: "utf8" }).trim();
+  git("init", "--quiet");
+  writeFileSync(
+    join(checkout, "tracked.txt"),
+    "Synthetic tracked checkout for round five proof.\n",
+  );
+  git("add", "tracked.txt");
+  git(
+    "-c",
+    "user.name=Proof",
+    "-c",
+    "user.email=proof@example.invalid",
+    "commit",
+    "--allow-empty",
+    "--quiet",
+    "-m",
+    "fixture",
+  );
+  const fakeCodex = join(bin, "codex");
+  const homeTrace = join(root, "repair-home.jsonl");
+  writeFileSync(homeTrace, "");
+  const cleanClose = closeDecision({ summary: "Clean repaired close decision." });
+  writeFileSync(
+    fakeCodex,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(homeTrace)}, JSON.stringify({ home: process.env.HOME, files: fs.readdirSync(process.env.HOME) }) + "\\n");
+if (process.argv[2] === "sandbox") {
+  process.stdout.write(require("node:child_process").execFileSync("git", process.argv.slice(process.argv.indexOf("--") + 2), { encoding: "utf8" }));
+  process.exit(0);
+}
+fs.readFileSync(0, "utf8");
+if (process.argv.includes("resume")) {
+  process.stdout.write(${JSON.stringify(JSON.stringify(cleanClose))} + "\\n");
+} else {
+  process.stderr.write("OpenAI Codex v0.0.0\\n--------\\nsession id: 019f0560-0000-7000-8000-0000000000a1\\n--------\\n" + process.env.GH_TOKEN + "\\n");
+  process.stdout.write('{"decision":"keep_open"}\\n');
+}
+`,
+    { mode: 0o755 },
+  );
+  process.env.PATH = `${bin}${delimiter}${original.PATH}`;
+  process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN = token;
+  const repaired = runCodexForTest({
+    item: subject,
+    context: { issue: {}, comments: [], timeline: [] },
+    git: { mainSha: git("rev-parse", "HEAD"), latestRelease: null },
+    model: "Codex",
+    openclawDir: checkout,
+    reasoningEffort: "high",
+    sandboxMode: "read-only",
+    serviceTier: "",
+    timeoutMs: 10000,
+    workDir: join(root, "repair-work"),
+    prompt: "Return the synthetic review decision.",
+    resultFileBytes: 1024 * 1024,
+  });
+  assert.equal(repaired.decision, "keep_open");
+  assert.ok(credentialPublicationBlocked(repaired));
+  assert.match(repaired.summary, /Clean repaired close decision/);
+  for (const stream of ["stdout", "stderr"]) {
+    const captured = readFileSync(
+      join(root, "repair-work", `${subject.number}.1.codex.${stream}.log`),
+      "utf8",
+    );
+    assert.ok(!captured.includes(token));
+    if (stream === "stderr") assert.match(captured, /redacted credential/);
+  }
+  const repairReport = markdownFor({
+    item: subject,
+    decision: repaired,
+    context: { issue: {}, comments: [], timeline: [] },
+    git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true },
+    action: reviewActionForDecision(repaired),
+    reviewMode: "propose",
+    snapshotHash: "synthetic-snapshot",
+    contentDigest: "synthetic-content",
+    reviewPolicy: "synthetic-policy",
+    runtime: { model: "Codex", reasoningEffort: "high" },
+  });
+  writeFileSync(result.reportPath, repairReport);
+  writeFileSync(join(root, "repaired-turn.md"), repairReport);
+  const repairedApply = runApply();
+  assert.equal(repairedApply.status, 0, repairedApply.stderr);
+  const repairedActions = JSON.parse(readFileSync(join(root, "apply.json"), "utf8"));
+  assert.equal(repairedActions[0].action, "kept_open");
+  writeFileSync(
+    join(root, "repaired-apply.log"),
+    `${repairedApply.stdout}\n${repairedApply.stderr}`,
+  );
+  const homes = readFileSync(homeTrace, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(homes.length, 3);
+  assert.equal(homes[1].home, homes[2].home);
+  assert.notEqual(homes[1].home, original.HOME);
+  for (const entry of homes) assert.deepEqual(entry.files.sort(), [".cache", ".config"]);
   const lateReport =
     markdownFor({
       item: subject,
@@ -204,6 +306,13 @@ try {
     applyGuard: guard,
     applyExit: apply.status,
     githubRequests: 0,
+    repairedTurn: {
+      decision: repaired.decision,
+      applyAction: repairedActions[0].action,
+      githubRequests: 0,
+      isolatedHome: true,
+      turnsShareHome: true,
+    },
     lateBodyRedactionPersisted: true,
     lateBodyApplyAction: lateActions[0].action,
     renderOnlyResults,

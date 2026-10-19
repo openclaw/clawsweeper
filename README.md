@@ -763,7 +763,10 @@ publication, and queue lifecycle.
   override. OpenClaw retains only credentials referenced by the selected provider, including
   custom provider blocks; local-only Codex
   review retains its explicit authentication preservation behavior. Unknown
-  job-level variables and secrets are dropped.
+  job-level variables and secrets are dropped. Hosted Codex and OpenClaw children
+  get a fresh credential-free HOME and XDG config/cache directories inside their
+  per-review temporary root, removed after exit; explicit local Codex auth keeps
+  the real HOME. CODEX_HOME retains its existing authentication/config location.
 - [`src/publication-dlp.ts`](src/publication-dlp.ts) redacts exact runtime
   credential-like capability values (at least 20 characters, excluding common
   words, paths, and numeric values), including file-backed Codex auth, and known
@@ -773,12 +776,15 @@ publication, and queue lifecycle.
   and blocked from close/apply even after reload. Render-time detection also
   invalidates the persisted decision before apply can change labels or close.
   Final-message files and shared Codex/OpenClaw stdout/stderr captures are
-  redacted before writing; diagnostic streams above the bounded memory buffer
-  are omitted. Structured redaction scans values and keys while preserving JSON
+  redacted before writing; redaction in any captured turn (including an earlier
+  turn before decision repair) fails the final review. Diagnostic streams above
+  the bounded memory buffer are omitted and fail closed. Structured redaction scans values and keys while preserving JSON
   syntax; matching keys become `[redacted credential]` with numbered suffixes
   when needed to retain colliding fields. Selected OpenClaw provider headers
   register embedded environment references and authorization payloads as well
-  as complete credential values. This is a literal-value and
+  as complete credential values. URL leaves also register userinfo and authentication
+  query values, including URL-encoded forms, without registering plain URLs or model IDs.
+  This is a literal-value and
   credential-shape boundary, not a detector for encoded or fragmented secrets.
 - Reviews fail if Codex leaves tracked or untracked changes behind.
 - Snapshot changes block apply unless the only change is the bot’s own review

@@ -736,3 +736,33 @@ setInterval(() => {}, 1000);
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("hosted Codex uses a fresh credential-free HOME and removes it on exit", async (t) => {
+  const { codexEnv } = await import("../dist/codex-env.js");
+  const root = mkdtempSync(tmpPrefix);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const binary = join(root, "codex");
+  writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+console.log(JSON.stringify({ home: process.env.HOME, config: process.env.XDG_CONFIG_HOME, cache: process.env.XDG_CACHE_HOME, files: fs.readdirSync(process.env.HOME), codexHome: process.env.CODEX_HOME }));
+`,
+    { mode: 0o755 },
+  );
+  const env = { ...codexEnv(), CODEX_BIN: binary };
+  const homes = [];
+  for (const index of [0, 1]) {
+    const result = runCodexProcess({ args: [], cwd: root, env, input: "", timeoutMs: 5000 });
+    assert.equal(result.status, 0, result.error?.message);
+    const record = JSON.parse(result.stdout);
+    assert.notEqual(record.home, process.env.HOME);
+    assert.equal(record.config, join(record.home, ".config"));
+    assert.equal(record.cache, join(record.home, ".cache"));
+    assert.deepEqual(record.files.sort(), [".cache", ".config"]);
+    assert.equal(record.codexHome, env.CODEX_HOME);
+    assert.equal(existsSync(record.home), false);
+    homes.push(record.home);
+    if (index) assert.notEqual(homes[0], homes[1]);
+  }
+});

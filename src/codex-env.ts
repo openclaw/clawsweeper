@@ -155,6 +155,11 @@ export function codexEnv(options: CodexEnvOptions = {}): NodeJS.ProcessEnv {
     }
   }
   if (openclaw) Object.assign(env, openclawProviderEnv(process.env));
+  if (openclaw || !options.preserveCodexAuth) {
+    // Keep Codex configuration/auth at its existing explicit location, not under the new HOME.
+    env.CODEX_HOME ||= join(process.env.HOME || homedir(), ".codex");
+    for (const key of ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"]) delete env[key];
+  }
   const ghToken = options.ghToken?.trim();
   if (ghToken) {
     env.GH_TOKEN = ghToken;

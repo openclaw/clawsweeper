@@ -434,3 +434,52 @@ test("comment preparation returns a persistable failed report for render-only cr
     process.env = original;
   }
 });
+
+test("literal provider URL authentication registers encoded and decoded components", async () => {
+  const { registerOpenclawProviderCapabilities, redactPublication } =
+    await import("../dist/publication-dlp.js");
+  const user = "Synthetic-URL-user-123456";
+  const password = "Synthetic:URL:password:123456";
+  const keys = [
+    "sig",
+    "signature",
+    "token",
+    "key",
+    "api_key",
+    "access_token",
+    "X-Amz-Signature",
+    "code",
+  ];
+  const values = keys.map((_, index) => `Synthetic:URL:query:${index}:123456`);
+  const url = new URL("https://provider.example.invalid/v1");
+  url.username = user;
+  url.password = password;
+  keys.forEach((key, index) => url.searchParams.set(key, values[index]!));
+  registerOpenclawProviderCapabilities(
+    JSON.stringify({ custom: { models: [{ options: { endpoint: url.href } }] } }),
+  );
+  const capabilities = [
+    user,
+    password,
+    encodeURIComponent(password),
+    ...values,
+    ...values.map(encodeURIComponent),
+  ];
+  const formValue = "Synthetic URL form value 123456";
+  const rawValue = "Synthetic%20URL+form+value+123456";
+  registerOpenclawProviderCapabilities(
+    JSON.stringify({ custom: { baseUrl: `https://provider.example.invalid?token=${rawValue}` } }),
+  );
+  capabilities.push(formValue, rawValue);
+  const result = redactPublication(capabilities);
+  assert.deepEqual(
+    result.value,
+    capabilities.map(() => "[redacted credential]"),
+  );
+  assert.equal(result.redactions, capabilities.length);
+  assert.equal(
+    redactPublication("https://public.example.invalid/v1?model=ordinary-model-1234567890")
+      .redactions,
+    0,
+  );
+});

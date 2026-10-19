@@ -1,3 +1,4 @@
+import { isolatedReviewerHome } from "./reviewer-home.js";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -22,6 +23,7 @@ export interface CodexProcessResult {
   signal: NodeJS.Signals | null;
   error?: Error;
   processError?: boolean;
+  compromised?: boolean;
   // Validator error of the first final message when the worker ran one decision repair turn.
   decisionRepairError?: string;
   stdout: string;
@@ -36,6 +38,7 @@ interface SerializedCodexProcessResult {
     code?: string;
   };
   processError?: boolean;
+  compromised?: boolean;
   decisionRepairError?: string;
   stdout: string;
   stderr: string;
@@ -65,6 +68,8 @@ export function runCodexProcess(options: {
   const stdoutPath = options.stdoutPath ?? join(workDir, "stdout.log");
   const stderrPath = options.stderrPath ?? join(workDir, "stderr.log");
   try {
+    if (!options.env.HOME)
+      options = { ...options, env: isolatedReviewerHome(options.env, workDir) };
     const outputLastMessageBytes = normalizedOutputLastMessageBytes(
       options.outputLastMessageBytes,
       options.outputLastMessagePath,
@@ -184,6 +189,7 @@ function failedProcessResult(
 function deserializeProcessResult(value: SerializedCodexProcessResult): CodexProcessResult {
   return {
     status: value.status,
+    compromised: Boolean(value.compromised),
     signal: value.signal,
     ...(value.error ? { error: deserializeError(value.error) } : {}),
     ...(value.processError === undefined ? {} : { processError: value.processError }),

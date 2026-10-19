@@ -107,6 +107,12 @@ if (repairError && repairThreadId && options.args.at(-1) === "-" && !terminating
 clearTimeout(timeout);
 closeCodexOutputCapture(stdout);
 closeCodexOutputCapture(stderr);
+let compromised = stdout.compromised || stderr.compromised;
+const sanitize = (value: string): string => {
+  const safe = redactPublication(value);
+  compromised ||= safe.redactions > 0;
+  return safe.value;
+};
 let outputLastMessageError = turn.outputLastMessageError;
 if (
   !turn.processError &&
@@ -115,28 +121,24 @@ if (
   options.outputLastMessagePath
 ) {
   try {
-    writeManagedResult(options.outputLastMessagePath, redactPublication(turn.text).value);
+    writeManagedResult(options.outputLastMessagePath, sanitize(turn.text));
   } catch (error) {
     outputLastMessageError = error instanceof Error ? error : new Error(String(error));
   }
 }
 const error = turn.processError ?? outputLastMessageError;
-writeFileSync(
-  options.resultPath,
-  JSON.stringify({
-    status: turn.status,
-    signal: turn.signal,
-    // A native failure can also omit the final stdout frame. Preserve whether
-    // the process itself failed so callers cannot trust interrupted stderr.
-    ...(error ? { error: serializedError(error), processError: Boolean(turn.processError) } : {}),
-    ...(decisionRepairError
-      ? { decisionRepairError: redactPublication(decisionRepairError).value }
-      : {}),
-    stdout: codexOutputTail(stdout),
-    stderr: codexOutputTail(stderr),
-  }),
-  "utf8",
-);
+const safeResult = redactPublication({
+  status: turn.status,
+  signal: turn.signal,
+  // A native failure can also omit the final stdout frame. Preserve whether
+  // the process itself failed so callers cannot trust interrupted stderr.
+  ...(error ? { error: serializedError(error), processError: Boolean(turn.processError) } : {}),
+  ...(decisionRepairError ? { decisionRepairError: sanitize(decisionRepairError) } : {}),
+  stdout: codexOutputTail(stdout),
+  stderr: codexOutputTail(stderr),
+});
+compromised ||= safeResult.redactions > 0;
+writeFileSync(options.resultPath, JSON.stringify({ ...safeResult.value, compromised }), "utf8");
 process.exit(0);
 
 function runTurn(args: readonly string[]): Promise<TurnResult> {
@@ -236,7 +238,7 @@ function writeManagedResult(path: string, text: string): void {
 function serializedError(error: Error): { message: string; code?: string } {
   const code = "code" in error ? (error as NodeJS.ErrnoException).code : undefined;
   return {
-    message: redactPublication(error.message).value,
+    message: sanitize(error.message),
     ...(typeof code === "string" ? { code } : {}),
   };
 }

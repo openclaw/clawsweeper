@@ -1,3 +1,4 @@
+import { isolatedReviewerHome } from "./reviewer-home.js";
 import { isRecord } from "./value-coerce.js";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -16,6 +17,7 @@ const STDERR_FAILURE_TAIL_BYTES = 8 * 1024;
 interface SerializedProcessResult {
   status: number | null;
   signal: NodeJS.Signals | null;
+  compromised?: boolean;
   error?: { message: string; code?: string };
   stdout: string;
   stderr: string;
@@ -46,6 +48,7 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
   const stdoutPath = options.stdoutPath ?? join(stateDir, "stdout.log");
   const stderrPath = options.stderrPath ?? join(stateDir, "stderr.log");
   try {
+    options = { ...options, env: isolatedReviewerHome(options.env, stateDir) };
     const timeoutSeconds = Math.max(1, Math.ceil(options.timeoutMs / 1_000));
     writeFileSync(
       configPath,
@@ -395,6 +398,11 @@ const OPENCLAW_CHILD_ENV_ALLOWLIST = [
   // Base OS/tooling surface the CLI needs to run.
   "PATH",
   "HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
   "USER",
   "SHELL",
   "LANG",
@@ -546,6 +554,7 @@ function failedResult(
 function deserializeResult(value: SerializedProcessResult): CodexProcessResult {
   return {
     status: value.status,
+    compromised: Boolean(value.compromised),
     signal: value.signal,
     ...(value.error ? { error: deserializeError(value.error) } : {}),
     stdout: value.stdout,

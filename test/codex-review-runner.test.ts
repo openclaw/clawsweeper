@@ -1,3 +1,4 @@
+import { registerPublicationCapability } from "../dist/publication-dlp.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
@@ -995,40 +996,29 @@ process.exit(1);
   process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
   process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS = "1";
   try {
-    assert.throws(
-      () =>
-        runBoundedCodexForTest({
-          item: item({ number: 83394 }),
-          context: { issue: {}, comments: [], timeline: [] },
-          git: { mainSha: "abc123", latestRelease: null },
-          model: "model-test",
-          openclawDir,
-          reasoningEffort: "high",
-          sandboxMode: "read-only",
-          serviceTier: "",
-          timeoutMs: 10_000,
-          workDir,
-          prompt: "Return a review decision.",
-        }),
-      (error: unknown) => {
-        const reviewError = error as Error & {
-          status?: number | null;
-          stderr?: string;
-          stdout?: string;
-        };
-        assert.equal(reviewError.status, 1);
-        assert.match(reviewError.stderr ?? "", /Rate limit reached/);
-        assert.match(reviewError.stderr ?? "", /OPENAI_API_KEY=\[REDACTED\]/);
-        assert.match(reviewError.stderr ?? "", /"CODEX_ACCESS_TOKEN":"\[REDACTED\]"/);
-        assert.doesNotMatch(reviewError.stderr ?? "", /sk-proj-/);
-        assert.doesNotMatch(reviewError.stderr ?? "", /codex-json-token-secret/);
-        assert.match(reviewError.stdout ?? "", /startup banner/);
-        assert.match(reviewError.stdout ?? "", /GH_TOKEN=\[REDACTED\]/);
-        assert.match(reviewError.stdout ?? "", /CODEX_ACCESS_TOKEN=\[REDACTED\]/);
-        assert.doesNotMatch(reviewError.stdout ?? "", /ghp_/);
-        assert.doesNotMatch(reviewError.stdout ?? "", /codex-access-token-secret/);
-        return true;
-      },
+    const decision = runBoundedCodexForTest({
+      item: item({ number: 83394 }),
+      context: { issue: {}, comments: [], timeline: [] },
+      git: { mainSha: "abc123", latestRelease: null },
+      model: "model-test",
+      openclawDir,
+      reasoningEffort: "high",
+      sandboxMode: "read-only",
+      serviceTier: "",
+      timeoutMs: 10_000,
+      workDir,
+      prompt: "Return a review decision.",
+    });
+    assert.equal(decision.decision, "keep_open");
+    assert.equal(decision.confidence, "low");
+    assert.match(decision.summary, /credential output was redacted/);
+    const evidence = JSON.stringify(decision.evidence);
+    assert.match(evidence, /Rate limit reached/);
+    assert.match(evidence, /startup banner/);
+    assert.match(evidence, /redacted/i);
+    assert.doesNotMatch(
+      evidence,
+      /sk-proj-|ghp_|codex-json-token-secret|codex-access-token-secret/,
     );
   } finally {
     if (originalPath === undefined) delete process.env.PATH;
@@ -1107,6 +1097,7 @@ ${fakeManagedDecision}
 
 for (const scenario of [
   "repaired",
+  "tainted-repaired",
   "invalid-twice",
   "repair-rate-limited",
   "valid-first",
@@ -1122,9 +1113,9 @@ for (const scenario of [
     const sessionId = "019f0560-0000-7000-8000-0000000000a1";
     const validDecision = JSON.stringify(
       closeDecision({
-        decision: "keep_open",
-        closeReason: "none",
-        confidence: "medium",
+        decision: scenario === "tainted-repaired" ? "close" : "keep_open",
+        closeReason: scenario === "tainted-repaired" ? "implemented_on_main" : "none",
+        confidence: "high",
         summary: "Repaired decision.",
         bestSolution: "Keep the validator.",
         closeComment: "",
@@ -1155,6 +1146,7 @@ fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify({ args, stdin }) 
 process.stderr.write("OpenAI Codex v0.0.0\\n--------\\nsandbox: read-only\\nsession id: ${sessionId}\\n--------\\nuser\\n" + stdin + "\\n");
 const resumed = args.includes("resume");
 const scenario = ${JSON.stringify(scenario)};
+if (!resumed && scenario === "tainted-repaired") process.stderr.write("synthetic-captured-turn-capability-123456\\n");
 if (resumed && scenario === "repair-rate-limited") {
   process.stderr.write("ERROR: stream disconnected: Rate limit reached for model-test on tokens per min (TPM). Please try again in 1ms.\\n");
   process.exit(1);
@@ -1169,6 +1161,10 @@ process.stdout.write(output + "\\n");
     );
     chmodSync(codexPath, 0o755);
     const originalPath = process.env.PATH;
+    registerPublicationCapability("synthetic-captured-turn-capability-123456");
+    const originalProofToken = process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN;
+    if (scenario === "tainted-repaired")
+      process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN = "synthetic-captured-turn-capability-123456";
     process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
     const review = () =>
       runBoundedCodexForTest({
@@ -1216,7 +1212,10 @@ process.stdout.write(output + "\\n");
         });
       } else {
         const decision = review();
-        assert.equal(decision.summary, "Repaired decision.");
+        if (scenario === "tainted-repaired") {
+          assert.equal(decision.decision, "keep_open");
+          assert.match(decision.summary, /credential output was redacted/);
+        } else assert.equal(decision.summary, "Repaired decision.");
         assert.equal(decision.maintainerDecision.required, false);
         assert.equal(decision.maintainerDecision.likelyOwner.person, "");
       }
@@ -1247,6 +1246,8 @@ process.stdout.write(output + "\\n");
         /\[clawsweeper\] decision repair turn/,
       );
     } finally {
+      if (originalProofToken === undefined) delete process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN;
+      else process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN = originalProofToken;
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;
       rmSync(root, { recursive: true, force: true });

@@ -140,8 +140,15 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     ...(options.stderrPath ? { stderrPath: options.stderrPath } : {}),
   });
   const result = redactOpenclawFailure(rawResult, model);
-  result.stdout = redactPublication(result.stdout).value;
-  result.stderr = redactPublication(result.stderr).value;
+  const safe = redactPublication({
+    stdout: result.stdout,
+    stderr: result.stderr,
+    error: result.error?.message,
+  });
+  result.compromised ||= safe.redactions > 0;
+  result.stdout = safe.value.stdout;
+  result.stderr = safe.value.stderr;
+  if (result.error) result.error = copyError(result.error, safe.value.error!);
   if (!result.error && result.status === 0 && outputPath) {
     if (
       options.outputLastMessageBytes !== undefined &&

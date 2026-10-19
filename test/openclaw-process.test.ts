@@ -37,6 +37,10 @@ const fs = require("node:fs");
 const record = {
   args: process.argv.slice(2),
   stateDir: process.env.OPENCLAW_STATE_DIR,
+  home: process.env.HOME,
+  xdgConfig: process.env.XDG_CONFIG_HOME,
+  xdgCache: process.env.XDG_CACHE_HOME,
+  homeFiles: fs.readdirSync(process.env.HOME),
   configPath: process.env.OPENCLAW_CONFIG_PATH,
   workspaceDir: process.env.OPENCLAW_WORKSPACE_DIR,
   config: JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8")),
@@ -123,6 +127,11 @@ test("OpenClaw process emits isolated config and invocation, joins payloads, and
     assert.equal(result.stdout, "first\nsecond");
     const record = JSON.parse(readFileSync(recordPath, "utf8"));
     assert.equal(record.workspaceDir, root);
+    assert.equal(record.home, join(record.stateDir, "home"));
+    assert.equal(record.xdgConfig, join(record.home, ".config"));
+    assert.equal(record.xdgCache, join(record.home, ".cache"));
+    assert.deepEqual(record.homeFiles.sort(), [".cache", ".config"]);
+    assert.equal(existsSync(record.home), false);
     assert.equal(record.prompt, "Inspect this patch.");
     assert.deepEqual(record.config, {
       agents: {
