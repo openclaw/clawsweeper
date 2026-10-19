@@ -141,6 +141,20 @@ test("parent-registered capabilities in full diagnostics compromise clean manage
   assert.match(diagnostics, /\[redacted credential\]/);
 });
 
+test("managed final-message artifacts redact parent-only capabilities", (t) => {
+  const token = ["opaque", "managed", "parent", "capability"].join("-");
+  registerPublicationCapability(token, true);
+  const fixture = runManagedOutputFixture(t, {
+    payload: managedCompletedOutput(token),
+    cap: 1024,
+    outputFileBytes: 1024,
+    tailBytes: 1,
+  });
+  assert.equal(fixture.result.status, 0);
+  assert.equal(fixture.result.compromised, true);
+  assert.equal(readFileSync(fixture.outputPath, "utf8"), "[redacted credential]");
+});
+
 test("managed Codex result enforces exact UTF-8 bytes and rejects cap plus one", (t) => {
   const exact = runManagedOutputFixture(t, {
     payload: managedCompletedOutput("🦊"),

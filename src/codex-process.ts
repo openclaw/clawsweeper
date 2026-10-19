@@ -127,6 +127,11 @@ export function runCodexProcess(options: {
           if (metadata.size > outputLastMessageBytes) {
             throw new Error(`Codex result exceeded its ${outputLastMessageBytes}-byte limit.`);
           }
+          if (redactPublicationFiles([options.outputLastMessagePath])) {
+            result.compromised = true;
+            if (statSync(options.outputLastMessagePath).size > outputLastMessageBytes)
+              throw new Error(`Codex result exceeded its ${outputLastMessageBytes}-byte limit.`);
+          }
         } catch (error) {
           if (!(result.error && (error as NodeJS.ErrnoException).code === "ENOENT")) {
             return {
