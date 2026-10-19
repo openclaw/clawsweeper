@@ -221,11 +221,11 @@ test("short capability values preserve structured keys and common content", asyn
     process.env = { CODEX_UNKNOWN_CAPABILITY: "rootCauseClusterToken123456" };
     const json = '{"rootCauseClusterToken123456":"rootCauseClusterToken123456"}';
     assert.deepEqual(JSON.parse(redactPublication(json).value), {
-      rootCauseClusterToken123456: "[redacted credential]",
+      "[redacted credential]": "[redacted credential]",
     });
     assert.equal(
       redactPublication(`metadata: ${json}\n`).value,
-      'metadata: {"rootCauseClusterToken123456":"[redacted credential]"}\n',
+      'metadata: {"[redacted credential]":"[redacted credential]"}\n',
     );
     const quotedToken = 'synthetic-"quoted"-token-123456';
     process.env.CODEX_UNKNOWN_CAPABILITY = quotedToken;
@@ -293,17 +293,20 @@ test("render-time body redaction invalidates the persisted close decision", asyn
   }
 });
 
-test("render-time compromised reports cannot synchronize PR labels", async () => {
-  const { publicationSafeReport } = await import("../dist/review-record.js");
+test("render-only compromised reports cannot synchronize PR labels after reload", async () => {
+  const { prepareReviewCommentFromReport } =
+    await import("../dist/clawsweeper-report-comment-presentation.js");
   const { syncApplyPullRequestLabels } =
     await import("../dist/clawsweeper-apply-pull-request-labels.js");
   const original = process.env;
-  const token = "synthetic-label-body-capability-123456";
+  const prefix = "synthetic-label-render-capability-123456";
+  const token = `${prefix}.`;
   try {
     process.env = {};
-    const stored = report("Already implemented.") + `\n## Extra evidence\n${token}\n`;
+    const stored = report(prefix).replaceAll(token, prefix);
     process.env = { GH_TOKEN: token };
-    const safe = publicationSafeReport(stored);
+    const safe = prepareReviewCommentFromReport(stored, "implemented_on_main").markdown;
+    process.env = {};
     const result = syncApplyPullRequestLabels(
       new Proxy(
         {},
@@ -325,6 +328,87 @@ test("render-time compromised reports cannot synchronize PR labels", async () =>
       },
     );
     assert.equal(result.changed, false);
+  } finally {
+    process.env = original;
+  }
+});
+
+test("registered capabilities in JSON keys are counted and collisions preserve every value", async () => {
+  const { redactPublication, registerPublicationCapability } =
+    await import("../dist/publication-dlp.js");
+  const first = "synthetic-object-key-capability-123456";
+  const second = "synthetic-object-key-capability-654321";
+  registerPublicationCapability(first);
+  registerPublicationCapability(second);
+  const input = {
+    [first]: "first",
+    [second]: "second",
+    "[redacted credential]": "existing",
+    "[redacted credential]-2": "also existing",
+  };
+  const safe = redactPublication(JSON.stringify(input) + "\n");
+  assert.equal(safe.redactions, 2);
+  assert.deepEqual(JSON.parse(safe.value), {
+    "[redacted credential]-3": "first",
+    "[redacted credential]-4": "second",
+    "[redacted credential]": "existing",
+    "[redacted credential]-2": "also existing",
+  });
+  assert.equal(redactPublication(input).redactions, 2);
+});
+
+test("composite provider references and authorization payloads register bare capabilities", async () => {
+  const { registerOpenclawProviderCapabilities, redactPublication } =
+    await import("../dist/publication-dlp.js");
+  const opaque = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
+  const other = "P6o5N4m3L2k1J0i9H8g7F6e5D4c3B2a1";
+  const literal = "Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6";
+  registerOpenclawProviderCapabilities(
+    JSON.stringify({
+      custom: {
+        apiKey: "prefix-${OPAQUE_AUTH}-${OTHER_AUTH}",
+        headers: { Authorization: "Bearer ${OPAQUE_AUTH}", "X-Custom-Auth": `Basic ${literal}` },
+      },
+    }),
+    { OPAQUE_AUTH: opaque, OTHER_AUTH: other },
+  );
+  assert.deepEqual(redactPublication([opaque, other, literal]), {
+    value: Array(3).fill("[redacted credential]"),
+    redactions: 3,
+  });
+});
+
+test("comment preparation returns a persistable failed report for render-only credentials", async () => {
+  const { prepareReviewCommentFromReport } =
+    await import("../dist/clawsweeper-report-comment-presentation.js");
+  const { publicationSafeReport } = await import("../dist/review-record.js");
+  const original = process.env;
+  const prefix = "synthetic-render-only-capability-123456";
+  const token = `${prefix}.`;
+  try {
+    process.env = {};
+    const stored = report(prefix).replaceAll(token, prefix);
+    process.env = { GH_TOKEN: token };
+    assert.equal(publicationSafeReport(stored), stored);
+    assert.equal(isApplyCloseCandidateReport(stored), true);
+    const prepared = prepareReviewCommentFromReport(stored, "implemented_on_main");
+    assert.ok(!prepared.comment.includes(token));
+    assert.match(prepared.markdown, /^review_status: failed$/m);
+    assert.equal(readReviewRecord(prepared.markdown)?.decision.decision, "keep_open");
+    assert.equal(isApplyCloseCandidateReport(prepared.markdown), false);
+    process.env = {};
+    const { validateReportClose } = await import("../dist/clawsweeper-apply-close-decision.js");
+    const { validateCloseDecision } = await import("../dist/clawsweeper-close-decision.js");
+    assert.equal(
+      validateReportClose(
+        { validateCloseDecision },
+        item(),
+        prepared.markdown,
+        "implemented_on_main",
+        { requireCloseComment: false },
+      ).ok,
+      false,
+    );
   } finally {
     process.env = original;
   }

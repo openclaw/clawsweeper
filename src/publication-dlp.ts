@@ -75,16 +75,22 @@ export function registerOpenclawProviderCapabilities(
   registerPublicationCapability(providersJson);
   const register = (value: unknown) => {
     if (typeof value !== "string") return;
-    const reference = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(value);
-    registerPublicationCapability(reference ? env[reference[1]!] : value);
+    const registerAuthorization = (credential: string) => {
+      registerPublicationCapability(credential);
+      registerPublicationCapability(credential.replace(/^[A-Za-z][A-Za-z0-9+.-]*\s+/, ""));
+    };
+    registerAuthorization(value);
+    const resolved = value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (reference, name: string) => {
+      registerPublicationCapability(env[name]);
+      return env[name] ?? reference;
+    });
+    registerAuthorization(resolved);
   };
   for (const provider of Object.values(providers)) {
     if (!provider || typeof provider !== "object" || Array.isArray(provider)) continue;
     register(provider.apiKey);
     if (provider.headers && typeof provider.headers === "object") {
-      for (const [name, value] of Object.entries(provider.headers)) {
-        if (/authorization|api.?key|token|secret|password|cookie/i.test(name)) register(value);
-      }
+      for (const value of Object.values(provider.headers)) register(value);
     }
   }
 }
@@ -141,10 +147,14 @@ function credentialPattern(): RegExp {
 export function redactPublication<T>(value: T): { value: T; redactions: number } {
   const pattern = credentialPattern();
   let redactions = 0;
+  const replace = (text: string): string =>
+    text.replace(pattern, () => {
+      redactions += 1;
+      return REDACTED;
+    });
   const visit = (entry: unknown): unknown => {
     if (typeof entry === "string") {
-      // Process serialized objects as values, including JSONL and report records.
-      // Never run credential substitution over object keys or JSON punctuation.
+      // Parse JSON/JSONL so keys and values are scanned without corrupting syntax.
       const structured = (text: string): string | undefined => {
         if (!/^\s*["[{]/.test(text)) return undefined;
         try {
@@ -159,12 +169,6 @@ export function redactPublication<T>(value: T): { value: T; redactions: number }
       };
       const parsed = structured(entry);
       if (parsed !== undefined) return parsed;
-      const replace = (text: string) => {
-        return text.replace(pattern, () => {
-          redactions += 1;
-          return REDACTED;
-        });
-      };
       let pending = "";
       let output = "";
       for (const line of entry.split(/(?<=\n)/)) {
@@ -181,7 +185,23 @@ export function redactPublication<T>(value: T): { value: T; redactions: number }
     }
     if (Array.isArray(entry)) return entry.map(visit);
     if (entry !== null && typeof entry === "object") {
-      return Object.fromEntries(Object.entries(entry).map(([key, child]) => [key, visit(child)]));
+      const entries = Object.entries(entry).map(([key, child]) => ({
+        key,
+        child,
+        matched: replace(key) !== key,
+      }));
+      const used = new Set(entries.filter((entry) => !entry.matched).map((entry) => entry.key));
+      return Object.fromEntries(
+        entries.map(({ key, child, matched }) => {
+          if (matched) {
+            key = REDACTED;
+            let suffix = 2;
+            while (used.has(key)) key = `${REDACTED}-${suffix++}`;
+            used.add(key);
+          }
+          return [key, visit(child)];
+        }),
+      );
     }
     return entry;
   };

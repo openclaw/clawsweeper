@@ -1,4 +1,6 @@
 import { publicationSafeReport } from "./review-record.js";
+import { credentialPublicationBlocked } from "./publication-dlp.js";
+import { prepareReviewCommentFromReport } from "./clawsweeper-report-comment-presentation.js";
 import { sha256 } from "./content-hash.js";
 import { GitHubItemMovedError } from "./github-item-identity.js";
 import {
@@ -184,7 +186,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     setGuardReadGeneration,
     removeCurrentCursorTraceItem,
     removeIssueLabel,
-    renderReviewCommentFromReport,
     repoFromArgs,
     reportEntriesForDir,
     reviewCommentBodyDigest,
@@ -531,10 +532,32 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         return;
       }
       let markdown = publicationSafeReport(entry.markdown);
+      if (!unreadableReviewRecordReason(markdown)) {
+        markdown = prepareReviewCommentFromReport(markdown, reportReviewDecision(markdown).closeReason).markdown;
+      }
       if (markdown !== entry.markdown) {
         writeFileSync(path, markdown, "utf8");
         entry.markdown = markdown;
       }
+      let publicationRenderReason: CloseReason = "none";
+      let publicationRenderOptions: ReviewCommentRenderOptions = {};
+      const renderReviewCommentFromReport = (
+        source: string,
+        reason: CloseReason,
+        options: ReviewCommentRenderOptions = {},
+      ): string => {
+        const prepared = prepareReviewCommentFromReport(source, reason, options);
+        if (source === markdown) {
+          publicationRenderReason = reason;
+          publicationRenderOptions = options;
+        }
+        if (prepared.markdown !== source) {
+          markdown = source === markdown ? prepared.markdown : publicationSafeReport(markdown, 1);
+          writeFileSync(path, markdown, "utf8");
+          entry.markdown = markdown;
+        }
+        return prepared.comment;
+      };
       const restrictedPublication = Boolean(reportPublicationPolicy(markdown));
       // Background apply has no publication claim. Canonical restrictions outlive
       // queue completion, so only the exact publisher can sync this report.
@@ -557,6 +580,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       ) => collectItemContext(contextItem, { ...options, liveReadGeneration });
       const applyReadDependencies: CreateApplyDecisionWorkflowDependencies = {
         ...dependencies,
+        renderReviewCommentFromReport,
         fetchItem: fetchApplyItem,
         collectItemContext: collectApplyItemContext,
       };
@@ -677,6 +701,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         didMutate?: ((result: T) => boolean) | undefined;
         knownNoMutation?: ((error: unknown) => boolean) | undefined;
       }): T => {
+        renderReviewCommentFromReport(markdown, publicationRenderReason, publicationRenderOptions);
+        if (credentialPublicationBlocked(reportReviewDecision(markdown))) {
+          throw new ApplyMutationReviewGuardError("review attempted to publish a credential; fresh review required");
+        }
         if (restrictedPublication) {
           if (!options.identity.startsWith(`review_comment_upsert:${number}:`) && !options.identity.startsWith("review_lease_")) {
             throw new Error("manual publication forbids this mutation");
@@ -957,6 +985,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       // A promotion removes a record that does not read, so do this check before a promotion.
       if (unreadableRecordReason) {
         if (markApplySkipped("skipped_changed_since_review", unreadableRecordReason)) break;
+        continue;
+      }
+      if (credentialPublicationBlocked(reportReviewDecision(markdown))) {
+        if (markApplySkipped("kept_open", "review attempted to publish a credential; fresh review required")) break;
         continue;
       }
       const shouldProbeClosedState = shouldProbeClosedStateReport(markdown);

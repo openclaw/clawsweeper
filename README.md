@@ -774,8 +774,11 @@ publication, and queue lifecycle.
   invalidates the persisted decision before apply can change labels or close.
   Final-message files and shared Codex/OpenClaw stdout/stderr captures are
   redacted before writing; diagnostic streams above the bounded memory buffer
-  are omitted. Structured redaction preserves object keys and JSON syntax.
-  This is a literal-value and
+  are omitted. Structured redaction scans values and keys while preserving JSON
+  syntax; matching keys become `[redacted credential]` with numbered suffixes
+  when needed to retain colliding fields. Selected OpenClaw provider headers
+  register embedded environment references and authorization payloads as well
+  as complete credential values. This is a literal-value and
   credential-shape boundary, not a detector for encoded or fragmented secrets.
 - Reviews fail if Codex leaves tracked or untracked changes behind.
 - Snapshot changes block apply unless the only change is the bot’s own review

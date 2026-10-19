@@ -616,16 +616,24 @@ function renderReviewComment(
     .join("\n\n");
 }
 
+/** Return the safe report as well as its comment so persistence owners retain invalidation. */
+export function prepareReviewCommentFromReport(
+  markdown: string,
+  reason: CloseReason,
+  options: ReviewCommentRenderOptions = {},
+): { markdown: string; comment: string } {
+  let safe = publicationSafeReport(markdown);
+  const rendered = redactPublication(renderReviewComment(safe, reason, options));
+  if (!rendered.redactions) return { markdown: safe, comment: rendered.value };
+  safe = publicationSafeReport(safe, rendered.redactions);
+  const failed = redactPublication(renderReviewComment(safe, "none", options));
+  return { markdown: safe, comment: failed.value };
+}
+
 export function renderReviewCommentFromReport(
   markdown: string,
   reason: CloseReason,
   options: ReviewCommentRenderOptions = {},
 ): string {
-  const safe = publicationSafeReport(markdown);
-  const rendered = redactPublication(renderReviewComment(safe, reason, options));
-  return rendered.redactions
-    ? redactPublication(
-        renderReviewComment(publicationSafeReport(safe, rendered.redactions), "none", options),
-      ).value
-    : rendered.value;
+  return prepareReviewCommentFromReport(markdown, reason, options).comment;
 }

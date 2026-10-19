@@ -147,6 +147,47 @@ try {
   assert.equal(readReviewRecord(persistedLate).decision.decision, "keep_open");
   const lateActions = JSON.parse(readFileSync(join(root, "apply.json"), "utf8"));
   assert.equal(lateActions[0].action, "kept_open");
+  const renderPrefix = "synthetic-render-proof-capability-123456";
+  const renderToken = `${renderPrefix}.`;
+  const renderOnlyResults = [];
+  for (const kind of ["issue", "pull_request"]) {
+    const stored = markdownFor({
+      item: { ...subject, kind },
+      decision: { ...closeDecision({ summary: renderPrefix }), localCheckoutAccess: "verified" },
+      context: { issue: {}, comments: [], timeline: [] },
+      git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true },
+      action: { actionTaken: "proposed_close" },
+      reviewMode: "propose",
+      snapshotHash: "synthetic-snapshot",
+      contentDigest: "synthetic-content",
+      reviewPolicy: "synthetic-policy",
+      runtime: { model: "Codex", reasoningEffort: "high" },
+    }).replaceAll(renderToken, renderPrefix);
+    assert.ok(!stored.includes(renderToken));
+    assert.equal(readReviewRecord(stored).decision.decision, "close");
+    writeFileSync(join(root, `render-only-${kind}-before.md`), stored);
+    writeFileSync(result.reportPath, stored);
+    process.env.GH_TOKEN = renderToken;
+    const renderApply = runApply();
+    writeFileSync(
+      join(root, `render-only-${kind}-apply.log`),
+      `${renderApply.stdout}\n${renderApply.stderr}`,
+    );
+    assert.equal(renderApply.status, 0, renderApply.stderr);
+    const persisted = readFileSync(result.reportPath, "utf8");
+    writeFileSync(join(root, `render-only-${kind}-after.md`), persisted);
+    assert.match(persisted, /^review_status: failed$/m);
+    assert.equal(readReviewRecord(persisted).decision.decision, "keep_open");
+    const actions = JSON.parse(readFileSync(join(root, "apply.json"), "utf8"));
+    assert.equal(actions[0].action, "kept_open");
+    renderOnlyResults.push({
+      kind,
+      persistedFailed: true,
+      decision: "keep_open",
+      action: actions[0].action,
+      githubRequests: 0,
+    });
+  }
   const sourceHead = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const diff = execFileSync("git", ["diff", "HEAD"], { encoding: "utf8" });
   const proof = {
@@ -165,6 +206,7 @@ try {
     githubRequests: 0,
     lateBodyRedactionPersisted: true,
     lateBodyApplyAction: lateActions[0].action,
+    renderOnlyResults,
     limits:
       "Synthetic decision through the production report writer/renderer and dry-run apply CLI; no inference or live GitHub writes.",
   };
