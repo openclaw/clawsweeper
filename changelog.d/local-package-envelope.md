@@ -1,0 +1,1 @@
+- Retain qualified private local-review package inputs and their observed npm resolution as per-platform CI artifacts.

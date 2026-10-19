@@ -187,7 +187,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, xcode-27]
+        os: [ubuntu-latest, windows-latest, xcode-27]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -201,7 +201,17 @@ jobs:
           build-script: build:node
 
       - name: Qualify the installed local reviewer
+        env:
+          CLAWSWEEPER_TEST_PACKAGE_OUTPUT: ${{ runner.temp }}/local-package-envelope
         run: node --test test/local-package-install.test.ts
+
+      - name: Retain qualified private package inputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: local-package-${{ matrix.os }}
+          path: ${{ runner.temp }}/local-package-envelope/
+          if-no-files-found: error
+          retention-days: 7
 
   # Single required status: passes only when every gate above passed. `always()`
   # keeps it from being skipped (which would read as success) when a gate fails.
