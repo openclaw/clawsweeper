@@ -210,6 +210,9 @@ const scheduledScenarios = [
   "content-target-drift",
   "content-target-drift-expired",
   "fresh-refusal",
+  "closed-before-selection",
+  "closed-pinned-before-selection",
+  "empty-batch-selection",
 ];
 
 interface OutputBudgetCase {
@@ -230,6 +233,7 @@ function testScheduledCacheScenario(
       : `scheduled ${scenario} preserves admission and terminal ledger classification`;
   test(name, (t) => {
     const refuseScan = scenario.endsWith("refusal");
+    const closedBeforeSelection = scenario.startsWith("closed-");
     const invalidProofPrior = scenario.startsWith("changed-pr-proof-");
     const proofMaintainerChange = scenario === "changed-pr-proof-maintainer-change";
     const writeAccessAuthor = scenario === "changed-pr-write-access";
@@ -276,7 +280,8 @@ function testScheduledCacheScenario(
     mkdirSync(target);
     const mediaCase = outputCase?.surface === "media";
     const cumulativeCase = outputCase?.surface === "cumulative";
-    const twoItems = partialJsonFailure || mediaCase || cumulativeCase;
+    const twoItems =
+      partialJsonFailure || mediaCase || cumulativeCase || scenario === "empty-batch-selection";
     const oversized =
       outputCase?.surface === "report"
         ? "x".repeat((outputCase.retention === "debug" ? 64 : 16) * 1024 * 1024 + 1)
@@ -874,16 +879,19 @@ process.exitCode = 1;
           decision,
         ),
       selectCandidates: () => ({
-        candidates: twoItems
-          ? [
-              { ...item },
-              {
-                ...item,
-                number: ITEM_NUMBER + 1,
-                url: `https://github.com/${REPO}/pull/${ITEM_NUMBER + 1}`,
-              },
-            ]
-          : [{ ...item }],
+        candidates:
+          closedBeforeSelection || scenario === "empty-batch-selection"
+            ? []
+            : twoItems
+              ? [
+                  { ...item },
+                  {
+                    ...item,
+                    number: ITEM_NUMBER + 1,
+                    url: `https://github.com/${REPO}/pull/${ITEM_NUMBER + 1}`,
+                  },
+                ]
+              : [{ ...item }],
         scannedPages: 1,
       }),
       suppliedReviewStartLeaseFromArgs,
@@ -905,6 +913,9 @@ process.exitCode = 1;
           "--item-numbers",
           twoItems ? `${ITEM_NUMBER},${ITEM_NUMBER + 1}` : String(ITEM_NUMBER),
           "--readonly-openclaw",
+          ...(scenario === "closed-pinned-before-selection"
+            ? ["--expected-source-revision", "c".repeat(64)]
+            : []),
         ];
         reviewCommand(
           parseArgs(
@@ -1229,7 +1240,26 @@ process.exitCode = 1;
         assert.equal(existsSync(join(artifactDir, `${ITEM_NUMBER}.md`)), false);
         return;
       }
+      if (scenario === "empty-batch-selection") {
+        assert.throws(execute, /A supplied review lease requires exactly one selected item/);
+        assert.equal(generationCalls, 0);
+        return;
+      }
       execute();
+
+      if (closedBeforeSelection) {
+        assert.equal(generationCalls, 0);
+        assert.equal(hydrationCalls, 0);
+        assert.equal(startCommentCalls, 0);
+        assert.equal(existsSync(join(artifactDir, `${ITEM_NUMBER}.md`)), false);
+        assert.equal(existsSync(join(artifactDir, "failure-diagnostics")), false);
+        const metrics = JSON.parse(
+          readFileSync(join(artifactDir, "review-cache-metrics.json"), "utf8"),
+        );
+        assert.equal(metrics.candidates, 0);
+        assert.equal(metrics.completed, 0);
+        return;
+      }
 
       if (publicationCase) {
         assert.equal(readFileSync(join(itemsDir, `${ITEM_NUMBER}.md`), "utf8"), priorMarkdown);

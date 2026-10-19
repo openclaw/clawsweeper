@@ -380,12 +380,19 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const writeOutputMetadata = (path: string, content: string): void => {
         writeReviewOutput(outputBudget, path, content);
       };
-      if (suppliedReviewLease && candidates.length !== 1) {
+      // An exact target can close after workflow admission. Leave its empty
+      // selection to the workflow's live terminal check instead of failing
+      // before that check can distinguish a close from a missing open report.
+      const emptyExactSelection =
+        candidates.length === 0 &&
+        shardIndex === 0 &&
+        (itemNumbers ? itemNumbers.length === 1 : itemNumber !== undefined);
+      if (suppliedReviewLease && candidates.length !== 1 && !emptyExactSelection) {
         throw new UserFacingCommandError(
           "A supplied review lease requires exactly one selected item.",
         );
       }
-      if (expectedSourceRevision && candidates.length !== 1) {
+      if (expectedSourceRevision && candidates.length !== 1 && !emptyExactSelection) {
         throw new UserFacingCommandError(
           `--expected-source-revision requires exactly one selected issue; selected ${candidates.length}.`,
         );
