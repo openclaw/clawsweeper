@@ -755,6 +755,27 @@ function exactUriFixtureTests(
 }
 
 exactUriFixtureTests(
+  "Gateway channels.status redaction",
+  "src/gateway/server-methods/channels.status.test-helpers.ts",
+  () => {
+    const raw = [
+      "https://",
+      "runtime-user",
+      ":",
+      "runtime-password",
+      "@",
+      "chat.example.test",
+    ].join("");
+    return {
+      raw,
+      rawV2: raw,
+      line: '    baseUrl: "' + raw + '/?token=runtime-token",',
+      decoders: ["PLAIN", "HTML"],
+    };
+  },
+);
+
+exactUriFixtureTests(
   "Historical OCE proxy URL rejection",
   "tests/conformance/kubernetes-compute.test.mjs",
   () => {
