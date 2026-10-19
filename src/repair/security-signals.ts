@@ -59,6 +59,14 @@ export function applyHiddenPayloadSecurityReview(
 ): Decision {
   if (!signal) return decision;
   const priority = decision.triagePriority === "P0" ? "P0" : "P1";
+  // Review records allow at most three impact labels; security takes precedence.
+  const impactLabels = [
+    "impact:security" as const,
+    ...decision.impactLabels.filter((label) => label !== "impact:security"),
+  ].slice(0, 3);
+  const droppedImpactLabels = new Set<string>(
+    decision.impactLabels.filter((label) => !impactLabels.includes(label)),
+  );
   return {
     ...decision,
     decision: "keep_open",
@@ -70,10 +78,13 @@ export function applyHiddenPayloadSecurityReview(
     workReason: PAYLOAD_SUMMARY,
     summary: `${PAYLOAD_SUMMARY} ${decision.summary}`,
     triagePriority: priority,
-    impactLabels: [...new Set([...decision.impactLabels, "impact:security" as const])],
+    impactLabels,
     labelJustifications: [
       ...decision.labelJustifications.filter(
-        (entry) => !/^P[0-3]$/.test(entry.label) && entry.label !== "impact:security",
+        (entry) =>
+          !/^P[0-3]$/.test(entry.label) &&
+          entry.label !== "impact:security" &&
+          !droppedImpactLabels.has(entry.label),
       ),
       { label: priority, reason: PAYLOAD_SUMMARY },
       { label: "impact:security", reason: PAYLOAD_SUMMARY },

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { reviewRecordFrontMatterLine } from "../dist/review-record.js";
 import { createItemContext } from "../dist/clawsweeper-item-context.js";
 import { validateCloseDecision } from "../dist/clawsweeper-close-decision.js";
 import { githubTest, installGhFixture } from "./github-runtime-fixture.ts";
@@ -204,6 +205,26 @@ test("full bodies and all comments are scanned without promoting visible example
     hiddenPayloadSecurityReview("ordinary", [{ body: `\`\`\`sh\n${payload}\n\`\`\`` }]),
     undefined,
   );
+});
+
+test("host security signal keeps the review record within the impact-label limit", () => {
+  const impactLabels = ["impact:data-loss", "impact:crash-loop", "impact:message-loss"] as const;
+  const decision = closeDecision({
+    impactLabels: [...impactLabels],
+    labelJustifications: impactLabels.map((label) => ({ label, reason: `${label} observed.` })),
+  });
+  const result = applyHiddenPayloadSecurityReview(
+    decision,
+    hiddenPayloadSecurityReview(hiddenComment),
+  );
+  assert.deepEqual(result.impactLabels, [
+    "impact:security",
+    "impact:data-loss",
+    "impact:crash-loop",
+  ]);
+  assert.ok(!result.labelJustifications.some((entry) => entry.label === "impact:message-loss"));
+  const subject = { repo: "openclaw/gogcli", number: 1054, kind: "issue" } as const;
+  assert.ok(reviewRecordFrontMatterLine({ decision: result }, subject));
 });
 
 test("host signal overrides model closure and repair while retaining security concerns", () => {
