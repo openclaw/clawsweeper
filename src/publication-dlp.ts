@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Decision } from "./clawsweeper-types.js";
@@ -19,6 +19,18 @@ const CODEX_NON_CAPABILITIES = new Set([
   "CODEX_VERSION",
 ]);
 const explicitCapabilities = new Set<string>();
+
+/** Recheck complete captures with publisher-only capabilities before retaining them. */
+export function redactPublicationFiles(paths: readonly string[]): number {
+  let redactions = 0;
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    const safe = redactPublication(readFileSync(path, "utf8"));
+    if (safe.redactions) writeFileSync(path, safe.value);
+    redactions += safe.redactions;
+  }
+  return redactions;
+}
 
 /** Remember credentials passed as arguments rather than inherited from the publisher. */
 export function registerPublicationCapability(

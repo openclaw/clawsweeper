@@ -21,6 +21,7 @@ import {
   codexSpawnInvocation,
   runCodexProcess,
 } from "../dist/codex-process.js";
+import { registerPublicationCapability } from "../dist/publication-dlp.js";
 
 const tmpPrefix = join(tmpdir(), "clawsweeper-codex-process-test-");
 
@@ -111,6 +112,34 @@ if (process.env.CODEX_TEST_MODE === "timeout") setInterval(() => {}, 1000);
   });
   return { outputPath, result, stdoutPath, stderrPath };
 }
+
+test("parent-registered capabilities in full diagnostics compromise clean managed results", (t) => {
+  const root = mkdtempSync(tmpPrefix);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const token = ["opaque", "parent", "registered", "capability"].join("-");
+  registerPublicationCapability(token, true);
+  const binary = join(root, "codex");
+  writeFileSync(
+    binary,
+    `#!${process.execPath}\nprocess.stderr.write(${JSON.stringify(token)} + "x".repeat(8192));\nprocess.stdout.write("clean");\n`,
+    { mode: 0o755 },
+  );
+  const stderrPath = join(root, "stderr.log");
+  const result = runCodexProcess({
+    args: [],
+    cwd: root,
+    env: { ...process.env, CODEX_BIN: binary },
+    input: "",
+    timeoutMs: 10_000,
+    tailBytes: 1024,
+    stderrPath,
+  });
+  assert.equal(result.status, 0, result.error?.message);
+  assert.equal(result.compromised, true);
+  const diagnostics = readFileSync(stderrPath, "utf8");
+  assert.ok(!diagnostics.includes(token));
+  assert.match(diagnostics, /\[redacted credential\]/);
+});
 
 test("managed Codex result enforces exact UTF-8 bytes and rejects cap plus one", (t) => {
   const exact = runManagedOutputFixture(t, {

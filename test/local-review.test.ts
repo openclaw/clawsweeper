@@ -466,7 +466,7 @@ test(
         if (retention === "diagnostic") {
           writeFileSync(
             fakeCodex,
-            `#!${process.execPath}\nrequire('node:fs').readFileSync(0);\nprocess.stderr.write(${JSON.stringify(token)});\nprocess.stdout.write("---\\nresult: success\\n---\\nClean report.\\n");\n`,
+            `#!${process.execPath}\nrequire('node:fs').readFileSync(0);\nprocess.stderr.write(${JSON.stringify(token)} + "x".repeat(70_000));\nprocess.stdout.write("---\\nresult: success\\n---\\nClean report.\\n");\n`,
             { mode: 0o755 },
           );
         }
@@ -484,7 +484,7 @@ test(
             "--report-dir",
             join(harness, retention),
           ],
-          { CODEX_BIN: fakeCodex, SOME_NEW_SECRET: token },
+          { CODEX_BIN: fakeCodex, GH_TOKEN: token },
         );
         assert.equal(result.status, 0, result.out);
         assert.ok(!result.stdout.includes(token));

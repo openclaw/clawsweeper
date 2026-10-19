@@ -10,6 +10,7 @@ import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import { reviewNetworkCapability, runAgentProcess } from "../dist/agent-runner.js";
 import { parseOpenclawJsonEnvelope, runOpenclawProcess } from "../dist/openclaw-process.js";
 import { codexProcessErrorCode } from "../dist/codex-process.js";
+import { registerPublicationCapability } from "../dist/publication-dlp.js";
 
 const OPENCLAW_PROCESS_WORKER_PATH = fileURLToPath(
   new URL("../dist/openclaw-process-worker.js", import.meta.url),
@@ -96,6 +97,32 @@ process.stdout.write(process.env.OPENCLAW_TEST_STDOUT || JSON.stringify({ payloa
   chmodSync(binary, 0o755);
   return binary;
 }
+
+test("OpenClaw rescans complete diagnostics with parent-only capabilities", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-dlp-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const token = ["opaque", "openclaw", "parent", "capability"].join("-");
+  registerPublicationCapability(token, true);
+  const stderrPath = join(root, "stderr.log");
+  const result = runOpenclawProcess({
+    label: "parent registry proof",
+    prompt: "Return a clean result.",
+    model: "synthetic/model",
+    cwd: root,
+    env: {
+      ...process.env,
+      CLAWSWEEPER_OPENCLAW_BIN: fakeOpenclaw(root),
+      OPENCLAW_TEST_RECORD: join(root, "record.json"),
+      OPENCLAW_TEST_STDERR: token + "x".repeat(70_000),
+    },
+    timeoutMs: 10_000,
+    stderrPath,
+  });
+  assert.equal(result.status, 0);
+  assert.equal(result.compromised, true);
+  assert.ok(!readFileSync(stderrPath, "utf8").includes(token));
+  assert.match(readFileSync(stderrPath, "utf8"), /\[redacted credential\]/);
+});
 
 test("OpenClaw process emits isolated config and invocation, joins payloads, and cleans state", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-test-"));

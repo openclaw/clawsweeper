@@ -1,4 +1,5 @@
 import { isolatedReviewerHome } from "./reviewer-home.js";
+import { redactPublication, redactPublicationFiles } from "./publication-dlp.js";
 import { isRecord } from "./value-coerce.js";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -116,6 +117,7 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
       stdio: "ignore",
       timeout: options.timeoutMs + 10_000,
     });
+    const diagnosticRedactions = redactPublicationFiles([stdoutPath, stderrPath]);
     if (!existsSync(resultPath)) {
       if (worker.error) return failedResult(worker.error, worker.status, worker.signal);
       return failedResult(
@@ -127,6 +129,9 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
       );
     }
     const processResult = deserializeResult(JSON.parse(readFileSync(resultPath, "utf8")));
+    const safe = redactPublication({ stdout: processResult.stdout, stderr: processResult.stderr });
+    Object.assign(processResult, safe.value);
+    processResult.compromised ||= diagnosticRedactions > 0 || safe.redactions > 0;
     if (worker.error) return { ...processResult, error: worker.error };
     return normalizeOpenclawResult(
       processResult,

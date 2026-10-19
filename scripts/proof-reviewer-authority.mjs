@@ -19,6 +19,8 @@ import { publicationSafeReport, readReviewRecord } from "../dist/review-record.j
 import { prepareReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import { repositoryProfileFor, setTargetRepo } from "../dist/repository-profiles.js";
 import { buildDecisionPacketFromReport } from "../dist/decision-packets.js";
+import { runCodexProcess } from "../dist/codex-process.js";
+import { registerPublicationCapability } from "../dist/publication-dlp.js";
 import {
   item,
   lowSignalCloseReport,
@@ -78,7 +80,8 @@ try {
     `#!${process.execPath}
 const fs = require('node:fs');
 fs.readFileSync(0);
-if (fs.readFileSync(${JSON.stringify(modeFile)}, 'utf8') === 'compromised') process.stderr.write(${JSON.stringify(capability)});
+const mode = fs.readFileSync(${JSON.stringify(modeFile)}, 'utf8');
+if (mode !== 'clean') process.stderr.write(${JSON.stringify(capability)} + (mode === 'parent-only' ? 'x'.repeat(8192) : ''));
 console.log(JSON.stringify({ sourceSummary: 'Source repairs the route.', coveringSummary: 'Canonical repairs the same route.', coveredWork: ['Canonical includes the route repair.'], uniqueSourceWork: [], decision: 'covered', reason: 'All source work is covered.' }));
 `,
     { mode: 0o755 },
@@ -218,6 +221,25 @@ console.log(JSON.stringify({ sourceSummary: 'Source repairs the route.', coverin
       };
     },
   );
+
+  registerPublicationCapability(capability, true);
+  writeFileSync(modeFile, "parent-only");
+  const captureEnv = { ...process.env };
+  delete captureEnv.GH_TOKEN;
+  const stderrPath = join(root, "parent-only.stderr.log");
+  const capture = runCodexProcess({
+    args: [],
+    cwd: root,
+    env: captureEnv,
+    input: "",
+    timeoutMs: 10_000,
+    tailBytes: 1024,
+    stderrPath,
+  });
+  assert.equal(capture.status, 0);
+  assert.equal(capture.compromised, true);
+  assert.ok(!readFileSync(stderrPath, "utf8").includes(capability));
+  proof.scenarios.parentOnlyDiagnostic = { compromised: true, fullCaptureRedacted: true };
 
   setTargetRepo("openclaw/clawsweeper");
   const stateRoot = join(root, "state");

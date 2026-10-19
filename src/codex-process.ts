@@ -1,4 +1,5 @@
 import { isolatedReviewerHome } from "./reviewer-home.js";
+import { redactPublication, redactPublicationFiles } from "./publication-dlp.js";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -102,6 +103,7 @@ export function runCodexProcess(options: {
       stdio: ["pipe", "ignore", "ignore"],
       timeout: options.timeoutMs + 10_000,
     });
+    const diagnosticRedactions = redactPublicationFiles([stdoutPath, stderrPath]);
     if (existsSync(resultPath)) {
       const resultBytes = statSync(resultPath).size;
       const maxResultBytes = workerResultMaxBytes(normalizedTailBytes(options.tailBytes));
@@ -113,6 +115,9 @@ export function runCodexProcess(options: {
         );
       }
       const result = deserializeProcessResult(JSON.parse(readFileSync(resultPath, "utf8")));
+      const safe = redactPublication({ stdout: result.stdout, stderr: result.stderr });
+      Object.assign(result, safe.value);
+      result.compromised ||= diagnosticRedactions > 0 || safe.redactions > 0;
       if (outputLastMessageBytes !== undefined && options.outputLastMessagePath) {
         try {
           const metadata = lstatSync(options.outputLastMessagePath);
