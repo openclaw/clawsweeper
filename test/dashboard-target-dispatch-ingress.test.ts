@@ -98,16 +98,14 @@ const pullIdentity: TargetDispatchIdentity = {
 test("target dispatch OIDC binds repository, event, branch, workflow, and run", async () => {
   assert.deepEqual(
     await authenticateTargetDispatchToken(oidcToken(), { now: nowMs, fetch: jwksFetch }),
-    pullIdentity,
+    { ok: true, identity: pullIdentity },
   );
-  assert.equal(
-    (
-      await authenticateTargetDispatchToken(oidcToken({ event_name: "issues" }), {
-        now: nowMs,
-        fetch: jwksFetch,
-      })
-    )?.eventName,
-    "issues",
+  assert.deepEqual(
+    await authenticateTargetDispatchToken(oidcToken({ event_name: "issues" }), {
+      now: nowMs,
+      fetch: jwksFetch,
+    }),
+    { ok: true, identity: { ...pullIdentity, eventName: "issues" } },
   );
   for (const mismatch of [
     { aud: "https://example.invalid/other-audience" },
@@ -131,25 +129,25 @@ test("target dispatch OIDC binds repository, event, branch, workflow, and run", 
     { exp: nowSeconds - 1 },
     { iat: nowSeconds - 601 },
   ]) {
-    assert.equal(
+    assert.deepEqual(
       await authenticateTargetDispatchToken(oidcToken(mismatch), { now: nowMs, fetch: jwksFetch }),
-      null,
+      { ok: false, reason: "rejected" },
       JSON.stringify(mismatch),
     );
   }
   const forged = oidcToken().slice(0, -6) + "abcdef";
-  assert.equal(
+  assert.deepEqual(
     await authenticateTargetDispatchToken(forged, { now: nowMs, fetch: jwksFetch }),
-    null,
+    { ok: false, reason: "rejected" },
   );
   const redirected = (async () =>
     new Response(null, {
       status: 302,
       headers: { location: "https://example.invalid/jwks" },
     })) as typeof fetch;
-  assert.equal(
+  assert.deepEqual(
     await authenticateTargetDispatchToken(oidcToken(), { now: nowMs, fetch: redirected }),
-    null,
+    { ok: false, reason: "unavailable" },
   );
 });
 
@@ -353,6 +351,48 @@ test("direct target dispatch fails closed before the queue", async () => {
       hostedTargetPredicate: () => false,
     });
     assert.equal(ineligible.status, 422);
+    assert.equal(queueCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("direct target dispatch distinguishes JWKS outage from rejected tokens", async () => {
+  const originalFetch = globalThis.fetch;
+  let jwksFetches = 0;
+  let queueCalls = 0;
+  globalThis.fetch = (async (input) => {
+    assert.equal(String(input), JWKS_URL);
+    jwksFetches += 1;
+    return new Response("JWKS unavailable", { status: 500 });
+  }) as typeof fetch;
+  try {
+    const env = {
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+        fetch() {
+          queueCalls += 1;
+          return Response.json({ ok: true, queued: true });
+        },
+      }),
+    };
+    const post = (token: string) =>
+      worker.fetch(
+        new Request(TARGET_DISPATCH_ENDPOINT, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify(pullRequestPayload),
+        }),
+        env,
+      );
+    const unavailable = await post(oidcToken());
+    assert.equal(unavailable.status, 503);
+    assert.equal(unavailable.headers.get("retry-after"), "30");
+    assert.deepEqual(await unavailable.json(), { error: "target_dispatch_verifier_unavailable" });
+    const rejected = await post(oidcToken({ aud: "wrong" }));
+    assert.equal(rejected.status, 401);
+    assert.equal(rejected.headers.get("retry-after"), null);
+    assert.deepEqual(await rejected.json(), { error: "target_dispatch_not_authorized" });
+    assert.equal(jwksFetches, 1);
     assert.equal(queueCalls, 0);
   } finally {
     globalThis.fetch = originalFetch;

@@ -5605,8 +5605,16 @@ async function authenticatedHostedTargetQueueRequest(request, env, path: string)
 async function githubTargetDispatch(request: Request, env, ctx) {
   const text = await boundedTargetDispatchBody(request, TARGET_DISPATCH_MAX_BODY_BYTES);
   if (text === null) return json({ error: "target_dispatch_too_large_or_invalid" }, 413);
-  const identity = await authenticateTargetDispatchToken(bearerToken(request));
-  if (!identity) return json({ error: "target_dispatch_not_authorized" }, 401);
+  const authentication = await authenticateTargetDispatchToken(bearerToken(request));
+  if (authentication.ok === false) {
+    if (authentication.reason === "unavailable") {
+      const response = json({ error: "target_dispatch_verifier_unavailable" }, 503);
+      response.headers.set("retry-after", "30");
+      return response;
+    }
+    return json({ error: "target_dispatch_not_authorized" }, 401);
+  }
+  const { identity } = authentication;
   const payload = parseJsonObject(text);
   if (identity.eventName === "issue_comment" || payload?.source_event === "issue_comment") {
     return githubTargetCommentDispatch(payload, identity, env, ctx);

@@ -6,6 +6,9 @@ const MAX_JWKS_BYTES = 65_536;
 
 export type GithubActionsOidcClaims = Record<string, unknown>;
 export type GithubActionsOidcOptions = { fetch?: typeof fetch; now?: number };
+export type GithubActionsOidcResult =
+  | { ok: true; claims: GithubActionsOidcClaims }
+  | { ok: false; reason: "rejected" | "unavailable" };
 
 function bytes(value: string) {
   return Uint8Array.from(atob(value.replace(/-/g, "+").replace(/_/g, "/")), (character) =>
@@ -47,29 +50,36 @@ async function boundedJson(response: Response): Promise<unknown> {
 }
 
 /**
- * Returns the claims of a GitHub-signed Actions OIDC token for `audience`, or null.
+ * Verifies a GitHub-signed Actions OIDC token for `audience`.
  * `accept` runs on the unverified claims before the JWKS fetch so cheap identity
- * mismatches never reach the network; a null result is always fail-closed.
+ * mismatches never reach the network. Rejection and verifier unavailability
+ * both fail closed, but only unavailability is retryable.
  */
 export async function verifiedGithubActionsOidcClaims(
   token: string,
   audience: string,
   accept: (claims: GithubActionsOidcClaims) => boolean,
   options: GithubActionsOidcOptions = {},
-): Promise<GithubActionsOidcClaims | null> {
+): Promise<GithubActionsOidcResult> {
+  let segments: string[];
+  let header: Record<string, unknown>;
+  let claims: GithubActionsOidcClaims;
+  let signature: Uint8Array<ArrayBuffer>;
   try {
-    if (token.length > MAX_TOKEN_LENGTH) return null;
-    const segments = token.split(".");
-    if (segments.length !== 3 || segments.some((s) => !/^[A-Za-z0-9_-]+$/.test(s))) return null;
-    const header = part(segments[0]!);
-    const claims = part(segments[1]!);
+    if (token.length > MAX_TOKEN_LENGTH) return { ok: false, reason: "rejected" };
+    segments = token.split(".");
+    if (segments.length !== 3 || segments.some((s) => !/^[A-Za-z0-9_-]+$/.test(s)))
+      return { ok: false, reason: "rejected" };
+    header = part(segments[0]!);
+    claims = part(segments[1]!);
+    signature = bytes(segments[2]!);
     if (
       header.alg !== "RS256" ||
       typeof header.kid !== "string" ||
       header.kid.length > 200 ||
       header.crit !== undefined
     )
-      return null;
+      return { ok: false, reason: "rejected" };
     const now = (options.now ?? Date.now()) / 1000;
     if (
       claims.iss !== GITHUB_ACTIONS_OIDC_ISSUER ||
@@ -84,7 +94,12 @@ export async function verifiedGithubActionsOidcClaims(
       claims.iat < now - 600 ||
       !accept(claims)
     )
-      return null;
+      return { ok: false, reason: "rejected" };
+  } catch {
+    return { ok: false, reason: "rejected" };
+  }
+  let key: CryptoKey;
+  try {
     // Workers reject `redirect: "error"`; a manual 3xx is not ok, so it fails closed.
     const response = await (options.fetch ?? fetch)(JWKS, {
       redirect: "manual",
@@ -92,7 +107,13 @@ export async function verifiedGithubActionsOidcClaims(
       headers: { Accept: "application/json" },
     });
     const keys = (await boundedJson(response)) as { keys?: unknown } | null;
-    if (!keys || !Array.isArray(keys.keys) || keys.keys.length > 20) return null;
+    if (
+      !keys ||
+      !Array.isArray(keys.keys) ||
+      keys.keys.length > 20 ||
+      keys.keys.some((key) => !key || typeof key !== "object" || Array.isArray(key))
+    )
+      return { ok: false, reason: "unavailable" };
     const matches = keys.keys.filter(
       (key) =>
         key.kid === header.kid &&
@@ -100,22 +121,27 @@ export async function verifiedGithubActionsOidcClaims(
         (key.alg === undefined || key.alg === "RS256") &&
         (key.use === undefined || key.use === "sig"),
     );
-    if (matches.length !== 1) return null;
-    const key = await crypto.subtle.importKey(
+    // A missing key can be GitHub key-rotation propagation, not a bad token.
+    if (matches.length !== 1) return { ok: false, reason: "unavailable" };
+    key = await crypto.subtle.importKey(
       "jwk",
       matches[0],
       { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
       false,
       ["verify"],
     );
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  }
+  try {
     const verified = await crypto.subtle.verify(
       "RSASSA-PKCS1-v1_5",
       key,
-      bytes(segments[2]!),
+      signature,
       new TextEncoder().encode(segments[0] + "." + segments[1]),
     );
-    return verified ? claims : null;
+    return verified ? { ok: true, claims } : { ok: false, reason: "rejected" };
   } catch {
-    return null;
+    return { ok: false, reason: "rejected" };
   }
 }

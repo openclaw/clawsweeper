@@ -84,21 +84,27 @@ function acceptedClaims(claims: GithubActionsOidcClaims) {
 export async function authenticateTargetDispatchToken(
   token: string,
   options: GithubActionsOidcOptions = {},
-): Promise<TargetDispatchIdentity | null> {
-  const claims = await verifiedGithubActionsOidcClaims(
+): Promise<
+  { ok: true; identity: TargetDispatchIdentity } | { ok: false; reason: "rejected" | "unavailable" }
+> {
+  const result = await verifiedGithubActionsOidcClaims(
     token,
     TARGET_DISPATCH_ENDPOINT,
     acceptedClaims,
     options,
   );
-  if (!claims || !acceptedClaims(claims)) return null;
+  if (result.ok === false) return result;
+  const { claims } = result;
   return {
-    repository: String(claims.repository),
-    repositoryId: String(claims.repository_id),
-    eventName: claims.event_name as TargetDispatchIdentity["eventName"],
-    ref: String(claims.ref),
-    runId: String(claims.run_id),
-    runAttempt: String(claims.run_attempt),
+    ok: true,
+    identity: {
+      repository: String(claims.repository),
+      repositoryId: String(claims.repository_id),
+      eventName: claims.event_name as TargetDispatchIdentity["eventName"],
+      ref: String(claims.ref),
+      runId: String(claims.run_id),
+      runAttempt: String(claims.run_attempt),
+    },
   };
 }
 

@@ -258,10 +258,9 @@ jobs:
               echo "Queued ClawSweeper intake directly: $(jq -c . "$direct_body" 2>/dev/null || echo '{}')"
               exit 0
             fi
-            # 4xx is a deliberate refusal (ineligible event); the App webhook covers it. Other
-            # failures share the Worker's failure domain with that webhook, so fail visibly
-            # and leave the run re-runnable instead of silently dropping the event.
-            if [[ "${direct_status:-}" == 4[0-9][0-9] ]]; then
+            # Only non-transient 4xx is a deliberate refusal; the App webhook covers it.
+            # Timeouts, throttling, and verifier/Worker failures must stay re-runnable.
+            if [[ "${direct_status:-}" == 4[0-9][0-9] && "$direct_status" != 408 && "$direct_status" != 429 ]]; then
               echo "::warning::ClawSweeper intake declined this event (HTTP $direct_status); the App webhook route still applies."
               exit 0
             fi
@@ -312,10 +311,9 @@ jobs:
               echo "Queued ClawSweeper intake directly: $(jq -c . "$direct_body" 2>/dev/null || echo '{}')"
               exit 0
             fi
-            # 4xx is a deliberate refusal (ineligible event); the App webhook covers it. Other
-            # failures share the Worker's failure domain with that webhook, so fail visibly
-            # and leave the run re-runnable instead of silently dropping the event.
-            if [[ "${direct_status:-}" == 4[0-9][0-9] ]]; then
+            # Only non-transient 4xx is a deliberate refusal; the App webhook covers it.
+            # Timeouts, throttling, and verifier/Worker failures must stay re-runnable.
+            if [[ "${direct_status:-}" == 4[0-9][0-9] && "$direct_status" != 408 && "$direct_status" != 429 ]]; then
               echo "::warning::ClawSweeper intake declined this event (HTTP $direct_status); the App webhook route still applies."
               exit 0
             fi
@@ -376,12 +374,16 @@ OIDC never grants authority to a payload-provided comment body or association.
 
 ### Failure semantics and legacy receivers
 
-A Worker `4xx` answer is a deliberate refusal: the step emits `::warning::` and
-exits zero, and the App webhook route still applies. A missing or unavailable
-OIDC token, network failure, redirect, or `5xx` emits `::error::` and fails the
-job: the App webhook shares the Worker's failure domain, so a red, re-runnable
-run is the visible record instead of a silently dropped event. The keyless
-template has no `repository_dispatch` fallback and makes no target GitHub
+A Worker `401` or `403` answer is a definitive rejection. These and other
+non-transient `4xx` answers emit `::warning::` and exit zero; the independent App
+webhook route still applies. A `503` means the OIDC verifier or Worker is
+unavailable, including JWKS fetch failures or key-rotation propagation. Verifier
+unavailability includes a `Retry-After` header. A missing or unavailable OIDC
+token, network failure, redirect, `408`, `429`, or `5xx` emits `::error::` and
+fails the job, leaving a visible, re-runnable record instead of silently dropping
+the event. The App webhook does not depend on OIDC JWKS, but shares other Worker
+failure modes. The keyless template has no `repository_dispatch` fallback and
+makes no target GitHub
 writes. These cases previously fell back and now rely solely on the App webhook
 route (or a re-run once the Worker recovers):
 
@@ -532,9 +534,10 @@ authoritative. Do not use a PAT or add another comment dispatcher.
 To verify a migrated target, confirm one `ClawSweeper Dispatch` run with
 `Queued ClawSweeper intake directly`, no relay workflow run for the item, and one
 canonical command acknowledgement/review when both routes deliver. An ordinary
-comment should produce no command POST. Exercise a Worker rejection (`4xx`) and
+comment should produce no command POST. Exercise a Worker rejection (`401`/`403`) and
 verify warning plus successful workflow exit while the App route still admits the
-event, and a Worker outage (`5xx`) and verify a failed, re-runnable run.
+event, and a timeout (`408`), throttling (`429`), or verifier/Worker outage (`503`)
+and verify a failed, re-runnable run.
 
 ### Rollout checklist (separate operation)
 

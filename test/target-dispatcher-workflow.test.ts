@@ -164,7 +164,7 @@ test("an old maintainer reminder comment cannot route itself as a command", () =
   }
 });
 
-test("dispatcher uses OIDC only and warns without failing when either endpoint is unavailable", async () => {
+test("dispatcher uses OIDC only and fails transient intake errors while warning on rejection", async () => {
   // The Worker only trusts tokens minted by the documented dispatcher file.
   assert.equal(TARGET_DISPATCH_WORKFLOW_PATH, ".github/workflows/clawsweeper-dispatch.yml");
   assert.match(documentation, /canonical dispatcher filename/);
@@ -359,8 +359,8 @@ test("dispatcher uses OIDC only and warns without failing when either endpoint i
     const declined = /::warning::.*declined this event/;
     const unavailable = /::error::.*intake unavailable/;
     const noToken = /::error::.*OIDC token unavailable/;
-    // A deliberate 4xx refusal is covered by the App webhook. Every other failure shares
-    // the Worker's failure domain with that webhook, so the run must fail and stay re-runnable.
+    // Definitive rejection is covered by the App webhook. Transient errors must
+    // fail the run and stay re-runnable, including OIDC verifier unavailability.
     const failures = [
       {
         name: "worker rejection",
@@ -370,6 +370,24 @@ test("dispatcher uses OIDC only and warns without failing when either endpoint i
         posts: 2,
         exit: 0,
         log: declined,
+      },
+      {
+        name: "worker timeout",
+        oidc: true,
+        token: 200,
+        direct: 408,
+        posts: 2,
+        exit: 1,
+        log: unavailable,
+      },
+      {
+        name: "worker throttling",
+        oidc: true,
+        token: 200,
+        direct: 429,
+        posts: 2,
+        exit: 1,
+        log: unavailable,
       },
       {
         name: "worker outage",
@@ -420,17 +438,20 @@ test("dispatcher uses OIDC only and warns without failing when either endpoint i
       },
     ];
     for (const scenario of failures) {
-      requests = [];
       tokenStatus = scenario.token;
       directStatus = scenario.direct;
-      const result = await execute({
-        oidc: scenario.oidc,
-        ...(scenario.directUrl ? { directUrl: scenario.directUrl } : {}),
-      });
-      assert.equal(result.status, scenario.exit, scenario.name);
-      assert.equal(requests.length, scenario.posts, scenario.name);
-      assert.equal(result.gh, "", scenario.name);
-      assert.match(result.stdout, scenario.log, scenario.name);
+      for (const comment of [false, true]) {
+        requests = [];
+        const result = await execute({
+          oidc: scenario.oidc,
+          comment,
+          ...(scenario.directUrl ? { directUrl: scenario.directUrl } : {}),
+        });
+        assert.equal(result.status, scenario.exit, scenario.name);
+        assert.equal(requests.length, scenario.posts, scenario.name);
+        assert.equal(result.gh, "", scenario.name);
+        assert.match(result.stdout, scenario.log, scenario.name);
+      }
     }
   } finally {
     server.close();
