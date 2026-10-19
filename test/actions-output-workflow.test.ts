@@ -223,8 +223,11 @@ function fixture(root: string) {
   write("plan.json", "{}");
   write(".artifacts/exact-review-batch/manifest.json", '{"items":[]}');
   write("scripts/review-target-checkout.sh", "#!/bin/bash\nexit 0\n");
-  for (const command of ["npm", "npx", "corepack", "codex", "openclaw", "setsid", "timeout"])
+  for (const command of ["npm", "npx", "corepack", "openclaw", "setsid", "timeout"])
     write(`bin/${command}`, "#!/bin/bash\nexit 0\n");
+  // `printenv KEY | codex login --with-api-key` runs under pipefail: the stub must drain
+  // its pipe, or the writer can die with SIGPIPE (141) depending on scheduling.
+  write("bin/codex", '#!/bin/bash\nif [ "$1" = login ]; then cat >/dev/null; fi\nexit 0\n');
   write("action/install.sh", "#!/bin/bash\nexit 0\n");
   write("scripts/dispatch-receipt-owner.sh", "#!/bin/bash\nprintf 'none\\n'\n");
   const decision = {
