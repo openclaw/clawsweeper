@@ -88,6 +88,10 @@ jobs:
                 ;;
             esac
           fi
+          if [[ ! "$target_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Invalid target_repo: expected owner/repository." >&2
+            exit 1
+          fi
           target_slug="$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
           target_owner="${target_repo%%/*}"
           target_name="${target_repo#*/}"

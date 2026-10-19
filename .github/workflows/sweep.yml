@@ -241,6 +241,10 @@ jobs:
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
+          if [[ ! "$QUEUE_LEASE_ID" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            echo "::error::Invalid queue lease ID." >&2
+            exit 1
+          fi
           source "$RUNNER_TEMP/control-plane-curl.sh"
           request="$RUNNER_TEMP/exact-review-queue-request.mts"
           printf 'claimed=false\ndecision={}\n' >> "$GITHUB_OUTPUT"
@@ -1999,6 +2003,10 @@ jobs:
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
+          if [[ ! "$QUEUE_LEASE_ID" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            echo "::error::Invalid queue lease ID." >&2
+            exit 1
+          fi
           source "$RUNNER_TEMP/control-plane-curl.sh"
           request="$RUNNER_TEMP/exact-review-queue-request.mts"
           printf 'claimed=false\ndecision={}\n' >> "$GITHUB_OUTPUT"
@@ -3543,6 +3551,10 @@ jobs:
                 ;;
             esac
           fi
+          if [[ ! "$target_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Invalid target_repo: expected owner/repository." >&2
+            exit 1
+          fi
           if [ -z "$PROOF_TARGET_REPO" ] || [ "$target_repo" != "$PROOF_TARGET_REPO" ]; then
             echo "Resolved mutation target '$target_repo' differs from proof target '${PROOF_TARGET_REPO:-missing}'." >&2
             exit 1
@@ -3662,6 +3674,28 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
+          # Validate the complete inputs before any checkpoint or idle path
+          # persists them as single-line environment records.
+          for field in INPUT_APPLY_LIMIT INPUT_APPLY_CLOSE_DELAY_MS INPUT_APPLY_CHECKPOINT_SIZE; do
+            if [[ ! "${!field}" =~ ^[0-9]+$ ]]; then
+              echo "::error::Invalid numeric apply input: $field" >&2
+              exit 1
+            fi
+          done
+          for field in INPUT_APPLY_MIN_AGE_DAYS INPUT_APPLY_MIN_AGE_MINUTES INPUT_APPLY_STALE_MIN_AGE_DAYS INPUT_APPLY_COMMENT_SYNC_MIN_AGE_DAYS; do
+            if [[ "$field" = INPUT_APPLY_MIN_AGE_MINUTES && -z "${!field}" ]]; then continue; fi
+            if [[ ! "${!field}" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]; then
+              echo "::error::Invalid apply age: $field" >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$INPUT_APPLY_KIND" =~ ^(issue|pull_request|all)$ ]] ||
+            [[ ! "$INPUT_APPLY_SYNC_COMMENTS_ONLY" =~ ^(true|false)$ ]] ||
+            [[ ! "$INPUT_APPLY_CLOSE_REASONS" =~ ^[a-z_,[:blank:]]*$ ]] ||
+            [[ "$DISPATCH_ITEM_NUMBER" != __cursor__ && ! "$DISPATCH_ITEM_NUMBER" =~ ^[0-9,[:blank:]]*$ ]]; then
+            echo "::error::Invalid apply selection." >&2
+            exit 1
+          fi
           source scripts/apply-workflow-helpers.sh
           initialize_apply_token_budget
           limit="${INPUT_APPLY_LIMIT}"

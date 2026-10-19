@@ -49,6 +49,10 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        if [[ ! "$INPUTS_PNPM_VERSION" =~ ^[A-Za-z0-9.+_/@:-]+$ ]]; then
+          echo "::error::Invalid pnpm version." >&2
+          exit 1
+        fi
         lockfile="${INPUTS_WORKING_DIRECTORY}/pnpm-lock.yaml"
         if [ -f "$lockfile" ]; then
           lock_hash="$(git hash-object "$lockfile")"

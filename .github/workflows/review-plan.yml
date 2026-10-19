@@ -170,7 +170,7 @@ jobs:
             echo "Invalid target_repo: $target_repo" >&2
             exit 1
           fi
-          if [[ ! "$target_branch" =~ ^[A-Za-z0-9_./-]+$ ]]; then
+          if [[ ! "$target_branch" =~ ^[A-Za-z0-9_./-]+$ || "$target_branch" == *..* ]]; then
             echo "Invalid target_branch: $target_branch" >&2
             exit 1
           fi
@@ -279,6 +279,12 @@ jobs:
           CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS: ${{ vars.CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS || '' }}
         run: |
           set -euo pipefail
+          if [[ ! "$CODEX_TIMEOUT_MS" =~ ^[0-9]+$ ]] ||
+            [[ ! "$HOT_INTAKE" =~ ^(true|false)$ ]] ||
+            [[ ! "$MANUAL_EXPLICIT" =~ ^(true|false)$ ]]; then
+            echo "::error::Invalid review mode configuration." >&2
+            exit 1
+          fi
           hot_intake="$HOT_INTAKE"
           manual_explicit="$MANUAL_EXPLICIT"
           max_pages=250

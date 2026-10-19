@@ -111,6 +111,13 @@ runs:
         INPUTS_STATE_PATH: ${{ inputs.state-path }}
         INPUTS_COORDINATOR_CLASS: ${{ inputs.coordinator-class }}
       run: |
+        # Paths may contain spaces; only record separators are forbidden.
+        if [[ ! "$INPUTS_STATE_PATH" =~ ^[^$'\r\n']+$ ]] ||
+          [[ ! "$STATE_COORDINATOR_URL" =~ ^https?://[^[:space:]]+$ ]] ||
+          [[ ! "$INPUTS_COORDINATOR_CLASS" =~ ^[A-Za-z0-9_-]+$ ]]; then
+          echo "::error::Invalid state configuration." >&2
+          exit 1
+        fi
         {
           echo "CLAWSWEEPER_STATE_DIR=$GITHUB_WORKSPACE/${INPUTS_STATE_PATH}"
           echo "CLAWSWEEPER_STATE_COORDINATOR_ENABLED=1"
