@@ -113,6 +113,9 @@ fs.writeFileSync(JSON.parse(fs.readFileSync(__filename + ".fixture.json", "utf8"
   args,
   leakedTokens: tokens.filter((name) => Boolean(process.env[name])),
   ghConfigDir: process.env.GH_CONFIG_DIR,
+  ghConfigExists: fs.existsSync(process.env.GH_CONFIG_DIR),
+  ghConfigFiles: fs.readdirSync(process.env.GH_CONFIG_DIR),
+  home: process.env.HOME,
   prompt: fs.readFileSync(0, "utf8"),
 }));
 if (args.includes("--output-last-message")) process.exit(2);
@@ -158,10 +161,16 @@ process.stdout.write("---\\nresult: success\\n---\\n\\nOffline local review comp
           args: string[];
           leakedTokens: string[];
           ghConfigDir: string;
+          ghConfigExists: boolean;
+          ghConfigFiles: string[];
+          home: string;
           prompt: string;
         };
         assert.deepEqual(recorded.leakedTokens, []);
-        assert.ok(existsSync(recorded.ghConfigDir));
+        assert.equal(recorded.ghConfigExists, true);
+        assert.deepEqual(recorded.ghConfigFiles, []);
+        assert.equal(recorded.ghConfigDir, join(recorded.home, ".config", "gh"));
+        assert.equal(existsSync(recorded.ghConfigDir), false);
         assert.ok(recorded.args.includes('web_search="disabled"'));
         const sandboxIndex = recorded.args.indexOf("--sandbox");
         assert.equal(recorded.args[sandboxIndex + 1], "read-only");

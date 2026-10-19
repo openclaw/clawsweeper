@@ -7,6 +7,24 @@ import test from "node:test";
 import { codexEnv } from "../dist/codex-env.js";
 
 const builder = codexEnv;
+test("local Codex auth retains a native profile when HOME is absent", () => {
+  const original = process.env;
+  try {
+    process.env = {
+      USERPROFILE: "C:\\synthetic-profile",
+      GH_CONFIG_DIR: "C:\\synthetic-gh",
+      GIT_CONFIG_GLOBAL: "C:\\synthetic-git",
+    };
+    const local = codexEnv({ preserveCodexAuth: true });
+    assert.equal(local.HOME, process.env.USERPROFILE);
+    assert.equal(local.USERPROFILE, process.env.USERPROFILE);
+    assert.equal(local.GH_CONFIG_DIR, process.env.GH_CONFIG_DIR);
+    assert.equal(local.GIT_CONFIG_GLOBAL, process.env.GIT_CONFIG_GLOBAL);
+    assert.equal(codexEnv().HOME, undefined);
+  } finally {
+    process.env = original;
+  }
+});
 test("hosted config pointers cannot expose parent credential files", async () => {
   const { isolatedReviewerHome } = await import("../dist/reviewer-home.js");
   const original = process.env;

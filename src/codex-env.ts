@@ -161,6 +161,9 @@ export function codexEnv(options: CodexEnvOptions = {}): NodeJS.ProcessEnv {
     for (const key of ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"]) delete env[key];
     for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GH_CONFIG_DIR"]) delete env[key];
     env.GIT_CONFIG_NOSYSTEM = "1";
+  } else {
+    // Native Windows local auth can have USERPROFILE without HOME.
+    env.HOME ||= env.USERPROFILE;
   }
   const ghToken = options.ghToken?.trim();
   if (ghToken) {
