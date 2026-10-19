@@ -251,7 +251,7 @@ export function redactPublication<T>(value: T): { value: T; redactions: number }
           pending += line;
           continue;
         }
-        output += replace(pending) + prefix + json;
+        output += replace(pending) + replace(prefix) + json;
         pending = "";
       }
       return output + replace(pending);

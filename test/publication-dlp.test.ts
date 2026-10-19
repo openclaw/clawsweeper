@@ -50,6 +50,19 @@ test("benign token terminology remains unchanged", () => {
   assert.match(markdown, /^review_status: complete$/m);
 });
 
+test("structured diagnostic prefixes are scanned before retaining JSON values", async () => {
+  const { redactPublication, registerPublicationCapability } =
+    await import("../dist/publication-dlp.js");
+  const capability = ["opaque", "structured", "prefix", "capability"].join("_");
+  registerPublicationCapability(capability, true);
+  for (const token of [capability, ["ghs", "x".repeat(36)].join("_")]) {
+    const safe = redactPublication(`${token}: {"clean":true}\n`);
+    assert.equal(safe.redactions, 1);
+    assert.equal(safe.value, '[redacted credential]: {"clean":true}\n');
+    assert.deepEqual(redactPublication(safe.value), { value: safe.value, redactions: 0 });
+  }
+});
+
 test("credential patterns and nested multiline capabilities are redacted before serialization", async () => {
   const { redactPublication } = await import("../dist/publication-dlp.js");
   const original = process.env;
