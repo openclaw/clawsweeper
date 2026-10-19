@@ -3256,6 +3256,20 @@ jobs:
           WORKFLOW_EVENT_SCHEDULE: ${{ github.event.schedule || '' }}
         run: |
           set -euo pipefail
+          for field in INPUT_APPLY_MIN_AGE_DAYS INPUT_APPLY_MIN_AGE_MINUTES INPUT_APPLY_STALE_MIN_AGE_DAYS; do
+            if [[ "$field" = INPUT_APPLY_MIN_AGE_MINUTES && -z "${!field}" ]]; then continue; fi
+            if [[ ! "${!field}" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]; then
+              echo "::error::Invalid proof selection age: $field" >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$INPUT_APPLY_KIND" =~ ^(issue|pull_request|all)$ ]] ||
+            [[ ! "$INPUT_APPLY_SYNC_COMMENTS_ONLY" =~ ^(true|false)$ ]] ||
+            [[ ! "$INPUT_APPLY_CLOSE_REASONS" =~ ^[a-z_,[:blank:]]*$ ]] ||
+            [[ "$INPUT_APPLY_ITEM_NUMBERS" != __cursor__ && ! "$INPUT_APPLY_ITEM_NUMBERS" =~ ^[0-9,[:blank:]]*$ ]]; then
+            echo "::error::Invalid proof selection." >&2
+            exit 1
+          fi
           min_age_days="${INPUT_APPLY_MIN_AGE_DAYS}"
           min_age_minutes="${INPUT_APPLY_MIN_AGE_MINUTES}"
           apply_kind="${INPUT_APPLY_KIND}"
@@ -3312,6 +3326,10 @@ jobs:
               proof_args+=(--cursor-path "results/apply-cursors/${target_slug}.json")
             fi
             selected="$(pnpm run --silent workflow -- proposed-pr-close-coverage-item-numbers "${proof_args[@]}")"
+          fi
+          if [[ ! "$selected" =~ ^([0-9]+(,[0-9]+)*)?$ ]]; then
+            echo "::error::Invalid selected proof item numbers." >&2
+            exit 1
           fi
           echo "item_numbers=$selected" >> "$GITHUB_OUTPUT"
           echo "Selected read-only coverage proof items: ${selected:-none}"
@@ -3692,7 +3710,9 @@ jobs:
           if [[ ! "$INPUT_APPLY_KIND" =~ ^(issue|pull_request|all)$ ]] ||
             [[ ! "$INPUT_APPLY_SYNC_COMMENTS_ONLY" =~ ^(true|false)$ ]] ||
             [[ ! "$INPUT_APPLY_CLOSE_REASONS" =~ ^[a-z_,[:blank:]]*$ ]] ||
-            [[ "$DISPATCH_ITEM_NUMBER" != __cursor__ && ! "$DISPATCH_ITEM_NUMBER" =~ ^[0-9,[:blank:]]*$ ]]; then
+            [[ "$DISPATCH_ITEM_NUMBER" != __cursor__ && ! "$DISPATCH_ITEM_NUMBER" =~ ^[0-9,[:blank:]]*$ ]] ||
+            [[ ! "$TARGET_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
+            [[ ! "$SCHEDULED_COMMENT_SYNC" =~ ^(true|false)$ ]]; then
             echo "::error::Invalid apply selection." >&2
             exit 1
           fi

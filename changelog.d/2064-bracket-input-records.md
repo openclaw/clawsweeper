@@ -1,0 +1,1 @@
+- Validate bracket-notation action inputs and remaining proof, apply, and observer values before writing GitHub Actions output or environment records.

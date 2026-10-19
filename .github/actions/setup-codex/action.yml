@@ -110,6 +110,10 @@ runs:
         else
           codex_home="$HOME/.clawsweeper-repair/codex-home/${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
         fi
+        if [[ ! "$codex_home" =~ ^(/|[A-Za-z0-9_.])[^$'\r\n']*$ ]]; then
+          echo "::error::Invalid Codex home: expected an absolute or workspace-relative path without CR/LF." >&2
+          exit 1
+        fi
         mkdir -p "$codex_home"
         chmod 700 "$codex_home"
         echo "CODEX_HOME=$codex_home" >> "$GITHUB_ENV"

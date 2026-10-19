@@ -18,7 +18,7 @@ import YAML from "yaml";
 
 type Step = { name?: string; id?: string; run?: string; env?: Record<string, unknown> };
 const untrusted =
-  /client_payload|\binputs\.|github\.event\.inputs|github\.head_ref|github\.event\.(?:comment|issue|pull_request|review)/;
+  /client_payload|\binputs(?:\.|\[)|github\.event\.inputs|github\.head_ref|github\.event\.(?:comment|issue|pull_request|review)/;
 const repository = resolve(".");
 const leaseId = "54ea52c2-c45e-40c9-9ddc-0923832e2a53";
 
@@ -66,6 +66,8 @@ function valueFor(name: string): string {
     INPUTS_STATE_PATH: "state with spaces",
     PIN_FILE: "target/extensions/codex/package.json",
     INPUTS_PNPM_VERSION: "12.4.1",
+    INPUTS_CODEX_HOME: "codex home",
+    INPUTS_OPENCLAW_SOURCE_REF: "a".repeat(40),
     STATE_COORDINATOR_URL: "https://queue.invalid",
     INPUTS_COORDINATOR_CLASS: "ordinary",
     COMMENT_BODY: "@clawsweeper review",
@@ -132,6 +134,10 @@ function fixture(root: string) {
   symlinkSync(join(repository, "src"), join(root, "src"), "dir");
   const write = (path: string, content: string) =>
     writeFileSync(join(root, path), content, { mode: 0o755 });
+  const sourceRoot = "home/.clawsweeper-repair/openclaw-source";
+  mkdirSync(join(root, sourceRoot, "checkout/dist"), { recursive: true });
+  write(`${sourceRoot}/ref`, "a".repeat(40) + "\n");
+  write(`${sourceRoot}/checkout/dist/index.js`, "process.stdout.write('fixture OpenClaw\\n');\n");
   for (const name of ["exact-review-queue-request", "exact-review-queue-response"])
     copyFileSync(`src/repair/${name}.ts`, join(root, `runner/${name}.mts`));
   copyFileSync(
@@ -239,6 +245,7 @@ esac
     `#!/bin/bash
 case "$1" in
   --input-type=module) exec "$REAL_NODE" --import "$FIXTURE_ROOT/preload.mjs" "$@" ;;
+  "$FIXTURE_ROOT/home/.clawsweeper-repair/openclaw-source/checkout/dist/index.js") exec "$REAL_NODE" "$@" ;;
   dist/clawsweeper.js)
     if [ "$2" = assist-target ]; then exec "$REAL_NODE" "$SOURCE_ROOT/$1" "\${@:2}"; fi
     if [ "$2" = assist-generate ]; then exit 0; fi ;;
@@ -266,6 +273,7 @@ test("workflow output files cannot acquire records from untrusted env values", a
         fixture(root);
         const base: Record<string, string> = {
           PATH: `${root}/bin:${process.env.PATH}`,
+          HOME: join(root, "home"),
           REAL_NODE: process.execPath,
           SOURCE_ROOT: repository,
           FIXTURE_ROOT: root,
@@ -309,10 +317,40 @@ test("workflow output files cannot acquire records from untrusted env values", a
         if (step.name === "Export state configuration") {
           assert.ok(normalEnv.includes(`CLAWSWEEPER_STATE_DIR=${root}/state with spaces\n`));
         }
+        if (step.name === "Resolve Codex home") {
+          assert.match(normalEnv, /^CODEX_HOME=codex home$/m);
+          for (const home of ["", ".codex-home", "./relative home", join(root, "absolute home")]) {
+            const result = run({ ...base, INPUTS_CODEX_HOME: home });
+            assert.equal(result.status, 0, result.stderr);
+            const expected = home || `${base.HOME}/.clawsweeper-repair/codex-home/123-1`;
+            assert.equal(readFileSync(base.GITHUB_ENV, "utf8"), `CODEX_HOME=${expected}\n`);
+          }
+        }
+        if (step.name === "Install observer shim") {
+          const optionalDefaults = run({
+            ...base,
+            SOURCE_ACTION: "",
+            CLAIM_GENERATION: "",
+            REPEAT_REVISION: "",
+          });
+          assert.equal(optionalDefaults.status, 0, optionalDefaults.stderr);
+        }
         const failures: string[] = [];
         for (const name of variables) {
           const result = run({ ...base, [name]: `${base[name]}\nforged_key=x` });
           assert.equal(result.error, undefined, `${name}: ${result.error}`);
+          if (
+            [
+              "Select bounded coverage proof work",
+              "Apply unchanged proposed decisions with checkpoints",
+              "Resolve Codex home",
+              "Install observer shim",
+              "Build OpenClaw CLI from source",
+            ].includes(step.name ?? "")
+          ) {
+            assert.equal(result.status, 1, `${name}: must fail closed`);
+            assert.match(result.stderr, /::error::/, `${name}: must explain invalid input`);
+          }
           for (const destination of [base.GITHUB_OUTPUT, base.GITHUB_ENV]) {
             if (/^forged_key=/m.test(readFileSync(destination, "utf8")))
               failures.push(
