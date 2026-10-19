@@ -607,3 +607,18 @@ test("production report writer persists render-only compromise before history an
     process.env = original;
   }
 });
+
+test("known provider credentials register even when all lowercase", async () => {
+  const { registerOpenclawProviderCapabilities, redactPublication } =
+    await import("../dist/publication-dlp.js");
+  const apiKey = "lowercaseopaqueproviderkey";
+  const header = "anotherlowercasesecretvalue";
+  registerOpenclawProviderCapabilities(
+    JSON.stringify({ lower: { apiKey, headers: { Authorization: `Bearer ${header}` } } }),
+    {},
+  );
+  assert.deepEqual(redactPublication([apiKey, header, "ordinarylowercasewordsnotsecret"]), {
+    value: ["[redacted credential]", "[redacted credential]", "ordinarylowercasewordsnotsecret"],
+    redactions: 2,
+  });
+});

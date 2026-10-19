@@ -21,8 +21,23 @@ const CODEX_NON_CAPABILITIES = new Set([
 const explicitCapabilities = new Set<string>();
 
 /** Remember credentials passed as arguments rather than inherited from the publisher. */
-export function registerPublicationCapability(value: string | undefined): void {
-  if (credentialLike(value)) explicitCapabilities.add(value!);
+export function registerPublicationCapability(
+  value: string | undefined,
+  knownCredential = false,
+): void {
+  if (knownCredential ? knownCredentialValue(value) : credentialLike(value))
+    explicitCapabilities.add(value!);
+}
+
+// A value already identified as a credential (token, apiKey, auth header, referenced secret)
+// registers even when all-lowercase; only trivially short or path/number values are skipped.
+function knownCredentialValue(value: string | undefined): boolean {
+  return Boolean(
+    value &&
+    value.length >= 16 &&
+    !/^[\d. +-]+$/.test(value) &&
+    !/^(?:[A-Za-z]:[\\/]|[\\/]|~[\\/])/.test(value),
+  );
 }
 
 function credentialLike(value: string | undefined): boolean {
@@ -48,7 +63,7 @@ export function registerCodexAuthCapabilities(env: NodeJS.ProcessEnv = process.e
       if (!value || typeof value !== "object") return;
       for (const [key, child] of Object.entries(value)) {
         if (/token|key|secret|password/i.test(key) && typeof child === "string")
-          registerPublicationCapability(child);
+          registerPublicationCapability(child, true);
         else visit(child);
       }
     };
@@ -76,12 +91,12 @@ export function registerOpenclawProviderCapabilities(
   const register = (value: unknown) => {
     if (typeof value !== "string") return;
     const registerAuthorization = (credential: string) => {
-      registerPublicationCapability(credential);
-      registerPublicationCapability(credential.replace(/^[A-Za-z][A-Za-z0-9+.-]*\s+/, ""));
+      registerPublicationCapability(credential, true);
+      registerPublicationCapability(credential.replace(/^[A-Za-z][A-Za-z0-9+.-]*\s+/, ""), true);
     };
     registerAuthorization(value);
     const resolved = value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (reference, name: string) => {
-      registerPublicationCapability(env[name]);
+      registerPublicationCapability(env[name], true);
       return env[name] ?? reference;
     });
     registerAuthorization(resolved);
@@ -115,7 +130,7 @@ export function registerOpenclawProviderCapabilities(
         // Only URL leaves can embed URL authentication.
       }
       for (const [, name] of value.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
-        registerPublicationCapability(env[name!]);
+        registerPublicationCapability(env[name!], true);
       }
     } else if (value && typeof value === "object") {
       for (const nested of Object.values(value)) registerReferences(nested);

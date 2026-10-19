@@ -143,13 +143,15 @@ export function codexEnv(options: CodexEnvOptions = {}): NodeJS.ProcessEnv {
   if (openclaw)
     registerOpenclawProviderCapabilities(process.env.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON);
   for (const [key, value] of Object.entries(process.env)) {
+    // Windows env names are case-insensitive and Node often reports `Path`, not `PATH`.
+    const name = process.platform === "win32" ? key.toUpperCase() : key;
     if (
-      CODEX_ENV_ALLOWLIST.has(key) ||
-      /^LC_[A-Z_]+$/.test(key) ||
-      (openclaw && OPENCLAW_ENV_ALLOWLIST.has(key)) ||
+      CODEX_ENV_ALLOWLIST.has(name) ||
+      /^LC_[A-Z_]+$/.test(name) ||
+      (openclaw && OPENCLAW_ENV_ALLOWLIST.has(name)) ||
       (!openclaw &&
         options.preserveCodexAuth &&
-        ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"].includes(key))
+        ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"].includes(name))
     ) {
       env[key] = value;
     }
@@ -168,7 +170,7 @@ export function codexEnv(options: CodexEnvOptions = {}): NodeJS.ProcessEnv {
   const ghToken = options.ghToken?.trim();
   if (ghToken) {
     env.GH_TOKEN = ghToken;
-    registerPublicationCapability(ghToken);
+    registerPublicationCapability(ghToken, true);
   }
   env.GIT_OPTIONAL_LOCKS = "0";
   return env;

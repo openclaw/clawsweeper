@@ -366,7 +366,7 @@ export function dirtyWorktree(targetDir: string): string {
 // committed-range review paths so neither can leak a token to the engine it spawns.
 export function scrubGitHubCredentialEnv(): void {
   for (const tokenVar of LOCAL_REVIEW_SCRUBBED_TOKEN_ENV) {
-    registerPublicationCapability(process.env[tokenVar]);
+    registerPublicationCapability(process.env[tokenVar], true);
     delete process.env[tokenVar];
   }
 }

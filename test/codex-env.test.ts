@@ -310,3 +310,22 @@ test("hosted and OpenClaw environments withhold credential home paths", () => {
     process.env = original;
   }
 });
+
+test("Windows env names match the allowlist case-insensitively", () => {
+  const original = process.env;
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    Object.defineProperty(process, "platform", { value: "win32" });
+    process.env = {
+      Path: "C:\\Windows\\System32",
+      CODEX_HOME: "C:\\synthetic-codex",
+      Some_New_Secret: "synthetic-secret",
+    };
+    const env = codexEnv();
+    assert.equal(env.Path, "C:\\Windows\\System32");
+    assert.equal(env.Some_New_Secret, undefined);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    process.env = original;
+  }
+});
