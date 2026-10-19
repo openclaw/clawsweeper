@@ -1,0 +1,1 @@
+- Qualify one canonical local-review package envelope on Linux, Windows, and macOS using its original locked dependencies and producer file inventory.

@@ -182,8 +182,39 @@ jobs:
       - name: Enforce coverage thresholds over every shard
         run: node scripts/run-node-tests.mjs all --coverage-from "$RUNNER_TEMP/coverage"
 
+  package-envelope:
+    name: canonical local package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      artifact-id: ${{ steps.envelope.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:node
+
+      - name: Produce the qualified Linux envelope
+        env:
+          CLAWSWEEPER_TEST_PACKAGE_OUTPUT: ${{ runner.temp }}/local-package-envelope
+        run: node --test test/local-package-install.test.ts
+
+      - name: Retain qualified private package inputs
+        id: envelope
+        uses: actions/upload-artifact@v7
+        with:
+          name: local-package-canonical
+          path: ${{ runner.temp }}/local-package-envelope/
+          if-no-files-found: error
+          retention-days: 7
+
   installed-package:
-    name: installed local package (${{ matrix.os }})
+    name: canonical package consumer (${{ matrix.os }})
+    needs: package-envelope
     strategy:
       fail-fast: false
       matrix:
@@ -200,25 +231,23 @@ jobs:
         with:
           build-script: build:node
 
-      - name: Qualify the installed local reviewer
-        env:
-          CLAWSWEEPER_TEST_PACKAGE_OUTPUT: ${{ runner.temp }}/local-package-envelope
-        run: node --test test/local-package-install.test.ts
-
-      - name: Retain qualified private package inputs
-        uses: actions/upload-artifact@v7
+      - name: Fetch the producer's exact envelope
+        uses: actions/download-artifact@v8
         with:
-          name: local-package-${{ matrix.os }}
-          path: ${{ runner.temp }}/local-package-envelope/
-          if-no-files-found: error
-          retention-days: 7
+          artifact-ids: ${{ needs.package-envelope.outputs.artifact-id }}
+          path: ${{ runner.temp }}/local-package-envelope
+
+      - name: Qualify the same installed local reviewer
+        env:
+          CLAWSWEEPER_TEST_PACKAGE_INPUT: ${{ runner.temp }}/local-package-envelope
+        run: node --test test/local-package-install.test.ts
 
   # Single required status: passes only when every gate above passed. `always()`
   # keeps it from being skipped (which would read as success) when a gate fails.
   check:
     name: pnpm check
     if: always()
-    needs: [check-fast, check-tests, check-coverage, installed-package]
+    needs: [check-fast, check-tests, check-coverage, package-envelope, installed-package]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

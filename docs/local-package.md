@@ -70,16 +70,30 @@ staged files, source commit and diff hash, tool versions, platform, and the
 observed dependency resolution with public npm URLs and integrity values.
 An existing output directory is rejected and never overwritten.
 
-CI uploads one envelope per operating system. These are private package
+To qualify the same envelope on another supported platform, build the Node
+entrypoints there and pass its directory as the input instead:
+
+```sh
+CLAWSWEEPER_TEST_PACKAGE_INPUT=/tmp/clawsweeper-package-envelope node --test test/local-package-install.test.ts
+```
+
+The consumer verifies the producer's source commit, tree, diff hash and input
+hashes before installing. It seeds an isolated cache with `npm ci` using the
+original manifest and lock, removes that installation, then installs offline in
+a fresh directory. Installed bytes must match the producer's staged inventory;
+the original four files and resolved graph must remain unchanged. Input and
+output modes cannot be combined.
+
+CI uploads one canonical Linux-produced envelope, then downloads that exact
+artifact ID for Linux, Windows and macOS consumers. These are private package
 qualification artifacts, not published releases. They freeze the observed npm
 resolution; dependency tarballs still need a populated cache or registry access.
 This is not an empty-cache offline bundle or a Homebrew-ready distribution.
 A future release must choose and qualify its dependency delivery contract.
 
-
-CI runs the installed-package harness on Linux, Windows, and macOS with Node
-24. Each run builds and packs the candidate, installs it outside the checkout,
-and invokes the installed bin from a target path containing spaces and Unicode.
+CI runs the installed-package harness on Linux, Windows, and macOS with Node 24. Each consumer builds local entrypoints for source-unit assertions and
+negative import probes, but installs the unchanged producer tarball outside
+the checkout and invokes its bin from a target path containing spaces and Unicode.
 On Windows, the committed-range fixtures use the real npm `.cmd` launcher;
 help, errors, retained reports, history, and preflight summaries use that same
 installed entry. The harness prints the actual Node version, OS, architecture,
