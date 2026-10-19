@@ -896,15 +896,17 @@ ${renderReviewContextBudget(options.context)}
 }
 
 export function markdownFor(options: Parameters<typeof renderReviewDocument>[0]): string {
-  const safe = redactPublication(options);
+  // Only the decision is serialized in full. Source context stays unpublished;
+  // the final render scan covers the metadata projected from it.
+  const safe = redactPublication(options.decision);
   const prepare = (redactions: number) => {
-    const decision = blockCredentialPublication(safe.value.decision, redactions);
+    const decision = blockCredentialPublication(safe.value, redactions);
     return {
-      ...safe.value,
+      ...options,
       decision,
       action: credentialPublicationBlocked(decision)
         ? { actionTaken: "kept_open" as const, closeComment: "" }
-        : safe.value.action,
+        : options.action,
     };
   };
   const rendered = redactPublication(renderReviewDocument(prepare(safe.redactions)));

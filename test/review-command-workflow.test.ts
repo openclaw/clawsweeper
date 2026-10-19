@@ -1,3 +1,4 @@
+import { readReviewRecord } from "../dist/review-record.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -718,6 +719,7 @@ process.exitCode = 1;
       },
       previousClawSweeperReviewDigestFromReport: () => digest("previous"),
       prepareReviewCommentFromReport: (markdown) => ({
+        decision: readReviewRecord(markdown).decision,
         markdown,
         comment:
           outputCase?.surface === "history"

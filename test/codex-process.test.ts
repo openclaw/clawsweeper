@@ -297,8 +297,9 @@ test("managed Codex result survives diagnostic capture truncation", (t) => {
   assert.equal(fixture.result.error, undefined);
   assert.equal(readFileSync(fixture.outputPath, "utf8"), "final result");
   assert.equal(readFileSync(fixture.stdoutPath, "utf8"), "final result\n");
-  assert.equal(readFileSync(fixture.stderrPath).length, 128);
-  assert.match(readFileSync(fixture.stderrPath, "utf8"), /Codex output truncated/);
+  assert.equal(fixture.result.compromised, true);
+  assert.ok(readFileSync(fixture.stderrPath).length <= 128);
+  assert.match(readFileSync(fixture.stderrPath, "utf8"), /diagnostic output omitted/);
 });
 
 test("completed Codex result remains available after a non-zero shutdown exit", (t) => {
@@ -618,6 +619,7 @@ process.stderr.write("e".repeat(16 * 1024 * 1024) + "stderr-tail-marker");
     assert.equal(result.error, undefined);
     assert.ok(Buffer.byteLength(result.stdout) <= 4096);
     assert.ok(Buffer.byteLength(result.stderr) <= 4096);
+    assert.equal(result.compromised, false);
     assert.match(result.stdout, /stdout-tail-marker$/);
     assert.match(result.stderr, /stderr-tail-marker$/);
     assert.equal(readFileSync(stdoutPath, "utf8").length, 16 * 1024 * 1024 + 18);
@@ -627,7 +629,7 @@ process.stderr.write("e".repeat(16 * 1024 * 1024) + "stderr-tail-marker");
   }
 });
 
-test("Codex process caps durable logs while preserving the final output tail", () => {
+test("Codex process omits oversized durable streams and marks compromise", () => {
   const root = mkdtempSync(tmpPrefix);
   const binDir = join(root, "bin");
   const stdoutPath = join(root, "codex.stdout.log");
@@ -658,16 +660,17 @@ process.stderr.write("e".repeat(2 * 1024 * 1024) + "stderr-tail-marker");
     });
 
     assert.equal(result.status, 0);
-    assert.match(result.stdout, /stdout-tail-marker$/);
-    assert.match(result.stderr, /stderr-tail-marker$/);
+    assert.equal(result.compromised, true);
+    assert.match(result.stdout, /diagnostic output omitted/);
+    assert.match(result.stderr, /diagnostic output omitted/);
     for (const [filePath, tailMarker] of [
       [stdoutPath, "stdout-tail-marker"],
       [stderrPath, "stderr-tail-marker"],
     ] as const) {
       const output = readFileSync(filePath);
-      assert.equal(output.length, outputFileBytes);
-      assert.match(output.toString("utf8"), /Codex output truncated; final tail follows/);
-      assert.match(output.toString("utf8"), new RegExp(`${tailMarker}$`));
+      assert.ok(output.length <= outputFileBytes);
+      assert.match(output.toString("utf8"), /diagnostic output omitted/);
+      assert.ok(!output.toString("utf8").includes(tailMarker));
     }
   } finally {
     rmSync(root, { recursive: true, force: true });

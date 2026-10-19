@@ -257,7 +257,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     markdown: string,
     reason: "none",
     options?: { previousReviewCommentBody?: string },
-  ) => { markdown: string; comment: string };
+  ) => { markdown: string; comment: string; decision: Decision };
   repoFromArgs: (args: Args) => RepositoryProfile;
   reportFileName: (repo: string, number: number) => string;
   resolveReviewCheckout: (options: {

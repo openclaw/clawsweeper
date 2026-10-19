@@ -1296,3 +1296,58 @@ test("--local-range preserves native history and exports current preflight summa
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("local range render-only disclosure fails output and preflight without completing history", (t) => {
+  useFakeScanner(t);
+  const dir = initRepo();
+  const harness = mkdtempSync(join(tmpdir(), "lrr-publication-"));
+  try {
+    git(dir, "commit", "--allow-empty", "-qm", "base");
+    git(dir, "branch", "base-ref");
+    writeFileSync(join(dir, "feature.txt"), "change\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "feat: example");
+    const prefix = "synthetic-local-range-render-capability";
+    const decisionPath = join(harness, "decision.json");
+    writeFileSync(decisionPath, JSON.stringify(changelogReviewDecision({ summary: prefix })));
+    const result = spawnReview(
+      CLI,
+      [
+        "review",
+        "--local-range",
+        "--preflight",
+        "--result-format",
+        "json",
+        "--base",
+        "base-ref",
+        "--target-repo",
+        "openclaw/clawsweeper",
+        "--target-dir",
+        dir,
+        "--artifact-dir",
+        join(harness, "artifacts"),
+      ],
+      {
+        encoding: "utf8",
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          GH_TOKEN: `${prefix}.`,
+          CODEX_BIN: writeLocalReviewCodex(harness),
+          LOCAL_REVIEW_CAPTURE: join(harness, "capture.json"),
+          LOCAL_REVIEW_DECISION: decisionPath,
+        },
+      },
+    );
+    assert.notEqual(result.status, 0);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.status, "failed");
+    assert.match(output.reports[0].report, /^review_status: failed$/m);
+    assert.match(output.reports[0].report, /^action_taken: kept_open$/m);
+    assert.equal(JSON.parse(output.preflight.block.split("\n")[1]).completion, "failed");
+    assert.doesNotMatch(result.stderr, /action=proposed_close/);
+  } finally {
+    rmSync(harness, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

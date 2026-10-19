@@ -777,11 +777,17 @@ publication, and queue lifecycle.
   counter. A review with a redaction is failed, retained as a keep-open decision,
   and blocked from close/apply even after reload. Render-time detection also
   invalidates the persisted decision in report writing and local-history bootstrap,
-  as well as before apply can change labels or close.
+  as well as before apply can change labels or close. Apply upgrades use the
+  managed record writer, preserving the original canonical baseline and syncing
+  the decision packet. Unpublished item bodies and comments do not count as
+  output disclosures; published fields and the final rendered output still do.
   Final-message files and shared Codex/OpenClaw stdout/stderr captures are
   redacted before writing; redaction in any captured turn (including an earlier
   turn before decision repair) fails the final review. Diagnostic streams above
-  the bounded memory buffer are omitted and fail closed. Structured redaction scans values and keys while preserving JSON
+  their configured per-stream byte limit are omitted and fail closed. Coverage
+  proof failures revoke any prior envelope and persist a keep-open denial; local
+  review status and history likewise follow the effective stored decision.
+  Structured redaction scans values and keys while preserving JSON
   syntax; matching keys become `[redacted credential]` with numbered suffixes
   when needed to retain colliding fields. Selected OpenClaw provider headers
   register embedded environment references and authorization payloads as well

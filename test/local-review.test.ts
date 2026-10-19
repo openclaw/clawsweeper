@@ -462,7 +462,14 @@ test(
         `#!${process.execPath}\nrequire('node:fs').readFileSync(0);\nprocess.stdout.write(${JSON.stringify(`---\nresult: success\n---\nEvidence ${token} and ghs_${"x".repeat(36)}\n`)});\n`,
         { mode: 0o755 },
       );
-      for (const retention of ["summary", "debug"]) {
+      for (const retention of ["summary", "debug", "diagnostic"]) {
+        if (retention === "diagnostic") {
+          writeFileSync(
+            fakeCodex,
+            `#!${process.execPath}\nrequire('node:fs').readFileSync(0);\nprocess.stderr.write(${JSON.stringify(token)});\nprocess.stdout.write("---\\nresult: success\\n---\\nClean report.\\n");\n`,
+            { mode: 0o755 },
+          );
+        }
         const result = runLocalReview(
           dir,
           [
@@ -473,7 +480,7 @@ test(
             "--result-format",
             "json",
             "--output-retention",
-            retention,
+            retention === "diagnostic" ? "debug" : retention,
             "--report-dir",
             join(harness, retention),
           ],
@@ -482,13 +489,15 @@ test(
         assert.equal(result.status, 0, result.out);
         assert.ok(!result.stdout.includes(token));
         assert.ok(!result.stdout.includes(`ghs_${"x".repeat(36)}`));
-        assert.ok(result.stdout.includes("[redacted credential]"));
+        if (retention !== "diagnostic") assert.ok(result.stdout.includes("[redacted credential]"));
         const envelope = JSON.parse(result.stdout);
+        assert.equal(envelope.status, "failed");
+        assert.match(envelope.reports[0].report, /^result: failed$/m);
         const reportPath = envelope.reports?.[0]?.artifact_path;
         assert.ok(reportPath, result.stdout);
         const report = readFileSync(reportPath, "utf8");
         assert.ok(!report.includes(token));
-        assert.ok(report.includes("[redacted credential]"));
+        if (retention !== "diagnostic") assert.ok(report.includes("[redacted credential]"));
         const markdownFiles = readdirSync(dirname(reportPath)).filter((name) =>
           name.endsWith(".md"),
         );

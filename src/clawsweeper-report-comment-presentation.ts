@@ -1,7 +1,8 @@
-import { publicationSafeReport } from "./review-record.js";
+import { publicationSafeReport, requireReviewRecord } from "./review-record.js";
 import { redactPublication } from "./publication-dlp.js";
 import type {
   CloseReason,
+  Decision,
   ProductFixScope,
   ProductReview,
   ProductReviewKind,
@@ -621,11 +622,16 @@ export function prepareReviewCommentFromReport(
   markdown: string,
   reason: CloseReason,
   options: ReviewCommentRenderOptions = {},
-): { markdown: string; comment: string } {
+): { markdown: string; comment: string; decision: Decision } {
   let safe = publicationSafeReport(markdown);
   const rendered = redactPublication(renderReviewComment(safe, reason, options));
-  if (!rendered.redactions) return { markdown: safe, comment: rendered.value };
+  if (!rendered.redactions)
+    return {
+      markdown: safe,
+      comment: rendered.value,
+      decision: requireReviewRecord(safe).decision,
+    };
   safe = publicationSafeReport(safe, rendered.redactions);
   const failed = redactPublication(renderReviewComment(safe, "none", options));
-  return { markdown: safe, comment: failed.value };
+  return { markdown: safe, comment: failed.value, decision: requireReviewRecord(safe).decision };
 }

@@ -1,1 +1,0 @@
-- Fail reviews on credential redaction in any captured turn or diagnostic sink, register provider URL authentication, and give hosted Codex/OpenClaw reviewers a temporary credential-free HOME while preserving explicit local Codex auth.

@@ -321,24 +321,42 @@ function runCodex(options: {
     ...(options.streamFileBytes === undefined ? {} : { outputFileBytes: options.streamFileBytes }),
     outputLastMessageBytes: options.resultFileBytes,
   });
-  if (result.error || result.status !== 0 || !existsSync(outputPath)) {
+  const safe = redactPublication({
+    markdown:
+      !result.error && result.status === 0 && existsSync(outputPath)
+        ? stripMarkdownFence(readBoundedReviewResult(outputPath, options.resultFileBytes))
+        : "",
+    stdout: result.stdout,
+    stderr: result.stderr,
+    error: result.error?.message,
+  });
+  if (
+    result.compromised ||
+    safe.redactions ||
+    result.error ||
+    result.status !== 0 ||
+    !existsSync(outputPath)
+  ) {
     const timeout = codexProcessErrorCode(result.error) === "ETIMEDOUT";
     const detail =
       result.error instanceof Error
-        ? `${result.error.message}\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout)}`
+        ? `${safe.value.error}\n${safeOutputTail(safe.value.stderr) || safeOutputTail(safe.value.stdout)}`
         : `exit ${result.status ?? "unknown"}\n${
-            safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
+            safeOutputTail(safe.value.stderr) || safeOutputTail(safe.value.stdout) || "No output."
           }`;
     return failureReport({
       targetRepo: options.targetRepo,
       sha: options.sha,
       baseSha: options.baseSha,
       metadata: options.metadata,
-      detail: detail.trim(),
+      detail:
+        result.compromised || safe.redactions
+          ? `Credential output was redacted; a fresh review is required.\n${safe.value.markdown}\n${detail.trim()}`
+          : detail.trim(),
       timeout,
     });
   }
-  return stripMarkdownFence(readBoundedReviewResult(outputPath, options.resultFileBytes));
+  return safe.value.markdown;
 }
 
 // GitHub credential env vars scrubbed before the offline local-review engine runs.
@@ -474,7 +492,7 @@ function localReviewCommand(args: Args): void {
       `[local-review] repo=${targetRepo} profile=${profileSlug} base=${baseBranch} range=${baseSha.slice(0, 8)}..${headSha.slice(0, 8)}`,
     );
 
-    const markdown = redactPublication(
+    const safe = redactPublication(
       ensureCommitReportTimestamps(
         produceReviewOutput(
           outputBudget,
@@ -504,7 +522,19 @@ function localReviewCommand(args: Args): void {
         ),
         metadata,
       ),
-    ).value;
+    );
+    const markdown = safe.redactions
+      ? redactPublication(
+          failureReport({
+            targetRepo,
+            sha: headSha,
+            baseSha,
+            metadata,
+            detail: `Credential output was redacted; a fresh review is required.\n${safe.value}`,
+            timeout: false,
+          }),
+        ).value
+      : safe.value;
 
     const outputPath = join(runDir, "local-review.md");
     const report = markdown.endsWith("\n") ? markdown : `${markdown}\n`;

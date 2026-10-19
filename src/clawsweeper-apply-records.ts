@@ -130,13 +130,11 @@ export function createApplyRecordOperations({
     reportPath: string,
     nextMarkdown: string,
     subjectState: DecisionPacketSubjectState = "open",
-  ): void => {
+  ): string => {
     captureApplyCanonicalBaseline(reportPath);
-    writeFileSync(
-      reportPath,
-      syncDecisionPacketMarkdown(reportPath, nextMarkdown, subjectState),
-      "utf8",
-    );
+    const markdown = syncDecisionPacketMarkdown(reportPath, nextMarkdown, subjectState);
+    writeFileSync(reportPath, markdown, "utf8");
+    return markdown;
   };
 
   return {

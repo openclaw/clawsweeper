@@ -34,7 +34,7 @@ export function openCodexOutputCapture(
     pendingBytes: 0,
     tailOffset: 0,
     omitted: false,
-    maxFileBytes: normalizedMaxFileBytes(options.maxFileBytes),
+    maxFileBytes: normalizedOutputFileBytes(options.maxFileBytes),
     tailBytes: normalizedTailBytes(options.tailBytes),
     writtenBytes: 0,
     truncated: false,
@@ -46,10 +46,7 @@ export function appendCodexOutputCapture(capture: CodexOutputCapture, chunk: Buf
   // Hold complete frames until redaction; chunk boundaries can split credentials.
   // Oversized diagnostic streams fail closed instead of retaining partial secrets.
   if (capture.omitted) return;
-  if (
-    capture.pendingBytes + chunk.length >
-    Math.max(DEFAULT_CODEX_OUTPUT_FILE_BYTES, capture.maxFileBytes)
-  ) {
+  if (capture.pendingBytes + chunk.length > capture.maxFileBytes) {
     capture.pending = [];
     capture.pendingBytes = 0;
     capture.omitted = true;
@@ -84,7 +81,7 @@ export function closeCodexOutputCapture(capture: CodexOutputCapture): void {
     capture.pending = [];
     capture.pendingBytes = 0;
     appendSafeOutput(capture, Buffer.from(safe.value));
-    if (capture.truncated) {
+    if (capture.truncated && capture.maxFileBytes >= TRUNCATION_MARKER.length) {
       const tail = capture.tail.subarray(
         Math.max(0, capture.tail.length - availableTailBytes(capture.maxFileBytes)),
       );
@@ -116,12 +113,6 @@ function appendTail(current: Buffer, chunk: Buffer, maxBytes: number): Buffer {
   if (chunk.length >= maxBytes) return chunk.subarray(chunk.length - maxBytes);
   const combined = Buffer.concat([current, chunk]);
   return combined.length > maxBytes ? combined.subarray(combined.length - maxBytes) : combined;
-}
-
-function normalizedMaxFileBytes(value: number | undefined): number {
-  if (value === undefined) return DEFAULT_CODEX_OUTPUT_FILE_BYTES;
-  const normalized = Number.isFinite(value) ? Math.floor(value) : DEFAULT_CODEX_OUTPUT_FILE_BYTES;
-  return Math.max(TRUNCATION_MARKER.length, normalized);
 }
 
 export function normalizedTailBytes(value: number | undefined): number {

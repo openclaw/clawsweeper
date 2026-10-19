@@ -1,3 +1,4 @@
+import { credentialPublicationBlocked } from "./publication-dlp.js";
 import { join } from "node:path";
 import { applyHiddenPayloadSecurityReview } from "./repair/security-signals.js";
 import { writeFileSync } from "node:fs";
@@ -307,7 +308,7 @@ export function writePreparedReviewReport(
   onReport?.();
   if (itemLocalReviewHistoryPath) {
     const nextLocalReviewCommentBody =
-      reviewStatusForDecision(decision) === "complete"
+      reviewStatusForDecision(prepared.decision) === "complete"
         ? prepared.comment
         : previousLocalReviewCommentBody;
     if (nextLocalReviewCommentBody) {
@@ -322,5 +323,13 @@ export function writePreparedReviewReport(
       }
     }
   }
-  return { action, reportPath, reportMarkdown };
+  return {
+    action: reviewActionForDecision({ item, decision: prepared.decision, git, runtime }),
+    decision: prepared.decision,
+    publicationFailure: credentialPublicationBlocked(prepared.decision)
+      ? new Error(prepared.decision.summary)
+      : null,
+    reportPath,
+    reportMarkdown,
+  };
 }

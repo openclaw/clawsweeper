@@ -186,12 +186,13 @@ export function runLocalRangeReview(args: Args, dependencies: LocalRangeCommandD
       },
       dependencies,
     );
-    const { decision, runtime, codexFailure, snapshotHash } = result;
-    const { action, reportPath } = writePreparedReviewReport(
+    let { codexFailure } = result;
+    const { runtime, snapshotHash } = result;
+    const { action, reportPath, decision, publicationFailure } = writePreparedReviewReport(
       {
         item,
         context,
-        decision,
+        decision: result.decision,
         git,
         runtime,
         artifactDir,
@@ -210,13 +211,17 @@ export function runLocalRangeReview(args: Args, dependencies: LocalRangeCommandD
             labelPending: false,
             labelApplied: false,
           }),
-        writeOutputReport: (_item, path, markdown) => {
-          writeReport(item, path, markdown);
-          preflightDecision = decision;
-        },
+        writeOutputReport: (_item, path, markdown) => writeReport(item, path, markdown),
       },
       dependencies,
     );
+    preflightDecision = decision;
+    if (publicationFailure && !codexFailure) {
+      codexFailure = {
+        error: publicationFailure,
+        logKind: dependencies.codexReviewFailure(publicationFailure).logKind,
+      };
+    }
     console.error(
       `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} done #${item.number} (1/1) decision=${decision.decision} confidence=${decision.confidence} action=${action.actionTaken}`,
     );

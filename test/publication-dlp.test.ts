@@ -60,7 +60,13 @@ test("credential patterns and nested multiline capabilities are redacted before 
     `sk-${"c".repeat(40)}`,
     `AKIA${"D".repeat(16)}`,
     `ASIA${"E".repeat(16)}`,
-    "-----BEGIN RSA PRIVATE KEY-----\nfake-only\n-----END RSA PRIVATE KEY-----",
+    [
+      "-----",
+      "BEGIN RSA PRIVATE KEY",
+      "-----\nfake-only\n-----",
+      "END RSA PRIVATE KEY",
+      "-----",
+    ].join(""),
     multiline,
   ];
   try {
@@ -568,7 +574,7 @@ test("production report writer persists render-only compromise before history an
           writeOutputReport: (_item, _path, markdown) => {
             persisted = markdown;
           },
-          writeOutputMetadata: () => {},
+          writeOutputMetadata: () => assert.fail("Failed reviews must not complete local history"),
         },
         {
           markdownFor,
@@ -578,6 +584,9 @@ test("production report writer persists render-only compromise before history an
         },
       );
       assert.equal(result.reportMarkdown, persisted);
+      assert.equal(result.action.actionTaken, "kept_open");
+      assert.equal(result.decision.decision, "keep_open");
+      assert.ok(result.publicationFailure);
       assert.match(persisted, /^review_status: failed$/m);
       assert.equal(readReviewRecord(persisted).decision.decision, "keep_open");
       assert.equal(
@@ -666,4 +675,54 @@ test("credential-named provider URL parameters register lowercase values", async
     {},
   );
   assert.deepEqual(redactPublication([token, benign]).value, ["[redacted credential]", benign]);
+});
+
+test("unpublished item context cannot compromise a clean review", () => {
+  const unpublished = `ghs_${"z".repeat(36)}`;
+  const markdown = markdownFor({
+    item: item(),
+    decision: { ...closeDecision(), localCheckoutAccess: "verified" },
+    context: {
+      issue: { body: unpublished },
+      comments: [{ body: unpublished }],
+      timeline: [],
+    },
+    git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true },
+    action: { actionTaken: "proposed_close" },
+    reviewMode: "propose",
+    snapshotHash: "synthetic",
+    contentDigest: "synthetic",
+    reviewPolicy: "synthetic",
+    runtime: { model: "Codex", reasoningEffort: "high" },
+  });
+  assert.match(markdown, /^review_status: complete$/m);
+  assert.equal(readReviewRecord(markdown)?.decision.decision, "close");
+  assert.ok(!markdown.includes(unpublished));
+  assert.ok(!markdown.includes("[redacted credential]"));
+});
+
+test("diagnostic pending bytes respect small and zero stream budgets", async () => {
+  const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { openCodexOutputCapture, appendCodexOutputCapture, closeCodexOutputCapture } =
+    await import("../dist/codex-output-capture.js");
+  const root = mkdtempSync(join(tmpdir(), "dlp-stream-budget-"));
+  try {
+    for (const limit of [0, 8, 128]) {
+      const path = join(root, `${limit}.log`);
+      const capture = openCodexOutputCapture(path, { maxFileBytes: limit });
+      appendCodexOutputCapture(capture, Buffer.alloc(limit, 120));
+      assert.equal(capture.pendingBytes, limit);
+      appendCodexOutputCapture(capture, Buffer.from("x"));
+      assert.equal(capture.pendingBytes, 0);
+      assert.equal(capture.omitted, true);
+      closeCodexOutputCapture(capture);
+      assert.equal(capture.compromised, true);
+      assert.ok(readFileSync(path).length <= limit);
+      assert.ok(!readFileSync(path, "utf8").includes("xxx"));
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

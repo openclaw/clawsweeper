@@ -538,7 +538,7 @@ export function createApplyDecisionWorkflow(
         markdown = prepareReviewCommentFromReport(markdown, reportReviewDecision(markdown).closeReason).markdown;
       }
       if (markdown !== entry.markdown) {
-        writeFileSync(path, markdown, "utf8");
+        markdown = writeReportMarkdown(path, markdown, entry.location === "closed" ? "closed" : "open");
         entry.markdown = markdown;
       }
       let publicationRenderReason: CloseReason = "none";
@@ -555,7 +555,7 @@ export function createApplyDecisionWorkflow(
         }
         if (prepared.markdown !== source) {
           markdown = source === markdown ? prepared.markdown : publicationSafeReport(markdown, 1);
-          writeFileSync(path, markdown, "utf8");
+          markdown = writeReportMarkdown(path, markdown, entry.location === "closed" ? "closed" : "open");
           entry.markdown = markdown;
         }
         return prepared.comment;
