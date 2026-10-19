@@ -1,0 +1,1 @@
+- Fix dashboard durations showing 60 seconds at minute and hour boundaries.
