@@ -65,7 +65,7 @@ jobs:
   notify:
     if: >-
       ${{
-        (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository) &&
+        (github.event_name != 'workflow_run' || (github.event.workflow_run.head_repository.full_name == github.repository && contains(fromJSON('["schedule","workflow_dispatch","repository_dispatch","push"]'), github.event.workflow_run.event))) &&
         !(github.event_name == 'pull_request_target' && github.event.action == 'synchronize') &&
         !(github.event_name == 'repository_dispatch' && github.event.client_payload.activity.type == 'pull_request_target' && github.event.client_payload.activity.action == 'synchronize') &&
         !(github.event_name == 'workflow_run' && contains(fromJSON('["success","neutral","skipped"]'), github.event.workflow_run.conclusion))

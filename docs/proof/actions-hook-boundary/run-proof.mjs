@@ -22,7 +22,7 @@ const expression = normalize(workflow.jobs.notify.if);
 assert.equal(
   expression,
   normalize(`\${{
-  (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository) &&
+  (github.event_name != 'workflow_run' || (github.event.workflow_run.head_repository.full_name == github.repository && contains(fromJSON('["schedule","workflow_dispatch","repository_dispatch","push"]'), github.event.workflow_run.event))) &&
   !(github.event_name == 'pull_request_target' && github.event.action == 'synchronize') &&
   !(github.event_name == 'repository_dispatch' && github.event.client_payload.activity.type == 'pull_request_target' && github.event.client_payload.activity.action == 'synchronize') &&
   !(github.event_name == 'workflow_run' && contains(fromJSON('["success","neutral","skipped"]'), github.event.workflow_run.conclusion))
@@ -41,7 +41,11 @@ function admitted(github) {
   const event = github.event;
   return (
     (!equal(github.event_name, "workflow_run") ||
-      equal(event.workflow_run?.head_repository?.full_name, github.repository)) &&
+      (equal(event.workflow_run?.head_repository?.full_name, github.repository) &&
+        contains(
+          JSON.parse('["schedule","workflow_dispatch","repository_dispatch","push"]'),
+          event.workflow_run?.event,
+        ))) &&
     !(equal(github.event_name, "pull_request_target") && equal(event.action, "synchronize")) &&
     !(
       equal(github.event_name, "repository_dispatch") &&
@@ -56,7 +60,7 @@ function admitted(github) {
 }
 
 const repository = "openclaw/clawsweeper";
-function context(headRepository = repository, conclusion = "failure") {
+function context(headRepository = repository, conclusion = "failure", runEvent = "schedule") {
   return {
     repository,
     event_name: "workflow_run",
@@ -70,6 +74,7 @@ function context(headRepository = repository, conclusion = "failure") {
         name: "sweep",
         status: "completed",
         conclusion,
+        event: runEvent,
         head_repository: { full_name: headRepository },
         head_sha: "a".repeat(40),
         html_url: "https://github.com/openclaw/clawsweeper/actions/runs/42",
@@ -87,6 +92,13 @@ for (const conclusion of ["success", "NEUTRAL", "skipped"])
 const missingHead = context();
 delete missingHead.event.workflow_run.head_repository;
 assert.equal(admitted(missingHead), false);
+for (const runEvent of ["pull_request_target", "pull_request", "issue_comment"])
+  assert.equal(admitted(context(repository, "failure", runEvent)), false);
+const missingEvent = context();
+delete missingEvent.event.workflow_run.event;
+assert.equal(admitted(missingEvent), false);
+for (const runEvent of ["workflow_dispatch", "REPOSITORY_DISPATCH", "push"])
+  assert.equal(admitted(context(repository, "failure", runEvent)), true);
 assert.equal(admitted({ repository, event_name: "issues", event: {} }), true);
 assert.equal(
   admitted({ repository, event_name: "pull_request_target", event: { action: "synchronize" } }),
@@ -137,6 +149,8 @@ const results = [];
 try {
   for (const [scenario, fixture, expected] of [
     ["fork-origin", context("fixture/fork"), false],
+    // pull_request_target runs report the base repository as head_repository.
+    ["pull-request-target-origin", context(repository, "failure", "pull_request_target"), false],
     ["same-repository", context(), true],
   ]) {
     const eventPath = resolve(output, `${scenario}.event.json`);
