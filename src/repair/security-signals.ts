@@ -25,23 +25,15 @@ export function hiddenPayloadSecurityReview(
     for (const token of html) {
       for (const match of token.content.matchAll(/<!--[\s\S]*?(?:-->|$)/g)) {
         const hidden = match[0];
-        // Hidden comments rarely mention download tools at all, so a download tool plus any
-        // execution signal anywhere in the comment is enough; no URL or pipe shape required.
-        // This only surfaces items for moderation; workflows never execute this text.
+        // Deliberately coarse: shell grammar (quoting, paths, wrappers) is not modeled. Hidden
+        // comments almost never mention download tools, so one next to any shell syntax,
+        // interpreter word, or chmod is moderation-worthy. A false positive only keeps the
+        // item open for a human; workflows never execute this text.
         const download = /\b(?:curl|wget)\b/i.test(hidden);
-        // `$(`/`<(` are never Markdown, so any opener counts; backticks often format prose,
-        // so they only count when a command word follows.
-        const substitution =
-          /[$<]\(/.test(hidden) ||
-          /`\s*(?:\/[\w./-]+\/)?(?:curl|wget|env|printenv|base64)\b/i.test(hidden);
-        // Interpreters as a command word, wrapped, pathed, or quoted: `| sudo -E /bin/bash`, `; 'sh' x`.
-        const shellExecution =
-          /(?:^|[\s|;&(])(?:sudo(?:\s+-\w+(?:\s+[\w-]+)?)*\s+)?(?:\/[\w./-]+\/)?(?:env(?:\s+-\w+)*\s+)?['"]?(?:ba|da|z|k|a)?sh['"]?(?=\s|$|[;&|)])/im.test(
-            hidden,
-          ) || /\bchmod\s+(?:[+ugoa]*x|[0-7]{3,4})\b/i.test(hidden);
+        const execution = /[`|;&]|[$<]\(|\b(?:ba|da|z|k|a)?sh\b|\bchmod\b/i.test(hidden);
         const environment = /\b(?:env|printenv)\b|\/proc\/(?:self|\d+)\/environ/i.test(hidden);
         const encodedEnvironment = environment && /\bbase64\b/i.test(hidden);
-        if (!(download && (substitution || shellExecution)) && !encodedEnvironment) continue;
+        if (!(download && execution) && !encodedEnvironment) continue;
         return {
           status: "needs_attention",
           summary: PAYLOAD_SUMMARY,
