@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { resolveSpawnCommand } from "../dist/command.js";
@@ -60,6 +60,7 @@ test(
       NPM_CONFIG_USERCONFIG: emptyConfig,
       NPM_CONFIG_GLOBALCONFIG: globalConfig,
       NPM_CONFIG_CACHE: join(root, "npm-cache"),
+      NPM_CONFIG_REGISTRY: "https://registry.npmjs.org",
     };
     delete env.NODE_PATH;
     delete env.NODE_OPTIONS;
@@ -123,24 +124,36 @@ test(
     );
     const tarball = join(root, packed.filename);
     const tarballHash = createHash("sha256").update(readFileSync(tarball)).digest("hex");
-    run(npm, [
-      "install",
-      "--prefix",
-      seed,
-      "--ignore-scripts",
-      "--omit=dev",
-      "--no-audit",
-      "--no-fund",
-      tarball,
-    ]);
+    mkdirSync(seed);
+    writeFileSync(
+      join(seed, "package.json"),
+      JSON.stringify(
+        {
+          name: "clawsweeper-local-install",
+          version: "0.0.0",
+          private: true,
+          dependencies: { [metadata.name]: "file:clawsweeper-local.tgz" },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    copyFileSync(tarball, join(seed, "clawsweeper-local.tgz"));
+    run(
+      npm,
+      ["install", "--prefix", seed, "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund"],
+      { cwd: seed },
+    );
     // Seed the isolated cache online, then prove a clean lock-driven offline
     // install. Keeping the original manifest/lock prevents cache warmth from
     // silently changing which package or transitive versions are exercised.
     mkdirSync(prefix);
-    const installInputs = ["package.json", "package-lock.json"].map((name) => {
-      copyFileSync(join(seed, name), join(prefix, name));
-      return { name, bytes: readFileSync(join(prefix, name)) };
-    });
+    const installInputs = ["clawsweeper-local.tgz", "package.json", "package-lock.json"].map(
+      (name) => {
+        copyFileSync(join(seed, name), join(prefix, name));
+        return { name, bytes: readFileSync(join(prefix, name)) };
+      },
+    );
     rmSync(join(seed, "node_modules"), { recursive: true });
     run(npm, [
       "ci",
@@ -158,7 +171,7 @@ test(
     assert.deepEqual(tree(installed), staged);
     const installedPackages = new Map<
       string,
-      { root: string; dependencies: Record<string, string>; declared: string[] }
+      { root: string; version: string; dependencies: Record<string, string>; declared: string[] }
     >();
     type NpmNode = {
       name: string;
@@ -191,6 +204,7 @@ test(
       const declared = Object.keys(packageJson.dependencies ?? {}).sort();
       const entry = installedPackages.get(node.path) ?? {
         root: node.path,
+        version: packageJson.version,
         dependencies: {},
         declared,
       };
@@ -339,6 +353,80 @@ if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify
     assert.deepEqual(tree(cwd), targetBefore);
     for (const { source, bytes } of sourceBefore)
       assert.deepEqual(readFileSync(source), bytes, "review must not change source inputs");
+    const lock = JSON.parse(readFileSync(join(prefix, "package-lock.json"), "utf8"));
+    assert.equal(lock.packages[""].dependencies[metadata.name], "file:clawsweeper-local.tgz");
+    assert.equal(lock.packages[""].name, "clawsweeper-local-install");
+    for (const path of Object.keys(lock.packages)) {
+      assert.ok(
+        path === "" || (path.startsWith("node_modules/") && !path.split("/").includes("..")),
+      );
+      assert.ok(
+        path === "" || installedPackages.has(join(prefix, path)),
+        "lock contains unverified package",
+      );
+    }
+    const resolution = [...installedPackages.values()]
+      .map(({ root, version }) => {
+        const path = relative(prefix, root).replaceAll("\\", "/");
+        const entry = lock.packages[path];
+        assert.equal(entry.version, version);
+        assert.match(entry.integrity, /^sha512-[A-Za-z0-9+/]+={0,2}$/);
+        if (root === installed) assert.equal(entry.resolved, "file:clawsweeper-local.tgz");
+        else {
+          const url = new URL(entry.resolved);
+          assert.equal(url.protocol, "https:");
+          assert.equal(url.host, "registry.npmjs.org");
+          assert.equal(url.username + url.password + url.search + url.hash, "");
+        }
+        return { path, version, resolved: entry.resolved, integrity: entry.integrity };
+      })
+      .sort((a, b) => a.path.localeCompare(b.path));
+    const npmVersion = run(npm, ["--version"]).trim();
+    const requestedOutput = process.env.CLAWSWEEPER_TEST_PACKAGE_OUTPUT;
+    if (requestedOutput) {
+      assert.ok(isAbsolute(requestedOutput), "package output must be an absolute new directory");
+      const output = join(
+        realpathSync(dirname(resolve(requestedOutput))),
+        basename(requestedOutput),
+      );
+      // Export only the exact inputs that survived the relocated install and
+      // parity checks. The caller owns a new destination, never an existing one.
+      for (const protectedRoot of [sourceRoot, root])
+        assert.ok(output !== protectedRoot && !output.startsWith(protectedRoot + sep));
+      mkdirSync(output);
+      try {
+        for (const { name, bytes } of installInputs) writeFileSync(join(output, name), bytes);
+        const files = installInputs.map(({ name, bytes }) => ({
+          path: name,
+          bytes: bytes.length,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        }));
+        writeFileSync(
+          join(output, "manifest.json"),
+          JSON.stringify(
+            {
+              source: run("git", ["-C", sourceRoot, "rev-parse", "HEAD"]).trim(),
+              sourceTree: run("git", ["-C", sourceRoot, "rev-parse", "HEAD^{tree}"]).trim(),
+              sourceDiffSha256: createHash("sha256")
+                .update(run("git", ["-C", sourceRoot, "diff", "HEAD", "--binary"]))
+                .digest("hex"),
+              node: process.version,
+              npm: npmVersion,
+              platform: process.platform,
+              arch: process.arch,
+              files,
+              stagedFiles: manifest,
+              resolution,
+            },
+            null,
+            2,
+          ) + "\n",
+        );
+      } catch (error) {
+        rmSync(output, { recursive: true, force: true });
+        throw error;
+      }
+    }
     t.diagnostic(
       JSON.stringify({
         node: process.version,
@@ -349,7 +437,7 @@ if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify
         tarballBytes: packed.size,
         tarballSha256: tarballHash,
         parity: parity.match(/# tests \d+/)?.[0],
-        npmVersion: run(npm, ["--version"]).trim(),
+        npmVersion,
         runtimePackages: [...installedPackages.keys()].map((path) =>
           relative(join(prefix, "node_modules"), path).replaceAll("\\", "/"),
         ),

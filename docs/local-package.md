@@ -3,7 +3,7 @@
 - Status: active development and qualification guide; no package release
 - Owner: ClawSweeper local-runtime maintainers
 - Source of truth: `scripts/stage-local-package.mjs` and `src/clawsweeper-local.ts`
-- Last verified: platform integration candidate based on `fb06a964d837740bef1b8db0ad89d8083d92e9a7`
+- Verified source baseline: `a8ed845bfdad2467c4d73d8b470f4284dce625f0`; CI artifacts identify the tested source and diff
 - Update when: the local entrypoint, imports, workers, assets, package format, or qualification matrix changes
 
 The private package candidate contains the full committed-range reviewer. It
@@ -53,6 +53,29 @@ is a model smoke test, not a free diagnostic.
 
 The harness seeds a fresh npm cache, preserves the install manifest and lock,
 and performs a clean offline installation before checking declared imports.
+The tarball has the same relative filename in both install directories, so the
+lock-driven installation also verifies relocation.
+
+To retain the verified inputs, set `CLAWSWEEPER_TEST_PACKAGE_OUTPUT` to an
+absolute, nonexistent directory outside the source checkout and run:
+
+```sh
+CLAWSWEEPER_TEST_PACKAGE_OUTPUT=/tmp/clawsweeper-package-envelope node --test test/local-package-install.test.ts
+```
+
+Build the Node entrypoints first. After every package and parity assertion
+passes, the harness exports `clawsweeper-local.tgz`, `package.json`,
+`package-lock.json`, and `manifest.json`. The manifest records input hashes,
+staged files, source commit and diff hash, tool versions, platform, and the
+observed dependency resolution with public npm URLs and integrity values.
+An existing output directory is rejected and never overwritten.
+
+CI uploads one envelope per operating system. These are private package
+qualification artifacts, not published releases. They freeze the observed npm
+resolution; dependency tarballs still need a populated cache or registry access.
+This is not an empty-cache offline bundle or a Homebrew-ready distribution.
+A future release must choose and qualify its dependency delivery contract.
+
 
 CI runs the installed-package harness on Linux, Windows, and macOS with Node
 24. Each run builds and packs the candidate, installs it outside the checkout,
