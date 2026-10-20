@@ -53,8 +53,9 @@ async function publicApi(path: string) {
   }
 }
 
-// Records are read only when a run was asked to refresh the corpus: the export runs inside
-// the exact-review queue Durable Object, so every other build reuses the cached aggregate.
+// The deployed build never reads records: the Dashboard corpus workflow refreshes the aggregate
+// incrementally (scripts/dashboard-corpus.ts, build-corpus.ts) and this build reuses the newest
+// one. --records stays for local previews against an already hydrated records directory.
 const corpusPath = join(stateDir, 'corpus.json');
 let cache: CorpusCache;
 if (values.records) {
@@ -65,7 +66,7 @@ if (values.records) {
   await writeFile(corpusPath, JSON.stringify(cache));
 } else {
   const cached = await readJson<CorpusCache | null>(corpusPath, null);
-  if (cached?.version !== 2) throw new Error('no cached corpus: run the workflow once with refresh_corpus');
+  if (cached?.version !== 2) throw new Error('no cached corpus: run the Dashboard corpus workflow once with mode=full');
   cache = cached;
 }
 

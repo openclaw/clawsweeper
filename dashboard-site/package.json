@@ -18,5 +18,8 @@
   "packageManager": "pnpm@12.4.1",
   "engines": {
     "node": ">=24"
+  },
+  "devDependencies": {
+    "wrangler": "4.131.1"
   }
 }

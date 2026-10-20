@@ -168,7 +168,8 @@ The operator dashboard at `/` (Overview, Agent performance, Throughput, Review a
 Coverage, Repositories) is a static Astro site in `dashboard-site/`. The `Dashboard site`
 workflow (`.github/workflows/dashboard-site.yml`) rebuilds it every 15 minutes
 and publishes it to the Cloudflare Pages project `clawsweeper-dashboard`
-(`https://clawsweeper-dashboard.pages.dev`). This Worker serves those page
+(`https://clawsweeper-dashboard.pages.dev`) with the Wrangler version pinned in
+`dashboard-site/package.json` and its lockfile, never fetched at publish time. This Worker serves those page
 paths and their assets from Pages for GET and HEAD (`dashboard/dashboard-site.ts`;
 override the origin with `DASHBOARD_SITE_ORIGIN`). A data refresh never
 redeploys this Worker, so webhooks, the queue Durable Object and `/api/*` are
@@ -177,12 +178,28 @@ not restarted by it.
 Each build reads four sources:
 
 - the corpus aggregate (totals, decisions, quality, closes, per-repository
-  counts), cached in the workflow state. It is rebuilt twice a day by the first
-  scheduled build in the 00 or 12 UTC hour (the quietest review hours) that finds
-  the corpus over 11 hours old, by any scheduled build that finds it over 13 hours
-  old (GitHub delays and drops scheduled runs), and when the workflow is started
-  by hand with `refresh_corpus`: that run hydrates every canonical
-  record read-only with `scripts/hydrate-state.ts`, reads front matter only and
+  counts). The site build never reads canonical records: it restores the newest
+  aggregate saved by the separate `Dashboard corpus` workflow
+  (`.github/workflows/dashboard-corpus.yml`) and keeps the copy in its own state
+  when that one is newer or the aggregate cache is missing, so a slow or failed
+  corpus refresh never blocks or times out a publish. The corpus workflow keeps a
+  cached tree of the `items` and `closed` records (the only sections the corpus
+  reads), trimmed to their front matter (the only part it reads), with a
+  per-repository cursor (`scripts/dashboard-corpus.ts`). Every hour
+  it lists the record slugs, skips every repository whose newest store revision is
+  not above its cursor, and asks the export journal only for records above the
+  cursor; the journal keeps one row per record at its newest store revision and
+  keeps deletions as tombstones, so the replay carries every write, archive move
+  and deletion. Changes are staged and moved into the tree only after a
+  repository's export completes; the cursor is the first page's watermark, so a
+  write that lands mid-export is read again next time. A full rebuild (weekly at
+  00:20 UTC on Sundays, by hand with `mode=full`, or by the first scheduled run
+  in the 00 or 12 UTC hour that finds no saved tree) hydrates the R2 snapshots plus
+  the journal read-only, as `scripts/hydrate-state.ts` does, and replaces the tree
+  only when every repository hydrated. A refresh that fails saves no tree, keeps
+  the previous aggregate, and makes scheduled runs back off for 2, 4, 8, then
+  12 hours; a manual run ignores the backoff. The aggregate
+  (`dashboard-site/scripts/build-corpus.ts`) reads front matter only and
   keeps repositories that GitHub reports as public. The cache keeps each
   repository's contribution apart, so every build checks visibility again,
   drops a repository that is no longer public and recomputes every total
@@ -193,7 +210,10 @@ Each build reads four sources:
   inside the exact-review queue Durable Object and slows reviews while it runs
   (a full export on 2026-10-12 failed 26 review runs in 14 minutes; after the
   queue fixes, the 2026-10-14 and 2026-10-15 refreshes saw 1 failure in 100 review
-  runs), so the schedule uses the quietest hours. Until the first such run, scheduled builds skip with a notice;
+  runs; on 2026-10-20 the full export inside the 30-minute publish job started
+  timing out and froze the site), so full rebuilds keep to the quietest hour and
+  hourly refreshes read only the changed records. Until the first corpus refresh,
+  site builds skip with a notice;
 - the public `/api/exact-review-queue` and `/api/review-coverage` responses;
 - the public 7-day `/api/health-history` samples and the 24-hour and 7-day
   `/api/apply-observability` summaries, for the Operations page. Samples are
@@ -219,7 +239,7 @@ Open pages check for a newer build every five minutes and when the tab becomes
 visible, and reload when one is published. The header shows both the build time
 and the review-corpus time. A page warns when its build is more than an hour old
 (the 15-minute rebuild has stopped) or when the corpus is more than 14 hours old
-(the scheduled refresh has stopped). Unknown paths return the site's 404 page with
+(the hourly corpus refresh has stopped or is backing off). Unknown paths return the site's 404 page with
 status 404. Pull requests that touch `dashboard-site/` build the site from
 `dashboard-site/fixtures/dashboard.json`, without secrets or publishing.
 
@@ -1430,5 +1450,5 @@ concurrently changed successor revision, reason, or deadline is not overwritten.
 Attention lists from a complete corpus refresh sort by reviewer-assigned priority
 (P0 through P3), then oldest review, with unranked items last. These are historical
 flags, not verified unresolved work. Cached corpora built before priority collection
-retain newest-first ordering until the next `refresh_corpus` run; discarded older
+retain newest-first ordering until the next corpus refresh; discarded older
 rows cannot be reconstructed by sorting the cache.

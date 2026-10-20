@@ -1,0 +1,579 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import test from "node:test";
+import YAML from "yaml";
+
+import { aggregateRecords } from "../dashboard-site/scripts/records.ts";
+import {
+  CORPUS_SECTIONS,
+  corpusFrontMatter,
+  FULL_REBUILD_CRON,
+  planCorpusRefresh,
+  readCorpusCursorState,
+  recordCorpusRefreshResult,
+  refreshCorpusRecords,
+  type CorpusRefreshStatus,
+} from "../scripts/dashboard-corpus.ts";
+import { packWorkerRecordSnapshot } from "../scripts/worker-records.ts";
+
+type Row = {
+  repoSlug: string;
+  section: string;
+  id: string;
+  content: string | null;
+  storeRevision: number;
+  revision: number;
+};
+
+// A canonical export journal with the queue's semantics: one row per identity at its newest
+// store revision, deletions kept as tombstones, a global revision watermark, and pages of at
+// most `pageSize» rows ordered by store revision.
+class FakeStore {
+  revision = 0;
+  rows = new Map<string, Row>();
+  exports: Array<{ repoSlug: string; sections: string[]; sinceRevision: number; cursor: number }> =
+    [];
+  snapshots = new Map<string, { archive: Buffer; descriptor: Record<string, unknown> }>();
+  beforeExportPage?: (page: number) => void;
+  failExportPage?: number;
+  exportPage = 0;
+  readonly pageSize: number;
+
+  constructor(pageSize = 2) {
+    this.pageSize = pageSize;
+  }
+
+  write(repoSlug: string, section: string, id: string | number, content: string | null) {
+    const key = `${repoSlug}/${section}/${id}`;
+    const previous = this.rows.get(key);
+    this.rows.set(key, {
+      repoSlug,
+      section,
+      id: String(id),
+      content,
+      storeRevision: ++this.revision,
+      revision: (previous?.revision ?? 0) + 1,
+    });
+  }
+
+  fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const endpoint = new URL(String(input)).pathname;
+    const body = init?.body ? JSON.parse(String(init.body)) : {};
+    if (endpoint.endsWith("/records/slugs")) {
+      const slugs = new Map<string, number>();
+      for (const row of this.rows.values()) {
+        slugs.set(row.repoSlug, Math.max(slugs.get(row.repoSlug) ?? 0, row.storeRevision));
+      }
+      return Response.json({
+        ok: true,
+        repositories: [...slugs].map(([repoSlug, revision]) => ({ repoSlug, revision })),
+      });
+    }
+    if (endpoint.endsWith("/snapshots/latest")) {
+      const snapshot = this.snapshots.get(body.repoSlug);
+      if (!snapshot) return Response.json({ error: "snapshot_not_found" }, { status: 404 });
+      return Response.json({ snapshotStoreAvailable: true, snapshot: snapshot.descriptor });
+    }
+    if (endpoint.endsWith("/snapshots/chunk")) {
+      const archive = this.snapshots.get(body.repoSlug)!.archive;
+      const { offset, length } = body;
+      return new Response(archive.subarray(offset, offset + length), {
+        status: 206,
+        headers: { "content-range": `bytes ${offset}-${offset + length - 1}/${archive.length}` },
+      });
+    }
+    if (endpoint.endsWith("/records/list")) {
+      return Response.json({
+        repoSlug: body.repoSlug,
+        section: "items",
+        records: [],
+        nextCursor: null,
+      });
+    }
+    assert.ok(endpoint.endsWith("/records/export"), endpoint);
+    this.exportPage++;
+    this.beforeExportPage?.(this.exportPage);
+    if (this.failExportPage === this.exportPage) {
+      return Response.json({ error: "denied" }, { status: 403 });
+    }
+    this.exports.push({
+      repoSlug: body.repoSlug,
+      sections: body.sections,
+      sinceRevision: body.sinceRevision,
+      cursor: body.cursor,
+    });
+    const after = Math.max(body.sinceRevision, body.cursor ?? 0);
+    const matching = [...this.rows.values()]
+      .filter(
+        (row) =>
+          row.repoSlug === body.repoSlug &&
+          body.sections.includes(row.section) &&
+          row.storeRevision > after,
+      )
+      .sort((left, right) => left.storeRevision - right.storeRevision);
+    const page = matching.slice(0, this.pageSize);
+    return Response.json({
+      repoSlug: body.repoSlug,
+      revision: this.revision,
+      records: page.map((row) => ({
+        section: row.section,
+        id: row.id,
+        content: row.content,
+        digest:
+          row.content === null ? null : createHash("sha256").update(row.content).digest("hex"),
+        revision: row.revision,
+        storeRevision: row.storeRevision,
+        updatedAt: new Date(0).toISOString(),
+        deleted: row.content === null,
+      })),
+      nextCursor: matching.length > page.length ? page.at(-1)!.storeRevision : null,
+    });
+  };
+}
+
+function files(root: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  const walk = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else result[path.relative(root, full)] = readFileSync(full, "utf8");
+    }
+  };
+  if (existsSync(root)) walk(root);
+  return result;
+}
+
+function fixtureRoot(t: { after: (fn: () => void) => void }) {
+  const root = mkdtempSync(path.join(tmpdir(), "dashboard-corpus-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+const worker = (store: FakeStore) => ({
+  baseUrl: "https://worker.invalid",
+  webhookSecret: "fixture",
+  fetch: store.fetch as typeof globalThis.fetch,
+  log: () => {},
+});
+
+async function fullTree(store: FakeStore, root: string, name: string) {
+  const state = path.join(root, name);
+  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
+  return files(path.join(state, "records"));
+}
+
+test("incremental refresh reads only changes and matches a fresh full rebuild", async (t) => {
+  const root = fixtureRoot(t);
+  const store = new FakeStore();
+  store.write("openclaw-alpha", "items", 1, "alpha one v1");
+  store.write("openclaw-alpha", "items", 2, "alpha two");
+  store.write("openclaw-alpha", "plans", 1, "plan text, never part of the corpus");
+  store.write("openclaw-beta", "items", 3, "beta three open");
+  store.write("openclaw-beta", "closed", 4, "beta four");
+  store.write("openclaw-quiet", "items", 5, "quiet five");
+  const state = path.join(root, "state");
+
+  const full = await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
+  assert.equal(full.bootstrapped, 3);
+  const cursor = readCorpusCursorState(state);
+  assert.ok(cursor);
+  assert.deepEqual(cursor.sections, [...CORPUS_SECTIONS]);
+  for (const entry of Object.values(cursor.repositories))
+    assert.equal(entry.revision, store.revision);
+  assert.deepEqual(Object.keys(files(path.join(state, "records"))).sort(), [
+    "openclaw-alpha/items/1.md",
+    "openclaw-alpha/items/2.md",
+    "openclaw-beta/closed/4.md",
+    "openclaw-beta/items/3.md",
+    "openclaw-quiet/items/5.md",
+  ]);
+  for (const call of store.exports) assert.deepEqual(call.sections, ["items", "closed"]);
+
+  const fullWatermark = store.revision;
+  store.write("openclaw-alpha", "items", 1, "alpha one v2");
+  store.write("openclaw-alpha", "items", 2, null);
+  // Archiving moves a record: a tombstone in items and a new closed record.
+  store.write("openclaw-beta", "items", 3, null);
+  store.write("openclaw-beta", "closed", 3, "beta three closed");
+  store.write("openclaw-beta", "plans", 9, "plans change the slug revision only");
+  store.write("openclaw-gamma", "items", 7, "a repository onboarded after the rebuild");
+  store.exports = [];
+
+  const incremental = await refreshCorpusRecords({
+    ...worker(store),
+    stateDir: state,
+    mode: "incremental",
+  });
+  assert.equal(incremental.unchanged, 1);
+  assert.equal(incremental.refreshed, 2);
+  assert.equal(incremental.bootstrapped, 1);
+  assert.equal(incremental.written, 2);
+  assert.equal(incremental.deleted, 2);
+  // The quiet repository is not exported at all; the others replay from the saved cursor.
+  assert.equal(
+    store.exports.some((call) => call.repoSlug === "openclaw-quiet"),
+    false,
+  );
+  for (const call of store.exports.filter((entry) => entry.repoSlug !== "openclaw-gamma")) {
+    assert.equal(call.sinceRevision, fullWatermark);
+    assert.deepEqual(call.sections, ["items", "closed"]);
+  }
+  assert.deepEqual(files(path.join(state, "records")), await fullTree(store, root, "fresh"));
+  const after = readCorpusCursorState(state)!;
+  assert.equal(after.repositories["openclaw-alpha"]!.revision, store.revision);
+  assert.equal(after.repositories["openclaw-quiet"]!.revision, fullWatermark);
+  assert.equal(after.repositories["openclaw-gamma"]!.source, "bootstrap");
+  assert.equal(
+    readdirSync(state).some((name) => name.startsWith(".")),
+    false,
+  );
+});
+
+test("a write that lands between export pages is never lost", async (t) => {
+  const root = fixtureRoot(t);
+  const store = new FakeStore(1);
+  for (const id of [1, 2, 3]) store.write("openclaw-alpha", "items", id, `item ${id} v1`);
+  const state = path.join(root, "state");
+  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
+  for (const id of [1, 2, 3]) store.write("openclaw-alpha", "items", id, `item ${id} v2`);
+  const firstWatermark = store.revision;
+  store.beforeExportPage = (page) => {
+    if (page === 2) {
+      store.write("openclaw-alpha", "items", 1, "item 1 v3 (written mid-export)");
+      store.write("openclaw-alpha", "closed", 8, "closed mid-export");
+    }
+  };
+  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "incremental" });
+  store.beforeExportPage = undefined;
+  // The cursor is the first page's watermark, so the next refresh replays the mid-export writes.
+  assert.equal(
+    readCorpusCursorState(state)!.repositories["openclaw-alpha"]!.revision,
+    firstWatermark,
+  );
+  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "incremental" });
+  assert.deepEqual(files(path.join(state, "records")), await fullTree(store, root, "fresh"));
+});
+
+test("a failed incremental refresh leaves the tree and cursor untouched", async (t) => {
+  const root = fixtureRoot(t);
+  const store = new FakeStore(1);
+  store.write("openclaw-alpha", "items", 1, "one");
+  store.write("openclaw-alpha", "items", 2, "two");
+  const state = path.join(root, "state");
+  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
+  const tree = files(path.join(state, "records"));
+  const cursor = readFileSync(path.join(state, "cursor.json"), "utf8");
+  store.write("openclaw-alpha", "items", 1, null);
+  store.write("openclaw-alpha", "items", 2, "two v2");
+  store.write("openclaw-alpha", "closed", 1, "one closed");
+  // The first page (the tombstone) succeeds; the second fails.
+  store.failExportPage = store.exportPage + 2;
+  await assert.rejects(
+    refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "incremental" }),
+    /403/,
+  );
+  assert.deepEqual(files(path.join(state, "records")), tree);
+  assert.equal(readFileSync(path.join(state, "cursor.json"), "utf8"), cursor);
+  assert.equal(
+    readdirSync(state).some((name) => name.startsWith(".stage-")),
+    false,
+  );
+  store.failExportPage = undefined;
+  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "incremental" });
+  assert.deepEqual(files(path.join(state, "records")), await fullTree(store, root, "fresh"));
+});
+
+test("an incremental refresh refuses to start without a saved cursor", async (t) => {
+  const root = fixtureRoot(t);
+  const store = new FakeStore();
+  store.write("openclaw-alpha", "items", 1, "one");
+  await assert.rejects(
+    refreshCorpusRecords({
+      ...worker(store),
+      stateDir: path.join(root, "none"),
+      mode: "incremental",
+    }),
+    /run a full rebuild/,
+  );
+  const stale = path.join(root, "stale");
+  mkdirSync(path.join(stale, "records"), { recursive: true });
+  writeFileSync(
+    path.join(stale, "cursor.json"),
+    JSON.stringify({ schemaVersion: 1, sections: ["items"], fullRebuildAt: "", repositories: {} }),
+  );
+  assert.equal(readCorpusCursorState(stale), null);
+});
+
+test("a repository the store no longer lists is dropped", async (t) => {
+  const root = fixtureRoot(t);
+  const store = new FakeStore();
+  store.write("openclaw-alpha", "items", 1, "one");
+  store.write("openclaw-gone", "items", 2, "two");
+  const state = path.join(root, "state");
+  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
+  for (const key of store.rows.keys()) if (key.startsWith("openclaw-gone/")) store.rows.delete(key);
+  const summary = await refreshCorpusRecords({
+    ...worker(store),
+    stateDir: state,
+    mode: "incremental",
+  });
+  assert.equal(summary.removed, 1);
+  assert.equal(existsSync(path.join(state, "records", "openclaw-gone")), false);
+  assert.equal(readCorpusCursorState(state)!.repositories["openclaw-gone"], undefined);
+});
+
+test("a full rebuild restores snapshots, keeps only corpus sections and swaps atomically", async (t) => {
+  const root = fixtureRoot(t);
+  const store = new FakeStore();
+  store.write("openclaw-alpha", "items", 1, "one");
+  store.write("openclaw-alpha", "closed", 2, "two");
+  store.write("openclaw-alpha", "plans", 1, "plan");
+  const tree = path.join(root, "snapshot-tree");
+  for (const [section, name, content] of [
+    ["items", "1.md", "one"],
+    ["closed", "2.md", "two"],
+    ["plans", "1.md", "plan"],
+  ]) {
+    mkdirSync(path.join(tree, section!), { recursive: true });
+    writeFileSync(path.join(tree, section!, name!), content!);
+  }
+  const packed = await packWorkerRecordSnapshot({
+    repoRoot: tree,
+    archivePath: path.join(root, "snapshot.tar.gz"),
+  });
+  store.snapshots.set("openclaw-alpha", {
+    archive: readFileSync(packed.archivePath),
+    descriptor: {
+      repoSlug: "openclaw-alpha",
+      revisionWatermark: store.revision,
+      objectKey: "fixture",
+      bytes: packed.bytes,
+      uncompressedBytes: packed.uncompressedBytes,
+      fileCount: packed.fileCount,
+      createdAt: new Date(0).toISOString(),
+      access: { mode: "worker_range_proxy", maxChunkBytes: 64 },
+    },
+  });
+  store.write("openclaw-alpha", "items", 1, null);
+  store.write("openclaw-alpha", "items", 5, "five");
+  const state = path.join(root, "state");
+  mkdirSync(path.join(state, "records", "openclaw-old"), { recursive: true });
+  writeFileSync(path.join(state, "records", "openclaw-old", "leftover.md"), "old");
+  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
+  assert.deepEqual(files(path.join(state, "records")), {
+    "openclaw-alpha/closed/2.md": "two",
+    "openclaw-alpha/items/5.md": "five",
+  });
+  assert.deepEqual(
+    store.exports.map((call) => call.sinceRevision),
+    [3],
+  );
+  assert.deepEqual(store.exports[0]!.sections, ["items", "closed"]);
+  assert.deepEqual(
+    readdirSync(root).filter((name) => name.startsWith(".corpus-full-")),
+    [],
+  );
+});
+
+test("a failed full rebuild keeps the previous tree", async (t) => {
+  const root = fixtureRoot(t);
+  const store = new FakeStore();
+  store.write("openclaw-alpha", "items", 1, "one");
+  const state = path.join(root, "state");
+  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
+  const tree = files(state);
+  store.failExportPage = store.exportPage + 1;
+  await assert.rejects(
+    refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" }),
+    /403/,
+  );
+  assert.deepEqual(files(state), tree);
+  assert.deepEqual(
+    readdirSync(root).filter((name) => name.startsWith(".corpus-full-")),
+    [],
+  );
+});
+
+test("the tree keeps front matter only, and the aggregate is unchanged by it", async (t) => {
+  assert.equal(corpusFrontMatter("---\na: 1\n---\n\nbody\n---\nmore"), "---\na: 1\n---\n");
+  assert.equal(corpusFrontMatter("---\r\na: 1\r\n---\r\nbody"), "---\r\na: 1\r\n---\r\n");
+  assert.equal(corpusFrontMatter("no front matter"), "no front matter");
+  assert.equal(corpusFrontMatter("---\nunterminated"), "---\nunterminated");
+
+  const root = fixtureRoot(t);
+  const record = (number: number, decision: string) =>
+    [
+      "---",
+      "repository: openclaw/clawsweeper",
+      `number: ${number}`,
+      "type: pull_request",
+      "reviewed_at: 2026-10-19T10:00:00Z",
+      "item_created_at: 2026-10-01T00:00:00Z",
+      `title: "Item ${number}"`,
+      `review_record: ${JSON.stringify({ version: 1, decision: { decision, closeReason: null } })}`,
+      "---",
+      "",
+      "## Report",
+      "",
+      "Long report body ".repeat(200),
+      "",
+    ].join("\n");
+  const store = new FakeStore();
+  store.write("openclaw-clawsweeper", "items", 1, record(1, "keep_open"));
+  store.write("openclaw-clawsweeper", "closed", 2, record(2, "close"));
+  const state = path.join(root, "state");
+  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
+  store.write("openclaw-clawsweeper", "items", 3, record(3, "keep_open"));
+  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "incremental" });
+  const compact = files(path.join(state, "records"));
+  assert.ok(Object.values(compact).every((content) => !content.includes("Long report body")));
+  const whole = path.join(root, "whole");
+  for (const row of store.rows.values()) {
+    const file = path.join(whole, row.repoSlug, row.section, `${row.id}.md`);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, row.content!);
+  }
+  const visibility = {
+    "openclaw/clawsweeper": { public: true, checkedAt: new Date().toISOString() },
+  };
+  const now = Date.parse("2026-10-20T12:00:00Z");
+  const strip = (value: { generatedAt?: string }) => ({ ...value, generatedAt: undefined });
+  const fromTree = await aggregateRecords(
+    path.join(state, "records"),
+    { ...visibility },
+    undefined,
+    now,
+  );
+  const fromWhole = await aggregateRecords(whole, { ...visibility }, undefined, now);
+  assert.equal(fromTree.repositories[0]?.totals.records, 3);
+  assert.equal(fromTree.repositories[0]?.totals.typed, 3);
+  assert.deepEqual(strip(fromTree), strip(fromWhole));
+});
+
+test("refresh planning", () => {
+  const now = new Date("2026-10-20T15:37:00Z");
+  const quiet = new Date("2026-10-20T12:37:00Z");
+  const plan = (input: Partial<Parameters<typeof planCorpusRefresh>[0]>) =>
+    planCorpusRefresh({ event: "schedule", hasState: true, status: null, now, ...input }).mode;
+  assert.equal(plan({}), "incremental");
+  assert.equal(plan({ schedule: FULL_REBUILD_CRON }), "full");
+  assert.equal(plan({ hasState: false }), "skip");
+  assert.equal(plan({ hasState: false, now: quiet }), "full");
+  assert.equal(plan({ event: "workflow_dispatch", requestedMode: "full" }), "full");
+  assert.equal(plan({ event: "workflow_dispatch", requestedMode: "incremental" }), "incremental");
+  assert.equal(plan({ event: "workflow_dispatch", hasState: false }), "full");
+  assert.equal(plan({ event: "push" }), "skip");
+  const failed = (failures: number, hoursAgo: number): CorpusRefreshStatus => ({
+    schemaVersion: 1,
+    consecutiveFailures: failures,
+    lastFailureAt: new Date(now.getTime() - hoursAgo * 3_600_000).toISOString(),
+  });
+  // 2, 4, 8, then at most 12 hours between scheduled attempts after failures.
+  assert.equal(plan({ status: failed(1, 1) }), "skip");
+  assert.equal(plan({ status: failed(1, 2) }), "incremental");
+  assert.equal(plan({ status: failed(2, 3) }), "skip");
+  assert.equal(plan({ status: failed(2, 4) }), "incremental");
+  assert.equal(plan({ status: failed(5, 11) }), "skip");
+  assert.equal(plan({ status: failed(5, 12) }), "incremental");
+  assert.equal(plan({ status: failed(5, 1), schedule: FULL_REBUILD_CRON }), "skip");
+  // A manual run is the operator's call and ignores the backoff.
+  assert.equal(plan({ status: failed(5, 1), event: "workflow_dispatch" }), "incremental");
+});
+
+test("refresh outcomes count consecutive failures", () => {
+  const first = recordCorpusRefreshResult(null, {
+    outcome: "failure",
+    mode: "incremental",
+    startedAt: "2026-10-20T01:37:00Z",
+  });
+  const second = recordCorpusRefreshResult(first, {
+    outcome: "failure",
+    mode: "incremental",
+    startedAt: "2026-10-20T03:37:00Z",
+  });
+  assert.equal(second.consecutiveFailures, 2);
+  assert.equal(second.lastFailureAt, "2026-10-20T03:37:00Z");
+  const recovered = recordCorpusRefreshResult(second, {
+    outcome: "success",
+    mode: "incremental",
+    startedAt: "2026-10-20T07:37:00Z",
+  });
+  assert.equal(recovered.consecutiveFailures, 0);
+  assert.equal(recovered.lastSuccessAt, "2026-10-20T07:37:00Z");
+});
+
+type Workflow = {
+  on: Record<string, unknown> & { schedule?: Array<{ cron: string }> };
+  jobs: Record<
+    string,
+    {
+      "timeout-minutes"?: number;
+      steps: Array<{
+        name?: string;
+        id?: string;
+        run?: string;
+        uses?: string;
+        env?: Record<string, string>;
+        "timeout-minutes"?: number;
+      }>;
+    }
+  >;
+};
+const workflow = (name: string) =>
+  YAML.parse(readFileSync(path.join(".github/workflows", name), "utf8")) as Workflow;
+
+test("the site build never reads canonical records and publishes with the pinned wrangler", () => {
+  const site = workflow("dashboard-site.yml");
+  const source = readFileSync(".github/workflows/dashboard-site.yml", "utf8");
+  assert.doesNotMatch(source, /hydrate-state|CLAWSWEEPER_WEBHOOK_SECRET|refresh_corpus|npx/);
+  const publish = site.jobs.publish!;
+  assert.ok(publish["timeout-minutes"]! <= 20);
+  const restore = publish.steps.find((step) => step.name === "Restore corpus aggregate");
+  assert.match(
+    String((restore as { with?: Record<string, string> }).with?.["restore-keys"]),
+    /^dashboard-corpus-aggregate-$/,
+  );
+  assert.match(
+    publish.steps.find((step) => step.name === "Publish to Cloudflare Pages")!.run!,
+    /pnpm exec wrangler pages deploy/,
+  );
+  const site_package = JSON.parse(readFileSync("dashboard-site/package.json", "utf8"));
+  assert.match(site_package.devDependencies.wrangler, /^\d+\.\d+\.\d+$/);
+});
+
+test("the corpus workflow refreshes hourly, rebuilds weekly and bounds every heavy step", () => {
+  const corpus = workflow("dashboard-corpus.yml");
+  const crons = corpus.on.schedule!.map((entry) => entry.cron);
+  assert.ok(crons.includes(FULL_REBUILD_CRON));
+  assert.ok(crons.some((cron) => /^\d+ \* \* \* \*$/.test(cron)));
+  const steps = corpus.jobs.refresh!.steps;
+  const step = (id: string) => steps.find((entry) => entry.id === id)!;
+  assert.match(step("incremental").run!, /--mode incremental/);
+  assert.match(step("full").run!, /--mode full/);
+  assert.ok(step("incremental")["timeout-minutes"]! <= 30);
+  assert.ok(step("full")["timeout-minutes"]! <= 60);
+  // Either refresh plus the aggregate fits inside the job, so a slow refresh is cut off by its
+  // own step timeout and still records the failure for the backoff.
+  assert.ok(
+    Math.max(step("incremental")["timeout-minutes"]!, step("full")["timeout-minutes"]!) +
+      step("aggregate")["timeout-minutes"]! <=
+      corpus.jobs.refresh!["timeout-minutes"]!,
+  );
+  // The record tree is saved only after a complete refresh and aggregate.
+  assert.match(
+    String((step("save-tree") as { if?: string }).if),
+    /steps\.aggregate\.outcome == 'success'/,
+  );
+});
