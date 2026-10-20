@@ -5,6 +5,8 @@
 //   node scripts/dashboard-corpus.ts refresh --state <dir> --mode incremental|full
 //   node scripts/dashboard-corpus.ts record  --status <file> --outcome success|failure
 //                                            --mode incremental|full --started-at <iso>
+//   node scripts/dashboard-corpus.ts pack    --state <dir> --archive <file>
+//   node scripts/dashboard-corpus.ts unpack  --archive <file> --state <dir>
 //
 // The corpus reads only the `items» and `closed» sections. A full rebuild hydrates them from
 // the stored R2 snapshots plus the journal (the same lifecycle as scripts/hydrate-state.ts);
@@ -18,17 +20,31 @@
 // The corpus aggregate reads front matter only (dashboard-site/scripts/records.ts), so the tree
 // keeps each record's front matter and drops the report body. That keeps the cached tree, and
 // every cache save and restore, a fraction of the canonical size.
+//
+// The tree holds canonical records of every repository the store lists, private ones included,
+// and Actions caches of the default branch are readable by pull-request workflows. The tree is
+// therefore cached only as an AES-256-GCM sealed archive keyed from the records secret, which
+// pull-request workflows from forks never receive.
+import { spawn } from "node:child_process";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
 import {
+  closeSync,
+  createReadStream,
+  createWriteStream,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  openSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -377,6 +393,102 @@ async function rebuildCorpusRecords(
   }
 }
 
+const SEALED_MAGIC = Buffer.from("CSCORPUS1\n");
+const SEALED_IV_BYTES = 12;
+const SEALED_TAG_BYTES = 16;
+
+function sealingKey(secret: string) {
+  if (!secret) throw new Error("CLAWSWEEPER_RECORDS_SECRET is required to seal the corpus tree");
+  return createHmac("sha256", secret).update("clawsweeper dashboard corpus tree v1").digest();
+}
+
+function waitForExit(child: ReturnType<typeof spawn>, label: string) {
+  return new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) =>
+      code === 0 ? resolve() : reject(new Error(`${label} failed (${signal ?? code})`)),
+    );
+  });
+}
+
+// tar | gzip | AES-256-GCM: magic, IV, ciphertext, then the authentication tag.
+export async function sealCorpusState(stateDir: string, archive: string, secret: string) {
+  if (!readCorpusCursorState(stateDir)) throw new Error(`No corpus state to seal in ${stateDir}`);
+  const key = sealingKey(secret);
+  mkdirSync(path.dirname(archive), { recursive: true });
+  const temporary = `${archive}.${process.pid}.tmp`;
+  const iv = randomBytes(SEALED_IV_BYTES);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const tar = spawn("tar", ["-czf", "-", "-C", stateDir, "cursor.json", "records"], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  const exited = waitForExit(tar, "tar");
+  exited.catch(() => undefined);
+  try {
+    await pipeline(
+      tar.stdout!,
+      cipher,
+      async function* (source) {
+        yield SEALED_MAGIC;
+        yield iv;
+        for await (const chunk of source) yield chunk as Buffer;
+        yield cipher.getAuthTag();
+      },
+      createWriteStream(temporary),
+    );
+    await exited;
+    renameSync(temporary, archive);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+  return { bytes: statSync(archive).size };
+}
+
+// Authenticates and unpacks into a staging directory; the state is replaced only on success.
+export async function unsealCorpusState(archive: string, stateDir: string, secret: string) {
+  const key = sealingKey(secret);
+  const size = statSync(archive).size;
+  const header = SEALED_MAGIC.length + SEALED_IV_BYTES;
+  if (size < header + SEALED_TAG_BYTES) throw new Error("Sealed corpus tree is truncated");
+  const descriptor = openSync(archive, "r");
+  const prefix = Buffer.alloc(header);
+  const tag = Buffer.alloc(SEALED_TAG_BYTES);
+  try {
+    readSync(descriptor, prefix, 0, header, 0);
+    readSync(descriptor, tag, 0, SEALED_TAG_BYTES, size - SEALED_TAG_BYTES);
+  } finally {
+    closeSync(descriptor);
+  }
+  if (!prefix.subarray(0, SEALED_MAGIC.length).equals(SEALED_MAGIC)) {
+    throw new Error("Sealed corpus tree has an unknown format");
+  }
+  const decipher = createDecipheriv("aes-256-gcm", key, prefix.subarray(SEALED_MAGIC.length));
+  decipher.setAuthTag(tag);
+  const parent = path.dirname(path.resolve(stateDir));
+  mkdirSync(parent, { recursive: true });
+  const staging = mkdtempSync(path.join(parent, ".corpus-unseal-"));
+  try {
+    const tar = spawn("tar", ["-xzf", "-", "-C", staging], {
+      stdio: ["pipe", "ignore", "inherit"],
+    });
+    const exited = waitForExit(tar, "tar");
+    exited.catch(() => undefined);
+    await pipeline(
+      createReadStream(archive, { start: header, end: size - SEALED_TAG_BYTES - 1 }),
+      decipher,
+      tar.stdin!,
+    );
+    await exited;
+    if (!readCorpusCursorState(staging))
+      throw new Error("Sealed corpus tree holds no usable state");
+    rmSync(stateDir, { force: true, recursive: true });
+    renameSync(staging, stateDir);
+  } finally {
+    rmSync(staging, { force: true, recursive: true });
+  }
+}
+
 export function planCorpusRefresh(input: {
   event: string;
   schedule?: string;
@@ -470,8 +582,21 @@ async function main(argv: string[]) {
       mode: { type: "string" },
       outcome: { type: "string" },
       "started-at": { type: "string" },
+      archive: { type: "string" },
     },
   });
+  const secret = () =>
+    process.env.CLAWSWEEPER_RECORDS_SECRET || process.env.CLAWSWEEPER_WEBHOOK_SECRET || "";
+  if (command === "pack" || command === "unpack") {
+    if (!values.state || !values.archive)
+      throw new Error(`${command} requires --state and --archive`);
+    if (command === "pack") {
+      console.log(JSON.stringify(await sealCorpusState(values.state, values.archive, secret())));
+    } else {
+      await unsealCorpusState(values.archive, values.state, secret());
+    }
+    return;
+  }
   if (command === "plan") {
     if (!values.state || !values.status) throw new Error("plan requires --state and --status");
     const startedAt = new Date();
@@ -496,8 +621,7 @@ async function main(argv: string[]) {
   }
   if (command === "refresh") {
     if (!values.state) throw new Error("refresh requires --state");
-    const webhookSecret =
-      process.env.CLAWSWEEPER_RECORDS_SECRET ?? process.env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
+    const webhookSecret = secret();
     if (!webhookSecret) throw new Error("CLAWSWEEPER_RECORDS_SECRET is required");
     const summary = await refreshCorpusRecords({
       stateDir: values.state,
@@ -531,7 +655,7 @@ async function main(argv: string[]) {
     console.log(JSON.stringify(status));
     return;
   }
-  throw new Error("usage: dashboard-corpus.ts plan|refresh|record [options]");
+  throw new Error("usage: dashboard-corpus.ts plan|refresh|record|pack|unpack [options]");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {

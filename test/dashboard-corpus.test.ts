@@ -23,6 +23,8 @@ import {
   readCorpusCursorState,
   recordCorpusRefreshResult,
   refreshCorpusRecords,
+  sealCorpusState,
+  unsealCorpusState,
   type CorpusRefreshStatus,
 } from "../scripts/dashboard-corpus.ts";
 import { packWorkerRecordSnapshot } from "../scripts/worker-records.ts";
@@ -462,6 +464,43 @@ test("the tree keeps front matter only, and the aggregate is unchanged by it", a
   assert.deepEqual(strip(fromTree), strip(fromWhole));
 });
 
+test("the cached tree is sealed with the records secret", async (t) => {
+  const root = fixtureRoot(t);
+  const store = new FakeStore();
+  store.write("openclaw-private", "items", 1, "---\ntitle: private\n---\n");
+  store.write("openclaw-private", "closed", 2, "---\ntitle: also private\n---\n");
+  const state = path.join(root, "state");
+  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
+  const archive = path.join(root, "cache", "tree.sealed");
+  await sealCorpusState(state, archive, "records-secret");
+  const sealed = readFileSync(archive);
+  assert.equal(sealed.includes(Buffer.from("private")), false);
+  assert.equal(sealed.includes(Buffer.from("cursor.json")), false);
+
+  const restored = path.join(root, "restored");
+  await unsealCorpusState(archive, restored, "records-secret");
+  assert.deepEqual(files(restored), files(state));
+
+  // A wrong key or a tampered archive never replaces the existing state.
+  await assert.rejects(unsealCorpusState(archive, restored, "fork-guess"));
+  const tampered = Buffer.from(sealed);
+  tampered[tampered.length - 40] ^= 1;
+  writeFileSync(path.join(root, "tampered.sealed"), tampered);
+  await assert.rejects(
+    unsealCorpusState(path.join(root, "tampered.sealed"), restored, "records-secret"),
+  );
+  assert.deepEqual(files(restored), files(state));
+  assert.deepEqual(
+    readdirSync(root).filter((name) => name.startsWith(".corpus-unseal-")),
+    [],
+  );
+  await assert.rejects(
+    sealCorpusState(path.join(root, "missing"), archive, "records-secret"),
+    /No corpus state/,
+  );
+  await assert.rejects(sealCorpusState(state, archive, ""), /SECRET is required/);
+});
+
 test("refresh planning", () => {
   const now = new Date("2026-10-20T15:37:00Z");
   const quiet = new Date("2026-10-20T12:37:00Z");
@@ -566,14 +605,25 @@ test("the corpus workflow refreshes hourly, rebuilds weekly and bounds every hea
   assert.ok(step("full")["timeout-minutes"]! <= 60);
   // Either refresh plus the aggregate fits inside the job, so a slow refresh is cut off by its
   // own step timeout and still records the failure for the backoff.
+  // Ten minutes stay for setup, sealing and the cache saves.
   assert.ok(
     Math.max(step("incremental")["timeout-minutes"]!, step("full")["timeout-minutes"]!) +
-      step("aggregate")["timeout-minutes"]! <=
+      step("aggregate")["timeout-minutes"]! +
+      10 <=
       corpus.jobs.refresh!["timeout-minutes"]!,
   );
-  // The record tree is saved only after a complete refresh and aggregate.
-  assert.match(
-    String((step("save-tree") as { if?: string }).if),
-    /steps\.aggregate\.outcome == 'success'/,
-  );
+  // The record tree is sealed and saved only after a complete refresh and aggregate, and the
+  // outcome that drives the backoff is recorded only from a sealed tree.
+  const condition = (id: string) => String((step(id) as { if?: string }).if);
+  assert.match(condition("seal-tree"), /steps\.aggregate\.outcome == 'success'/);
+  assert.match(condition("save-tree"), /steps\.seal-tree\.outcome == 'success'/);
+  const record = steps.find((entry) => entry.name === "Record refresh outcome")!;
+  assert.match(String(record.env?.OUTCOME), /steps\.seal-tree\.outcome == 'success'/);
+  // The plain tree (private repositories included) is never cached; only the sealed archive is.
+  for (const entry of steps.filter((candidate) =>
+    String(candidate.uses).startsWith("actions/cache"),
+  )) {
+    const cachePath = String((entry as { with?: Record<string, string> }).with?.path);
+    assert.ok([".corpus-cache", ".dashboard-corpus"].includes(cachePath), cachePath);
+  }
 });

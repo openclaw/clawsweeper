@@ -185,7 +185,11 @@ Each build reads four sources:
   corpus refresh never blocks or times out a publish. The corpus workflow keeps a
   cached tree of the `items` and `closed` records (the only sections the corpus
   reads), trimmed to their front matter (the only part it reads), with a
-  per-repository cursor (`scripts/dashboard-corpus.ts`). Every hour
+  per-repository cursor (`scripts/dashboard-corpus.ts`). The tree holds records
+  of private repositories too and default-branch Actions caches are readable from
+  pull-request workflows, so it is cached only as an AES-256-GCM archive keyed from
+  `CLAWSWEEPER_WEBHOOK_SECRET` (never available to fork pull requests), and the
+  cached `visibility.json` keeps public answers only. Every hour
   it lists the record slugs, skips every repository whose newest store revision is
   not above its cursor, and asks the export journal only for records above the
   cursor; the journal keeps one row per record at its newest store revision and

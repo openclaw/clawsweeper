@@ -7,6 +7,10 @@ name: Dashboard corpus
 # weekly in the quietest review hour and on request; it hydrates the R2 snapshots plus the journal
 # read-only and replaces the tree only when every repository hydrated.
 #
+# The record tree includes private repositories' records and default-branch caches are readable
+# from pull-request workflows, so the tree is cached only as an archive sealed with a key derived
+# from the records secret (never available to fork pull requests); the plain tree is never cached.
+#
 # Publishing never waits for this workflow: the 15-minute site build restores the newest saved
 # aggregate. A failed refresh saves no record tree, keeps the previous aggregate, and backs off
 # (2, 4, 8, then 12 hours between scheduled attempts) instead of retrying against the queue.
@@ -38,7 +42,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
     permissions:
       contents: read
       # Prunes superseded record-tree caches, which are large.
@@ -66,9 +70,9 @@ jobs:
         id: tree
         uses: actions/cache/restore@v6
         with:
-          path: .corpus-records
-          key: dashboard-corpus-records-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: dashboard-corpus-records-
+          path: .corpus-cache
+          key: dashboard-corpus-tree-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: dashboard-corpus-tree-
           lookup-only: true
 
       - name: Plan refresh
@@ -84,9 +88,9 @@ jobs:
         if: ${{ steps.plan.outputs.mode == 'incremental' }}
         uses: actions/cache/restore@v6
         with:
-          path: .corpus-records
-          key: dashboard-corpus-records-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: dashboard-corpus-records-
+          path: .corpus-cache
+          key: dashboard-corpus-tree-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: dashboard-corpus-tree-
 
       - name: Refresh changed records
         id: incremental
@@ -95,7 +99,10 @@ jobs:
         env:
           CLAWSWEEPER_RECORDS_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_RECORDS_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-        run: node scripts/dashboard-corpus.ts refresh --state .corpus-records --mode incremental
+        run: |
+          set -euo pipefail
+          node scripts/dashboard-corpus.ts unpack --archive .corpus-cache/tree.sealed --state .corpus-records
+          node scripts/dashboard-corpus.ts refresh --state .corpus-records --mode incremental
 
       - name: Rebuild every record
         id: full
@@ -114,23 +121,33 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node dashboard-site/scripts/build-corpus.ts --records .corpus-records/records --out .dashboard-corpus
 
+      # Only a complete refresh saves the tree: after a failure the next run starts again from
+      # the previous tree and cursor, so nothing is half-applied.
+      - name: Seal record tree
+        id: seal-tree
+        if: ${{ steps.aggregate.outcome == 'success' }}
+        env:
+          CLAWSWEEPER_RECORDS_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          rm -rf .corpus-cache
+          node scripts/dashboard-corpus.ts pack --state .corpus-records --archive .corpus-cache/tree.sealed
+
       - name: Record refresh outcome
         if: ${{ always() && (steps.plan.outputs.mode == 'incremental' || steps.plan.outputs.mode == 'full') }}
         env:
           MODE: ${{ steps.plan.outputs.mode }}
           STARTED_AT: ${{ steps.plan.outputs.started_at }}
-          OUTCOME: ${{ steps.aggregate.outcome == 'success' && 'success' || 'failure' }}
+          OUTCOME: ${{ steps.seal-tree.outcome == 'success' && 'success' || 'failure' }}
         run: node scripts/dashboard-corpus.ts record --status .dashboard-corpus/status.json --outcome "$OUTCOME" --mode "$MODE" --started-at "$STARTED_AT"
 
-      # Only a complete refresh saves the tree: after a failure the next run starts again from
-      # the previous tree and cursor, so nothing is half-applied.
       - name: Save record tree
         id: save-tree
-        if: ${{ steps.aggregate.outcome == 'success' }}
+        if: ${{ steps.seal-tree.outcome == 'success' }}
         uses: actions/cache/save@v6
         with:
-          path: .corpus-records
-          key: dashboard-corpus-records-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .corpus-cache
+          key: dashboard-corpus-tree-${{ github.run_id }}-${{ github.run_attempt }}
 
       # Saved after failures too, so the backoff survives; the previous corpus.json stays inside.
       - name: Save corpus aggregate
@@ -148,7 +165,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for prefix in dashboard-corpus-records- dashboard-corpus-aggregate-; do
+          for prefix in dashboard-corpus-tree- dashboard-corpus-aggregate-; do
             keep=2
             if [ "$prefix" = dashboard-corpus-aggregate- ]; then keep=4; fi
             gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/caches" \

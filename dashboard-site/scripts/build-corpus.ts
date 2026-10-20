@@ -4,7 +4,9 @@
 //
 // Run by the Dashboard corpus workflow after scripts/dashboard-corpus.ts refreshed the tree. It
 // writes <out>/corpus.json, which the 15-minute Dashboard site build picks up, and keeps
-// <out>/visibility.json between runs so repository visibility is checked at most once a day.
+// <out>/visibility.json between runs so a public repository's visibility is checked at most once
+// a day. Both land in an Actions cache, so neither names a non-public repository: the aggregate
+// leaves those out, and only public answers are kept (non-public ones are checked again).
 // GITHUB_TOKEN raises the visibility-check rate limit.
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -30,7 +32,10 @@ try {
 }
 const startedAt = Date.now();
 const cache = await aggregateRecords(values.records, visibility, process.env.GITHUB_TOKEN);
-await writeAtomic(visibilityPath, JSON.stringify(visibility));
+await writeAtomic(
+  visibilityPath,
+  JSON.stringify(Object.fromEntries(Object.entries(visibility).filter(([, entry]) => entry.public === true))),
+);
 await writeAtomic(join(out, 'corpus.json'), JSON.stringify(cache));
 console.log(
   JSON.stringify({
