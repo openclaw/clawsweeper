@@ -109,7 +109,7 @@ function valueFor(name: string): string {
     INPUTS_TARGET_DIR: "target",
     INPUTS_STATE_PATH: "state with spaces",
     PIN_FILE: "target/extensions/codex/package.json",
-    INPUTS_PNPM_VERSION: "12.4.1",
+    INPUTS_PNPM_VERSION: "12.15.0",
     INPUTS_CODEX_HOME: "codex home",
     INPUTS_OPENCLAW_SOURCE_REF: "a".repeat(40),
     STATE_COORDINATOR_URL: "https://queue.invalid",
