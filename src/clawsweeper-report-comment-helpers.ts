@@ -86,26 +86,30 @@ function publicBeforeMergeItems(options: {
     detail: string,
     identity?: { distinctKey: string },
     state: PublicBeforeMergeItem["state"] = "needs-changes",
+    owner?: PublicBeforeMergeItem["owner"],
   ) => {
     const rawDetail = stripListMarker(detail);
     const cleanDetail = sentence(rawDetail);
     // Typed findings pass a distinct key (title and location) so independent
     // findings that share remediation wording are all kept; free-form guidance
     // still de-duplicates on the detail text across sections.
-    const key = normalizePublicReviewText(
-      identity ? `${identity.distinctKey} ${cleanDetail}` : cleanDetail,
-    );
+    const key =
+      (owner ?? "unspecified") +
+      ":" +
+      normalizePublicReviewText(identity ? `${identity.distinctKey} ${cleanDetail}` : cleanDetail);
     if (!cleanDetail || /^none[.!]?$/i.test(rawDetail) || isReportNoneList(cleanDetail)) return;
     const duplicate =
       seen.get(key) ??
       (!identity
-        ? items.find((item) => !publicReviewTextDiffers(item.detail, cleanDetail))
+        ? items.find(
+            (item) => item.owner === owner && !publicReviewTextDiffers(item.detail, cleanDetail),
+          )
         : undefined);
     if (duplicate) {
       if (state === "blocked") duplicate.state = "blocked";
       return;
     }
-    const item = { label, detail: cleanDetail, state };
+    const item = { label, detail: cleanDetail, state, ...(owner ? { owner } : {}) };
     seen.set(key, item);
     items.push(item);
   };
@@ -166,13 +170,17 @@ function publicBeforeMergeItems(options: {
     add("Resolve merge risk", risk, undefined, "blocked");
   }
   // The model owns next-step intent. A report without a typed next step fails closed.
-  if (options.nextStepAssessment?.kind === "required") {
+  if (options.nextStepAssessment && options.nextStepAssessment.kind !== "none") {
+    const maintainerOwned = options.nextStepAssessment.kind === "maintainer";
     add(
-      "Complete next step",
+      maintainerOwned ? "Await maintainer action" : "Complete next step",
       typedBlockerDetail(
         options.nextStepAssessment.text,
         "Complete the required follow-up from this review before merge.",
       ),
+      undefined,
+      maintainerOwned ? "blocked" : "needs-changes",
+      maintainerOwned ? "maintainer" : undefined,
     );
   } else if (!options.reviewFailed && options.nextStepAssessment === undefined) {
     add(
@@ -235,8 +243,13 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
       patchQualityBlocked,
       requiredRatingSteps: patchQualityBlocked ? rating.nextSteps : [],
     });
-    const block = (condition: boolean, label: string, detail: string) => {
-      if (condition) items.push({ state: "blocked", label, detail });
+    const block = (
+      condition: boolean,
+      label: string,
+      detail: string,
+      owner?: PublicBeforeMergeItem["owner"],
+    ) => {
+      if (condition) items.push({ state: "blocked", label, detail, ...(owner ? { owner } : {}) });
     };
     const number = frontMatterValue(markdown, "number") ?? "";
     block(
@@ -265,6 +278,7 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
       decisionPending,
       "Resolve maintainer decision",
       "Resolve the maintainer decision shown above before merge.",
+      "maintainer",
     );
     const product = decision.productReview;
     block(
@@ -277,6 +291,7 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
       product.worthIt === "needs_maintainer" && !decisionPending,
       "Product call needed",
       product.reason || "An owner must decide whether this change belongs in the product.",
+      "maintainer",
     );
     // The model owns the stored-data judgement; the host only shows its verdict.
     block(

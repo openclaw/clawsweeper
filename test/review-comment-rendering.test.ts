@@ -225,6 +225,7 @@ test("canonical next-step report round-trip preserves explicit intent and absent
     undefined,
     { kind: "none", text: "" },
     { kind: "required", text: "Owner approval." },
+    { kind: "maintainer", text: "Owner approval." },
   ] as const) {
     const report = evidenceReport([], "keep_open", nextStep);
     assert.deepEqual(readReviewRecord(report)?.decision.nextStep, nextStep);
@@ -238,7 +239,7 @@ test("canonical next-step report round-trip preserves explicit intent and absent
         publicSection(comment, "Before merge"),
         /Complete next step|Run a fresh ClawSweeper review/,
       );
-    if (nextStep?.kind === "required")
+    if (nextStep?.kind === "required" || nextStep?.kind === "maintainer")
       assert.match(publicSection(comment, "Before merge"), /Owner approval\./);
   }
 });
