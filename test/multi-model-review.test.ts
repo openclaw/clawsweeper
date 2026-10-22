@@ -505,7 +505,18 @@ test(
   { skip: process.platform !== "linux" },
   (t) => {
     const f = processFixture(t, true);
-    const deadlineAt = Date.now() + 2000;
+    // Source admission and native startup share this absolute budget. Exercise
+    // a slow native startup explicitly instead of assuming both workers can
+    // reach their readiness log within two seconds on a shared CI runner.
+    const binary = join(f.root, "fake-codex.cjs");
+    const original = readFileSync(binary, "utf8");
+    const delayed = original.replace(
+      'fs.readFileSync(0, "utf8");',
+      'fs.readFileSync(0, "utf8"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);',
+    );
+    assert.notEqual(delayed, original, "slow native startup control was not installed");
+    writeFileSync(binary, delayed);
+    const deadlineAt = Date.now() + 10_000;
     const jobs: AssessmentJob[] = [1, 2, 3].map((index) => ({
       id: "member-" + index,
       deadlineAt,
