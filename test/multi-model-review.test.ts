@@ -2373,3 +2373,100 @@ test("an earlier native role cannot rewrite a queued assessment's host-bound opt
   assert.equal(calls.filter((call) => call.model === "third-model").length, 0);
   assert.equal(calls.filter((call) => call.model === "coordinator-model").length, 0);
 });
+
+for (const reason of [
+  "source_incompatible",
+  "setup_script_failed",
+  "review_commit_fetch_failed",
+] as const)
+  test("coordinator source preparation cannot replay completed member work: " + reason, (t) => {
+    const { options } = fixture(t);
+    const original = new ReviewSourcePreparationError(
+      reason,
+      "controlled coordinator source failure",
+    );
+    let batches = 0;
+    const result = runMultiModelReview(options, (jobs) => {
+      if (++batches === 2) throw original;
+      return jobs.map(() => ({ decision: decision() }));
+    });
+    assert.equal(batches, 2);
+    assert.equal(result.decision, undefined);
+    assert.equal(result.multiModel.status, "incomplete");
+    assert.equal(
+      result.multiModel.members.filter((member) => member.status === "complete").length,
+      2,
+    );
+    assert.equal(result.failureDisposition?.retryable, false);
+    assert.equal(result.sourcePreparationFailure, original);
+    const error = new CodexReviewError({
+      message: "Multi-model review incomplete",
+      status: null,
+      failureDisposition: result.failureDisposition,
+      cause: result.sourcePreparationFailure,
+    });
+    assert.equal(error.cause, original);
+    assert.equal(retryableBatchFailure(error), false);
+    const stored = report(decision(), result.multiModel);
+    assert.deepEqual(readReviewRecord(stored)!.multiModel, result.multiModel);
+    assert.ok(
+      !stored.includes(original.message),
+      "private source diagnostics are not durable model evidence",
+    );
+  });
+
+test("actual native members survive coordinator source preparation refusal without another model", (t) => {
+  const f = processFixture(t);
+  const original = new ReviewSourcePreparationError(
+    "review_commit_fetch_failed",
+    "controlled coordinator acquisition refusal",
+  );
+  const mkdir = fs.mkdirSync;
+  let refused = 0;
+  try {
+    t.mock.method(fs, "mkdirSync", (...args: Parameters<typeof fs.mkdirSync>) => {
+      if (String(args[0]).includes("coordinator.private")) {
+        refused++;
+        throw original;
+      }
+      return mkdir(...args);
+    });
+    syncBuiltinESMExports();
+    const result = runMultiModelReview(f.options);
+    assert.equal(refused, 1);
+    assert.equal(result.multiModel.status, "incomplete");
+    assert.equal(
+      result.multiModel.members.filter((member) => member.status === "complete").length,
+      2,
+    );
+    assert.equal(result.sourcePreparationFailure, original);
+    assert.equal(result.failureDisposition?.retryable, false);
+    const calls = readFileSync(f.log, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((call) => call.model !== "coordinator-model"));
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
+test("post-member source recovery still bypasses incomplete advisory publication", (t) => {
+  const { options } = fixture(t);
+  const recovery = new ValidationRecoveryRequiredError("unsettled coordinator source", undefined);
+  const original = Object.assign(
+    new ReviewSourcePreparationError("review_checkout_failed", "source recovery"),
+    { cause: recovery },
+  );
+  let batches = 0;
+  assert.throws(
+    () =>
+      runMultiModelReview(options, (jobs) => {
+        if (++batches === 2) throw original;
+        return jobs.map(() => ({ decision: decision() }));
+      }),
+    (value) => value === original && validationRecoveryRequired(value) === recovery,
+  );
+});

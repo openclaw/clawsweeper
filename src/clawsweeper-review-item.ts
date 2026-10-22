@@ -264,6 +264,7 @@ export function runPreparedReviewItem(
             message:
               "Multi-model review incomplete; independent assessments are advisory, not consensus.",
             status: null,
+            ...(result.sourcePreparationFailure ? { cause: result.sourcePreparationFailure } : {}),
             failureDisposition: result.failureDisposition ?? {
               retryable: false,
               terminal: false,

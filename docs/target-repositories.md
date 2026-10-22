@@ -108,7 +108,10 @@ full validated member Decisions as untrusted evidence and selects the canonical
 priority, relevance and labels through the existing parser/publication owners.
 A small reject-only guard prevents dropping explicit contributor, proof,
 compatibility, owner, product or security holds, or creating new automation
-eligibility. Failure or veto means incomplete review, not a synthetic consensus.
+eligibility. Failure or veto means incomplete review, not a synthetic consensus. Source
+preparation may retain its ordinary typed retry owner before members run; after
+the member batch returns, a coordinator preparation failure is nonretryable and
+preserves completed advisory assessments plus the private original source cause.
 Host-owned failure class, terminal status and retry disposition cross the worker
 boundary without raw diagnostics; a terminal, unknown or vetoed outcome does not
 authorize another potentially paid batch. Hosted producers exit 82 for a nonretryable

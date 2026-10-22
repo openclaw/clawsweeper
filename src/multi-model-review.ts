@@ -476,6 +476,7 @@ export function runMultiModelReview(
   decision?: Decision;
   multiModel: MultiModelReviewRecord;
   failureDisposition?: AssessmentFailureDisposition;
+  sourcePreparationFailure?: ReviewSourcePreparationError;
 } {
   const config = options.assessment.repositoryReview!;
   const plan = config.multiModel!;
@@ -500,6 +501,7 @@ export function runMultiModelReview(
     coordinator: { id: "coordinator", selection: plan.coordinator, status: "failed" },
     vetoes: [],
   };
+  let memberBatchReturned = false;
   const incomplete = (roles: readonly MultiModelAssessment[] = []) => {
     const failures = roles.map(
       (role) =>
@@ -580,6 +582,7 @@ export function runMultiModelReview(
       job("member-" + (index + 1), selection, "independent"),
     );
     const results = assess(jobs);
+    memberBatchReturned = true;
     const members: MultiModelAssessment[] = jobs.map((job, index) => {
       const result = results[index] ?? {};
       const decision = result.decision
@@ -637,10 +640,16 @@ export function runMultiModelReview(
     multiModel.status = "complete";
     return { decision, multiModel };
   } catch (error) {
-    if (error instanceof AgentInputScanError || error instanceof ReviewSourcePreparationError)
-      throw error;
+    if (error instanceof AgentInputScanError) throw error;
     const recovery = validationRecoveryRequired(error);
     if (recovery) throw error;
+    if (error instanceof ReviewSourcePreparationError) {
+      if (!memberBatchReturned) throw error;
+      // The source owner may be retryable before inference, but a coordinator
+      // preparation failure must not replay already completed paid members.
+      // Keep its original typed cause private; durable records retain enums only.
+      return { ...incomplete(), sourcePreparationFailure: error };
+    }
     // Unknown host/orchestration failures are not permission to repeat paid work.
     // Preserve validated members already completed before coordinator setup/cleanup.
     return incomplete();

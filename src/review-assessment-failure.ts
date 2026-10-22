@@ -67,8 +67,9 @@ export class CodexReviewError extends Error {
     diagnostic?: string;
     retryHint?: string;
     failureDisposition?: AssessmentFailureDisposition;
+    cause?: unknown;
   }) {
-    super(options.message);
+    super(options.message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "CodexReviewError";
     this.status = options.status;
     this.stdout = options.stdout ?? "";
