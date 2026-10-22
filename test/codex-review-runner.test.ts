@@ -1446,6 +1446,9 @@ import { syncBuiltinESMExports } from "node:module";
 const spawn = childProcess.spawn;
 childProcess.spawn = function(...args) {
   const child = spawn.apply(this, args);
+  // The injected Windows exit tuple belongs to model execution, not the
+  // read-only checkout probe that now receives the same per-call environment.
+  if (!Array.isArray(args[1]) || args[1][0] !== "exec") return child;
   const once = child.once;
   child.once = function(event, listener) {
     return once.call(this, event, event === "close"

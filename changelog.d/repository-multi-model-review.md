@@ -1,0 +1,1 @@
+- Add opt-in repository-configured full multi-model PR assessments with one reconciled review comment and durable individual assessments; ordinary reviews remain single-model.

@@ -207,6 +207,7 @@ test("review runtime forwards the private root before source preparation failure
     };
     const runtime = createReviewRuntime({
       ensureDir: () => assert.fail("source preparation must finish before model output setup"),
+      untrustedCodexEnv: () => ({ CLAWSWEEPER_RUNNER: "codex" }),
     } as Parameters<typeof createReviewRuntime>[0]);
     assert.throws(
       () =>

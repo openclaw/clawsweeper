@@ -1,4 +1,8 @@
 import { validationRecoveryRequired } from "./validation-recovery.js";
+import { CodexReviewError } from "./review-assessment-failure.js";
+import { runMultiModelReview } from "./multi-model-review.js";
+import { markdownFor as renderDecisionReport } from "./clawsweeper-report-document.js";
+import type { MultiModelReviewRecord } from "./review-record.js";
 import { join } from "node:path";
 import type { RepositoryReviewConfig } from "./repository-review-config.js";
 import { applyHiddenPayloadSecurityReview } from "./repair/security-signals.js";
@@ -12,7 +16,11 @@ import { PUBLIC_CODEX_MODEL } from "./codex-env.js";
 import { LOCAL_REVIEW_WEB_SEARCH_CONFIG } from "./commit-sweeper.js";
 import { pullRequestHistoryCoverage } from "./pr-review-history.js";
 import { pullRequestProvenanceEvidence, type CommitPullResolver } from "./pr-review-provenance.js";
-import { produceReviewOutput, type configureReviewOutputItems } from "./review-output-policy.js";
+import {
+  produceReviewOutput,
+  reviewAssessmentOutputDir,
+  type configureReviewOutputItems,
+} from "./review-output-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import type { CodexFailureLogKind } from "./clawsweeper-review-core.js";
 import type {
@@ -141,6 +149,27 @@ export function runPreparedReviewItem(
   onPrompt?.(prompt.text);
   const snapshotHash = itemSnapshotHash(item, context);
   let decision: Decision;
+  let multiModel: MultiModelReviewRecord | undefined;
+  const modelCalls =
+    item.kind === "pull_request" && options.repositoryReview?.multiModel
+      ? options.repositoryReview.multiModel.reviewers.length + 1
+      : 1;
+  const modelBudget = {
+    promptFileBytes: Math.floor(itemOutputBudget.promptFileBytes / modelCalls),
+    resultFileBytes: Math.floor(itemOutputBudget.resultFileBytes / modelCalls),
+    streamFileBytes: Math.floor(itemOutputBudget.streamFileBytes / modelCalls),
+  };
+  const postprocess = (value: Decision) =>
+    applyHiddenPayloadSecurityReview(
+      verifyRegressionProvenance(
+        attachFixedPullRequest(value, item, context, existingPriorReview?.markdown),
+        item,
+        context,
+        reviewOpenclawDir,
+        git,
+      ),
+      context.securityReview,
+    );
   let codexElapsedMs = 0;
   let codexFailure: { error: unknown; logKind: CodexFailureLogKind } | null = null;
   let codexFailureRetryable = false;
@@ -148,10 +177,14 @@ export function runPreparedReviewItem(
   try {
     if (humanLocalReview) {
       console.error("");
-      console.error("Running Codex review");
+      console.error(modelCalls > 1 ? "Running multi-model review" : "Running Codex review");
       console.error(`  timeout: ${displayDurationMs(timeoutMs)}`);
       if (outputSelection.retention === "none") {
         console.error("  retained output: none");
+      } else if (modelCalls > 1) {
+        console.error(
+          `  assessments: ${displayPath(reviewAssessmentOutputDir(codexWorkDir, item.number))}`,
+        );
       } else {
         console.error(
           `  stdout: ${displayPath(join(codexWorkDir, `${item.number}.1.codex.stdout.log`))}`,
@@ -164,17 +197,20 @@ export function runPreparedReviewItem(
     decision = produceReviewOutput(
       outputBudget,
       {
-        paths: ["prompt.md", "json", "1.codex.stdout.log", "1.codex.stderr.log"].map((suffix) =>
-          join(codexWorkDir, `${item.number}.${suffix}`),
-        ),
+        paths:
+          modelCalls > 1
+            ? [reviewAssessmentOutputDir(codexWorkDir, item.number)]
+            : ["prompt.md", "json", "1.codex.stdout.log", "1.codex.stderr.log"].map((suffix) =>
+                join(codexWorkDir, `${item.number}.${suffix}`),
+              ),
         maxBytes:
           itemOutputBudget.promptFileBytes +
           itemOutputBudget.resultFileBytes +
           itemOutputBudget.streamFileBytes * 2,
-        maxFiles: 4,
+        maxFiles: 4 * modelCalls,
       },
-      () =>
-        runCodex({
+      () => {
+        const assessment = {
           item,
           context,
           git,
@@ -192,13 +228,49 @@ export function runPreparedReviewItem(
           proofScratchDir,
           prompt: prompt.text,
           reviewEnv,
-          promptFileBytes: itemOutputBudget.promptFileBytes,
-          resultFileBytes: itemOutputBudget.resultFileBytes,
-          streamFileBytes: itemOutputBudget.streamFileBytes,
+          ...modelBudget,
           quietLogs: humanLocalReview,
           ...(options.repositoryReview ? { repositoryReview: options.repositoryReview } : {}),
           ...(localRange ? { extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG] } : {}),
-        }),
+        };
+        if (modelCalls === 1) return runCodex(assessment);
+        const result = runMultiModelReview({
+          assessment,
+          snapshotHash,
+          environmentForSelection: (selection) =>
+            reviewEnvironment(sandboxMode, localOnly, selection.runner),
+          postprocess,
+          report: (value) =>
+            renderDecisionReport({
+              item,
+              context,
+              decision: value,
+              git,
+              action: { actionTaken: "kept_open", closeComment: "" },
+              reviewMode: "propose",
+              snapshotHash,
+              contentDigest: snapshotHash,
+              reviewPolicy: "multi-model-safety",
+              runtime: {
+                model: PUBLIC_CODEX_MODEL,
+                reasoningEffort: itemCodexProfile.reasoningEffort,
+              },
+            }),
+        });
+        multiModel = result.multiModel;
+        if (!result.decision)
+          throw new CodexReviewError({
+            message:
+              "Multi-model review incomplete; independent assessments are advisory, not consensus.",
+            status: null,
+            failureDisposition: result.failureDisposition ?? {
+              retryable: false,
+              terminal: false,
+              logKind: "codex_execution",
+            },
+          });
+        return result.decision;
+      },
     );
   } catch (error) {
     if (error instanceof AgentInputScanError || validationRecoveryRequired(error)) throw error;
@@ -209,12 +281,11 @@ export function runPreparedReviewItem(
   } finally {
     codexElapsedMs = Date.now() - codexStartedAt;
   }
-  decision = attachFixedPullRequest(decision, item, context, existingPriorReview?.markdown);
-  decision = verifyRegressionProvenance(decision, item, context, reviewOpenclawDir, git);
-  decision = applyHiddenPayloadSecurityReview(decision, context.securityReview);
+  if (!multiModel || multiModel.status !== "complete") decision = postprocess(decision);
   const runtime = {
-    model: PUBLIC_CODEX_MODEL,
-    reasoningEffort: itemCodexProfile.reasoningEffort,
+    model: multiModel ? "multi-model" : PUBLIC_CODEX_MODEL,
+    reasoningEffort:
+      multiModel?.coordinator.selection.reasoningEffort ?? itemCodexProfile.reasoningEffort,
     sandboxMode,
     serviceTier: itemCodexProfile.serviceTier,
     ...prompt.telemetry,
@@ -222,7 +293,14 @@ export function runPreparedReviewItem(
     codexElapsedMs,
   };
 
-  return { decision, runtime, codexFailure, codexFailureRetryable, snapshotHash };
+  return {
+    decision,
+    runtime,
+    codexFailure,
+    codexFailureRetryable,
+    snapshotHash,
+    ...(multiModel ? { multiModel } : {}),
+  };
 }
 
 export function writePreparedReviewReport(
@@ -230,6 +308,7 @@ export function writePreparedReviewReport(
     item: Item;
     context: ItemContext;
     decision: Decision;
+    multiModel?: MultiModelReviewRecord;
     git: GitInfo;
     runtime: ReturnType<typeof runPreparedReviewItem>["runtime"];
     artifactDir: string;
@@ -292,6 +371,7 @@ export function writePreparedReviewReport(
     reviewPolicy,
     runtime,
     structuralRecord,
+    ...(options.multiModel ? { multiModel: options.multiModel } : {}),
     ...(acquiredReviewLease
       ? {
           reviewLeaseOwner: acquiredReviewLease.owner,

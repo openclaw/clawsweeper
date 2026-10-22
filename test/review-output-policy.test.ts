@@ -35,6 +35,7 @@ import {
   produceReviewOutput,
   readBoundedReviewResult,
   reviewOutputFilePeak,
+  reviewAssessmentOutputDir,
   reviewOutputItemBudget,
   reviewOutputMediaLimits,
   reviewOutputSelection,
@@ -901,4 +902,43 @@ test("legacy explicit-path failures report compatibility retention in JSON", () 
     console.log = original;
   }
   assert.equal(JSON.parse(lines.join("")).retention, "debug");
+});
+
+test("multi-model output pruning is per-item and stays bounded across 64-item batches", () => {
+  const parent = mkdtempSync(join(tmpdir(), "clawsweeper-multi-output-"));
+  try {
+    for (const retention of ["none", "summary", "debug"] as const) {
+      const artifactDir = join(parent, retention);
+      mkdirSync(artifactDir);
+      const codexWorkDir = join(artifactDir, "codex");
+      for (let itemNumber = 1; itemNumber <= 64; itemNumber++) {
+        const root = reviewAssessmentOutputDir(codexWorkDir, itemNumber);
+        for (const id of ["member-1", "member-2", "coordinator"]) {
+          const slot = join(root, id);
+          mkdirSync(slot, { recursive: true });
+          for (const suffix of ["json", "prompt.md", "1.codex.stdout.log", "1.codex.stderr.log"])
+            writeFileSync(join(slot, itemNumber + "." + suffix), "fixture");
+        }
+        const reportPath = join(artifactDir, itemNumber + ".md");
+        writeFileSync(reportPath, "durable report fixture");
+        const proofScratchDir = join(codexWorkDir, "proof-scratch", String(itemNumber));
+        mkdirSync(proofScratchDir, { recursive: true });
+        if (retention !== "debug") assertTransientReviewOutputBudget(artifactDir);
+        pruneReviewOutputItem({
+          artifactDir,
+          codexWorkDir,
+          proofScratchDir,
+          reportPath,
+          itemNumber,
+          retention,
+        });
+        assert.equal(existsSync(root), retention === "debug");
+        assert.equal(existsSync(reportPath), retention !== "none");
+      }
+      if (retention !== "debug") assert.equal(existsSync(codexWorkDir), false);
+      else assert.ok(existsSync(reviewAssessmentOutputDir(codexWorkDir, 1)));
+    }
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
 });

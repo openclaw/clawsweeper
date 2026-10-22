@@ -999,6 +999,68 @@ setInterval(() => {}, 1000);
   },
 );
 
+for (const modelId of ["selected", "vendor/selected"])
+  test("immutable per-call OpenClaw selection preserves the native model ID: " + modelId, (t) => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-selection-test-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    useFakeScanner(t);
+    const binary = fakeOpenclaw(root);
+    const recordPath = join(root, "record.json");
+    const envelope = {
+      payloads: [{ text: "native answer" }],
+      meta: {
+        stopReason: "stop",
+        agentMeta: {
+          provider: "fixture",
+          model: modelId,
+          sessionId: "safe-session",
+          runtimeModelSelection: { provider: "fixture", model: modelId },
+          terminalReceipt: {
+            requested: { provider: "fixture", model: modelId },
+            effective: { provider: "fixture", model: modelId, responseModel: "selected-v1" },
+            rerouted: false,
+          },
+        },
+        requestShaping: { thinking: "medium", thinkingClamp: "private clamp prose" },
+      },
+    };
+    const env = {
+      ...process.env,
+      CLAWSWEEPER_RUNNER: "codex",
+      CLAWSWEEPER_OPENCLAW_MODEL: "legacy/old",
+      CLAWSWEEPER_OPENCLAW_BIN: binary,
+      OPENCLAW_TEST_RECORD: recordPath,
+      OPENCLAW_TEST_STDOUT: JSON.stringify(envelope),
+    };
+    const before = { ...env };
+    const result = runAgentProcess({
+      label: "selection",
+      prompt: "review",
+      scanSource: { kind: "prompt" },
+      model: "internal",
+      cwd: root,
+      env,
+      timeoutMs: 10_000,
+      selection: {
+        runner: "openclaw",
+        model: "fixture/" + modelId,
+        reasoningEffort: "high",
+        contextTier: "default",
+      },
+      reviewPhase: "independent",
+    });
+    assert.equal(result.status, 0, result.error?.message);
+    assert.equal(result.stdout, "native answer");
+    assert.equal(result.execution!.terminalReceipt!.effective.responseModel, "selected-v1");
+    assert.equal(result.execution!.requestShaping!.thinking, "medium");
+    assert.equal(result.execution!.requestShaping!.thinkingClamped, true);
+    assert.deepEqual(env, before);
+    const record = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.equal(record.args[record.args.indexOf("--model") + 1], "fixture/" + modelId);
+    assert.equal(record.args[record.args.indexOf("--thinking") + 1], "high");
+    assert.equal(existsSync(record.stateDir), false);
+  });
+
 test(
   "native receipt export deadline settles SIGTERM-resistant descendants",
   { skip: process.platform !== "linux" },

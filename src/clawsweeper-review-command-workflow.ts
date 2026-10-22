@@ -1431,7 +1431,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           context, proofScratchDir, undefined,
           reviewOutputMediaLimits(outputBudget, proofScratchDir), writeOutputMetadata,
         );
-        const { decision, runtime, codexFailure, codexFailureRetryable, snapshotHash } = runPreparedReviewItem({
+        const { decision, runtime, codexFailure, codexFailureRetryable, snapshotHash, multiModel } = runPreparedReviewItem({
           item, context, git, model, sandboxMode, localOnly, localRange: false,
           reviewOpenclawDir, reviewTreesDir, additionalPrompt, proofScratchDir,
           preparedMediaProof, resolveProvenancePull, shardIndex, shardCount, timeoutMs,
@@ -1448,6 +1448,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         structuralRecord = refreshStructuralRecordForVerdict();
         const { action, reportPath } = writePreparedReviewReport({
           item, context, decision, git, runtime, artifactDir, snapshotHash, contentDigest,
+          ...(multiModel ? { multiModel } : {}),
           reviewPolicy, structuralRecord, acquiredReviewLease,
           itemLocalReviewHistoryPath, previousLocalReviewCommentBody,
           localRange: false, metadataBytes: itemOutputBudget.metadataBytes,

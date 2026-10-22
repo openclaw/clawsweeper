@@ -1,3 +1,5 @@
+import { REVIEW_DIRECT_PROVIDER_ENV_KEYS } from "./codex-env.js";
+import { projectOpenclawExecutionReceipt } from "./review-execution-receipt.js";
 import { isRecord } from "./value-coerce.js";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -50,7 +52,8 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
     const timeoutSeconds = Math.max(1, Math.ceil(options.timeoutMs / 1_000));
     writeFileSync(
       configPath,
-      `${JSON.stringify(openclawConfig(options.env, timeoutSeconds, Boolean(options.checkoutInspection), options.skillFilter))}\n`,
+      `${JSON.stringify(openclawConfig({ ...options.env, CLAWSWEEPER_OPENCLAW_MODEL: options.model }, timeoutSeconds, Boolean(options.checkoutInspection), options.skillFilter))}\n`,
+
       {
         encoding: "utf8",
         mode: 0o600,
@@ -242,7 +245,10 @@ function normalizeOpenclawResult(
   if (processResult.error || processResult.status !== 0) return processResult;
   const parsed = parseOpenclawJsonEnvelope(completeStdout, processResult.stderr);
   if (!parsed.failure) {
-    if (!checkoutInspection) return { ...processResult, stdout: parsed.text };
+    if (!checkoutInspection) {
+      const execution = projectOpenclawExecutionReceipt(JSON.parse(completeStdout));
+      return { ...processResult, stdout: parsed.text, ...(execution ? { execution } : {}) };
+    }
     if (parsed.text.trim() !== checkoutInspection.expectedText) {
       return failedInspectionResult(
         processResult,
@@ -532,21 +538,7 @@ const OPENCLAW_CHILD_ENV_ALLOWLIST = [
   // Provider API keys the embedded agent needs for direct inference. These
   // are the credentials this lane intentionally trades for provider choice;
   // everything else in the step environment stays out.
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-  "OPENROUTER_API_KEY",
-  "XAI_API_KEY",
-  "GROQ_API_KEY",
-  "MINIMAX_API_KEY",
-  "KIMI_API_KEY",
-  "KIMICODE_API_KEY",
-  "MOONSHOT_API_KEY",
-  "CEREBRAS_API_KEY",
-  "ZAI_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "MISTRAL_API_KEY",
+  ...REVIEW_DIRECT_PROVIDER_ENV_KEYS,
 ] as const;
 
 function pickEnv(env: NodeJS.ProcessEnv, names: readonly string[]): NodeJS.ProcessEnv {

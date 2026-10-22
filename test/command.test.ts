@@ -1512,3 +1512,33 @@ process.stdin.on("end", () => process.exit(1));
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("concurrent commands keep explicitly filtered environments closed", () => {
+  const name = "CLAWSWEEPER_TEST_AMBIENT_SECRET",
+    before = process.env[name];
+  process.env[name] = "fixture-secret";
+  try {
+    const result = runTextConcurrently(
+      [
+        {
+          command: process.execPath,
+          args: [
+            "-e",
+            "console.log(JSON.stringify({ambient:process.env.CLAWSWEEPER_TEST_AMBIENT_SECRET!==undefined,explicit:process.env.EXPLICIT_FIXTURE}))",
+          ],
+          options: {
+            inheritEnv: false,
+            env: { PATH: process.env.PATH, EXPLICIT_FIXTURE: "preserved" },
+          },
+        },
+      ],
+      1,
+    );
+    assert.deepEqual(result, [
+      { output: JSON.stringify({ ambient: false, explicit: "preserved" }) },
+    ]);
+  } finally {
+    if (before === undefined) delete process.env[name];
+    else process.env[name] = before;
+  }
+});

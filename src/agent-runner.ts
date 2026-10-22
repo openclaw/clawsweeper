@@ -43,6 +43,8 @@ export interface RunAgentProcessOptions {
   // Codex only: one repair turn on the same thread when the final decision fails validation.
   decisionRepair?: DecisionRepairOptions;
   repositoryReview?: RepositoryReviewConfig;
+  selection?: import("./repository-review-config.js").ReviewModelSelection;
+  reviewPhase?: "independent" | "consolidation";
   nativeWorkspace?: { cwd: string; prompt: string };
 }
 
@@ -74,6 +76,23 @@ export function reviewNetworkCapability(
 
 export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessResult {
   if (options.diagnosticPromptPath) rmSync(options.diagnosticPromptPath, { force: true });
+  if (options.selection) {
+    const selection = options.selection;
+    if (selection.contextTier === "long_context")
+      throw new Error("Explicit long_context is unsupported.");
+    options = {
+      ...options,
+      model: selection.model,
+      ...(selection.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: selection.reasoningEffort }),
+      env: {
+        ...options.env,
+        CLAWSWEEPER_RUNNER: selection.runner,
+        ...(selection.runner === "openclaw" ? { CLAWSWEEPER_OPENCLAW_MODEL: selection.model } : {}),
+      },
+    };
+  }
   const runner = agentRunner(options.env);
   if (runner === "openclaw" && options.repositoryReview?.skills.length && !options.nativeWorkspace)
     throw new Error(
@@ -119,8 +138,18 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
         options.repositoryReview.additionalPrompt,
     };
   }
+  if (options.reviewPhase)
+    options = {
+      ...options,
+      prompt:
+        options.prompt +
+        "\n\n## Host review role\nPhase: " +
+        options.reviewPhase +
+        ". The host schedules all reviewers. Produce one full ordinary Decision for this phase. Do not start another model, pair, agent, or nested review; selected skills supply analysis guidance, not orchestration authority.",
+    };
   if (runner === "openclaw" && options.nativeWorkspace)
     options = { ...options, prompt: options.prompt + "\n\n" + options.nativeWorkspace.prompt };
+
   // OpenClaw has no structured-output option, so it reads the same schema file that Codex
   // receives through --output-schema as a prompt section.
   const prompt =
@@ -191,7 +220,9 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     cwd: options.nativeWorkspace?.cwd ?? options.cwd,
     ...(options.nativeWorkspace
       ? { skillFilter: options.repositoryReview!.skills.map((skill) => skill.name) }
-      : {}),
+      : options.reviewPhase
+        ? { skillFilter: [] }
+        : {}),
     env: options.env,
     timeoutMs: options.timeoutMs,
     ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
@@ -464,7 +495,11 @@ export function codexAgentArgs(options: RunAgentProcessOptions): string[] {
   const reasoningEffort = options.reasoningEffort?.trim();
   return [
     "exec",
-    ...(hasOrderedModelArgs ? [] : codexModelArgs(options.model)),
+    ...(hasOrderedModelArgs
+      ? []
+      : options.selection
+        ? ["--model", options.selection.model]
+        : codexModelArgs(options.model)),
     ...(reasoningEffort && !hasOrderedReasoningConfig
       ? ["-c", `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`]
       : []),
@@ -477,7 +512,7 @@ function openclawModel(env: NodeJS.ProcessEnv): string {
   if (!model) {
     throw new Error("CLAWSWEEPER_OPENCLAW_MODEL is required when CLAWSWEEPER_RUNNER=openclaw.");
   }
-  if (!/^[^\s/]+\/[^\s/]+$/.test(model)) {
+  if (!/^[^\s/]+\/[^\s/]+(?:\/[^\s/]+)*$/.test(model)) {
     throw new Error(
       "CLAWSWEEPER_OPENCLAW_MODEL must use provider/model form when CLAWSWEEPER_RUNNER=openclaw.",
     );

@@ -1,3 +1,5 @@
+import { runTextConcurrently } from "./command.js";
+import { AgentInputScanError } from "./agent-input-scan.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -30,8 +32,11 @@ export function prepareOpenClawCodexSourceForReview(options: {
   reviewTreeRoot?: string;
   env?: NodeJS.ProcessEnv;
   spawn?: Spawn;
+  deadlineAt?: number;
 }): string | undefined {
   if (options.targetRepo.toLowerCase() !== OPENCLAW_REPOSITORY) return;
+  if (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt)
+    throw new AgentInputScanError("deadline");
   const env = options.env ?? process.env;
   const script = env.CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT;
   if (!script) return;
@@ -39,8 +44,31 @@ export function prepareOpenClawCodexSourceForReview(options: {
   const targetDir = requiredEnvironmentPath(env, "CLAWSWEEPER_OPENCLAW_CODEX_TARGET_DIR");
   const cacheDir = requiredEnvironmentPath(env, "CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR");
   const sourceUrl = env.CLAWSWEEPER_OPENCLAW_CODEX_SOURCE_URL?.trim() || DEFAULT_CODEX_SOURCE_URL;
-  const run =
-    options.spawn ?? ((command, args) => spawnSync(command, args, { encoding: "utf8", env }));
+  const run: Spawn =
+    options.spawn ??
+    ((command, args) => {
+      if (options.deadlineAt === undefined)
+        return spawnSync(command, args, { encoding: "utf8", env });
+      const result = runTextConcurrently(
+        [
+          {
+            command,
+            args,
+            options: {
+              env,
+              deadlineAt: options.deadlineAt,
+              managedProcessGroup: true,
+              maxBuffer: 1024 * 1024,
+            },
+          },
+        ],
+        1,
+      )[0];
+      if (result && "output" in result) return { status: 0, stderr: "" };
+      if (!result || "expired" in result) throw new AgentInputScanError("deadline");
+      const error = result.error as Error & { status?: number; stderr?: string };
+      return { status: error.status ?? null, error, stderr: error.stderr ?? "" };
+    });
   const result = run("bash", [
     script,
     OPENCLAW_REPOSITORY,

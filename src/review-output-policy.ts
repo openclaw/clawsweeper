@@ -669,6 +669,10 @@ export function assertReviewOutputFilePeak(
   }
 }
 
+export function reviewAssessmentOutputDir(codexWorkDir: string, itemNumber: number): string {
+  return join(codexWorkDir, "multi-model", String(itemNumber));
+}
+
 export function pruneReviewOutputItem(options: {
   artifactDir: string;
   codexWorkDir: string;
@@ -691,6 +695,12 @@ export function pruneReviewOutputItem(options: {
   ]) {
     rmSync(path, { force: true });
   }
+  const assessments = assertOwnedOutputPath(
+    artifactDir,
+    reviewAssessmentOutputDir(codexWorkDir, options.itemNumber),
+  );
+  rmSync(assessments, { recursive: true, force: true });
+  removeDirectoryIfEmpty(dirname(assessments));
   rmSync(proofScratchDir, { recursive: true, force: true });
   if (options.retention === "none") rmSync(reportPath, { force: true });
   removeDirectoryIfEmpty(dirname(proofScratchDir));

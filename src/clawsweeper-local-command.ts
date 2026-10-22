@@ -200,12 +200,13 @@ export function runLocalRangeReview(args: Args, dependencies: LocalRangeCommandD
       },
       dependencies,
     );
-    const { decision, runtime, codexFailure, snapshotHash } = result;
+    const { decision, runtime, codexFailure, snapshotHash, multiModel } = result;
     const { action, reportPath } = writePreparedReviewReport(
       {
         item,
         context,
         decision,
+        ...(multiModel ? { multiModel } : {}),
         git,
         runtime,
         artifactDir,

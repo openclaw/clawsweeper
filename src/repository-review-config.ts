@@ -25,9 +25,78 @@ const CONFIG_PATH = ".clawsweeper/review.json";
 const MAX_BYTES = 256 * 1024;
 const MAX_FILES = 64;
 const markdown = new MarkdownIt();
+
+export interface ReviewModelSelection {
+  runner: "codex" | "openclaw";
+  model: string;
+  reasoningEffort?: string;
+  contextTier?: "default" | "long_context";
+}
+export interface MultiModelReviewConfig {
+  reviewers: ReviewModelSelection[];
+  coordinator: ReviewModelSelection;
+}
+
+export function parseReviewModelSelection(input: unknown): ReviewModelSelection {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new Error("Review model selection must be an object.");
+  const value = input as Record<string, unknown>;
+  if (
+    Object.keys(value).some(
+      (key) => !["runner", "model", "reasoningEffort", "contextTier"].includes(key),
+    ) ||
+    (value.runner !== "codex" && value.runner !== "openclaw") ||
+    typeof value.model !== "string" ||
+    value.model.length > 160 ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(value.model) ||
+    value.model.includes("://") ||
+    (value.runner === "openclaw" && !/^[^/]+\/[^/]+(?:\/[^/]+)*$/.test(value.model)) ||
+    (value.reasoningEffort !== undefined &&
+      (typeof value.reasoningEffort !== "string" ||
+        !["none", "minimal", "low", "medium", "high", "xhigh"].includes(value.reasoningEffort))) ||
+    (value.contextTier !== undefined &&
+      value.contextTier !== "default" &&
+      value.contextTier !== "long_context")
+  )
+    throw new Error("Invalid review model selection.");
+  return {
+    runner: value.runner,
+    model: value.model,
+    ...(value.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: value.reasoningEffort as string }),
+    ...(value.contextTier === undefined ? {} : { contextTier: value.contextTier }),
+  };
+}
+
+function parseMultiModel(input: unknown): MultiModelReviewConfig | undefined {
+  if (input === undefined) return undefined;
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new Error("Invalid multiModel configuration.");
+  const value = input as Record<string, unknown>;
+  if (
+    Object.keys(value).some((key) => !["reviewers", "coordinator"].includes(key)) ||
+    !Array.isArray(value.reviewers) ||
+    value.reviewers.length < 2 ||
+    value.reviewers.length > 4
+  )
+    throw new Error("multiModel requires two to four reviewers and one coordinator.");
+  const config = {
+    reviewers: value.reviewers.map(parseReviewModelSelection),
+    coordinator: parseReviewModelSelection(value.coordinator),
+  };
+  if (
+    [...config.reviewers, config.coordinator].some(
+      (member) => member.contextTier === "long_context",
+    )
+  )
+    throw new Error("Explicit long_context is not supported by either review adapter.");
+  return config;
+}
 export interface RepositoryReviewConfig {
   revision: string;
   digest: string;
+  multiModel?: MultiModelReviewConfig;
   additionalPrompt: string;
   skills: Array<{ name: string; directory: string }>;
   files: Array<{ path: string; text: string }>;
@@ -147,7 +216,9 @@ export function loadRepositoryReviewConfig(
   const value = config as Record<string, unknown>;
   if (
     value.version !== 1 ||
-    Object.keys(value).some((key) => !["version", "skills", "additionalPrompt"].includes(key))
+    Object.keys(value).some(
+      (key) => !["version", "skills", "additionalPrompt", "multiModel"].includes(key),
+    )
   )
     throw new Error("Unsupported repository review configuration.");
   const selected = value.skills === undefined ? [] : value.skills;
@@ -161,7 +232,8 @@ export function loadRepositoryReviewConfig(
     additionalPrompt.length > 5_000
   )
     throw new Error("Invalid repository review skills or additionalPrompt.");
-  if (!selected.length && !additionalPrompt.trim()) return undefined;
+  const multiModel = parseMultiModel(value.multiModel);
+  if (!selected.length && !additionalPrompt.trim() && !multiModel) return undefined;
   const files: RepositoryReviewConfig["files"] = [];
   const skills: RepositoryReviewConfig["skills"] = [];
   let size = Buffer.byteLength(configText);
@@ -246,7 +318,15 @@ export function loadRepositoryReviewConfig(
     }
   }
   const digest = sha256(stableJson({ configText, files }));
-  return { revision, digest, additionalPrompt, skills, files, configText };
+  return {
+    revision,
+    digest,
+    additionalPrompt,
+    skills,
+    files,
+    configText,
+    ...(multiModel ? { multiModel } : {}),
+  };
 }
 
 export function repositoryReviewContentDigest(

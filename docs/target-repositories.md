@@ -59,8 +59,73 @@ keeps the ordinary prompt, invocation, review cadence and cache identity.
 
 `skills` selects at most eight exact names under `.agents/skills/<name>/SKILL.md`;
 frontmatter names must match. `additionalPrompt` appends at most 5,000 characters
-to the normal review contract. Unknown keys and versions are rejected. Models,
-fanout and reconciliation are not part of this configuration version.
+to the normal review contract. Unknown keys and versions are rejected.
+
+The optional `multiModel` key selects two to four independent full assessments and
+one full consolidation, with at most two independent workers running at once:
+
+```json
+{
+  "version": 1,
+  "multiModel": {
+    "reviewers": [
+      { "runner": "codex", "model": "<operator-authorized-model>" },
+      { "runner": "openclaw", "model": "<provider>/<operator-authorized-model>" }
+    ],
+    "coordinator": { "runner": "codex", "model": "<operator-authorized-model>" }
+  }
+}
+```
+
+These placeholders are not working model bindings. OpenClaw references split the
+provider at the first slash and preserve the remaining model ID, including vendor
+namespaces; valid syntax does not establish access or model availability. Each selection may include
+`reasoningEffort` and `contextTier: "default"`. Explicit `long_context` is rejected:
+neither adapter has a qualified long-context selector. Each runner environment
+is filtered for its selected role before launch, using only credentials already
+provisioned by the operator. Configuration never grants missing workflow secrets;
+an unprovisioned provider remains unavailable. Configuration cannot
+supply credentials, endpoints, executables, CLI arguments or mutation authority.
+Skills and model selection are independent: skills alone keep one assessment;
+models alone fan out; both use the same selected guidance in each host-assigned
+phase without another skill-owned model pair. No extra baseline assessment runs.
+
+Every worker uses the normal scanner, checkout inspection, strict Decision parser
+and host postprocessing. Model-authored results are scanned before they can become
+durable member evidence. Any scanner refusal is terminal, discards private model
+slots and prevents publication of the rejected batch. Shared Codex source setup
+finishes once before workers run in parallel. A surviving host owns each worker's
+private temporary root and removes native adapter, scanner and skill state after
+all workers settle, including timeout-killed workers. Independent workers and consolidation share the original
+source/configuration snapshot and one absolute deadline. Output budgets are split
+across all assessments, rather than multiplied. The consolidation model receives
+full validated member Decisions as untrusted evidence and selects the canonical
+priority, relevance and labels through the existing parser/publication owners.
+A small reject-only guard prevents dropping explicit contributor, proof,
+compatibility, owner, product or security holds, or creating new automation
+eligibility. Failure or veto means incomplete review, not a synthetic consensus.
+Host-owned failure class, terminal status and retry disposition cross the worker
+boundary without raw diagnostics; a terminal, unknown or vetoed outcome does not
+authorize another potentially paid batch. Unverified Git process settlement retains
+owned recovery state and aborts ordinary item conversion; settled host failures
+retain completed advisory assessments without granting retry permission.
+
+The one review comment shows the final assessment and collapsed, escaped,
+section-budgeted individual assessments. Full typed member Decisions remain in
+the durable record even when diagnostic output retention is none. Such records
+use review-record version 2; upgraded readers also accept version 1. Old strict
+readers reject version 2 rather than silently losing the individual assessments.
+The top-level record Decision remains authoritative. Requested settings, native
+runtime selection and terminal facts are separate; absent native facts are
+reported as unreported, not inferred from the model's own answer. Assessment
+completion describes content only; the durable `executionQualification` remains
+`unverified`, and neither completion nor native runtime facts qualify an exact
+actual-model/high-effort pair. The exact
+Codex 0.162.1 human startup header supplies runtime configuration only, never
+terminal selection or provider-observed reasoning effort. OpenClaw's successful
+native envelope supplies only the bounded allowlisted execution receipt fields.
+Actual-provider execution and the requested Windows pair remain qualification
+gates; this configuration example does not assert either has passed.
 
 Configuration, selected skills and relative references use the same pinned
 revision. Bundles are limited to 64 regular UTF-8 files and 256 KiB; symlinks,
@@ -85,6 +150,17 @@ grant writes, helper execution, installation, delegation or additional models.
 Unsupported methodology must be reported, not claimed complete. Selected Codex
 skills preserve the normal same-thread structured-decision repair lifecycle.
 
+Every multi-model role, including models-only configuration, receives its own
+pinned working copy and independent Git config/index/refs; immutable Git objects
+are borrowed from the admitted host store, never hardlinked. The existing byte,
+file, disk, attribute and shared-time admission checks still run before checkout.
+Before acceptance or mode restoration, the host verifies the complete private
+source fingerprint, including ignored files and Git metadata. Replacement
+file/directory/ancestor identities are retained for recovery, never followed by
+permission restoration. A bounded internal recovery receipt preserves cause
+identity/digests and owned paths across worker termination; raw provider
+diagnostics never enter advisory Decisions. Temporary state is private per role.
+
 OpenClaw uses the existing managed review-tree parent as its isolated native
 workspace, with pinned skills outside the reviewed checkout. This does not enable
 optional Codex-source provisioning in jobs where the existing setup is absent.
@@ -105,7 +181,7 @@ the read-only checkout probe allows none. Filesystem workspace-only restrictions
 remain enabled. A missing/shared parent (including ordinary offline user
 checkouts) is unsupported for selected OpenClaw skills and fails before inference;
 unconfigured and append-only operation is unchanged. No source copy or move is
-performed. Adding an extra skill directory to the PR checkout alone is not safe.
+performed on user checkouts. Adding an extra skill directory to the PR checkout alone is not safe.
 The checkout probe uses only the direct read tool, not Code Mode, and still requires
 the exact challenge and paired successful read receipt. It reads legacy transcripts or the current local `sessions export-trajectory`
 output from its own isolated state; unavailable or mismatched receipts fail closed.
@@ -127,7 +203,9 @@ configuration. Hosted reviews always use the authenticated default branch above.
 
 This active contract is owned by ClawSweeper maintainers; source owners are
 `src/repository-review-config.ts`, `src/clawsweeper-review-runtime.ts` and
-`src/agent-runner.ts`. Update it when configuration, native harness isolation,
+`src/agent-runner.ts`, `src/multi-model-review.ts` and `src/review-record.ts`.
+Verified scope: the compiled worker path and synthetic process fixtures, not live
+provider qualification (2026-10-22). Update it when configuration, native harness isolation,
 source pinning, scanner, budgets or cache identity change.
 
 All profiles share the hidden-payload security guard in

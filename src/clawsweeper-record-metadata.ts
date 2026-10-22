@@ -44,7 +44,11 @@ import {
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
 import { isOlderThanDays, parseIsoMs } from "./iso-time.js";
 import { reportReviewDecision } from "./report-review-decision.js";
-import { ReviewRecordFormatError } from "./review-record.js";
+import {
+  readReviewRecord,
+  ReviewRecordFormatError,
+  type MultiModelReviewRecord,
+} from "./review-record.js";
 import { effectiveReviewStatus } from "./review-completion.js";
 export { effectiveReviewStatus, hasVerifiedLocalCheckoutAccess } from "./review-completion.js";
 import {
@@ -498,7 +502,9 @@ export function failedReviewFailureDetail(markdown: string): string {
 
 export function isInfrastructureFailedReview(markdown: string): boolean {
   let detail: string;
+  let multiModel: MultiModelReviewRecord | undefined;
   try {
+    multiModel = readReviewRecord(markdown)?.multiModel;
     detail = failedReviewFailureDetail(markdown);
   } catch (error) {
     // Corrupt reviewed evidence is not authority to schedule an infrastructure retry.
@@ -520,6 +526,19 @@ export function isInfrastructureFailedReview(markdown: string): boolean {
     !/^(?:true|false)$/i.test(checkoutInspectionFailure.value)
   ) {
     return false;
+  }
+  if (multiModel?.status === "incomplete") {
+    // Only host-classified attempted failures authorize another paid batch.
+    // Advisory model text and the generic failed Decision are not retry authority.
+    const failed = multiModel.members.filter((member) => member.status !== "complete");
+    if (!failed.length) failed.push(multiModel.coordinator);
+    return failed.every(
+      (role) =>
+        role.status === "failed" &&
+        role.failure?.retryable === true &&
+        !role.failure.terminal &&
+        ["timeout", "transport_network", "provider_throttle"].includes(role.failure.logKind),
+    );
   }
   if (
     checkoutInspectionFailure.status === "value" &&

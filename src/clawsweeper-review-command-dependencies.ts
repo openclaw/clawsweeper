@@ -37,7 +37,11 @@ import type { ReviewStructuralRecord } from "./review-structural-cache.js";
 
 export interface CreateReviewCommandWorkflowDependencies {
   repositoryReviewConfig: (targetDir: string) => RepositoryReviewConfig | undefined;
-  reviewEnvironment: (sandboxMode: string, preserveCodexAuth?: boolean) => NodeJS.ProcessEnv;
+  reviewEnvironment: (
+    sandboxMode: string,
+    preserveCodexAuth?: boolean,
+    runner?: "codex" | "openclaw",
+  ) => NodeJS.ProcessEnv;
   actionLedgerFailureDisposition: (error: unknown) => {
     status: ActionEventStatus;
     reasonCode: ActionEventReasonCode;
@@ -292,6 +296,9 @@ export interface CreateReviewCommandWorkflowDependencies {
   runReviewCheckoutInspection: (options: {
     scanSource: AgentScanSource;
     initialPrompt: string;
+    nativeWorkspace?: string;
+    disableSkills?: boolean;
+    reviewEnv?: NodeJS.ProcessEnv;
     itemNumber: number;
     openclawDir: string;
     preserveCodexAuth?: boolean;
@@ -321,6 +328,11 @@ export interface CreateReviewCommandWorkflowDependencies {
     quietLogs?: boolean;
     extraCodexConfig?: string[];
     repositoryReview?: RepositoryReviewConfig;
+    /** Host-only receipt: shared preparation finished before parallel workers. */
+    sourcePrepared?: boolean;
+    selection?: import("./repository-review-config.js").ReviewModelSelection;
+    reviewPhase?: "independent" | "consolidation";
+    onExecution?: (receipt: import("./review-execution-receipt.js").ReviewExecutionReceipt) => void;
   }) => Decision;
   selectCandidates: (options: {
     batchSize: number;

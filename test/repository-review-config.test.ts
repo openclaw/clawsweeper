@@ -357,6 +357,65 @@ test("compiled local review rejects invalid trusted base despite head deletion a
   assert.equal(f.git("status", "--porcelain"), "");
 });
 
+for (const skills of [false, true])
+  for (const models of [false, true]) {
+    test("public opt-in matrix skills=" + skills + " models=" + models, (t) => {
+      const f = fixture(t);
+      if (skills) f.skill();
+      const selection = {
+        runner: "codex",
+        model: "fixture-model",
+        reasoningEffort: "high",
+        contextTier: "default",
+      };
+      f.configure({
+        version: 1,
+        ...(skills ? { skills: ["sample"] } : {}),
+        ...(models
+          ? { multiModel: { reviewers: [selection, selection], coordinator: selection } }
+          : {}),
+      });
+      const sha = f.commit();
+      const config = loadRepositoryReviewConfig(f.root, sha);
+      assert.equal(Boolean(config?.skills.length), skills);
+      assert.equal(Boolean(config?.multiModel), models);
+      if (config) assert.equal(config.revision, sha);
+      const hash = repositoryReviewContentDigest("base", config);
+      f.configure({ version: 1, additionalPrompt: "changed target guidance" });
+      f.commit();
+      assert.equal(
+        repositoryReviewContentDigest("base", loadRepositoryReviewConfig(f.root, sha)),
+        hash,
+      );
+    });
+  }
+for (const invalid of [
+  { runner: "codex", model: "valid", contextTier: "long_context" },
+  { runner: "codex", model: "valid", args: ["--dangerous"] },
+  { runner: "codex", model: "valid", apiKey: "not-allowed" },
+  { runner: "codex", model: "https://private.invalid" },
+  { runner: "openclaw", model: "missing-provider" },
+  { runner: "codex", model: "valid", reasoningEffort: "invented" },
+])
+  test("reject unsupported public model binding " + JSON.stringify(invalid), (t) => {
+    const f = fixture(t);
+    f.configure({
+      version: 1,
+      multiModel: { reviewers: [invalid, invalid], coordinator: invalid },
+    });
+    assert.throws(() => loadRepositoryReviewConfig(f.root, f.commit()));
+  });
+for (const size of [0, 1, 5])
+  test("multi-model admission rejects reviewer count " + size, (t) => {
+    const f = fixture(t);
+    const selection = { runner: "codex", model: "fixture" };
+    f.configure({
+      version: 1,
+      multiModel: { reviewers: Array(size).fill(selection), coordinator: selection },
+    });
+    assert.throws(() => loadRepositoryReviewConfig(f.root, f.commit()));
+  });
+
 test("OpenClaw rejects parent residue and admits the next configured review", (t) => {
   const f = fixture(t);
   f.configure();
@@ -849,6 +908,52 @@ test("hosted blob:none hydration batches the full bounded native bundle", (t) =>
   }
 });
 
+test("model configuration changes invalidate content but never reopen ordinary admission", (t) => {
+  const f = fixture(t);
+  const role = { runner: "codex", model: "first-model" };
+  f.configure({ version: 1, multiModel: { reviewers: [role, role], coordinator: role } });
+  const first = loadRepositoryReviewConfig(f.root, f.commit())!;
+  f.configure({
+    version: 1,
+    multiModel: { reviewers: [{ ...role, model: "second-model" }, role], coordinator: role },
+  });
+  const second = loadRepositoryReviewConfig(f.root, f.commit())!;
+  const item = {
+    repo: "steipete/fixture",
+    number: 1,
+    kind: "pull_request" as const,
+    createdAt: "2026-10-20T00:00:00Z",
+    updatedAt: "2026-10-20T00:00:00Z",
+  };
+  const review = {
+    reviewStatus: "complete",
+    decision: "keep_open",
+    reviewPolicy: "host-policy",
+    reviewedAt: "2026-10-22T00:00:00Z",
+    lastFullReviewAt: "2026-10-22T00:00:00Z",
+    itemUpdatedAt: item.updatedAt,
+    lastFullReviewDecision: "keep_open",
+    contentDigest: repositoryReviewContentDigest("item-content", first),
+  };
+  const now = Date.parse(review.reviewedAt) + 60_000;
+  assert.notEqual(
+    repositoryReviewContentDigest("item-content", first),
+    repositoryReviewContentDigest("item-content", second),
+  );
+  assert.equal(
+    reviewContentCacheHit({
+      review,
+      reviewPolicy: "host-policy",
+      contentDigest: repositoryReviewContentDigest("item-content", second),
+      now,
+      explicitDispatch: false,
+      maintainerRequest: false,
+    }),
+    false,
+  );
+  assert.equal(shouldReviewItem(item, review, now, "host-policy"), false);
+});
+
 for (const mode of ["config-budget", "bundle-budget", "disk-budget"] as const)
   test("hosted native bundle admits bytes and disk before hydration: " + mode, (t) => {
     const f = fixture(t);
@@ -961,6 +1066,15 @@ test("selected native Codex skills retain the same-thread decision repair lifecy
   assert.deepEqual(rows[1], [...rows[0].slice(0, -1), "resume", session, "-"]);
   assert.equal(JSON.parse(readFileSync(output, "utf8")).decision, "keep_open");
   assert.equal(f.git("status", "--porcelain"), "");
+});
+
+test("public model selection preserves nested native model namespaces", (t) => {
+  const f = fixture(t),
+    native = { runner: "openclaw", model: "fixture/vendor/model" };
+  f.configure({ version: 1, multiModel: { reviewers: [native, native], coordinator: native } });
+  const config = loadRepositoryReviewConfig(f.root, f.commit())!;
+  assert.equal(config.multiModel!.reviewers[0]!.model, "fixture/vendor/model");
+  assert.equal(config.multiModel!.coordinator.model, "fixture/vendor/model");
 });
 
 for (const runner of ["codex", "openclaw"] as const)
