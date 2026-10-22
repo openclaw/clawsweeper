@@ -1,3 +1,4 @@
+import { sha256 } from "../dist/content-hash.js";
 import { pathToFileURL } from "node:url";
 import { ReviewSourcePreparationError } from "../dist/review-source-preparation.js";
 import childProcess from "node:child_process";
@@ -2230,15 +2231,19 @@ test("an assessment booting after its absolute deadline cannot start native work
       reviewEnvKeys: ["CODEX_BIN", "CODEX_HOME", "PATH"],
     }),
   );
-  const result = spawnSync(process.execPath, ["dist/review-assessment-worker.js", path], {
-    encoding: "utf8",
-    timeout: 10000,
-    env: {
-      PATH: process.env.PATH,
-      CODEX_BIN: String(f.options.assessment.reviewEnv!.CODEX_BIN),
-      CODEX_HOME: join(f.root, "expired-home"),
+  const result = spawnSync(
+    process.execPath,
+    ["dist/review-assessment-worker.js", path, sha256(readFileSync(path, "utf8"))],
+    {
+      encoding: "utf8",
+      timeout: 10000,
+      env: {
+        PATH: process.env.PATH,
+        CODEX_BIN: String(f.options.assessment.reviewEnv!.CODEX_BIN),
+        CODEX_HOME: join(f.root, "expired-home"),
+      },
     },
-  });
+  );
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { scanRefusal: "deadline" });
   assert.equal(existsSync(f.log), false);
@@ -2333,3 +2338,38 @@ test(
     }
   },
 );
+
+test("an earlier native role cannot rewrite a queued assessment's host-bound options", (t) => {
+  const f = processFixture(t);
+  const binary = f.options.assessment.reviewEnv!.CODEX_BIN!;
+  const marker = join(f.root, "queued-job-tampered");
+  const injection = [
+    'fs.readFileSync(0, "utf8");',
+    'if(args[args.indexOf("--model")+1]==="fixture-model"){',
+    'const p=require("node:path").join(require("node:path").dirname(require("node:os").tmpdir()),"member-3.json");',
+    'const job=JSON.parse(fs.readFileSync(p,"utf8"));job.options.prompt+=" injected queued role";fs.writeFileSync(p,JSON.stringify(job));',
+    "fs.writeFileSync(" + JSON.stringify(marker) + ',"tampered");}',
+  ].join("\n");
+  const original = readFileSync(binary, "utf8");
+  assert.ok(original.includes('fs.readFileSync(0, "utf8");'));
+  writeFileSync(binary, original.replace('fs.readFileSync(0, "utf8");', injection));
+  const config = f.options.assessment.repositoryReview!;
+  f.options.assessment.repositoryReview = {
+    ...config,
+    multiModel: {
+      ...config.multiModel!,
+      reviewers: [...config.multiModel!.reviewers, { ...selection, model: "third-model" }],
+    },
+  };
+  assert.throws(() => runMultiModelReview(f.options), {
+    name: "AgentInputScanError",
+    reason: "source_drift",
+  });
+  assert.equal(readFileSync(marker, "utf8"), "tampered");
+  const calls = readFileSync(f.log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(calls.filter((call) => call.model === "third-model").length, 0);
+  assert.equal(calls.filter((call) => call.model === "coordinator-model").length, 0);
+});

@@ -698,7 +698,7 @@ function reviewTreeMetadata(
     );
   }
   if (missingAttributeBlobs.length > 0) {
-    const objectStore = reviewTreeObjectStoreCapacity(targetDir, headSha);
+    const objectStore = reviewTreeObjectStoreCapacity(targetDir, headSha, deadlineAt);
     assertReviewTreeDiskAdmission(
       headSha,
       0n,

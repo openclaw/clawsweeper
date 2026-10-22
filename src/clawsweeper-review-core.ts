@@ -811,6 +811,7 @@ ${extra}
     initialPrompt: string;
     nativeWorkspace?: string;
     disableSkills?: boolean;
+    reviewPhase?: "independent" | "consolidation";
   }): CodexProcessResult {
     const dirtyBefore = openclawDirtyStatus(options.openclawDir);
     if (dirtyBefore) {
@@ -831,6 +832,7 @@ ${extra}
       cwd: options.openclawDir,
       ...(options.nativeWorkspace ? { nativeWorkspace: options.nativeWorkspace } : {}),
       ...(options.disableSkills ? { disableSkills: true } : {}),
+      ...(options.reviewPhase ? { reviewPhase: options.reviewPhase } : {}),
       env:
         options.reviewEnv ??
         untrustedCodexEnv({
@@ -1100,7 +1102,7 @@ ${extra}
       reviewEnv: codexEnv,
       initialPrompt: prompt,
       ...(native ? { nativeWorkspace: native.cwd } : {}),
-      ...(options.reviewPhase ? { disableSkills: true } : {}),
+      ...(options.reviewPhase ? { disableSkills: true, reviewPhase: options.reviewPhase } : {}),
       itemNumber: options.item.number,
       openclawDir: options.openclawDir,
       timeoutMs: options.timeoutMs - (Date.now() - startedAt),

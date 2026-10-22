@@ -155,18 +155,19 @@ export function runAssessmentJobs(jobs: readonly AssessmentJob[]): AssessmentRes
           sourcePrepared: true,
         };
       }
-      writeFileSync(
-        path,
-        JSON.stringify({
-          ...job,
-          options: assessment,
-          reviewEnvKeys: Object.keys(workerEnv),
-        }),
-        { mode: 0o600, flag: "wx" },
-      );
+      const jobText = JSON.stringify({
+        ...job,
+        options: assessment,
+        reviewEnvKeys: Object.keys(workerEnv),
+      });
+      writeFileSync(path, jobText, { mode: 0o600, flag: "wx" });
       return {
         command: process.execPath,
-        args: [fileURLToPath(new URL("./review-assessment-worker.js", import.meta.url)), path],
+        args: [
+          fileURLToPath(new URL("./review-assessment-worker.js", import.meta.url)),
+          path,
+          sha256(jobText),
+        ],
         options: {
           env: workerEnv,
           inheritEnv: false,

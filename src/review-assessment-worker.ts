@@ -1,5 +1,6 @@
 import { AgentInputScanError, scanAgentInput } from "./agent-input-scan.js";
 import { readFileSync } from "node:fs";
+import { sha256 } from "./content-hash.js";
 import { createReviewCoreRuntime } from "./clawsweeper-review-core.js";
 import { reviewDecisionParser } from "./clawsweeper-decision-parser.js";
 import { run, ensureDir } from "./clawsweeper-review-io.js";
@@ -13,7 +14,14 @@ import type { ReviewExecutionReceipt } from "./review-execution-receipt.js";
 import { assessmentRecoveryReceipt, CodexReviewError } from "./review-assessment-failure.js";
 
 // Internal, host-created options only. No dispatch, publication, or nested orchestration.
-const job = JSON.parse(readFileSync(process.argv[2] ?? "", "utf8")) as AssessmentJob & {
+const jobText = readFileSync(process.argv[2] ?? "", "utf8");
+// The host keeps this digest in its already-owned supervisor command channel,
+// not beside the writable job. Verify the same bytes before using any options.
+if (!/^[a-f0-9]{64}$/.test(process.argv[3] ?? "") || sha256(jobText) !== process.argv[3]) {
+  process.stdout.write(JSON.stringify({ scanRefusal: "source_drift" }));
+  process.exit(0);
+}
+const job = JSON.parse(jobText) as AssessmentJob & {
   reviewEnvKeys: string[];
 };
 job.options.reviewEnv = Object.fromEntries(

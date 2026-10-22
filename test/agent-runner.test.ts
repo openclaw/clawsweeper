@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -475,6 +483,110 @@ test("checkout inspection lists tracked files beyond the 1 MB spawn default", (t
     });
     assert.notEqual(result.error?.code, "ENOBUFS", result.error?.message);
     assert.match(result.error?.message ?? "", /could not select a tracked text line/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("configured OpenClaw inspection shares its role deadline through a late native read and export", (t) => {
+  useFakeScanner(t);
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-role-inspection-budget-"));
+  const source = join(root, "source");
+  const binary = join(root, "fake-openclaw");
+  const record = join(root, "native-events.jsonl");
+  mkdirSync(source);
+  writeFileSync(join(source, "tracked.txt"), "Exact native tracked inspection challenge.\n");
+  execFileSync("git", ["init", "-q"], { cwd: source });
+  execFileSync("git", ["add", "tracked.txt"], { cwd: source });
+  writeFileSync(
+    binary,
+    [
+      "#!/usr/bin/env node",
+      "const fs = require('node:fs'), path = require('node:path');",
+      "const args = process.argv.slice(2), state = process.env.OPENCLAW_STATE_DIR;",
+      "const exporting = args[0] === 'sessions';",
+      "fs.appendFileSync(process.env.OPENCLAW_TEST_INSPECTION_LOG, JSON.stringify({pid:process.pid,exporting,args})+'\\n');",
+      "if (exporting) {",
+      "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,500);",
+      "  const id=args[args.indexOf('--session-key')+1].slice('agent:main:explicit:'.length);",
+      "  const out=path.join(state,'.openclaw/trajectory-exports/checkout-receipt');fs.mkdirSync(out,{recursive:true});",
+      "  const p=process.env.OPENCLAW_TEST_WRONG_INSPECTION_PATH==='1'?'wrong.txt':'tracked.txt';",
+      "  const events=[{type:'tool.call',data:{toolCallId:'r',name:'read',arguments:{path:p}}},{type:'tool.result',data:{message:{role:'toolResult',toolName:'read',toolCallId:'r',isError:false}}}].map(e=>({traceSchema:'openclaw-trajectory',schemaVersion:1,sessionId:id,source:'transcript',...e}));",
+      "  fs.writeFileSync(path.join(out,'events.jsonl'),events.map(e=>JSON.stringify(e)).join('\\n')+'\\n');",
+      "  fs.writeFileSync(path.join(out,'manifest.json'),JSON.stringify({sessionId:id,eventCount:events.length}));console.log(JSON.stringify({sessionId:id}));process.exit(0);",
+      "}",
+      "const prompt=fs.readFileSync(args[args.indexOf('--message-file')+1],'utf8');",
+      "const p=JSON.parse(prompt.match(/^Path: (.+)$/m)[1]), n=Number(prompt.match(/^Return exactly line (\\d+)/m)[1]);",
+      "const text=fs.readFileSync(path.resolve(process.cwd(),p),'utf8').split(/\\r?\\n/)[n-1].trim();",
+      "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,Number(process.env.OPENCLAW_TEST_INSPECTION_DELAY_MS));",
+      "console.log(JSON.stringify({payloads:[{text}]}));",
+    ].join("\n"),
+  );
+  chmodSync(binary, 0o755);
+  const env = {
+    PATH: process.env.PATH,
+    HOME: root,
+    TMPDIR: root,
+    CLAWSWEEPER_RUNNER: "openclaw",
+    CLAWSWEEPER_OPENCLAW_MODEL: "synthetic/inspection",
+    CLAWSWEEPER_OPENCLAW_BIN: binary,
+    OPENCLAW_TEST_INSPECTION_LOG: record,
+    OPENCLAW_TEST_INSPECTION_DELAY_MS: "35000",
+  };
+  const options = {
+    cwd: source,
+    env,
+    timeoutMs: 60_000,
+    scanSource: { kind: "prompt" as const },
+    initialPrompt: "Inspect the tracked checkout.",
+  };
+  try {
+    const started = Date.now();
+    const ordinary = runAgentCheckoutInspection(options);
+    assert.equal(ordinary.error?.code, "ETIMEDOUT", ordinary.stderr);
+    assert.ok(Date.now() - started >= 30_000);
+    assert.ok(Date.now() - started < 50_000);
+    const configuredStarted = Date.now();
+    const configured = runAgentCheckoutInspection({ ...options, reviewPhase: "independent" });
+    assert.equal(configured.status, 0, configured.error?.message ?? configured.stderr);
+    assert.equal(configured.error, undefined);
+    assert.ok(Date.now() - configuredStarted >= 35_500);
+    assert.ok(Date.now() - configuredStarted < 60_000);
+    const shortStarted = Date.now();
+    const short = runAgentCheckoutInspection({
+      ...options,
+      reviewPhase: "consolidation",
+      timeoutMs: 5_000,
+    });
+    assert.equal(short.error?.code, "ETIMEDOUT", short.stderr);
+    assert.ok(Date.now() - shortStarted < 8_000);
+    const wrong = runAgentCheckoutInspection({
+      ...options,
+      reviewPhase: "consolidation",
+      env: {
+        ...env,
+        OPENCLAW_TEST_INSPECTION_DELAY_MS: "0",
+        OPENCLAW_TEST_WRONG_INSPECTION_PATH: "1",
+      },
+    });
+    assert.equal(wrong.status, 1);
+    assert.match(wrong.error?.message ?? "", /exact challenged path/);
+    const events = readFileSync(record, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const probes = events.filter((event) => !event.exporting);
+    assert.equal(probes[0].args[probes[0].args.indexOf("--timeout") + 1], "30");
+    assert.ok(Number(probes[1].args[probes[1].args.indexOf("--timeout") + 1]) > 30);
+    assert.ok(events.some((event) => event.exporting));
+    for (const event of events) {
+      assert.ok(!event.args.includes("--thinking"));
+      assert.throws(() => process.kill(event.pid, 0));
+    }
+    assert.equal(
+      execFileSync("git", ["diff", "--name-only"], { cwd: source, encoding: "utf8" }),
+      "",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -274,6 +274,7 @@ export function runAgentCheckoutInspection(options: {
   schemaPath?: string;
   nativeWorkspace?: string;
   disableSkills?: boolean;
+  reviewPhase?: "independent" | "consolidation";
 }): CodexProcessResult {
   const deadlineAt = Date.now() + options.timeoutMs;
   const remainingMs = () => {
@@ -332,7 +333,10 @@ export function runAgentCheckoutInspection(options: {
       cwd: options.nativeWorkspace ?? options.cwd,
       ...(options.nativeWorkspace || options.disableSkills ? { skillFilter: [] } : {}),
       env,
-      timeoutMs: Math.min(remainingMs(), 30_000),
+      // Configured roles already share one bounded review deadline. Native CLI
+      // startup, the challenged read, and its export consume that remainder.
+      // Preserve the ordinary single-review inspection cap.
+      timeoutMs: options.reviewPhase ? remainingMs() : Math.min(remainingMs(), 30_000),
       checkoutInspection: { expectedText: challenge.text, expectedPath: challengePath },
     });
   }

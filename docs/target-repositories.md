@@ -97,7 +97,12 @@ slots and prevents publication of the rejected batch. Codex source setup is seri
 workers runs in parallel. A surviving host owns each worker's
 private temporary root and removes native adapter, scanner and skill state after
 all workers settle, including timeout-killed workers. Independent workers and consolidation share the original
-source/configuration snapshot and one absolute deadline. Output budgets are split
+source/configuration snapshot and one absolute deadline. Before boot, each worker
+verifies its options against a digest held in the host supervisor command channel;
+an earlier role cannot silently replace a queued role's options file. For configured OpenClaw
+roles, native checkout inspection (startup, challenged read and receipt export)
+consumes the remaining role deadline; it cannot extend that deadline. Ordinary
+single-review inspection and Codex retain their existing 30-second cap. Output budgets are split
 across all assessments, rather than multiplied. The consolidation model receives
 full validated member Decisions as untrusted evidence and selects the canonical
 priority, relevance and labels through the existing parser/publication owners.
