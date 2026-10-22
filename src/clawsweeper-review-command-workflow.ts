@@ -301,6 +301,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     let commandFailed = false;
     let stopBatchRetries = false;
     let configuredBatch = false;
+    let configuredAssessmentAttempted = false;
     let transientBatchSummary: Error | undefined;
     let finalizationError: unknown;
     let reviewCompleted = false;
@@ -1445,6 +1446,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           context, proofScratchDir, undefined,
           reviewOutputMediaLimits(outputBudget, proofScratchDir), writeOutputMetadata,
         );
+        if (itemRepositoryReview?.multiModel) configuredAssessmentAttempted = true;
         const { decision, runtime, codexFailure, codexFailureRetryable, snapshotHash, multiModel } = runPreparedReviewItem({
           item, context, git, model, sandboxMode, localOnly, localRange: false,
           reviewOpenclawDir, reviewTreesDir, additionalPrompt, proofScratchDir,
@@ -1657,6 +1659,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       assertCurrentOutputBudget();
     } catch (caught) {
       const error =
+        configuredAssessmentAttempted &&
         (stopBatchRetries ||
           (configuredBatch &&
             caught !== transientBatchSummary &&

@@ -2123,13 +2123,16 @@ export class ExactReviewQueue {
           const ignoredRecovery = isLowPriorityExactReviewDecision(decision);
           // Manual admission was authenticated and replay-fenced above. A fresh
           // request may reuse retained source authority, never invent a newer head.
-          const freshBatchManual =
-            current.parkedReason === "batch_nonretryable" &&
+          const freshManualAdmission =
             manualAdmission &&
-            deliveryId !== current.admissionDeliveryId;
+            deliveryId !== current.admissionDeliveryId &&
+            // Ordinary source coalescing can replace admission provenance; the
+            // retained request and active lease remain replay fences after TTL.
+            deliveryId !== current.decision.sourceDeliveryId &&
+            deliveryId !== current.leaseDecision?.sourceDeliveryId;
           if (
             current.parkedReason === "batch_nonretryable" &&
-            !freshBatchManual &&
+            !freshManualAdmission &&
             (ignoredRecovery || !exactReviewBatchInputIdentityChanged(current.decision, decision))
           ) {
             this.writeStateSync(state);
@@ -2268,7 +2271,7 @@ export class ExactReviewQueue {
             const bindsCommandToCurrentAuthority =
               decision.itemKind === "pull_request" &&
               (current.leaseDecision || current.decision).itemKind === "pull_request" &&
-              (Boolean(decision.commandStatusMarker) || freshBatchManual) &&
+              (Boolean(decision.commandStatusMarker) || freshManualAdmission) &&
               !Object.hasOwn(decision, "sourceHeadSha") &&
               !Object.hasOwn(decision, "sourceAuthoritySeq");
             const queuesCommandFollowUp =
@@ -2384,7 +2387,7 @@ export class ExactReviewQueue {
             // non-recovery input releases it to pending.
             const preserveReviewRetryBudget =
               mergeable &&
-              !freshBatchManual &&
+              !freshManualAdmission &&
               !sourceDriftLoopParked &&
               !reviewHold &&
               !exactReviewQueueIsPublication(current) &&
@@ -16457,11 +16460,16 @@ function exactReviewInputIdentityChanged(
   );
 }
 
-/** Event names, recovery deliveries and missing hydration are not fresh paid input. */
+/** Recovery deliveries and missing hydration are not fresh paid input; admitted manual request IDs are. */
 function exactReviewBatchInputIdentityChanged(
   prior: ExactReviewDecision,
   next: ExactReviewDecision,
 ) {
+  const manualRequest = (decision: ExactReviewDecision) =>
+    decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION &&
+    decisionPublicationPolicy(decision) === RECORD_COMMENT_ONLY
+      ? (decision.sourceDeliveryId ?? null)
+      : null;
   const command = (decision: ExactReviewDecision) =>
     exactReviewDecisionHasCommandContext(decision)
       ? stableJson({
@@ -16487,7 +16495,8 @@ function exactReviewBatchInputIdentityChanged(
       !prior.sourceContentRevision &&
       next.itemKind === "issue" &&
       Date.parse(next.sourceUpdatedAt || "") > Date.parse(prior.sourceUpdatedAt || "")) ||
-    (command(next) !== null && command(next) !== command(prior)),
+    (command(next) !== null && command(next) !== command(prior)) ||
+    (manualRequest(next) !== null && manualRequest(next) !== manualRequest(prior)),
   );
 }
 

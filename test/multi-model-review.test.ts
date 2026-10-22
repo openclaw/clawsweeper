@@ -457,6 +457,7 @@ function processFixture(t: TestContext, hanging = false) {
   };
   f.options.assessment.context.pullRequest = { head: { sha }, base: { sha } };
   f.options.assessment.git.mainSha = sha;
+  f.options.assessment.repositoryReview!.revision = sha;
   return { ...f, log, git };
 }
 
@@ -726,7 +727,20 @@ test(
     const f = processFixture(t);
     const log = join(f.root, "preparation-calls");
     const script = join(f.root, "prepare.sh");
-    writeFileSync(script, 'printf "prepared\\n" >> ' + JSON.stringify(log) + "\n");
+    const pinnedReference = join(f.root, "codex");
+    execFileSync(
+      "git",
+      ["clone", "--no-hardlinks", f.options.assessment.openclawDir, pinnedReference],
+      { stdio: "ignore" },
+    );
+    writeFileSync(
+      script,
+      'printf "prepared\\n" >> ' +
+        JSON.stringify(log) +
+        "\nln -s " +
+        JSON.stringify(pinnedReference) +
+        ' "$6/codex"\n',
+    );
     const previous = process.env;
     t.after(() => {
       process.env = previous;
@@ -738,7 +752,7 @@ test(
       CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR: join(f.root, "cache.git"),
     };
     const result = runMultiModelReview(f.options);
-    assert.equal(result.multiModel.status, "complete");
+    assert.equal(result.multiModel.status, "complete", JSON.stringify(result.multiModel));
     assert.equal(readFileSync(log, "utf8"), "prepared\n".repeat(3));
   },
 );
@@ -820,7 +834,7 @@ test(
       binary,
       [
         "#!" + process.execPath,
-        'const fs=require("node:fs"); const state=process.env.OPENCLAW_STATE_DIR; const config=process.env.OPENCLAW_CONFIG_PATH;',
+        'const fs=require("node:fs"); if(process.argv[2]==="sandbox")process.exit(0); const state=process.env.OPENCLAW_STATE_DIR; const config=process.env.OPENCLAW_CONFIG_PATH;',
         "fs.writeFileSync(" +
           JSON.stringify(receiptPath) +
           ',JSON.stringify({pid:process.pid,state,config,credentialPresent:fs.readFileSync(config,"utf8").includes("synthetic-inline-key")}));',
@@ -831,6 +845,7 @@ test(
     f.options.assessment.reviewEnv = {
       ...f.options.assessment.reviewEnv,
       CLAWSWEEPER_OPENCLAW_BIN: binary,
+      CLAWSWEEPER_OPENCLAW_SANDBOX_IMAGE: "localhost/fixture@sha256:" + "1".repeat(64),
       CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON: JSON.stringify({
         fixture: {
           baseUrl: "https://fixture.invalid",
@@ -959,11 +974,11 @@ test(
       "#!" + process.execPath,
       'const fs=require("node:fs"),path=require("node:path");',
       'const args=process.argv.slice(2),root=process.env.OPENCLAW_WORKSPACE_DIR,config=JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH,"utf8"));',
-      'const prompt=fs.readFileSync(args[args.indexOf("--message-file")+1],"utf8"); const probe=Array.isArray(config.tools.allow);',
+      'if(args[0]==="sandbox")process.exit(0); const prompt=fs.readFileSync(args[args.indexOf("--message-file")+1],"utf8"); const probe=config.tools.exec.mode==="deny";',
       'const source=path.join(root,"42"),trusted=fs.readFileSync(path.join(root,".agents/skills/sample/SKILL.md"),"utf8");',
       'const record={probe,root,skills:config.agents.defaults.skills,workspaceOnly:config.tools.fs.workspaceOnly,readOnly:(fs.statSync(path.join(source,"tracked.txt")).mode&0o222)===0,trusted:trusted.includes("TRUSTED_NATIVE_GUIDANCE")};',
       "fs.appendFileSync(" + JSON.stringify(nativeLog) + ',JSON.stringify(record)+"\\n");',
-      'if(probe){const rel=JSON.parse(prompt.match(/^Path: (.+)$/m)[1]),line=Number(prompt.match(/Return exactly line ([0-9]+)/)[1]); const text=fs.readFileSync(path.join(root,rel),"utf8").split("\\n")[line-1].trim(); const session=args[args.indexOf("--session-id")+1],file=path.join(process.env.OPENCLAW_STATE_DIR,"agents/main/sessions",session+".jsonl"); fs.mkdirSync(path.dirname(file),{recursive:true}); fs.writeFileSync(file,[{type:"message",message:{role:"assistant",content:[{type:"toolCall",id:"read",name:"read",arguments:{path:rel}}]}},{type:"message",message:{role:"toolResult",toolCallId:"read",toolName:"read",isError:false,content:[{type:"text",text}]}}].map(JSON.stringify).join("\\n")+"\\n"); console.log(JSON.stringify({payloads:[{text}],meta:{stopReason:"stop"}}));}',
+      'if(probe){const rel=JSON.parse(prompt.match(/^Path: (.+)$/m)[1]),line=Number(prompt.match(/Return exactly line ([0-9]+)/)[1]); const text=fs.readFileSync(path.resolve(root,rel),"utf8").split("\\n")[line-1].trim(); const session=args[args.indexOf("--session-id")+1],file=path.join(process.env.OPENCLAW_STATE_DIR,"agents/main/sessions",session+".jsonl"); fs.mkdirSync(path.dirname(file),{recursive:true}); fs.writeFileSync(file,[{type:"message",message:{role:"assistant",content:[{type:"toolCall",id:"read",name:"read",arguments:{path:rel}}]}},{type:"message",message:{role:"toolResult",toolCallId:"read",toolName:"read",isError:false,content:[{type:"text",text}]}}].map(JSON.stringify).join("\\n")+"\\n"); console.log(JSON.stringify({payloads:[{text}],meta:{stopReason:"stop"}}));}',
       'else setTimeout(()=>{if(!fs.readFileSync(path.join(root,".agents/skills/sample/SKILL.md"),"utf8").includes("TRUSTED_NATIVE_GUIDANCE"))process.exit(17);console.log(JSON.stringify({payloads:[{text:' +
         JSON.stringify(
           JSON.stringify(closeDecision({ decision: "keep_open", closeReason: "none" })),
@@ -973,6 +988,8 @@ test(
     writeFileSync(binary, body, { mode: 0o755 });
     execFileSync(process.execPath, ["--check", binary]);
     f.options.assessment.reviewEnv!.CLAWSWEEPER_OPENCLAW_BIN = binary;
+    f.options.assessment.reviewEnv!.CLAWSWEEPER_OPENCLAW_SANDBOX_IMAGE =
+      "localhost/fixture@sha256:" + "1".repeat(64);
     const result = runMultiModelReview(f.options);
     assert.equal(result.multiModel.status, "complete");
     assert.equal(result.multiModel.executionQualification, "unverified");
@@ -1049,6 +1066,7 @@ test(
       binary,
       [
         "#!" + process.execPath,
+        'if(process.argv[2]==="sandbox")process.exit(0);',
         'require("node:fs").appendFileSync(' +
           JSON.stringify(killedRoots) +
           ',JSON.stringify({root:process.env.OPENCLAW_WORKSPACE_DIR,state:process.env.OPENCLAW_STATE_DIR})+"\\n");',
@@ -1056,7 +1074,9 @@ test(
       ].join("\n"),
       { mode: 0o755 },
     );
-    f.options.assessment.timeoutMs = 1500;
+    // Allow bounded object preparation to finish; the scenario under test is
+    // termination of an already-started native worker, not preflight expiry.
+    f.options.assessment.timeoutMs = 4000;
     const timedOut = runMultiModelReview(f.options);
     assert.equal(timedOut.multiModel.status, "incomplete");
     for (const line of readFileSync(killedRoots, "utf8").trim().split("\n")) {

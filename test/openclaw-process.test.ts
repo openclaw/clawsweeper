@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,7 +16,11 @@ import { fileURLToPath } from "node:url";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 
 import { reviewNetworkCapability, runAgentProcess } from "../dist/agent-runner.js";
-import { parseOpenclawJsonEnvelope, runOpenclawProcess } from "../dist/openclaw-process.js";
+import {
+  parseOpenclawJsonEnvelope,
+  runOpenclawProcess,
+  retireOpenclawRoleStates,
+} from "../dist/openclaw-process.js";
 import { codexProcessErrorCode } from "../dist/codex-process.js";
 
 const OPENCLAW_PROCESS_WORKER_PATH = fileURLToPath(
@@ -34,6 +46,7 @@ function fakeOpenclaw(root: string): string {
     binary,
     `#!/usr/bin/env node
 const fs = require("node:fs");
+if (process.argv[2] === "sandbox") process.exit(0);
 if (process.argv[2] === "sessions") {
   if (!process.env.OPENCLAW_TEST_SQLITE_EXPORT) process.exit(4);
   if (process.env.OPENCLAW_TEST_HANG_EXPORT) {
@@ -1031,8 +1044,10 @@ for (const modelId of ["selected", "vendor/selected"])
       CLAWSWEEPER_OPENCLAW_BIN: binary,
       OPENCLAW_TEST_RECORD: recordPath,
       OPENCLAW_TEST_STDOUT: JSON.stringify(envelope),
+      CLAWSWEEPER_OPENCLAW_SANDBOX_IMAGE: "localhost/fixture@sha256:" + "1".repeat(64),
     };
     const before = { ...env };
+    const configured = process.platform === "linux" && (process.getuid?.() ?? 0) > 0;
     const result = runAgentProcess({
       label: "selection",
       prompt: "review",
@@ -1047,7 +1062,7 @@ for (const modelId of ["selected", "vendor/selected"])
         reasoningEffort: "high",
         contextTier: "default",
       },
-      reviewPhase: "independent",
+      ...(configured ? { reviewPhase: "independent" as const } : {}),
     });
     assert.equal(result.status, 0, result.error?.message);
     assert.equal(result.stdout, "native answer");
@@ -1058,7 +1073,13 @@ for (const modelId of ["selected", "vendor/selected"])
     const record = JSON.parse(readFileSync(recordPath, "utf8"));
     assert.equal(record.args[record.args.indexOf("--model") + 1], "fixture/" + modelId);
     assert.equal(record.args[record.args.indexOf("--thinking") + 1], "high");
-    assert.equal(existsSync(record.stateDir), false);
+    assert.equal(record.config.agents.defaults.sandbox.mode, configured ? "all" : "off");
+    if (configured) assert.equal(record.config.agents.defaults.sandbox.backend, "podman");
+    assert.equal(record.config.tools.exec.host, configured ? "sandbox" : "gateway");
+    assert.equal(existsSync(record.stateDir), configured);
+    // The surviving assessment owner now retires configured native state. This
+    // unit fixture creates no native container; remove only its recorded state.
+    rmSync(record.stateDir, { recursive: true, force: true });
   });
 
 test(
@@ -1100,3 +1121,101 @@ test(
     assert.equal(existsSync(JSON.parse(readFileSync(recordPath, "utf8")).stateDir), false);
   },
 );
+
+test("configured native state fails closed before launch when a key-bearing state path is tool-readable", () => {
+  const root = mkdtempSync(join(tmpdir(), "openclaw-state-overlap-"));
+  try {
+    const record = join(root, "record.json");
+    const result = runOpenclawProcess({
+      label: "overlap",
+      prompt: "fixture",
+      model: "fixture/model",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: fakeOpenclaw(root),
+        OPENCLAW_TEST_RECORD: record,
+        CLAWSWEEPER_OPENCLAW_SANDBOX_IMAGE: "localhost/fixture@sha256:" + "1".repeat(64),
+      },
+      timeoutMs: 1000,
+      roleIsolation: { readRoots: [tmpdir()] },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.error?.message ?? "", /provider state.*outside/);
+    assert.equal(existsSync(record), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("configured native state retirement retains binding while dropping provider models and secrets", () => {
+  const root = mkdtempSync(join(tmpdir(), "openclaw-retire-"));
+  try {
+    const state = join(root, "clawsweeper-openclaw-process-owned");
+    const config = {
+      agents: { defaults: { sandbox: { mode: "all", backend: "podman" } } },
+      models: { providers: { fixture: { apiKey: "SYNTHETIC_ONLY" } } },
+    };
+    mkdirSync(state);
+    writeFileSync(join(state, "role-isolation.json"), "1");
+    writeFileSync(join(state, "openclaw.json"), JSON.stringify(config));
+    const marker = join(root, "retired.json");
+    const binary = join(root, "retire-native.cjs");
+    writeFileSync(
+      binary,
+      "#!" +
+        process.execPath +
+        "\n" +
+        'const fs=require("node:fs"),assert=require("node:assert/strict");' +
+        'assert.deepEqual(process.argv.slice(2),["sandbox","recreate","--agent","main","--force"]);' +
+        "assert.equal(process.env.OPENAI_API_KEY,undefined);assert.equal(process.env.OPENCLAW_GATEWAY_TOKEN,undefined);" +
+        'const c=JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH,"utf8"));' +
+        'assert.equal(c.models,undefined);assert.equal(c.agents.defaults.sandbox.backend,"podman");' +
+        "fs.writeFileSync(" +
+        JSON.stringify(marker) +
+        ",JSON.stringify({state:process.env.OPENCLAW_STATE_DIR,config:c}));",
+      { mode: 0o755 },
+    );
+    retireOpenclawRoleStates(
+      root,
+      {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: binary,
+        OPENAI_API_KEY: "SYNTHETIC_ONLY",
+        OPENCLAW_GATEWAY_TOKEN: "SYNTHETIC_ONLY",
+      },
+      Date.now() + 5000,
+    );
+    assert.equal(JSON.parse(readFileSync(marker, "utf8")).state, state);
+    assert.deepEqual(JSON.parse(readFileSync(join(state, "openclaw.json"), "utf8")), config);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("configured native roles reject an unsupported host without launching broad host tools", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "native-host-refusal-"));
+  try {
+    if (process.getuid) t.mock.method(process, "getuid", () => 0);
+    const record = join(root, "record.json");
+    const result = runOpenclawProcess({
+      label: "unqualified-host",
+      prompt: "fixture",
+      model: "fixture/model",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: fakeOpenclaw(root),
+        OPENCLAW_TEST_RECORD: record,
+        CLAWSWEEPER_OPENCLAW_SANDBOX_IMAGE: "localhost/fixture@sha256:" + "1".repeat(64),
+      },
+      timeoutMs: 1000,
+      roleIsolation: { readRoots: [root] },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.error?.message ?? "", /qualified non-root native sandbox host/);
+    assert.equal(existsSync(record), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

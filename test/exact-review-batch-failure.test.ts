@@ -1,3 +1,7 @@
+import {
+  MANUAL_REVIEW_SOURCE_ACTION,
+  RECORD_COMMENT_ONLY,
+} from "../dist/manual-publication-policy.js";
 import { enqueueManualReviews } from "../dist/repair/manual-review-enqueue.js";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -247,7 +251,11 @@ test("parked batch input accepts fresh verified source and an explicit request, 
   }
 });
 
-function manualRequest(h: Harness, requestId: string) {
+function manualRequest(
+  h: Harness,
+  requestId: string,
+  additionalPrompt = "A deliberately fresh operator request",
+) {
   return enqueueManualReviews({
     targetRepo: repo,
     targetBranch: "main",
@@ -256,7 +264,7 @@ function manualRequest(h: Harness, requestId: string) {
     requestId,
     queueUrl: "https://queue",
     secret: "fixture-signing-key",
-    additionalPrompt: "A deliberately fresh operator request",
+    additionalPrompt,
     itemKind: async () => "pull_request",
     fetch: async (input, init) => {
       const path = new URL(String(input)).pathname.replace("/internal/exact-review", "");
@@ -408,5 +416,105 @@ test("a fresh manual request binds live source instead of dropping a retained st
       ).unchanged,
       1,
     );
+  });
+});
+
+for (const initialManual of [false, true])
+  test(
+    "fresh commandless manual request survives older batch completion: " + initialManual,
+    async () => {
+      const h = harness(true);
+      await withExactReviewAdmissionHarness(h, async () => {
+        if (initialManual) await manualRequest(h, "older-active-manual", "");
+        else await post(h, "/enqueue", { delivery_id: "older-opened", decision: decision() });
+        const oldLease = await claim(h);
+        const oldRevision = (await state(h)).items[key]!.revision;
+        assert.equal((await manualRequest(h, "fresh-during-active", "")).accepted, 1);
+        const queued = (await state(h)).items[key]!;
+        const delivery = queued.decision.sourceDeliveryId;
+        assert.equal(queued.decision.sourceAction, MANUAL_REVIEW_SOURCE_ACTION);
+        assert.equal(delivery, "manual:fresh-during-active:42");
+        assert.ok(queued.revision > oldRevision);
+        assert.ok(
+          !queued.decision.commandStatusMarker &&
+            !queued.decision.statusCommentId &&
+            !queued.decision.additionalPrompt,
+        );
+        assert.equal(queued.decision.sourceHeadSha, queued.leaseDecision!.sourceHeadSha);
+        await post(h, "/complete", completion(oldLease));
+        const next = (await state(h)).items[key]!;
+        assert.equal(
+          next.state,
+          "pending",
+          "old batch failure cannot discard the fresh explicit request",
+        );
+        assert.equal(next.decision.sourceDeliveryId, delivery);
+        const revision = next.revision;
+        await manualRequest(h, "fresh-during-active", "");
+        assert.equal((await state(h)).items[key]!.revision, revision);
+        await post(h, "/complete", completion(await claim(h)));
+        assert.equal((await state(h)).items[key]!.state, "parked");
+        await manualRequest(h, "fresh-during-active", "");
+        assert.equal(
+          (await state(h)).items[key]!.state,
+          "parked",
+          "request replay cannot spend another batch",
+        );
+      });
+    },
+  );
+
+test("stale bound manual tuple cannot bypass the source-authority fence", async () => {
+  const h = harness(true);
+  await withExactReviewAdmissionHarness(h, async () => {
+    await post(h, "/enqueue", { delivery_id: "older-bound", decision: decision() });
+    const lease = await claim(h);
+    const before = (await state(h)).items[key]!;
+    const priorRevision = before.revision;
+    const fresh = {
+      ...before.leaseDecision!,
+      sourceAction: MANUAL_REVIEW_SOURCE_ACTION,
+      publicationPolicy: RECORD_COMMENT_ONLY,
+    };
+    await post(h, "/enqueue", { delivery_id: "manual:bound-fresh-request:42", decision: fresh });
+    const queued = (await state(h)).items[key]!;
+    assert.equal(queued.revision, priorRevision);
+    assert.equal(queued.decision.sourceAction, "opened");
+    await post(h, "/complete", completion(lease));
+    const after = (await state(h)).items[key]!;
+    assert.equal(after.state, "parked");
+    assert.equal(after.decision.sourceAction, "opened");
+  });
+});
+
+test("expired manual receipt cannot replay a retained request after source coalescing", async (t) => {
+  const h = harness(true);
+  const realNow = Date.now.bind(Date);
+  let offset = 0;
+  t.mock.method(Date, "now", () => realNow() + offset);
+  await withExactReviewAdmissionHarness(h, async () => {
+    await manualRequest(h, "retained-A");
+    await post(h, "/enqueue", {
+      delivery_id: "ordinary-B",
+      decision: decision("edited", {
+        sourceUpdatedAt: "2026-10-20T00:01:00Z",
+        sourceHeadVerified: true,
+        sourceAuthoritySeq: 1,
+      }),
+    });
+    const coalesced = (await state(h)).items[key]!;
+    assert.equal(coalesced.decision.sourceDeliveryId, "manual:retained-A:42");
+    assert.equal(coalesced.admissionDeliveryId, "ordinary-B");
+    await post(h, "/complete", completion(await claim(h)));
+    assert.equal((await state(h)).items[key]!.state, "parked");
+    offset = 8 * 24 * 60 * 60 * 1000;
+    await manualRequest(h, "retained-A");
+    const after = (await state(h)).items[key]!;
+    assert.equal(
+      after.state,
+      "parked",
+      "the persisted request identity survives delivery-receipt expiry",
+    );
+    assert.equal(after.decision.sourceDeliveryId, "manual:retained-A:42");
   });
 });

@@ -812,6 +812,7 @@ ${extra}
     nativeWorkspace?: string;
     disableSkills?: boolean;
     reviewPhase?: "independent" | "consolidation";
+    nativeReadRoots?: string[];
   }): CodexProcessResult {
     const dirtyBefore = openclawDirtyStatus(options.openclawDir);
     if (dirtyBefore) {
@@ -832,6 +833,7 @@ ${extra}
       cwd: options.openclawDir,
       ...(options.nativeWorkspace ? { nativeWorkspace: options.nativeWorkspace } : {}),
       ...(options.disableSkills ? { disableSkills: true } : {}),
+      ...(options.nativeReadRoots ? { nativeReadRoots: options.nativeReadRoots } : {}),
       ...(options.reviewPhase ? { reviewPhase: options.reviewPhase } : {}),
       env:
         options.reviewEnv ??
@@ -866,6 +868,9 @@ ${extra}
     repositoryReview?: RepositoryReviewConfig;
     /** Host-only receipt: shared preparation finished before parallel workers. */
     sourcePrepared?: boolean;
+    /** Host-admitted public source objects; never a repository-configured mount. */
+    nativeReadRoots?: string[];
+    nativeReferenceDir?: string;
     selection?: import("./repository-review-config.js").ReviewModelSelection;
     reviewPhase?: "independent" | "consolidation";
     onExecution?: (receipt: import("./review-execution-receipt.js").ReviewExecutionReceipt) => void;
@@ -1047,7 +1052,9 @@ ${extra}
         ...reviewNetworkCapability(options.sandboxMode, codexEnv),
       }).text;
     if (options.selection) {
-      const capability = reviewNetworkCapability(options.sandboxMode, codexEnv);
+      const capability = options.reviewPhase
+        ? { networkCapability: "none", hasGitHubToken: false }
+        : reviewNetworkCapability(options.sandboxMode, codexEnv);
       prompt +=
         "\n\n## Effective host execution context (overrides generic runtime descriptions)\n" +
         "Runner: " +
@@ -1059,9 +1066,14 @@ ${extra}
         "; GitHub token available: " +
         capability.hasGitHubToken +
         ".\n" +
-        (options.selection.runner === "openclaw"
-          ? "OpenClaw does not enforce Codex filesystem sandboxing. The checkout is still read-only by host policy; do not modify it."
-          : "The configured Codex sandbox remains unchanged.") +
+        (options.reviewPhase
+          ? "Native role tool policy exposes only admitted source/Git/skills read-only and this role's proof scratch. Provider state and peer files remain outside tool roots. Git history stops at host-admitted shallow boundaries; unavailable older history is not evidence against the PR."
+          : options.selection.runner === "openclaw"
+            ? "OpenClaw does not enforce Codex filesystem sandboxing. The checkout is still read-only by host policy; do not modify it."
+            : "The configured Codex sandbox remains unchanged.") +
+        (options.nativeReferenceDir
+          ? " Host-pinned dependency source: " + JSON.stringify(options.nativeReferenceDir) + "."
+          : "") +
         " The pinned source checkout for this role is " +
         JSON.stringify(options.openclawDir) +
         ". Use it instead of original context filesystem paths. No repository setting grants writes, installation, helper execution, delegation or publication. Scratch directory: " +
@@ -1103,6 +1115,7 @@ ${extra}
       initialPrompt: prompt,
       ...(native ? { nativeWorkspace: native.cwd } : {}),
       ...(options.reviewPhase ? { disableSkills: true, reviewPhase: options.reviewPhase } : {}),
+      ...(options.nativeReadRoots ? { nativeReadRoots: options.nativeReadRoots } : {}),
       itemNumber: options.item.number,
       openclawDir: options.openclawDir,
       timeoutMs: options.timeoutMs - (Date.now() - startedAt),
@@ -1148,6 +1161,7 @@ ${extra}
     const result = runAgentProcess({
       ...(options.selection ? { selection: options.selection } : {}),
       ...(options.reviewPhase ? { reviewPhase: options.reviewPhase } : {}),
+      ...(options.nativeReadRoots ? { nativeReadRoots: options.nativeReadRoots } : {}),
       ...(options.repositoryReview ? { repositoryReview: options.repositoryReview } : {}),
       ...(native ? { nativeWorkspace: native } : {}),
       scanSource,

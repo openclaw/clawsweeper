@@ -115,7 +115,10 @@ preserves completed advisory assessments plus the private original source cause.
 Host-owned failure class, terminal status and retry disposition cross the worker
 boundary without raw diagnostics; a terminal, unknown or vetoed outcome does not
 authorize another potentially paid batch. Hosted producers exit 82 for a nonretryable
-batch and complete the queue lease with the closed terminal reason
+batch; fresh authenticated manual-request follow-ups retain their persisted
+delivery identity across older lease completion, while retained request and
+lease identities fence same-request replay even after delivery-receipt expiry
+and ordinary-source coalescing. Hosted producers complete the queue lease with the closed terminal reason
 `batch_nonretryable`. The queue retains the failed input without automatically
 retrying it; a fresh source or explicit request is required. Deploy the updated
 queue Worker and completion/status readers **before** enabling this producer or
@@ -165,48 +168,68 @@ grant writes, helper execution, installation, delegation or additional models.
 Unsupported methodology must be reported, not claimed complete. Selected Codex
 skills preserve the normal same-thread structured-decision repair lifecycle.
 
-Every multi-model role, including models-only configuration, receives its own
-pinned working copy and independent Git config/index/refs; immutable Git objects
-are borrowed from the admitted host store, never hardlinked. The existing byte,
-file, disk, attribute and shared-time admission checks still run before checkout.
-Before acceptance or mode restoration, the host verifies the complete private
-source fingerprint, including ignored files and Git metadata. Replacement
-file/directory/ancestor identities are retained for recovery, never followed by
-permission restoration. A bounded internal recovery receipt preserves cause
-identity/digests and owned paths across worker termination; raw provider
-diagnostics never enter advisory Decisions. Temporary state is private per role.
+Every multi-model role, including models-only configuration, receives a pinned
+working copy with independent Git config, index and refs. A task-owned immutable
+object closure contains only the host-verified head, actual PR base, trusted
+configuration revision and their bounded required history. It never borrows the
+managed checkout's object store. Unreachable objects, unrelated branches,
+untracked files and host configuration are not projected. The role's alternates
+point only at that admitted closure; roles for identical pinned input may share
+its read-only pack. Older history stops at explicit shallow boundaries and must
+not be treated as negative evidence about the PR.
 
-OpenClaw uses the existing managed review-tree parent as its isolated native
-workspace, with pinned skills outside the reviewed checkout. This does not enable
-optional Codex-source provisioning in jobs where the existing setup is absent.
-When present, the host-owned Codex-source sibling is permitted only after
-successful preparation and exact
-symlink-target verification. Its referent uses the existing read-only mode guard;
-original modes are restored only on the same filesystem identities. Before
-acceptance, a bounded streaming fingerprint checks the entire owned clone, including
-Git metadata, modification/change timestamps and ignored/untracked files. On every
-assessment exit, drift or an unverifiable snapshot requires recovery and preserves
-the reference and review workspace, including the original failure cause. Git
-optional index writes are disabled for selected native reviews;
-worktree-style Git pointers and escaping reference links are unsupported. This is
-post-execution verification, not a new OS sandbox. Unrelated siblings remain
-rejected. Its name
-allowlist selects only the approved skills;
-the read-only checkout probe allows none. Filesystem workspace-only restrictions
-remain enabled. A missing/shared parent (including ordinary offline user
-checkouts) is unsupported for selected OpenClaw skills and fails before inference;
-unconfigured and append-only operation is unchanged. No source copy or move is
-performed on user checkouts. Adding an extra skill directory to the PR checkout alone is not safe.
-The checkout probe uses only the direct read tool, not Code Mode, and still requires
-the exact challenge and paired successful read receipt. It reads legacy transcripts or the current local `sessions export-trajectory`
-output from its own isolated state; unavailable or mismatched receipts fail closed.
-New siblings written in the owned native workspace are removed during cleanup;
-an otherwise successful review that wrote them is rejected before acceptance.
-Changed original workspace/source/sibling identities instead preserve the workspace
-for recovery and reject acceptance, rather than deleting relocated source.
-Host-provided Node CA roots are preserved for verified TLS through managed egress.
-Harness selection remains operator-owned: a native runtime that cannot honor the
-read-only probe is unsupported, not automatically replaced.
+The existing object/file, byte, disk, attribute and absolute-deadline admission
+runs before packing or checkout. Packing streams exact admitted object IDs through
+trusted Git configuration with no hooks, filters, lazy fetching, thin packs or
+reused deltas. Incomplete history or objects, exceeded capacity and unverifiable
+packing fail closed without another paid batch. Private source, reference and
+closure fingerprints are checked before acceptance; permission restoration uses
+only the original filesystem identities. Uncertain Git or native-runtime
+settlement retains owned recovery state rather than deleting or retrying it.
+
+Configured model tools are an enforced filesystem boundary, not just a prompt or
+chmod policy. The native provider client remains trusted on the host; its state
+and credentials must stay outside tool-readable roots. Codex uses a restricted
+native permission profile: admitted source/objects/skills are read-only, only the
+role's proof scratch is writable, and tool networking is disabled. The operator
+must provide a native CLI executable supporting restricted permission profiles,
+either directly on PATH or through `CODEX_BIN`; an npm launcher alone does not
+establish that binding. An unavailable restricted runtime does not fall back to
+ordinary broad `:read-only` access. Ordinary single-review defaults are unchanged.
+
+Configured OpenClaw checkout probes and full assessments use its existing native
+per-session Podman sandbox. The qualified execution surface is a non-root hosted
+Linux worker, including reviews of the Windows-node repository; this is not a
+claim that local Windows or macOS Podman execution is qualified. Before opting in,
+operators must provision the native Podman capability and set
+`CLAWSWEEPER_OPENCLAW_SANDBOX_IMAGE` to an available immutable SHA-256 image
+reference. Repository configuration cannot choose the image or widen mounts.
+The sandbox retains init, a read-only root, dropped capabilities, no networking,
+disabled elevation, and no gateway-exec fallback. Only this role's source, admitted
+objects, selected skills and proof scratch are bound; no home, common Git root,
+provider configuration, peer temporary state or engine socket is exposed.
+
+The surviving host retires configured native runtimes through their native owner
+before deleting adapter state, including after a killed worker. Retirement keeps
+the sandbox/workspace binding but omits key-bearing model configuration. Missing
+capability or unverified retirement preserves a failed/recovery outcome, never a
+clean review. Existing Codex-source provisioning is not enabled where absent;
+when present, its verified setup-owned alias is replaced with a private pinned
+tracked copy and admitted objects, not a mount of the host dependency cache.
+
+OpenClaw uses the owned review-tree parent for selected native skills outside the
+reviewed checkout. Its name allowlist selects only the approved bundle; the
+read-only checkout probe allows none. Workspace-only restrictions remain enabled.
+A missing/shared parent, including an ordinary user checkout, is unsupported for
+selected OpenClaw skills and fails before inference. No source copy or move is
+performed on user checkouts. Adding a skill directory to the PR checkout alone is
+not safe. The configured probe reads the exact admitted absolute path through the
+native read tool, not Code Mode, and requires the paired successful receipt.
+Legacy transcripts or the current local `sessions export-trajectory` output must
+come from that adapter's own state; unavailable or mismatched receipts fail closed.
+Host-provided Node CA roots remain available for verified TLS through managed
+egress. A runtime that cannot honor these boundaries is unsupported, not replaced
+with another provider or a broader tool mode.
 
 Offline local-range review instead trusts the operator-selected `--base` ref
 (default `origin/main`), resolved to its exact commit, not the diff’s merge-base

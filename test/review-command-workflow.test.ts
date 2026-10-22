@@ -254,12 +254,14 @@ function testScheduledCacheScenario(
     const proofMaintainerChange = scenario === "changed-pr-proof-maintainer-change";
     const writeAccessAuthor = scenario === "changed-pr-write-access";
     const batchNonretryable = scenario === "changed-pr-exact-batch-nonretryable";
+    const batchCoordinationFailure = scenario === "changed-pr-exact-batch-coordination-failure";
     const batchTransient = scenario.includes("batch-transient");
     const batchOutputFailure = scenario.endsWith("batch-transient-output-failure");
     const batchLedgerFailure = scenario === "changed-pr-exact-batch-ledger-failure";
     const batchCleanupFailure = scenario.includes("batch-transient-cleanup-failure");
     const batchJsonFailure = scenario.endsWith("batch-transient-cleanup-failure-json");
-    const configuredBatch = batchNonretryable || batchTransient || batchLedgerFailure;
+    const configuredBatch =
+      batchNonretryable || batchTransient || batchLedgerFailure || batchCoordinationFailure;
     let terminalLedgerAttempts = 0;
     let modeRestorations = 0;
     const repositoryConfigured = scenario === "changed-pr-repository-config" || configuredBatch;
@@ -693,14 +695,18 @@ process.exitCode = 1;
       }),
       isBulkFilerExemptAuthorAssociation: () => false,
       isBulkFilerExemptRepositoryPermission: () => false,
-      issueReviewCommentState: () => ({
-        comments: [leaseComment],
-        reviewComment: undefined,
-        leaseComment,
-        leaseComments: [leaseComment],
-        dedicatedLeaseComment: leaseComment,
-        dedicatedLeaseComments: [leaseComment],
-      }),
+      issueReviewCommentState: () => {
+        if (batchCoordinationFailure)
+          throw new Error("controlled durable coordination unavailable");
+        return {
+          comments: [leaseComment],
+          reviewComment: undefined,
+          leaseComment,
+          leaseComments: [leaseComment],
+          dedicatedLeaseComment: leaseComment,
+          dedicatedLeaseComments: [leaseComment],
+        };
+      },
       isSuppliedReviewStartLease,
       reviewLeaseStillMatchesContext,
       liveClawSweeperReviewDigest: () => digest("previous"),
@@ -1158,6 +1164,18 @@ process.exitCode = 1;
           ),
         );
       };
+
+      if (batchCoordinationFailure) {
+        assert.throws(execute, (error) => {
+          assert.equal(nonretryableReviewBatchExitCode(error), undefined);
+          assert.match(String(error), /durable.*coordination/);
+          return true;
+        });
+        assert.equal(injectedBatches, 0);
+        assert.equal(generationCalls, 0);
+        assert.equal(existsSync(providerCalls), false);
+        return;
+      }
 
       if (outputCase) {
         if (cumulativeCase) {
@@ -1721,3 +1739,5 @@ for (const path of ["structural-clean", "content-clean"]) {
     }
   }
 }
+
+testScheduledCacheScenario("changed-pr-exact-batch-coordination-failure");

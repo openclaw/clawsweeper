@@ -1,10 +1,11 @@
 import { randomInt } from "node:crypto";
 import { UserFacingCommandError } from "./command.js";
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { lstatSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { delimiter, isAbsolute, join, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { codexModelArgs, redactInternalCodexModel } from "./codex-env.js";
-import { runCodexProcess, type CodexProcessResult } from "./codex-process.js";
+import { codexProcessCommand, runCodexProcess, type CodexProcessResult } from "./codex-process.js";
 import { runOpenclawProcess } from "./openclaw-process.js";
 import { AgentInputScanError, scanAgentInput, type AgentScanSource } from "./agent-input-scan.js";
 import type { DecisionRepairOptions } from "./review-decision-repair.js";
@@ -45,6 +46,7 @@ export interface RunAgentProcessOptions {
   repositoryReview?: RepositoryReviewConfig;
   selection?: import("./repository-review-config.js").ReviewModelSelection;
   reviewPhase?: "independent" | "consolidation";
+  nativeReadRoots?: string[];
   nativeWorkspace?: { cwd: string; prompt: string };
 }
 
@@ -145,7 +147,7 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
         options.prompt +
         "\n\n## Host review role\nPhase: " +
         options.reviewPhase +
-        ". The host schedules all reviewers. Produce one full ordinary Decision for this phase. Do not start another model, pair, agent, or nested review; selected skills supply analysis guidance, not orchestration authority.",
+        ". The host schedules all reviewers. Produce one full ordinary Decision for this phase. Do not start another model, pair, agent, or nested review; selected skills supply analysis guidance, not orchestration authority. Configured role tools have no network access: use the admitted source and selected skills; unavailable external verification is a limit, not evidence against the PR.",
     };
   if (runner === "openclaw" && options.nativeWorkspace)
     options = { ...options, prompt: options.prompt + "\n\n" + options.nativeWorkspace.prompt };
@@ -162,6 +164,7 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     throw new AgentInputScanError("deadline");
   }
   if (runner === "codex") {
+    const reviewSourceDir = options.cwd;
     const native = options.repositoryReview?.skills.length
       ? materializeNativeReviewSkills(options.repositoryReview, options.cwd)
       : undefined;
@@ -182,13 +185,22 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
         };
       }
       retainDiagnosticPrompt(options, options.prompt);
-      const args = codexAgentArgs(options);
+      const ordinaryArgs = codexAgentArgs(options);
+      const args = options.reviewPhase
+        ? isolatedCodexRoleArgs(options, ordinaryArgs, [
+            reviewSourceDir,
+            options.cwd,
+            ...(options.nativeReadRoots ?? []),
+          ])
+        : ordinaryArgs;
       const managedOutput =
         options.outputLastMessageBytes !== undefined && outputPath !== undefined;
       return runCodexProcess({
         args: managedOutput ? managedCodexStdoutArgs(args) : args,
         cwd: options.cwd,
-        env: options.env,
+        env: options.reviewPhase
+          ? { ...options.env, GH_TOKEN: undefined, GITHUB_TOKEN: undefined }
+          : options.env,
         input: options.prompt,
         timeoutMs: options.timeoutMs,
         ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
@@ -218,6 +230,20 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     model,
     ...(options.reasoningEffort?.trim() ? { reasoningEffort: options.reasoningEffort.trim() } : {}),
     cwd: options.nativeWorkspace?.cwd ?? options.cwd,
+    ...(options.reviewPhase
+      ? {
+          roleIsolation: {
+            readRoots: [
+              options.nativeWorkspace?.cwd ?? options.cwd,
+              options.cwd,
+              ...(options.nativeReadRoots ?? []),
+            ],
+            ...(options.env.CLAWSWEEPER_PROOF_SCRATCH_DIR
+              ? { proofScratchDir: options.env.CLAWSWEEPER_PROOF_SCRATCH_DIR }
+              : {}),
+          },
+        }
+      : {}),
     ...(options.nativeWorkspace
       ? { skillFilter: options.repositoryReview!.skills.map((skill) => skill.name) }
       : options.reviewPhase
@@ -254,6 +280,95 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
   return result;
 }
 
+function isolatedCodexRoleArgs(
+  options: RunAgentProcessOptions,
+  args: readonly string[],
+  roots: readonly string[],
+): string[] {
+  const command = codexProcessCommand(options.env, process.platform, options.cwd);
+  const candidates = isAbsolute(command)
+    ? [command]
+    : command.includes("/") || command.includes("\\")
+      ? [resolve(options.cwd, command)]
+      : (options.env.PATH ?? "")
+          .split(delimiter)
+          .filter(isAbsolute)
+          .map((root) => join(root, command));
+  const executable = candidates.flatMap((candidate) => {
+    try {
+      const actual = realpathSync(candidate);
+      return lstatSync(actual).isFile() ? [actual] : [];
+    } catch {
+      return [];
+    }
+  })[0];
+  if (!executable || (!options.env.CODEX_BIN && /\.[cm]?js$/i.test(executable)))
+    throw new Error(
+      "Configured Codex roles require CODEX_BIN to name the trusted native CLI executable, not an npm launcher; restricted tool roots cannot expose a provider home to find it.",
+    );
+  const access = new Map([...roots, executable].map((root) => [realpathSync(root), "read"]));
+  const scratch = options.env.CLAWSWEEPER_PROOF_SCRATCH_DIR;
+  if (scratch) access.set(realpathSync(scratch), "write");
+  const providerHome =
+    options.env.CODEX_HOME ?? join(options.env.HOME ?? options.env.USERPROFILE ?? "", ".codex");
+  const privateParents = [
+    providerHome,
+    tmpdir(),
+    options.env.TMPDIR,
+    options.env.TMP,
+    options.env.TEMP,
+  ]
+    .filter((path): path is string => Boolean(path))
+    .map((path) => resolve(options.cwd, path));
+  if (
+    [...access.keys()].some((root) =>
+      privateParents.some((parent) => {
+        const path = relative(root, parent);
+        return (
+          !path ||
+          (path !== ".." &&
+            !path.startsWith("../") &&
+            !path.startsWith("..\\") &&
+            !isAbsolute(path))
+        );
+      }),
+    )
+  )
+    throw new Error("Codex provider state must remain outside every configured role tool root.");
+  const filesystem =
+    '":root"="deny",":minimal"="read",":workspace_roots"={"."="read"},' +
+    [...access].map(([root, mode]) => JSON.stringify(root) + "=" + JSON.stringify(mode)).join(",");
+  const profile = "clawsweeper-configured-review";
+  const config =
+    "permissions={" +
+    JSON.stringify(profile) +
+    '={extends=":read-only",filesystem={' +
+    filesystem +
+    "},network={enabled=false}}}";
+  const isolated: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (["--sandbox", "-s", "--permission-profile", "-P"].includes(args[i]!)) {
+      i++;
+      continue;
+    }
+    isolated.push(args[i]!);
+  }
+  // CLI profiles are host-owned. Repository model/skill configuration cannot
+  // select another profile or widen tool roots. Ordinary single reviews retain
+  // their existing managed proxy and permissions unchanged.
+  const stdin = isolated.at(-1) === "-" ? isolated.pop() : undefined;
+  isolated.push(
+    "-c",
+    config,
+    "-c",
+    "default_permissions=" + JSON.stringify(profile),
+    "--permission-profile",
+    profile,
+  );
+  if (stdin) isolated.push(stdin);
+  return isolated;
+}
+
 function retainDiagnosticPrompt(options: RunAgentProcessOptions, prompt: string): void {
   if (
     options.promptFileBytes !== undefined &&
@@ -275,6 +390,7 @@ export function runAgentCheckoutInspection(options: {
   nativeWorkspace?: string;
   disableSkills?: boolean;
   reviewPhase?: "independent" | "consolidation";
+  nativeReadRoots?: string[];
 }): CodexProcessResult {
   const deadlineAt = Date.now() + options.timeoutMs;
   const remainingMs = () => {
@@ -309,11 +425,15 @@ export function runAgentCheckoutInspection(options: {
         new Error("Checkout inspection could not select a tracked text line."),
       );
     }
-    const challengePath = options.nativeWorkspace
-      ? relative(options.nativeWorkspace, join(options.cwd, challenge.path))
-      : challenge.path;
+    const challengePath = options.reviewPhase
+      ? resolve(options.cwd, challenge.path)
+      : options.nativeWorkspace
+        ? relative(options.nativeWorkspace, join(options.cwd, challenge.path))
+        : challenge.path;
     const prompt = [
-      "Use the read tool to inspect the workspace-relative file below.",
+      options.reviewPhase
+        ? "Use the read tool to inspect the exact admitted read-only file below."
+        : "Use the read tool to inspect the workspace-relative file below.",
       `Path: ${JSON.stringify(challengePath)}`,
       `Return exactly line ${challenge.lineNumber} with surrounding whitespace removed.`,
       "Do not add quotes, code fences, or commentary.",
@@ -332,6 +452,17 @@ export function runAgentCheckoutInspection(options: {
       model: openclawModel(env),
       cwd: options.nativeWorkspace ?? options.cwd,
       ...(options.nativeWorkspace || options.disableSkills ? { skillFilter: [] } : {}),
+      ...(options.reviewPhase
+        ? {
+            roleIsolation: {
+              readRoots: [
+                options.nativeWorkspace ?? options.cwd,
+                options.cwd,
+                ...(options.nativeReadRoots ?? []),
+              ],
+            },
+          }
+        : {}),
       env,
       // Configured roles already share one bounded review deadline. Native CLI
       // startup, the challenged read, and its export consume that remainder.

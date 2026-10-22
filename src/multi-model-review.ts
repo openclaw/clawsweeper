@@ -1,4 +1,5 @@
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
+import { retireOpenclawRoleStates } from "./openclaw-process.js";
 import {
   ValidationRecoveryRequiredError,
   validationRecoveryRequired,
@@ -24,6 +25,7 @@ import type { FileModeSnapshot } from "./clawsweeper-types.js";
 import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { readReviewGit } from "./pr-review-evidence.js";
 import { fileURLToPath } from "node:url";
 import { runTextConcurrently } from "./command.js";
 import { reviewAssessmentOutputDir } from "./review-output-policy.js";
@@ -64,9 +66,30 @@ export function runAssessmentJobs(jobs: readonly AssessmentJob[]): AssessmentRes
     targetDir: string;
     worktreeDir: string;
     modes: FileModeSnapshot[];
+    privateTemp: string;
+    env: NodeJS.ProcessEnv;
     digest?: string;
+    reference?: { path: string; digest: string; identity: string; modes: FileModeSnapshot[] };
     identity?: { source: string; workspace: string; private: string };
   }> = [];
+  const closures = new Map<
+    string,
+    { modes: FileModeSnapshot[]; digest: string; identity: string }
+  >();
+  const closureParent = join(directory, "admitted");
+  mkdirSync(closureParent);
+  const freezeClosure = (path: string, deadlineAt: number) => {
+    if (!closures.has(path)) {
+      const modes: FileModeSnapshot[] = [];
+      const identity = ownedSourceIdentity(path);
+      if (!identity) throw new AgentInputScanError("incomplete_source");
+      const closure = { modes, identity, digest: "" };
+      closures.set(path, closure);
+      makeTreeReadOnly(path, modes, deadlineAt, undefined, true);
+      closure.digest = snapshotOpenClawCodexSource(path, deadlineAt);
+    }
+    return realpathSync(join(path, ".git", "objects"));
+  };
   let results: AssessmentResult[] = [];
   let failure: { error: unknown } | undefined;
   let recovery: ReturnType<typeof validationRecoveryRequired> = null;
@@ -109,9 +132,27 @@ export function runAssessmentJobs(jobs: readonly AssessmentJob[]): AssessmentRes
           targetDir: assessment.openclawDir,
           worktreeDir: source,
           modes: [] as FileModeSnapshot[],
+          privateTemp,
+          env: workerEnv,
         };
         sources.push(owned);
-        const headSha = asRecord(asRecord(assessment.context.pullRequest).head).sha;
+        const pull = asRecord(assessment.context.pullRequest);
+        const headSha = asRecord(pull.head).sha;
+        const baseSha = asRecord(pull.base).sha;
+        if (typeof headSha !== "string" || typeof baseSha !== "string")
+          throw new AgentInputScanError("incomplete_source");
+        const configurationSha = assessment.repositoryReview?.revision;
+        const closureDir = join(
+          closureParent,
+          sha256(
+            JSON.stringify([
+              realpathSync(owned.targetDir),
+              headSha,
+              baseSha,
+              configurationSha ?? null,
+            ]),
+          ),
+        );
         if (
           typeof headSha !== "string" ||
           !materializePullRequestReviewTree({
@@ -121,9 +162,15 @@ export function runAssessmentJobs(jobs: readonly AssessmentJob[]): AssessmentRes
             headSha,
             deadlineAt: job.deadlineAt,
             independentGit: true,
+            admittedObjects: {
+              directory: closureDir,
+              baseSha,
+              ...(configurationSha ? { configurationSha } : {}),
+            },
           })
         )
           throw new AgentInputScanError("incomplete_source");
+        const objectRoot = freezeClosure(closureDir, job.deadlineAt);
         const identity = ownedSourceIdentity(source);
         const workspaceIdentity = ownedSourceIdentity(root);
         const privateIdentity = ownedSourceIdentity(privateTemp);
@@ -139,17 +186,68 @@ export function runAssessmentJobs(jobs: readonly AssessmentJob[]): AssessmentRes
           private: privateIdentity,
         };
         // This loop is serialized; mutable Codex source/link setup never races with another role.
-        if (runner === "codex")
-          prepareOpenClawCodexSourceForReview({
-            targetRepo: assessment.item.repo,
-            reviewDir: source,
-            reviewTreeRoot: root,
+        let reference =
+          runner === "codex"
+            ? prepareOpenClawCodexSourceForReview({
+                targetRepo: assessment.item.repo,
+                reviewDir: source,
+                reviewTreeRoot: root,
+                deadlineAt: job.deadlineAt,
+              })
+            : undefined;
+        const referenceRoots: string[] = [];
+        if (reference) {
+          const pinned = readReviewGit(reference, ["rev-parse", "HEAD"], {
             deadlineAt: job.deadlineAt,
-          });
+          })
+            ?.toString("utf8")
+            .trim();
+          const alias = join(root, "codex");
+          if (
+            !pinned ||
+            !lstatSync(alias).isSymbolicLink() ||
+            realpathSync(alias) !== realpathSync(reference)
+          )
+            throw new AgentInputScanError("incomplete_source");
+          const dependency = join(
+            closureParent,
+            sha256(JSON.stringify([realpathSync(reference), pinned])),
+          );
+          // Replace only the verified setup-owned alias. Do not expose its cache,
+          // untracked builds, config, alternates or unrelated historical objects.
+          rmSync(alias);
+          if (
+            !materializePullRequestReviewTree({
+              targetDir: reference,
+              worktreeDir: alias,
+              itemNumber: 0,
+              headSha: pinned,
+              deadlineAt: job.deadlineAt,
+              independentGit: true,
+              admittedObjects: { directory: dependency, baseSha: pinned },
+            })
+          )
+            throw new AgentInputScanError("incomplete_source");
+          referenceRoots.push(freezeClosure(dependency, job.deadlineAt));
+          const identity = ownedSourceIdentity(alias);
+          if (!identity) throw new AgentInputScanError("incomplete_source");
+          owned.reference = { path: alias, identity, digest: "", modes: [] };
+          makeTreeReadOnly(alias, owned.reference.modes, job.deadlineAt, undefined, true);
+          owned.reference.digest = snapshotOpenClawCodexSource(alias, job.deadlineAt);
+          reference = alias;
+        }
         makeTreeReadOnly(source, owned.modes, job.deadlineAt, undefined, true);
         owned.digest = snapshotOpenClawCodexSource(source, job.deadlineAt);
+        // Only the immutable admitted pack is visible across roles. The original
+        // canonical object store, refs, config and unrelated objects stay host-only.
         assessment = {
           ...assessment,
+          nativeReadRoots: [
+            objectRoot,
+            ...referenceRoots,
+            ...(reference ? [realpathSync(reference)] : []),
+          ],
+          ...(reference ? { nativeReferenceDir: reference } : {}),
           openclawDir: source,
           reviewTreeRoot: root,
           sourcePrepared: true,
@@ -249,7 +347,9 @@ export function runAssessmentJobs(jobs: readonly AssessmentJob[]): AssessmentRes
             owned.identity &&
             (ownedSourceIdentity(owned.worktreeDir) !== owned.identity.source ||
               ownedSourceIdentity(dirname(owned.worktreeDir)) !== owned.identity.workspace ||
-              ownedSourceIdentity(dirname(dirname(owned.worktreeDir))) !== owned.identity.private),
+              ownedSourceIdentity(dirname(dirname(owned.worktreeDir))) !== owned.identity.private ||
+              (owned.reference &&
+                ownedSourceIdentity(owned.reference.path) !== owned.reference.identity)),
         ))
     ) {
       recovery = new ValidationRecoveryRequiredError(
@@ -259,15 +359,60 @@ export function runAssessmentJobs(jobs: readonly AssessmentJob[]): AssessmentRes
       );
       failure = { error: recovery };
     }
+    // Native tool containers are not descendants of the killed CLI process.
+    // Retire through their native owner before source/state deletion, even when
+    // another assessment reported recovery. Do not follow replaced private roots.
+    const retirementDeadlineAt = Math.max(Date.now() + 5000, ...jobs.map((job) => job.deadlineAt));
+    for (const owned of sources) {
+      if (
+        ownedSourceIdentity(directory) !== directoryIdentity ||
+        (owned.identity && ownedSourceIdentity(owned.privateTemp) !== owned.identity.private)
+      )
+        continue;
+      try {
+        retireOpenclawRoleStates(owned.privateTemp, owned.env, retirementDeadlineAt);
+      } catch (error) {
+        recovery =
+          validationRecoveryRequired(error) ??
+          new ValidationRecoveryRequiredError("Native assessment cleanup failed", error, [
+            directory,
+          ]);
+        recovery.retain([directory, ...sources.map((source) => source.worktreeDir)]);
+        failure = { error: recovery };
+      }
+    }
     if (!recovery) {
       const verificationDeadline = Math.max(
         Date.now() + 5000,
         ...jobs.map((job) => job.deadlineAt),
       );
-      for (const owned of sources) {
-        if (!owned.digest) continue;
+      for (const [path, closure] of closures) {
         try {
-          if (snapshotOpenClawCodexSource(owned.worktreeDir, verificationDeadline) !== owned.digest)
+          if (
+            ownedSourceIdentity(path) !== closure.identity ||
+            (closure.digest &&
+              snapshotOpenClawCodexSource(path, verificationDeadline) !== closure.digest)
+          )
+            throw new Error("Admitted source object closure changed.");
+        } catch (error) {
+          recovery = new ValidationRecoveryRequiredError(
+            "Admitted source object closure changed or could not be verified",
+            error,
+            [directory, path],
+          );
+          failure = { error: recovery };
+          break;
+        }
+      }
+      for (const owned of sources) {
+        if (recovery || !owned.digest) continue;
+        try {
+          if (
+            snapshotOpenClawCodexSource(owned.worktreeDir, verificationDeadline) !== owned.digest ||
+            (owned.reference &&
+              snapshotOpenClawCodexSource(owned.reference.path, verificationDeadline) !==
+                owned.reference.digest)
+          )
             throw new Error("Private assessment source changed.");
         } catch (error) {
           recovery = new ValidationRecoveryRequiredError(
@@ -285,7 +430,10 @@ export function runAssessmentJobs(jobs: readonly AssessmentJob[]): AssessmentRes
       const deadlineAt = Date.now() + 5000;
       for (const owned of sources.reverse()) {
         try {
-          if (!restoreTreeModes(owned.modes))
+          if (
+            !restoreTreeModes(owned.modes) ||
+            (owned.reference && !restoreTreeModes(owned.reference.modes))
+          )
             throw new ValidationRecoveryRequiredError(
               "Owned assessment descendant identity changed",
               failure?.error,
@@ -310,7 +458,19 @@ export function runAssessmentJobs(jobs: readonly AssessmentJob[]): AssessmentRes
           break;
         }
       }
-      // Never delete private state while Git cleanup completion is uncertain.
+      if (!recovery)
+        for (const [path, closure] of closures) {
+          if (!restoreTreeModes(closure.modes)) {
+            recovery = new ValidationRecoveryRequiredError(
+              "Admitted object cleanup identity changed",
+              failure?.error,
+              [directory, path],
+            );
+            failure = { error: recovery };
+            break;
+          }
+        }
+      // Never delete private state while Git/native cleanup completion is uncertain.
       if (!recovery)
         try {
           rmSync(directory, { recursive: true, force: true });

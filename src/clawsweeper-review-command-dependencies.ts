@@ -298,6 +298,8 @@ export interface CreateReviewCommandWorkflowDependencies {
     initialPrompt: string;
     nativeWorkspace?: string;
     disableSkills?: boolean;
+    reviewPhase?: "independent" | "consolidation";
+    nativeReadRoots?: string[];
     reviewEnv?: NodeJS.ProcessEnv;
     itemNumber: number;
     openclawDir: string;
@@ -330,6 +332,9 @@ export interface CreateReviewCommandWorkflowDependencies {
     repositoryReview?: RepositoryReviewConfig;
     /** Host-only receipt: shared preparation finished before parallel workers. */
     sourcePrepared?: boolean;
+    /** Host-admitted public source objects; never a repository-configured mount. */
+    nativeReadRoots?: string[];
+    nativeReferenceDir?: string;
     selection?: import("./repository-review-config.js").ReviewModelSelection;
     reviewPhase?: "independent" | "consolidation";
     onExecution?: (receipt: import("./review-execution-receipt.js").ReviewExecutionReceipt) => void;
