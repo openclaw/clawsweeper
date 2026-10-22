@@ -1,3 +1,8 @@
+import { retryableBatchFailure, batchSecondaryFailure } from "./review-assessment-failure.js";
+import {
+  NonretryableReviewBatchError,
+  nonretryableReviewBatchExitCode,
+} from "./exact-review-failure-reason.js";
 import { runLocalRangeReview } from "./clawsweeper-local-command.js";
 import { runPreparedReviewItem, writePreparedReviewReport } from "./clawsweeper-review-item.js";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
@@ -293,6 +298,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     } = createReviewOutputWriter(preparation);
     let outputEmitted = false;
     let commandError: unknown;
+    let commandFailed = false;
+    let stopBatchRetries = false;
+    let configuredBatch = false;
+    let transientBatchSummary: Error | undefined;
     let finalizationError: unknown;
     let reviewCompleted = false;
     const emitLocalOutput = (status: "completed" | "failed"): void => {
@@ -448,6 +457,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       // oxfmt-ignore
       for (const item of candidates) {
         let itemRepositoryReview: RepositoryReviewConfig | undefined;
+        let batchAssessmentsFinished = false;
         const itemReadonlyModeSnapshots: ReturnType<typeof makeTreeReadOnly> = [];
         let reviewOpenclawDir = openclawDir;
         let pullRequestReviewTreeDir: string | null = null;
@@ -465,7 +475,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             itemNumber: item.number,
             retention: outputSelection.retention,
           });
-        const recordFailureDiagnostics = (error: unknown, classification = "codex_execution") => {
+        const recordFailureDiagnostics = (error: unknown, classification = "codex_execution", retryable?: boolean) => {
           if (!process.env.EXACT_REVIEW_ITEM_KEY) return;
           try {
             produceReviewOutput(outputBudget, {
@@ -485,8 +495,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               sourceSha: error instanceof ReviewSourcePreparationError || error instanceof AgentInputScanError
                 ? error.reviewedHeadSha ?? diagnosticSourceSha
                 : diagnosticSourceSha,
-              retryable: codexReviewFailureRetryable(error),
-              workflowExit: agentInputScanFailureExitCode(error) ?? 1,
+              retryable: retryable ?? (itemRepositoryReview?.multiModel &&
+                !(error instanceof ReviewSourcePreparationError) && !(error instanceof AgentInputScanError)
+                ? !batchAssessmentsFinished && retryableBatchFailure(error)
+                : codexReviewFailureRetryable(error)),
+              workflowExit: agentInputScanFailureExitCode(error) ?? nonretryableReviewBatchExitCode(error) ?? 1,
             }));
           } catch {
             console.error("[review] exact-review failure diagnostics could not be written.");
@@ -622,6 +635,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             repositoryReviewLoaded = true;
           }
           itemRepositoryReview = repositoryReview;
+          configuredBatch ||= Boolean(itemRepositoryReview?.multiModel);
         }
         let authorRepositoryPermission: string | null = null;
         const restoredMaintainerAssociation =
@@ -1444,7 +1458,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const codexFailureDisposition = codexFailure
           ? actionLedgerFailureDisposition(codexFailure.error)
           : null;
-        if (codexFailure) codexFailures += 1;
+        batchAssessmentsFinished = Boolean(itemRepositoryReview?.multiModel);
+        if (codexFailure) {
+          codexFailures += 1;
+          if (itemRepositoryReview?.multiModel && !codexFailureRetryable) stopBatchRetries = true;
+        }
         structuralRecord = refreshStructuralRecordForVerdict();
         const { action, reportPath } = writePreparedReviewReport({
           item, context, decision, git, runtime, artifactDir, snapshotHash, contentDigest,
@@ -1454,7 +1472,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           localRange: false, metadataBytes: itemOutputBudget.metadataBytes,
           writeOutputReport, writeOutputMetadata,
           onReport: () => {
-            if (codexFailure) recordFailureDiagnostics(codexFailure.error, codexFailure.logKind);
+            if (codexFailure) recordFailureDiagnostics(codexFailure.error, codexFailure.logKind, codexFailureRetryable);
           },
           transformReport: (markdown) => hostReport(updateBulkFilerDetectedFrontMatter(markdown, bulkFilerDetection)),
         }, dependencies);
@@ -1506,6 +1524,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           reviewItemFailed = true;
           itemRecoveryRequired = validationRecoveryRequired(error) !== null;
           if (error instanceof AgentInputScanError || error instanceof ReviewSourcePreparationError) {
+            recordFailureDiagnostics(error);
+          } else if (itemRepositoryReview?.multiModel) {
+            stopBatchRetries ||= batchAssessmentsFinished || !retryableBatchFailure(error);
             recordFailureDiagnostics(error);
           }
           throw error;
@@ -1623,8 +1644,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const message = `Codex failed for ${codexFailures} item${
           codexFailures === 1 ? "" : "s"
         }; the workflow recovery lane can requeue evidence-backed retryable items.${retainedFailureReports}`;
-        if (humanLocalReview) throw new UserFacingCommandError(message);
-        throw new Error(message);
+        const failure = humanLocalReview ? new UserFacingCommandError(message) : new Error(message);
+        if (configuredBatch && !stopBatchRetries) transientBatchSummary = failure;
+        throw failure;
       }
       finishReviewActionLedger({
         ledger: reviewLedger,
@@ -1633,49 +1655,93 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       });
       reviewCompleted = true;
       assertCurrentOutputBudget();
-    } catch (error) {
+    } catch (caught) {
+      const error =
+        (stopBatchRetries ||
+          (configuredBatch &&
+            caught !== transientBatchSummary &&
+            !retryableBatchFailure(caught))) &&
+        !(caught instanceof AgentInputScanError) &&
+        !(caught instanceof ReviewSourcePreparationError)
+          ? new NonretryableReviewBatchError(caught)
+          : caught;
       commandError = error;
-      emitLocalOutput("failed");
-      if (reviewLedger) {
-        for (const acquired of acquiredReviewLeases) {
-          const state = [...reviewLedger.items.values()].find(
-            (candidate) => candidate.item.number === acquired.itemNumber,
-          );
-          if (!state) continue;
-          const previousReviewMutationRunner = dependencies.activeReviewMutationRunner;
-          dependencies.activeReviewMutationRunner = reviewMutationRunner(reviewLedger, state.item);
-          try {
-            releaseOwnedReviewLease(acquired.itemNumber, acquired.lease);
-          } finally {
-            dependencies.activeReviewMutationRunner = previousReviewMutationRunner;
+      commandFailed = true;
+      try {
+        emitLocalOutput("failed");
+        if (reviewLedger) {
+          for (const acquired of acquiredReviewLeases) {
+            const state = [...reviewLedger.items.values()].find(
+              (candidate) => candidate.item.number === acquired.itemNumber,
+            );
+            if (!state) continue;
+            const previousReviewMutationRunner = dependencies.activeReviewMutationRunner;
+            dependencies.activeReviewMutationRunner = reviewMutationRunner(
+              reviewLedger,
+              state.item,
+            );
+            try {
+              releaseOwnedReviewLease(acquired.itemNumber, acquired.lease);
+            } finally {
+              dependencies.activeReviewMutationRunner = previousReviewMutationRunner;
+            }
           }
+          finishReviewActionLedger({
+            ledger: reviewLedger,
+            error,
+            activeItem: activeReviewItem,
+            completedCount: completed,
+            cacheHits,
+          });
         }
-        finishReviewActionLedger({
-          ledger: reviewLedger,
-          error,
-          activeItem: activeReviewItem,
-          completedCount: completed,
-          cacheHits,
-        });
+      } catch (secondary) {
+        commandError = configuredBatch ? batchSecondaryFailure(error, secondary) : secondary;
+        console.error(
+          "[review] error-path bookkeeping failed; original batch disposition retained.",
+        );
       }
+    } finally {
+      try {
+        finalizationError = finalizeReviewCommandOutput({
+          restoreTreeModes: () => restoreTreeModes(readonlyModeSnapshots),
+          outputSelection,
+          retainedReviewOutput,
+          results: localOutputResults,
+          cleanupReviewOutput,
+          captureSecondaryFailure: configuredBatch,
+          commandError,
+        });
+      } catch (secondary) {
+        finalizationError = secondary;
+      }
+    }
+    if (finalizationError !== undefined) {
+      if (configuredBatch) {
+        commandError = batchSecondaryFailure(
+          commandFailed ? commandError : undefined,
+          finalizationError,
+        );
+        commandFailed = true;
+      } else if (!commandFailed) throw finalizationError;
+    }
+    if (commandFailed) {
       if (outputEmitted && outputSelection.resultFormat === "json") {
-        console.error(error instanceof Error ? error.message : String(error));
-        process.exitCode = agentInputScanFailureExitCode(error) ?? 1;
+        console.error(commandError instanceof Error ? commandError.message : String(commandError));
+        process.exitCode =
+          agentInputScanFailureExitCode(commandError) ??
+          nonretryableReviewBatchExitCode(commandError) ??
+          1;
         return;
       }
-      throw error;
-    } finally {
-      finalizationError = finalizeReviewCommandOutput({
-        restoreTreeModes: () => restoreTreeModes(readonlyModeSnapshots),
-        outputSelection,
-        retainedReviewOutput,
-        results: localOutputResults,
-        cleanupReviewOutput,
-        commandError,
-      });
+      throw commandError;
     }
-    if (finalizationError !== undefined) throw finalizationError;
-    if (reviewCompleted) emitLocalOutput("completed");
+    if (reviewCompleted) {
+      try {
+        emitLocalOutput("completed");
+      } catch (error) {
+        throw configuredBatch ? batchSecondaryFailure(undefined, error) : error;
+      }
+    }
   }
 
   return { reviewCommand };

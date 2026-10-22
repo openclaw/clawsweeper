@@ -1,7 +1,13 @@
+import { ReviewSourcePreparationError } from "./review-source-preparation.js";
+import { retryableBatchFailure, batchSecondaryFailure } from "./review-assessment-failure.js";
+import {
+  NonretryableReviewBatchError,
+  nonretryableReviewBatchExitCode,
+} from "./exact-review-failure-reason.js";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { boolArg, stringArg, type Args } from "./clawsweeper-args.js";
-import { agentInputScanFailureExitCode } from "./agent-input-scan.js";
+import { AgentInputScanError, agentInputScanFailureExitCode } from "./agent-input-scan.js";
 import { codexItemProfile } from "./codex-item-profile.js";
 import { UserFacingCommandError } from "./command.js";
 import {
@@ -86,8 +92,11 @@ export function runLocalRangeReview(args: Args, dependencies: LocalRangeCommandD
   let preflightDecision: Decision | undefined;
   let outputEmitted = false;
   let commandError: unknown;
+  let commandFailed = false;
   let finalizationError: unknown;
   let completed = false;
+  let batchAssessmentsFinished = false;
+  let transientBatchFailure: Error | undefined;
   const readonlyModeSnapshots: FileModeSnapshot[] = [];
   const emitLocalOutput = (status: "completed" | "failed") => {
     if (outputEmitted || (status === "failed" && localOutputResults.length === 0)) return;
@@ -201,6 +210,7 @@ export function runLocalRangeReview(args: Args, dependencies: LocalRangeCommandD
       dependencies,
     );
     const { decision, runtime, codexFailure, snapshotHash, multiModel } = result;
+    batchAssessmentsFinished = Boolean(repositoryReview?.multiModel);
     const { action, reportPath } = writePreparedReviewReport(
       {
         item,
@@ -249,31 +259,74 @@ export function runLocalRangeReview(args: Args, dependencies: LocalRangeCommandD
         `[review] ${new Date().toISOString()} codex-failure classification=${codexFailure.logKind}${outputSelection.retention === "none" ? "" : ` report=${dependencies.displayPath(reportPath)}`}`,
       );
       emitLocalOutput("failed");
-      throw new Error(
+      const failure = new Error(
         `Codex failed for 1 item; the workflow recovery lane can requeue evidence-backed retryable items.${outputSelection.retention === "none" ? "" : ` Report: ${dependencies.displayPath(reportPath)}`}`,
+        { cause: codexFailure.error },
       );
+      if (repositoryReview?.multiModel && result.codexFailureRetryable)
+        transientBatchFailure = failure;
+      throw failure;
     }
     completed = true;
     assertCurrentOutputBudget();
-  } catch (error) {
+  } catch (caught) {
+    const error =
+      repositoryReview?.multiModel &&
+      !(caught instanceof AgentInputScanError) &&
+      !(caught instanceof ReviewSourcePreparationError) &&
+      (batchAssessmentsFinished ? caught !== transientBatchFailure : !retryableBatchFailure(caught))
+        ? new NonretryableReviewBatchError(caught)
+        : caught;
     commandError = error;
-    emitLocalOutput("failed");
+    commandFailed = true;
+    try {
+      emitLocalOutput("failed");
+    } catch (secondary) {
+      commandError = repositoryReview?.multiModel
+        ? batchSecondaryFailure(error, secondary)
+        : secondary;
+      console.error("[review] error-path bookkeeping failed; original batch disposition retained.");
+    }
+  } finally {
+    try {
+      finalizationError = finalizeReviewCommandOutput({
+        restoreTreeModes: () => dependencies.restoreTreeModes(readonlyModeSnapshots),
+        outputSelection,
+        retainedReviewOutput,
+        results: localOutputResults,
+        cleanupReviewOutput,
+        captureSecondaryFailure: Boolean(repositoryReview?.multiModel),
+        commandError,
+      });
+    } catch (secondary) {
+      finalizationError = secondary;
+    }
+  }
+  if (finalizationError !== undefined) {
+    if (repositoryReview?.multiModel) {
+      commandError = batchSecondaryFailure(
+        commandFailed ? commandError : undefined,
+        finalizationError,
+      );
+      commandFailed = true;
+    } else if (!commandFailed) throw finalizationError;
+  }
+  if (commandFailed) {
     if (outputEmitted && outputSelection.resultFormat === "json") {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = agentInputScanFailureExitCode(error) ?? 1;
+      console.error(commandError instanceof Error ? commandError.message : String(commandError));
+      process.exitCode =
+        agentInputScanFailureExitCode(commandError) ??
+        nonretryableReviewBatchExitCode(commandError) ??
+        1;
       return;
     }
-    throw error;
-  } finally {
-    finalizationError = finalizeReviewCommandOutput({
-      restoreTreeModes: () => dependencies.restoreTreeModes(readonlyModeSnapshots),
-      outputSelection,
-      retainedReviewOutput,
-      results: localOutputResults,
-      cleanupReviewOutput,
-      commandError,
-    });
+    throw commandError;
   }
-  if (finalizationError !== undefined) throw finalizationError;
-  if (completed) emitLocalOutput("completed");
+  if (completed) {
+    try {
+      emitLocalOutput("completed");
+    } catch (error) {
+      throw repositoryReview?.multiModel ? batchSecondaryFailure(undefined, error) : error;
+    }
+  }
 }

@@ -36,16 +36,19 @@ if (process.argv[1] && realpathSync(resolve(process.argv[1])) === fileURLToPath(
   main().catch(async (error) => {
     const [
       { agentInputScanFailureExitCode },
+      { nonretryableReviewBatchExitCode },
       { emitReviewFailureJson },
       { isUserFacingCommandError },
     ] = await Promise.all([
       import("./agent-input-scan.js"),
+      import("./exact-review-failure-reason.js"),
       import("./review-output-policy.js"),
       import("./command.js"),
     ]);
     const args = parseArgs(process.argv.slice(2));
     if (emitReviewFailureJson(args, error)) {
-      process.exitCode = agentInputScanFailureExitCode(error) ?? 1;
+      process.exitCode =
+        agentInputScanFailureExitCode(error) ?? nonretryableReviewBatchExitCode(error) ?? 1;
       return;
     }
     console.error(
@@ -55,6 +58,7 @@ if (process.argv[1] && realpathSync(resolve(process.argv[1])) === fileURLToPath(
           ? error.stack || error.message
           : String(error),
     );
-    process.exitCode = agentInputScanFailureExitCode(error) ?? 1;
+    process.exitCode =
+      agentInputScanFailureExitCode(error) ?? nonretryableReviewBatchExitCode(error) ?? 1;
   });
 }

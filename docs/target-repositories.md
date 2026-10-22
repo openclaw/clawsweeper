@@ -93,8 +93,8 @@ phase without another skill-owned model pair. No extra baseline assessment runs.
 Every worker uses the normal scanner, checkout inspection, strict Decision parser
 and host postprocessing. Model-authored results are scanned before they can become
 durable member evidence. Any scanner refusal is terminal, discards private model
-slots and prevents publication of the rejected batch. Shared Codex source setup
-finishes once before workers run in parallel. A surviving host owns each worker's
+slots and prevents publication of the rejected batch. Codex source setup is serialized once per private role before that batch of
+workers runs in parallel. A surviving host owns each worker's
 private temporary root and removes native adapter, scanner and skill state after
 all workers settle, including timeout-killed workers. Independent workers and consolidation share the original
 source/configuration snapshot and one absolute deadline. Output budgets are split
@@ -106,7 +106,14 @@ compatibility, owner, product or security holds, or creating new automation
 eligibility. Failure or veto means incomplete review, not a synthetic consensus.
 Host-owned failure class, terminal status and retry disposition cross the worker
 boundary without raw diagnostics; a terminal, unknown or vetoed outcome does not
-authorize another potentially paid batch. Unverified Git process settlement retains
+authorize another potentially paid batch. Hosted producers exit 82 for a nonretryable
+batch and complete the queue lease with the closed terminal reason
+`batch_nonretryable`. The queue retains the failed input without automatically
+retrying it; a fresh source or explicit request is required. Deploy the updated
+queue Worker and completion/status readers **before** enabling this producer or
+repository opt-in: the workflow will not strip this terminal reason to work around
+an older Worker. Diagnostic `retryable: false` alone is not retry authority.
+Unverified Git process settlement retains
 owned recovery state and aborts ordinary item conversion; settled host failures
 retain completed advisory assessments without granting retry permission.
 

@@ -1,3 +1,8 @@
+import { pathToFileURL } from "node:url";
+import { ReviewSourcePreparationError } from "../dist/review-source-preparation.js";
+import childProcess from "node:child_process";
+import { runPreparedReviewItem } from "../dist/clawsweeper-review-item.js";
+import { createReviewOutputBudget } from "../dist/review-output-policy.js";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import {
@@ -43,6 +48,7 @@ import {
   parseAssessmentFailureDisposition,
   assessmentRecoveryReceipt,
   parseAssessmentRecoveryReceipt,
+  retryableBatchFailure,
 } from "../dist/review-assessment-failure.js";
 import { createReviewCoreRuntime } from "../dist/clawsweeper-review-core.js";
 import { codexEnv } from "../dist/codex-env.js";
@@ -1313,7 +1319,7 @@ test("expired role preparation never materializes or executes a source", (t) => 
 });
 
 test(
-  "host role preparation shares the deadline and cleans a stalled first role",
+  "host role preparation shares the deadline and retains an unverified stalled first role",
   { skip: process.platform !== "linux" },
   (t) => {
     const f = processFixture(t);
@@ -1334,6 +1340,7 @@ test(
     const previous = process.env;
     const started = Date.now(),
       deadlineAt = started + 1500;
+    let retained: ReturnType<typeof validationRecoveryRequired> = null;
     try {
       process.env = {
         ...previous,
@@ -1350,7 +1357,11 @@ test(
               options: { ...f.options.assessment, selection, reviewPhase: "independent" },
             })),
           ),
-        /prepare|deadline/,
+        (error) => {
+          retained = validationRecoveryRequired(error);
+          assert.ok(retained);
+          return true;
+        },
       );
       // Existing command owner reserves 3s escalation plus 3.2s settlement after expiry.
       assert.ok(Date.now() - started < 9000);
@@ -1363,6 +1374,8 @@ test(
         }).stdout.trim();
         assert.ok(!state || state.startsWith("Z"));
       }
+      assert.ok(retained && [...retained.recoveryPaths].some((path) => existsSync(path)));
+      if (retained) cleanupAssessmentState(retained.recoveryPaths);
     } finally {
       process.env = previous;
     }
@@ -1761,3 +1774,562 @@ test("native-style Git status cannot refresh read-only private index", (t) => {
     if (recovery) cleanupAssessmentState(recovery.recoveryPaths);
   }
 });
+
+for (const transportCase of ["mixed-recovery", "unsettled"] as const)
+  test(
+    "recovery marker with unknown envelope keys retains owned state before generic rejection: " +
+      transportCase,
+    (t) => {
+      const f = processFixture(t),
+        original = childProcess.spawnSync;
+      let recovery: ReturnType<typeof validationRecoveryRequired> = null;
+      try {
+        childProcess.spawnSync = ((...args: Parameters<typeof childProcess.spawnSync>) => {
+          const options = args[2] as { input?: string } | undefined;
+          let batch: any;
+          try {
+            batch = JSON.parse(String(options?.input));
+          } catch {}
+          if (
+            Array.isArray(batch?.commands) &&
+            batch.commands.some((command: any) =>
+              command.args?.some((arg: unknown) =>
+                String(arg).endsWith("review-assessment-worker.js"),
+              ),
+            )
+          ) {
+            const envelope = {
+              recovery: { digest: "f".repeat(64), paths: [], causes: [], overflow: false },
+              extra: true,
+            };
+            return {
+              status: 0,
+              signal: null,
+              stdout: JSON.stringify(
+                batch.commands.map(() => ({
+                  status: 0,
+                  signal: null,
+                  stdout: JSON.stringify(envelope),
+                  stderr: "",
+                  ...(transportCase === "unsettled" ? { errorCode: "EPROCESSSETTLEMENT" } : {}),
+                })),
+              ),
+              stderr: "",
+              pid: 0,
+              output: [],
+            } as ReturnType<typeof childProcess.spawnSync>;
+          }
+          return original(...args);
+        }) as typeof childProcess.spawnSync;
+        syncBuiltinESMExports();
+        assert.throws(
+          () =>
+            runAssessmentJobs([
+              {
+                id: "member-1",
+                deadlineAt: Date.now() + 10000,
+                options: { ...f.options.assessment, selection, reviewPhase: "independent" },
+              },
+            ]),
+          (error) => {
+            recovery = validationRecoveryRequired(error);
+            return Boolean(recovery);
+          },
+        );
+        assert.equal(existsSync(f.log), false);
+        assert.ok(recovery && [...recovery.recoveryPaths].some((path) => existsSync(path)));
+      } finally {
+        childProcess.spawnSync = original;
+        syncBuiltinESMExports();
+        if (recovery) cleanupAssessmentState(recovery.recoveryPaths);
+      }
+    },
+  );
+
+test("outer output admission after completed full assessments cannot authorize another batch", (t) => {
+  const f = processFixture(t),
+    output = join(f.root, "output"),
+    oversized = join(output, "injected-output");
+  mkdirSync(output);
+  const budget = createReviewOutputBudget(output, "none");
+  const binary = f.options.assessment.reviewEnv!.CODEX_BIN!;
+  writeFileSync(
+    binary,
+    readFileSync(binary, "utf8").replace(
+      'fs.readFileSync(0, "utf8");',
+      'fs.readFileSync(0, "utf8");if(args[args.indexOf("--model")+1]==="coordinator-model"){fs.writeFileSync(' +
+        JSON.stringify(oversized) +
+        ',"");fs.truncateSync(' +
+        JSON.stringify(oversized) +
+        "," +
+        (budget.maxBytes + 1) +
+        ");}",
+    ),
+  );
+  const assessment = f.options.assessment;
+  const result = runPreparedReviewItem(
+    {
+      item: assessment.item,
+      context: assessment.context,
+      git: assessment.git,
+      model: assessment.model,
+      sandboxMode: "read-only",
+      localOnly: true,
+      localRange: true,
+      reviewOpenclawDir: assessment.openclawDir,
+      reviewTreesDir: join(f.root, "unused"),
+      additionalPrompt: "",
+      proofScratchDir: join(output, "proof"),
+      preparedMediaProof: { manifestPath: null, summaryPath: null, artifacts: [] },
+      resolveProvenancePull: () => null,
+      shardIndex: 0,
+      shardCount: 1,
+      timeoutMs: 10000,
+      humanLocalReview: false,
+      outputSelection: { retention: "none" },
+      outputBudget: budget,
+      itemOutputBudget: budget.item,
+      codexWorkDir: join(output, "codex"),
+      forcedLoginMethod: "",
+      itemCodexProfile: { reasoningEffort: "high", serviceTier: "" },
+      existingPriorReview: null,
+      contextElapsedMs: 0,
+      repositoryReview: assessment.repositoryReview!,
+    },
+    {
+      buildReviewPrompt: () => ({ text: "fixture context", telemetry: {} }),
+      reviewEnvironment: () => assessment.reviewEnv!,
+      itemSnapshotHash: () => "e".repeat(64),
+      runCodex: () => {
+        throw Error("unexpected single review");
+      },
+      codexReviewFailure: () => ({
+        decision: decision({ summary: "Codex review failed: output admission." }),
+        logKind: "codex_execution",
+      }),
+      codexReviewFailureRetryable: () => true,
+      attachFixedPullRequest: (value) => value,
+      verifyRegressionProvenance: (value) => value,
+      displayPath: String,
+      displayDurationMs: String,
+    } as never,
+  );
+  assert.equal(readFileSync(f.log, "utf8").trim().split("\n").length, 3);
+  assert.ok(result.codexFailure);
+  assert.match((result.codexFailure.error as Error).message, /Review output exceeded/);
+  assert.equal(result.codexFailureRetryable, false);
+  assert.equal(result.multiModel!.coordinator.status, "complete");
+  for (const logKind of ["timeout", "transport_network", "provider_throttle"] as const)
+    assert.equal(
+      retryableBatchFailure(
+        new CodexReviewError({
+          message: "known transient",
+          status: 1,
+          failureDisposition: { retryable: true, terminal: false, logKind },
+        }),
+      ),
+      true,
+    );
+  assert.equal(retryableBatchFailure(new Error("unknown")), false);
+  assert.equal(
+    retryableBatchFailure(
+      new CodexReviewError({ message: "no bounded disposition", status: 1, retryable: true }),
+    ),
+    false,
+  );
+  assert.equal(
+    retryableBatchFailure(
+      new CodexReviewError({
+        message: "non transient",
+        status: 1,
+        failureDisposition: { retryable: true, terminal: false, logKind: "content_or_output" },
+      }),
+    ),
+    false,
+  );
+});
+
+for (const failureCase of ["invalid", "source80", "source9", "transient", "transient-cleanup"])
+  test("ordinary compiled local CLI preserves batch failure ownership: " + failureCase, (t) => {
+    const sourceExit = failureCase.startsWith("source") ? Number(failureCase.slice(6)) : 0;
+    const transient = failureCase.startsWith("transient");
+    const cleanupFailure = failureCase === "transient-cleanup";
+    const f = processFixture(t);
+    const source = f.options.assessment.openclawDir;
+    mkdirSync(join(source, ".clawsweeper"));
+    writeFileSync(
+      join(source, ".clawsweeper/review.json"),
+      JSON.stringify({
+        version: 1,
+        multiModel: f.options.assessment.repositoryReview!.multiModel,
+      }),
+    );
+    const commit = (message: string) => {
+      f.git("add", ".");
+      f.git(
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-qm",
+        message,
+        "-m",
+        "Co-authored-by: RomneyDa <6581799+RomneyDa@users.noreply.github.com>",
+      );
+    };
+    commit("test: pin batch configuration");
+    f.git("tag", "batch-base");
+    writeFileSync(join(source, "tracked.txt"), "changed fixture source content\n");
+    commit("test: exercise rejected batch");
+    const binary = String(f.options.assessment.reviewEnv!.CODEX_BIN);
+    const prior = readFileSync(binary, "utf8");
+    // Source inspection uses the existing fake sandbox pass-through, but both
+    // assessment processes emit malformed Decisions. No paid inference occurs.
+    writeFileSync(
+      binary,
+      prior.slice(0, prior.indexOf("setTimeout(")) +
+        (transient
+          ? 'process.stderr.write("ERROR: Selected model is at capacity. Please try a different model.\\n");process.exit(1);\n'
+          : 'console.log("not a Decision");\n'),
+    );
+    const setup = join(f.root, "source-setup.sh");
+    if (sourceExit) writeFileSync(setup, "exit " + sourceExit + "\n");
+    const hook = join(f.root, "cleanup-fault.mjs"),
+      marker = join(f.root, "cleanup-owner.json");
+    if (cleanupFailure) {
+      writeFileSync(
+        hook,
+        [
+          'import fs from "node:fs"; import path from "node:path"; import {syncBuiltinESMExports} from "node:module";',
+          'const original=fs.rmSync,mkdtemp=fs.mkdtempSync,owned=[];fs.mkdtempSync=(...args)=>{const p=mkdtemp(...args);if(path.basename(p).startsWith("clawsweeper-review-"))owned.push(p);return p;};',
+          'fs.rmSync=(name,options)=>{if(path.basename(String(name)).startsWith("clawsweeper-review-workspace-")){original(name,options);for(const p of owned)original(p,{recursive:true,force:true});fs.writeFileSync(' +
+            JSON.stringify(marker) +
+            ',"fault after removing fixture-owned output roots");throw Object.assign(new Error("controlled private cleanup failure"),{code:"EIO"});}return original(name,options);};syncBuiltinESMExports();',
+        ].join("\n"),
+      );
+    }
+    const result = spawnSync(
+      process.execPath,
+      [
+        ...(cleanupFailure ? ["--import", pathToFileURL(hook).href] : []),
+        "dist/clawsweeper-local.js",
+        "review",
+        "--target-dir",
+        source,
+        "--target-repo",
+        sourceExit ? "openclaw/openclaw" : "steipete/fixture",
+        "--base",
+        "batch-base",
+        "--codex-sandbox",
+        "read-only",
+        "--codex-timeout-ms",
+        "30000",
+        "--output-retention",
+        "none",
+        "--result-format",
+        "json",
+      ],
+      {
+        encoding: "utf8",
+        timeout: 60000,
+        env: {
+          ...process.env,
+          CODEX_BIN: binary,
+          CODEX_HOME: join(f.root, "cli-home"),
+          ...(sourceExit
+            ? {
+                CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT: setup,
+                CLAWSWEEPER_OPENCLAW_CODEX_TARGET_DIR: source,
+                CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR: join(f.root, "cache.git"),
+              }
+            : {}),
+        },
+      },
+    );
+    assert.equal(
+      result.status,
+      sourceExit || (transient && !cleanupFailure) ? 1 : 82,
+      result.stderr.slice(-2000) + String(JSON.parse(result.stdout).error?.message ?? ""),
+    );
+    if (sourceExit) {
+      assert.match(result.stdout + result.stderr, /PR-pinned Codex source/);
+      assert.equal(existsSync(f.log), false, "typed setup failure precedes every assessment");
+    } else if (!transient || cleanupFailure)
+      assert.match(result.stderr, /automatic retry is disabled/);
+    if (cleanupFailure)
+      assert.equal(
+        existsSync(marker),
+        true,
+        "the real compiled local command reached private cleanup after the transient batch",
+      );
+    assert.equal(JSON.parse(result.stdout).status, "failed");
+    assert.equal(f.git("status", "--porcelain"), "");
+  });
+
+for (const reason of [
+  "source_incompatible",
+  "setup_script_failed",
+  "review_commit_fetch_failed",
+] as const)
+  test("multi-model source preparation keeps the existing typed owner: " + reason, (t) => {
+    const { options } = fixture(t);
+    const error = new ReviewSourcePreparationError(reason, "controlled source setup failure");
+    assert.throws(
+      () =>
+        runMultiModelReview(options, () => {
+          throw error;
+        }),
+      (value) => value === error,
+    );
+  });
+
+for (const lostProcess of ["assessment", "supervisor"])
+  test(
+    "SIGKILL of actual managed " + lostProcess + " retains source until native work is settled",
+    { skip: process.platform !== "linux" },
+    (t) => {
+      const f = processFixture(t);
+      const binary = String(f.options.assessment.reviewEnv!.CODEX_BIN);
+      const source = readFileSync(binary, "utf8");
+      const attack = [
+        'const parent=fs.readFileSync("/proc/"+process.ppid+"/stat","utf8");',
+        'const owner=Number(parent.slice(parent.lastIndexOf(")")+2).split(" ")[1]);',
+        'if(!fs.readFileSync("/proc/"+owner+"/cmdline","utf8").includes("review-assessment-worker.js"))process.exit(71);',
+        'const ownerCommand=fs.readFileSync("/proc/"+owner+"/cmdline","utf8");',
+        'const stat=fs.readFileSync("/proc/"+owner+"/stat","utf8"),supervisor=Number(stat.slice(stat.lastIndexOf(")")+2).split(" ")[1]);',
+        'if(!fs.readFileSync("/proc/"+supervisor+"/cmdline","utf8").includes("managedLifecycleModule"))process.exit(72);',
+        'fs.appendFileSync(log,JSON.stringify({owner,ownerCommand,supervisor})+"\\n");',
+        "process.kill(" + (lostProcess === "supervisor" ? "supervisor" : "owner") + ',"SIGKILL");',
+        'process.on("SIGTERM",()=>{});setInterval(()=>{},1000);',
+      ].join("\n");
+      writeFileSync(binary, source.slice(0, source.indexOf("setTimeout(")) + attack);
+      let recovery: ReturnType<typeof validationRecoveryRequired> = null;
+      const cleanup = () => {
+        // The supervisor-loss case leaves its assessment group running. Only
+        // this fixture's exact observed child identity may be signalled.
+        if (existsSync(f.log))
+          for (const line of readFileSync(f.log, "utf8").trim().split("\n")) {
+            const { owner, ownerCommand } = JSON.parse(line);
+            if (!owner) continue;
+            try {
+              if (readFileSync("/proc/" + owner + "/cmdline", "utf8") === ownerCommand)
+                process.kill(-owner, "SIGKILL");
+            } catch (error) {
+              if (!["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? ""))
+                throw error;
+            }
+          }
+        if (existsSync(f.log))
+          for (const line of readFileSync(f.log, "utf8").trim().split("\n")) {
+            const pid = JSON.parse(line).pid;
+            if (!pid) continue;
+            try {
+              if (readFileSync("/proc/" + pid + "/cmdline", "utf8").includes(binary))
+                process.kill(-pid, "SIGKILL");
+            } catch (error) {
+              if (!["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? ""))
+                throw error;
+            }
+            const limit = Date.now() + 3000;
+            while (Date.now() < limit) {
+              try {
+                if (/\) Z /.test(readFileSync("/proc/" + pid + "/stat", "utf8"))) break;
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+                throw error;
+              }
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+            }
+            try {
+              assert.match(readFileSync("/proc/" + pid + "/stat", "utf8"), /\) Z /);
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            }
+          }
+        if (recovery) cleanupAssessmentState(recovery.recoveryPaths);
+      };
+      try {
+        assert.throws(
+          () =>
+            runAssessmentJobs([
+              {
+                id: "member-1",
+                deadlineAt: Date.now() + 10000,
+                options: { ...f.options.assessment, selection, reviewPhase: "independent" },
+              },
+            ]),
+          (error) => {
+            recovery = validationRecoveryRequired(error);
+            assert.ok(recovery);
+            assert.equal((recovery.cause as NodeJS.ErrnoException).code, "EPROCESSSETTLEMENT");
+            assert.ok([...recovery.recoveryPaths].some((path) => existsSync(path)));
+            return true;
+          },
+        );
+        const calls = readFileSync(f.log, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        assert.ok(
+          calls.some((call) => Number.isSafeInteger(call.owner)),
+          "the killed process was an actual assessment owner",
+        );
+        for (const call of calls.filter((call) => call.cwd)) {
+          assert.equal(
+            existsSync(call.cwd),
+            true,
+            "host must retain the source while native settlement is unverified",
+          );
+        }
+      } finally {
+        cleanup();
+      }
+    },
+  );
+
+test("secondary batch failure preserves scanner/source identity and all recovery paths", async () => {
+  const { batchSecondaryFailure } = await import("../dist/review-assessment-failure.js");
+  const { nonretryableReviewBatchExitCode } =
+    await import("../dist/exact-review-failure-reason.js");
+  const first = new ValidationRecoveryRequiredError("first", undefined, ["/owned/first"]);
+  const second = new ValidationRecoveryRequiredError("second", undefined, ["/owned/second"]);
+  const result = batchSecondaryFailure(first, new AggregateError([new Error("ordinary"), second]));
+  assert.equal(nonretryableReviewBatchExitCode(result), 82);
+  assert.deepEqual([...validationRecoveryRequired(result)!.recoveryPaths].sort(), [
+    "/owned/first",
+    "/owned/second",
+  ]);
+  const emptyRecovery = batchSecondaryFailure(
+    new Error("transient"),
+    new ValidationRecoveryRequiredError("empty", undefined),
+  );
+  assert.ok(validationRecoveryRequired(emptyRecovery));
+  for (const primary of [
+    new AgentInputScanError("findings"),
+    new ReviewSourcePreparationError("source_incompatible", "source"),
+  ]) {
+    const result = batchSecondaryFailure(primary, second);
+    assert.equal(result, primary);
+    assert.ok(validationRecoveryRequired(result));
+    assert.equal(nonretryableReviewBatchExitCode(result), undefined);
+  }
+});
+
+test("an assessment booting after its absolute deadline cannot start native work", (t) => {
+  const f = processFixture(t);
+  const path = join(f.root, "expired-job.json");
+  const assessment = { ...f.options.assessment };
+  delete assessment.reviewEnv;
+  writeFileSync(
+    path,
+    JSON.stringify({
+      id: "expired",
+      deadlineAt: Date.now() - 1,
+      options: { ...assessment, selection, reviewPhase: "independent" },
+      reviewEnvKeys: ["CODEX_BIN", "CODEX_HOME", "PATH"],
+    }),
+  );
+  const result = spawnSync(process.execPath, ["dist/review-assessment-worker.js", path], {
+    encoding: "utf8",
+    timeout: 10000,
+    env: {
+      PATH: process.env.PATH,
+      CODEX_BIN: String(f.options.assessment.reviewEnv!.CODEX_BIN),
+      CODEX_HOME: join(f.root, "expired-home"),
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { scanRefusal: "deadline" });
+  assert.equal(existsSync(f.log), false);
+});
+
+test(
+  "source setup supervisor loss keeps its source owner and private recovery state",
+  { skip: process.platform !== "linux" },
+  (t) => {
+    const f = processFixture(t),
+      script = join(f.root, "setup-loss.sh"),
+      child = join(f.root, "setup-loss.cjs"),
+      receipt = join(f.root, "setup-loss.json");
+    writeFileSync(
+      child,
+      [
+        'const fs=require("node:fs"),supervisor=Number(process.argv[2]),root=process.argv[3];',
+        'if(!fs.readFileSync("/proc/"+supervisor+"/cmdline","utf8").includes("managedLifecycleModule"))process.exit(71);',
+        "fs.writeFileSync(" +
+          JSON.stringify(receipt) +
+          ',JSON.stringify({pid:process.pid,root,command:fs.readFileSync("/proc/"+process.pid+"/cmdline","utf8")}));',
+        'process.kill(supervisor,"SIGKILL");process.on("SIGTERM",()=>{});setInterval(()=>{},1000);',
+      ].join("\n"),
+    );
+    writeFileSync(
+      script,
+      "exec " + JSON.stringify(process.execPath) + " " + JSON.stringify(child) + ' "$PPID" "$5"\n',
+    );
+    const prior = process.env;
+    let retained: ReturnType<typeof validationRecoveryRequired> = null;
+    const cleanup = () => {
+      if (existsSync(receipt)) {
+        const value = JSON.parse(readFileSync(receipt, "utf8"));
+        try {
+          if (readFileSync("/proc/" + value.pid + "/cmdline", "utf8") === value.command)
+            process.kill(-value.pid, "SIGKILL");
+        } catch (error) {
+          if (!["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? ""))
+            throw error;
+        }
+        const deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+          try {
+            if (/\) Z /.test(readFileSync("/proc/" + value.pid + "/stat", "utf8"))) break;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+            throw error;
+          }
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+        try {
+          assert.match(readFileSync("/proc/" + value.pid + "/stat", "utf8"), /\) Z /);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+      if (retained) cleanupAssessmentState(retained.recoveryPaths);
+    };
+    try {
+      process.env = {
+        ...prior,
+        CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT: script,
+        CLAWSWEEPER_OPENCLAW_CODEX_TARGET_DIR: f.options.assessment.openclawDir,
+        CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR: join(f.root, "cache"),
+      };
+      assert.throws(
+        () =>
+          runAssessmentJobs([
+            {
+              id: "member-1",
+              deadlineAt: Date.now() + 10000,
+              options: { ...f.options.assessment, selection, reviewPhase: "independent" },
+            },
+          ]),
+        (error) => {
+          retained = validationRecoveryRequired(error);
+          assert.ok(retained);
+          assert.ok(retained.cause instanceof ReviewSourcePreparationError);
+          assert.equal(
+            ((retained.cause as Error).cause as NodeJS.ErrnoException).code,
+            "EPROCESSSETTLEMENT",
+          );
+          const value = JSON.parse(readFileSync(receipt, "utf8"));
+          assert.equal(existsSync(value.root), true);
+          return true;
+        },
+      );
+      assert.equal(existsSync(f.log), false, "no model work began during failed host setup");
+    } finally {
+      process.env = prior;
+      cleanup();
+    }
+  },
+);

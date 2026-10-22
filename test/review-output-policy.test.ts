@@ -942,3 +942,51 @@ test("multi-model output pruning is per-item and stays bounded across 64-item ba
     rmSync(parent, { recursive: true, force: true });
   }
 });
+
+test("configured batch finalization reports secondary failures without changing legacy precedence", () => {
+  const primary = new Error("bounded transient fixture");
+  const secondary = new Error("private cleanup fixture");
+  const outputSelection = reviewOutputSelection(parseArgs([]), { destinationFlag: "artifact_dir" });
+  const result = finalizeReviewCommandOutput({
+    outputSelection,
+    retainedReviewOutput: null,
+    results: [],
+    commandError: primary,
+    captureSecondaryFailure: true,
+    restoreTreeModes: () => {},
+    cleanupReviewOutput: () => {
+      throw secondary;
+    },
+  });
+  assert.equal(result, secondary);
+});
+
+test("batch output recovery survives both restoration and private cleanup failures", async () => {
+  const { ValidationRecoveryRequiredError, validationRecoveryRequired } =
+    await import("../dist/validation-recovery.js");
+  const { batchSecondaryFailure } = await import("../dist/review-assessment-failure.js");
+  const primary = new ValidationRecoveryRequiredError("primary", undefined, ["/owned/primary"]);
+  const restore = new ValidationRecoveryRequiredError("restore", undefined, ["/owned/restore"]);
+  const cleanup = new ValidationRecoveryRequiredError("cleanup", undefined, ["/owned/cleanup"]);
+  const result = finalizeReviewCommandOutput({
+    outputSelection: reviewOutputSelection(parseArgs([]), { destinationFlag: "artifact_dir" }),
+    retainedReviewOutput: null,
+    results: [],
+    commandError: primary,
+    captureSecondaryFailure: true,
+    restoreTreeModes: () => {
+      throw restore;
+    },
+    cleanupReviewOutput: (received) => {
+      assert.equal(validationRecoveryRequired(received), restore);
+      assert.ok(restore.recoveryPaths.has("/owned/primary"));
+      throw cleanup;
+    },
+  });
+  const final = batchSecondaryFailure(primary, result);
+  assert.deepEqual([...validationRecoveryRequired(final)!.recoveryPaths].sort(), [
+    "/owned/cleanup",
+    "/owned/primary",
+    "/owned/restore",
+  ]);
+});

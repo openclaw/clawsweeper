@@ -1542,3 +1542,59 @@ test("concurrent commands keep explicitly filtered environments closed", () => {
     else process.env[name] = before;
   }
 });
+
+test(
+  "abnormal managed assessment exit retains unverified settlement instead of ordinary failure",
+  { skip: process.platform === "win32" },
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "cmd-abnormal-managed-"));
+    const marker = join(root, "descendant.pid");
+    let descendant = 0;
+    const cleanup = () => {
+      if (descendant) {
+        try {
+          process.kill(descendant, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
+      rmSync(root, { recursive: true, force: true });
+    };
+    try {
+      const script = [
+        'const cp=require("node:child_process"),fs=require("node:fs");',
+        'const child=cp.spawn(process.execPath,["-e",\'process.on("SIGTERM",()=>{});setInterval(()=>{},1000)\'],{stdio:"ignore"});',
+        "fs.writeFileSync(" + JSON.stringify(marker) + ",String(child.pid));",
+        'process.kill(process.pid,"SIGKILL");',
+      ].join("\n");
+      const [result] = runTextConcurrently(
+        [
+          {
+            command: process.execPath,
+            args: ["-e", script],
+            options: {
+              managedProcessGroup: true,
+              retainOnAbnormalExit: true,
+              deadlineAt: Date.now() + 10000,
+            },
+          },
+        ],
+        1,
+      );
+      descendant = Number(readFileSync(marker, "utf8"));
+      assert.ok(result && "error" in result);
+      assert.equal((result.error as NodeJS.ErrnoException).code, "EPROCESSSETTLEMENT");
+      // The supervisor kills the dead owner's group. The typed failure still does
+      // not claim that a detached native group can be verified after owner loss.
+      if (process.platform === "linux") {
+        try {
+          assert.match(readFileSync("/proc/" + descendant + "/stat", "utf8"), /\) Z /);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    } finally {
+      cleanup();
+    }
+  },
+);

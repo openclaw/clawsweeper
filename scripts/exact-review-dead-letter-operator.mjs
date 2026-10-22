@@ -1420,7 +1420,7 @@ async function reconcileParkedReviews({
 }
 
 function parkedReviewRetryIdentityChanged(row, target) {
-  if (row.retry_policy_changed) return true;
+  if (row.parked_reason !== "batch_nonretryable" && row.retry_policy_changed) return true;
   if (row.item_kind !== target.item_kind) return false;
   const contentChanged =
     row.source_content_revision !== null
@@ -1434,6 +1434,19 @@ function parkedReviewRetryIdentityChanged(row, target) {
       : row.source_updated_at !== null
         ? new Date(Date.parse(row.source_updated_at)).toISOString() !== target.source_updated_at
         : target.source_content_revision !== null || target.source_updated_at !== null;
+  if (row.parked_reason === "batch_nonretryable")
+    return Boolean(
+      (row.source_head_sha !== null &&
+        target.source_head_sha !== null &&
+        row.source_head_sha !== target.source_head_sha) ||
+      (row.source_base_sha !== null &&
+        target.source_base_sha !== null &&
+        row.source_base_sha !== target.source_base_sha) ||
+      (typeof row.source_is_draft === "boolean" &&
+        typeof target.source_is_draft === "boolean" &&
+        row.source_is_draft !== target.source_is_draft) ||
+      (row.source_content_revision !== null && contentChanged),
+    );
   return (
     (row.source_head_sha !== null && row.source_head_sha !== target.source_head_sha) ||
     (row.source_base_sha !== null && row.source_base_sha !== target.source_base_sha) ||

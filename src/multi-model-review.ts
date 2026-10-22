@@ -1,3 +1,4 @@
+import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 import {
   ValidationRecoveryRequiredError,
   validationRecoveryRequired,
@@ -173,27 +174,41 @@ export function runAssessmentJobs(jobs: readonly AssessmentJob[]): AssessmentRes
           maxBuffer: job.options.resultFileBytes + 64 * 1024,
           trim: "both" as const,
           managedProcessGroup: true,
+          retainOnAbnormalExit: true,
         },
       };
     });
     results = runTextConcurrently(commands, 2).map((result, index) => {
-      if (!("output" in result)) return {};
+      if (!("output" in result)) {
+        if (
+          "error" in result &&
+          (result.error as NodeJS.ErrnoException)?.code === "EPROCESSSETTLEMENT"
+        )
+          throw new ValidationRecoveryRequiredError(
+            "Assessment worker settlement unverified",
+            result.error,
+            [directory],
+          );
+        return {};
+      }
       try {
         const value: unknown = JSON.parse(result.output);
+        if (!isRecord(value)) return {};
+        if (Object.hasOwn(value, "recovery")) {
+          if (Object.keys(value).length !== 1)
+            throw new ValidationRecoveryRequiredError(
+              "Malformed worker recovery envelope",
+              undefined,
+              [directory],
+            );
+          throw parseAssessmentRecoveryReceipt(value.recovery, directory);
+        }
         if (
-          !isRecord(value) ||
           Object.keys(value).some(
-            (key) => !["decision", "execution", "scanRefusal", "failure", "recovery"].includes(key),
+            (key) => !["decision", "execution", "scanRefusal", "failure"].includes(key),
           )
         )
           return {};
-        if (value.recovery !== undefined) {
-          if (Object.keys(value).length !== 1)
-            throw new ValidationRecoveryRequiredError("Mixed worker recovery receipt", undefined, [
-              directory,
-            ]);
-          throw parseAssessmentRecoveryReceipt(value.recovery, directory);
-        }
         if (value.scanRefusal !== undefined)
           return {
             scanRefusal: agentInputScanFailureReason(value.scanRefusal) ?? "scanner_failed",
@@ -621,7 +636,8 @@ export function runMultiModelReview(
     multiModel.status = "complete";
     return { decision, multiModel };
   } catch (error) {
-    if (error instanceof AgentInputScanError) throw error;
+    if (error instanceof AgentInputScanError || error instanceof ReviewSourcePreparationError)
+      throw error;
     const recovery = validationRecoveryRequired(error);
     if (recovery) throw error;
     // Unknown host/orchestration failures are not permission to repeat paid work.

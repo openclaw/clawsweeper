@@ -33,6 +33,7 @@ const core = createReviewCoreRuntime({
 });
 let execution: ReviewExecutionReceipt | undefined;
 try {
+  if (Date.now() >= job.deadlineAt) throw new AgentInputScanError("deadline");
   const decision = core.runCodex({
     ...job.options,
     timeoutMs: Math.max(1, job.deadlineAt - Date.now()),

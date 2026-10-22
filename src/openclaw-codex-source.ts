@@ -1,3 +1,4 @@
+import { ValidationRecoveryRequiredError } from "./validation-recovery.js";
 import { runTextConcurrently } from "./command.js";
 import { AgentInputScanError } from "./agent-input-scan.js";
 import { spawnSync } from "node:child_process";
@@ -58,6 +59,8 @@ export function prepareOpenClawCodexSourceForReview(options: {
               env,
               deadlineAt: options.deadlineAt,
               managedProcessGroup: true,
+              retainOnAbnormalExit: true,
+              completionOnFailureExit: true,
               maxBuffer: 1024 * 1024,
             },
           },
@@ -67,7 +70,13 @@ export function prepareOpenClawCodexSourceForReview(options: {
       if (result && "output" in result) return { status: 0, stderr: "" };
       if (!result || "expired" in result) throw new AgentInputScanError("deadline");
       const error = result.error as Error & { status?: number; stderr?: string };
-      return { status: error.status ?? null, error, stderr: error.stderr ?? "" };
+      // A trusted ordinary script exit is its completion receipt. Preserve the
+      // status without exposing runText's argv-bearing generic error message.
+      return {
+        status: error.status ?? null,
+        ...(typeof error.status === "number" ? {} : { error }),
+        stderr: error.stderr ?? "",
+      };
     });
   const result = run("bash", [
     script,
@@ -78,6 +87,18 @@ export function prepareOpenClawCodexSourceForReview(options: {
     options.reviewDir,
     options.reviewTreeRoot ?? "",
   ]);
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "EPROCESSSETTLEMENT") {
+    const source = new ReviewSourcePreparationError(
+      "setup_script_failed",
+      "Could not prepare the PR-pinned Codex source: setup completion is unverified.",
+    );
+    source.cause = result.error;
+    throw new ValidationRecoveryRequiredError(
+      "Could not verify prepared source setup completion",
+      source,
+      [options.reviewDir, ...(options.reviewTreeRoot ? [options.reviewTreeRoot] : [])],
+    );
+  }
   if (result.error || result.status !== 0) {
     const detail = (result.stderr ?? "").trim() || result.error?.message || `exit ${result.status}`;
     throw new ReviewSourcePreparationError(

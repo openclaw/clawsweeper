@@ -1,5 +1,6 @@
+import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 import { validationRecoveryRequired } from "./validation-recovery.js";
-import { CodexReviewError } from "./review-assessment-failure.js";
+import { CodexReviewError, retryableBatchFailure } from "./review-assessment-failure.js";
 import { runMultiModelReview } from "./multi-model-review.js";
 import { markdownFor as renderDecisionReport } from "./clawsweeper-report-document.js";
 import type { MultiModelReviewRecord } from "./review-record.js";
@@ -273,8 +274,14 @@ export function runPreparedReviewItem(
       },
     );
   } catch (error) {
-    if (error instanceof AgentInputScanError || validationRecoveryRequired(error)) throw error;
-    codexFailureRetryable = codexReviewFailureRetryable(error);
+    if (
+      error instanceof AgentInputScanError ||
+      validationRecoveryRequired(error) ||
+      (modelCalls > 1 && error instanceof ReviewSourcePreparationError)
+    )
+      throw error;
+    codexFailureRetryable =
+      modelCalls > 1 ? retryableBatchFailure(error) : codexReviewFailureRetryable(error);
     const failure = codexReviewFailure(error);
     decision = failure.decision;
     codexFailure = { error, logKind: failure.logKind };

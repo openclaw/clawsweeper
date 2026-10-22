@@ -1,3 +1,10 @@
+import childProcess from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import {
+  NonretryableReviewBatchError,
+  nonretryableReviewBatchExitCode,
+} from "../dist/exact-review-failure-reason.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -202,6 +209,12 @@ const scheduledScenarios = [
   "changed-pr-exact-source-incompatible",
   "changed-pr-clean",
   "changed-pr-repository-config",
+  "changed-pr-exact-batch-nonretryable",
+  "changed-pr-exact-batch-transient",
+  "changed-pr-exact-batch-transient-output-failure",
+  "changed-pr-exact-batch-ledger-failure",
+  "changed-pr-exact-batch-transient-cleanup-failure",
+  "changed-pr-exact-batch-transient-cleanup-failure-json",
   "changed-pr-proof-invalid-cursor",
   "changed-pr-proof-maintainer-change",
   "changed-pr-write-access",
@@ -240,9 +253,19 @@ function testScheduledCacheScenario(
     const invalidProofPrior = scenario.startsWith("changed-pr-proof-");
     const proofMaintainerChange = scenario === "changed-pr-proof-maintainer-change";
     const writeAccessAuthor = scenario === "changed-pr-write-access";
-    const repositoryConfigured = scenario === "changed-pr-repository-config";
+    const batchNonretryable = scenario === "changed-pr-exact-batch-nonretryable";
+    const batchTransient = scenario.includes("batch-transient");
+    const batchOutputFailure = scenario.endsWith("batch-transient-output-failure");
+    const batchLedgerFailure = scenario === "changed-pr-exact-batch-ledger-failure";
+    const batchCleanupFailure = scenario.includes("batch-transient-cleanup-failure");
+    const batchJsonFailure = scenario.endsWith("batch-transient-cleanup-failure-json");
+    const configuredBatch = batchNonretryable || batchTransient || batchLedgerFailure;
+    let terminalLedgerAttempts = 0;
+    let modeRestorations = 0;
+    const repositoryConfigured = scenario === "changed-pr-repository-config" || configuredBatch;
     const sourceIncompatible = scenario.endsWith("source-incompatible");
-    const codexFailure = scenario.endsWith("codex-failure") || sourceIncompatible;
+    const codexFailure =
+      scenario.endsWith("codex-failure") || sourceIncompatible || configuredBatch;
     const exactFailure = scenario.includes("exact");
     const invalidBase = scenario.endsWith("invalid-base-refusal");
     const missingHead = scenario.endsWith("missing-head-refusal");
@@ -536,6 +559,15 @@ else {
         activeReviewMutationRunner = value;
       },
       ...ledgerOwner,
+      finishReviewActionLedger: (
+        options: Parameters<typeof ledgerOwner.finishReviewActionLedger>[0],
+      ) => {
+        if (batchLedgerFailure) {
+          terminalLedgerAttempts++;
+          throw Object.assign(new Error("persistent fixture ledger ENOSPC"), { code: "ENOSPC" });
+        }
+        return ledgerOwner.finishReviewActionLedger(options);
+      },
       actionLedgerItemKey: (value: { repo: string; number: number }) =>
         `${value.repo}#${value.number}`,
       bulkFilerPolicyInvalidatesCachedReview: () => false,
@@ -731,7 +763,11 @@ process.exitCode = 1;
       reportFileName: (_repo, number) => `${number}.md`,
       reportReviewFindings: () => [],
       resolveReviewCheckout: () => ({ openclawDir: target }),
-      restoreTreeModes: () => undefined,
+      restoreTreeModes: () => {
+        modeRestorations++;
+        if (batchCleanupFailure && modeRestorations >= 2)
+          throw new Error("fixture secondary finalizer failure");
+      },
       reviewCodexForcedLoginMethod: () => "chatgpt",
       reviewMutationRunner: () => null,
       reviewPolicyHash: () => POLICY,
@@ -746,6 +782,17 @@ process.exitCode = 1;
               skills: [],
               files: [],
               configText: "{}",
+              ...(configuredBatch
+                ? {
+                    multiModel: {
+                      reviewers: [
+                        { runner: "openclaw", model: "openai/fixture-model" },
+                        { runner: "openclaw", model: "openai/second-fixture" },
+                      ],
+                      coordinator: { runner: "openclaw", model: "openai/coordinator-fixture" },
+                    },
+                  }
+                : {}),
             }
           : undefined;
       },
@@ -763,7 +810,12 @@ process.exitCode = 1;
         return { status: 0, signal: null, stdout: "", stderr: "" };
       },
       prepareMediaProofArtifacts: () => ({ manifestPath: null, summaryPath: null, artifacts: [] }),
-      reviewEnvironment: () => ({ GH_TOKEN: "synthetic-inspection-token" }),
+      reviewEnvironment: () => ({
+        GH_TOKEN: "synthetic-inspection-token",
+        ...(configuredBatch
+          ? { CODEX_BIN: provider, CODEX_HOME: join(root, "codex-home"), PATH: process.env.PATH }
+          : {}),
+      }),
       buildReviewPrompt: (_item, reviewContext, _git, _additionalPrompt, runtimeHints) => {
         assert.equal(runtimeHints.hasGitHubToken, true);
         if (publicationCacheMiss)
@@ -974,6 +1026,71 @@ process.exitCode = 1;
         : (markdown: string) => markdown,
     } as never;
 
+    let injectedBatches = 0;
+    if (configuredBatch) {
+      const originalSpawn = childProcess.spawnSync;
+      t.mock.method(
+        childProcess,
+        "spawnSync",
+        (...args: Parameters<typeof childProcess.spawnSync>) => {
+          let batch: any;
+          try {
+            batch = JSON.parse(String((args[2] as { input?: string })?.input));
+          } catch {}
+          if (
+            Array.isArray(batch?.commands) &&
+            batch.commands.some((command: any) =>
+              command.args?.some((arg: unknown) =>
+                String(arg).endsWith("review-assessment-worker.js"),
+              ),
+            )
+          ) {
+            injectedBatches++;
+            return {
+              status: 0,
+              signal: null,
+              stdout: JSON.stringify(
+                batch.commands.map(() => ({
+                  status: 0,
+                  signal: null,
+                  stderr: "",
+                  stdout: JSON.stringify(
+                    batchLedgerFailure
+                      ? {
+                          decision: closeDecision({ decision: "keep_open", closeReason: "none" }),
+                        }
+                      : {
+                          failure: {
+                            retryable: batchTransient,
+                            terminal: false,
+                            logKind: batchTransient ? "transport_network" : "content_or_output",
+                          },
+                        },
+                  ),
+                })),
+              ),
+              stderr: "",
+              output: [],
+              pid: 0,
+            };
+          }
+          return originalSpawn(...args);
+        },
+      );
+      if (batchOutputFailure) {
+        const originalWrite = fs.writeFileSync;
+        t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
+          if (String(args[0]).endsWith("review-cache-metrics.json"))
+            throw Object.assign(new Error("fixture post-batch output failure"), { code: "EACCES" });
+          return originalWrite(...args);
+        });
+      }
+      syncBuiltinESMExports();
+      t.after(() => {
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+      });
+    }
     try {
       const { reviewCommand } = createReviewCommandWorkflow(dependencies);
       const execute = () => {
@@ -1012,20 +1129,32 @@ process.exitCode = 1;
                         String(LEASE_COMMENT_ID),
                       ]),
                 ]
-              : partialJsonFailure
-                ? [...commonArgs, "--local-only", "--result-format", "json"]
-                : [
+              : batchJsonFailure
+                ? [
                     ...commonArgs,
                     "--artifact-dir",
                     artifactDir,
+                    "--output-retention",
+                    "debug",
+                    "--local-only",
+                    "--result-format",
+                    "json",
                     "--skip-start-comment",
-                    "--review-lease-owner",
-                    LEASE_OWNER,
-                    "--review-lease-comment-id",
-                    String(LEASE_COMMENT_ID),
-                    "--review-source-action",
-                    "scheduled_normal_backfill",
-                  ],
+                  ]
+                : partialJsonFailure
+                  ? [...commonArgs, "--local-only", "--result-format", "json"]
+                  : [
+                      ...commonArgs,
+                      "--artifact-dir",
+                      artifactDir,
+                      "--skip-start-comment",
+                      "--review-lease-owner",
+                      LEASE_OWNER,
+                      "--review-lease-comment-id",
+                      String(LEASE_COMMENT_ID),
+                      "--review-source-action",
+                      "scheduled_normal_backfill",
+                    ],
           ),
         );
       };
@@ -1270,6 +1399,66 @@ process.exitCode = 1;
         );
         assert.equal(terminal.length, 3);
         assert.ok(terminal.every((event) => event.action.retryable === true));
+        return;
+      }
+      if (configuredBatch) {
+        if (batchJsonFailure) {
+          const priorLog = console.log,
+            priorError = console.error,
+            priorExit = process.exitCode;
+          const stdout: string[] = [];
+          console.log = (value) => stdout.push(String(value));
+          console.error = () => {};
+          try {
+            execute();
+            assert.equal(process.exitCode, 82);
+            assert.equal(stdout.length, 1);
+            assert.equal(JSON.parse(stdout[0]!).status, "failed");
+          } finally {
+            console.log = priorLog;
+            console.error = priorError;
+            process.exitCode = priorExit;
+          }
+        } else
+          assert.throws(execute, (error) => {
+            if (batchTransient && !batchOutputFailure && !batchCleanupFailure) {
+              assert.ok(error instanceof Error);
+              assert.match(error.message, /Codex failed/);
+              assert.equal(nonretryableReviewBatchExitCode(error), undefined);
+            } else {
+              assert.ok(
+                error instanceof NonretryableReviewBatchError,
+                error instanceof Error ? error.stack : String(error),
+              );
+              assert.equal(nonretryableReviewBatchExitCode(error), 82);
+              if (batchOutputFailure)
+                assert.match(String(error.cause), /post-batch output failure/);
+            }
+            return true;
+          });
+        if (!batchLedgerFailure) {
+          const manifest = JSON.parse(
+            readFileSync(join(artifactDir, "failure-diagnostics", "manifest.json"), "utf8"),
+          );
+          assert.equal(
+            manifest.retryable,
+            batchTransient,
+            "member diagnostics do not override a secondary terminal batch failure",
+          );
+        }
+        if (batchLedgerFailure)
+          assert.equal(
+            terminalLedgerAttempts,
+            2,
+            "both normal and catch-path terminal ledger writes fail",
+          );
+        if (batchCleanupFailure) assert.ok(modeRestorations >= 2);
+        assert.equal(generationCalls, 0, "legacy single generation is not run");
+        assert.equal(
+          injectedBatches,
+          batchLedgerFailure ? 2 : 1,
+          "controlled worker envelopes use full batch path",
+        );
         return;
       }
       if (codexFailure || preparationFailure) {
