@@ -1070,22 +1070,7 @@
           "properties": {
             "kind": {
               "type": "string",
-              "enum": ["required"]
-            },
-            "text": {
-              "type": "string",
-              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "text"],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "enum": ["maintainer"]
+              "enum": ["required", "maintainer"]
             },
             "text": {
               "type": "string",

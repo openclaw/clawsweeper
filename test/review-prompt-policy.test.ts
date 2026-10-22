@@ -43,16 +43,14 @@ import {
 test("review prompt and generation schema deliver explicit next-step presentation intent", () => {
   const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
   assert.ok(schema.required.includes("nextStep"));
-  const [none, required, maintainer] = schema.properties.nextStep.anyOf;
-  for (const branch of [none, required, maintainer]) {
+  const [none, required] = schema.properties.nextStep.anyOf;
+  for (const branch of [none, required]) {
     assert.equal(branch.additionalProperties, false);
     assert.deepEqual(branch.required, ["kind", "text"]);
   }
   assert.deepEqual(none.properties.kind.enum, ["none"]);
   assert.deepEqual(none.properties.text.enum, [""]);
-  assert.deepEqual(required.properties.kind.enum, ["required"]);
-  assert.deepEqual(maintainer.properties.kind.enum, ["maintainer"]);
-  assert.equal(maintainer.properties.text.pattern, required.properties.text.pattern);
+  assert.deepEqual(required.properties.kind.enum, ["required", "maintainer"]);
   const pattern = new RegExp(required.properties.text.pattern);
   for (const text of ["", " ", "\n", " Owner approval.", "Owner approval. "])
     assert.equal(pattern.test(text), false);
