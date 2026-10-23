@@ -2,7 +2,8 @@
 
 - Status: active development and qualification guide; no package release
 - Owner: ClawSweeper local-runtime maintainers
-- Source of truth: `scripts/stage-local-package.mjs` and `src/clawsweeper-local.ts`
+- Source of truth: `scripts/stage-local-package.mjs`, `src/clawsweeper-local.ts`,
+  and `.github/workflows/local-package-qualification.yml`
 - Verified source baseline: `a8ed845bfdad2467c4d73d8b470f4284dce625f0`; CI artifacts identify the tested source and diff
 - Update when: the local entrypoint, imports, workers, assets, package format, or qualification matrix changes
 
@@ -111,3 +112,45 @@ processes are deterministic fixtures, so these checks do not establish live
 provider access, native scanner coverage, a published release, or global install.
 Keep the original target, reports, and operator authentication separate from the
 disposable install.
+
+## Proposed release rehearsal
+
+The manual `.github/workflows/release.yml` caller is preparation only. It has
+no publishing mode and cannot create a version tag, npm package, or tap change.
+The existing package and command names remain private and provisional.
+
+Both CI and the caller reuse `.github/workflows/local-package-qualification.yml`.
+Its Linux producer emits one canonical four-file envelope. Linux, Windows, and
+macOS must all consume the producer's exact artifact ID successfully before the
+workflow exposes that ID. A failed or skipped consumer prevents the release job.
+
+The caller pins `openclaw/release-workflows` at
+`50a56f81429b1590bad6470e4d8ee9565c18f1b6`. That shared workflow downloads the
+same-run ID into `RELEASE_ASSET_INPUT_DIR`. The dependency-free
+`scripts/release-local-package-envelope.mjs` validates the original four files,
+their hashes and locked resolution, and their source commit, tree, and clean
+diff against the shared workflow's frozen checkout. A newer-main envelope
+cannot stand in for an older tagged source. The wrapper never installs,
+resolves, rebuilds, or repacks the inner npm package.
+
+On Ubuntu, GNU tar and gzip wrap the original files as
+`clawsweeper-local-envelope.tar.gz` at `RELEASE_ASSET_PATH`. Fixed file order,
+ownership, modes, timestamps, and `gzip -n` make that outer archive independent
+of downloaded file metadata. The original envelope bytes and checkout must
+remain unchanged. The shared inventory and two verifier jobs check transport
+integrity; the three consumers provide the package behavior proof.
+
+The caller grants `actions: read`, `checks: read`, `contents: write`, and
+`statuses: read` only to the pinned shared call. Its tag and publication jobs
+declare write capability even in dry-run mode. `dry_run: true`, signed-tag and
+strict-CI options are fixed, and Homebrew handoff is disabled. Qualification
+has only `contents: read`; no secrets are inherited or supplied, and the shared
+build strips token environment variables before running the wrapper.
+
+A protected-main rehearsal is still blocked until the release maintainer
+approves dated release notes matching package version `0.3.1`. The current
+`0.3.1 - Unreleased` heading does not satisfy the shared metadata contract.
+Do not dispatch an expected failure or invent release metadata. Public naming,
+signer policy for a future real release, dependency delivery for Homebrew, and
+publication require separate decisions. This caller does not establish those
+outcomes or a full shared-workflow rehearsal.

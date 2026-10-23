@@ -1,0 +1,40 @@
+name: Local package release rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version already recorded in dated release notes and package metadata
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  qualification:
+    uses: ./.github/workflows/local-package-qualification.yml
+    permissions:
+      contents: read
+
+  release:
+    needs: qualification
+    # The pinned callee declares write access for its tag/publish jobs, even
+    # though this caller always rehearses and those paths perform no writes.
+    permissions:
+      actions: read
+      checks: read
+      contents: write
+      statuses: read
+    uses: openclaw/release-workflows/.github/workflows/release-source.yml@50a56f81429b1590bad6470e4d8ee9565c18f1b6
+    with:
+      version: ${{ inputs.version }}
+      dry_run: true
+      require-signed-tag: true
+      strict-checks: true
+      ci-check-events: '["push"]'
+      test-runs-on: ubuntu-latest
+      test-command: node scripts/release-local-package-envelope.mjs ${{ needs.qualification.outputs.artifact-id }}
+      generated-input-artifact-id: ${{ needs.qualification.outputs.artifact-id }}
+      generated-asset: clawsweeper-local-envelope.tar.gz
+      source-archives: false
+      homebrew-formula: ""
