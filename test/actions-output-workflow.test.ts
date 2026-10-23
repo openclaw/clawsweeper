@@ -88,6 +88,7 @@ function valueFor(name: string): string {
     COMPLETION_KIND: "published",
     REASON_CODE: "publication_applied",
     ARTIFACT_NAME: "exact-review-123-1",
+    ARTIFACT_ID: "123",
     DIRECT_OUTCOME: "direct-outcome.json",
     LIVE_PROCEEDED: "false",
     LIVE_TERMINAL_NOOP: "false",
