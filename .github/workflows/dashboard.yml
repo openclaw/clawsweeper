@@ -2,6 +2,16 @@ name: ClawSweeper Live Dashboard
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Deploy the Worker or verify the existing deployment only.
+        type: choice
+        options: [deploy, verify]
+        default: deploy
+      expected_deployment_sha:
+        description: Full deployed commit SHA required for verification-only mode.
+        type: string
+        default: ""
   push:
     branches: [main]
     paths:
@@ -16,13 +26,13 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: clawsweeper-live-dashboard
-  cancel-in-progress: true
-
 jobs:
   deploy:
     name: Deploy dashboard Worker
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'deploy' }}
+    concurrency:
+      group: clawsweeper-live-dashboard
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_ACCOUNT_ID: 91b59577e757131d68d55a471fe32aca
@@ -94,3 +104,34 @@ jobs:
 
       - name: Smoke test live dashboard
         run: pnpm run dashboard:smoke -- "$CLAWSWEEPER_STATUS_URL"
+
+  verify:
+    name: Verify existing dashboard deployment
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'verify' }}
+    concurrency:
+      group: clawsweeper-live-dashboard-verify
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.22.1"
+
+      - name: Verify live dashboard without deploying
+        env:
+          CLAWSWEEPER_STATUS_URL: https://clawsweeper.openclaw.ai
+          CLAWSWEEPER_EXPECTED_DEPLOY_SHA: ${{ inputs.expected_deployment_sha }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CLAWSWEEPER_EXPECTED_DEPLOY_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::Verification requires a full deployed commit SHA." >&2
+            exit 1
+          fi
+          test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
+          node scripts/dashboard-smoke.mjs "$CLAWSWEEPER_STATUS_URL"

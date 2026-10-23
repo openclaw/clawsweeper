@@ -86,6 +86,24 @@ manual publication policy. A valid disabled manual-publication policy passes.
 Local smoke runs without `CLAWSWEEPER_EXPECTED_DEPLOY_SHA` explicitly report this
 signed check as skipped. A persistently unavailable queue still fails readiness.
 
+To repeat verification without deploying or syncing Worker secrets, dispatch the
+same workflow with `mode=verify` and an explicit full deployed commit SHA:
+
+```bash
+gh workflow run dashboard.yml --repo openclaw/clawsweeper --ref <reviewed-branch> \
+  -f mode=verify -f expected_deployment_sha=<deployed-commit-sha>
+```
+
+The separate verification job runs the existing full smoke against the fixed
+production URL using only the webhook signing secret. It checks both the outer
+Worker and signed Durable Object deployment identities. Its concurrency group
+cannot cancel a deployment. The default manual mode and matching pushes to
+`main` still deploy and sync secrets; merging a change to this workflow therefore
+still triggers the normal deployment path.
+
+The signed probe uses the existing Durable Object initialization and legacy
+cleanup path; it does not run a migration or add an administrative write.
+
 A status contract failure keeps its original error and nonzero smoke exit, with
 one bounded diagnostic summary: projection completeness, freshness, cache state,
 validated numeric diagnostic count, and fetch duration. It excludes response

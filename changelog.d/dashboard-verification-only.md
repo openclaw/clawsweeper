@@ -1,0 +1,1 @@
+- Add a verification-only dashboard workflow mode that checks an explicit deployed revision without syncing secrets or deploying the Worker.
