@@ -104,7 +104,7 @@ test("review-tool bootstrap pins the official Windows archive", () => {
     platform: "win32-x64",
     executable: "trufflehog.exe",
     url: `https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_windows_amd64.tar.gz`,
-    sha256: "6ce9a957ac62bfb19463048333d9e8481327dbbf5bdc0c43f5ab5327b9631fb9",
+    sha256: "97749c11ec76ef93ca50a3a50bd2a40f25fb92dfee4366d4bff0ba0d951307a8",
   });
 });
 
