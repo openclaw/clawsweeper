@@ -22,16 +22,16 @@ trap cleanup EXIT
 
 curl --fail --show-error --silent --location \
   --connect-timeout 15 --max-time 60 --retry 2 --retry-all-errors --retry-delay 2 --retry-max-time 120 \
-  "https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.4/trufflehog_3.97.4_linux_amd64.tar.gz" \
+  "https://github.com/trufflesecurity/trufflehog/releases/download/v3.99.4/trufflehog_3.99.4_linux_amd64.tar.gz" \
   --output "$review_tools_root/archive.tar.gz"
 printf '%s  %s\n' \
-  "dc24007c2f233bd61c05beabeb44aa27ea9b43288166279209abe0458c5ce76b" \
+  "5ae9b313342d1bfa96404064c0f59e77a2cbd1824d797ca7b11e6655aa8fd9d1" \
   "$review_tools_root/archive.tar.gz" | sha256sum --check -
 tar -xzf "$review_tools_root/archive.tar.gz" -C "$review_tools_root/bin" trufflehog
 chmod 700 "$review_tools_root/bin/trufflehog"
 export PATH="$review_tools_root/bin:$PATH"
 version="$(env -i HOME="$review_tools_root" "$review_tools_root/bin/trufflehog" --version 2>&1)"
-[[ "$version" == "trufflehog 3.97.4" ]]
+[[ "$version" == "trufflehog 3.99.4" ]]
 printf 'A harmless review scanner installation check.\n' > "$review_tools_root/smoke/clean.txt"
 chmod 600 "$review_tools_root/smoke/clean.txt"
 if ! env -i HOME="$review_tools_root" TMPDIR="$review_tools_root" \
@@ -47,4 +47,4 @@ if [[ -s "$review_tools_root/stdout" ]]; then
 fi
 echo "$review_tools_root/bin" >> "$GITHUB_PATH"
 review_tools_ready=1
-echo "Trusted TruffleHog 3.97.4 scanner installed and benign scan passed."
+echo "Trusted TruffleHog 3.99.4 scanner installed and benign scan passed."

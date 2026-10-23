@@ -139,7 +139,7 @@ process.exit(r.status??1);
         ".github/actions/setup-review-tools/install.sh",
         "utf8",
       ).replace(
-        "https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.4/trufflehog_3.97.4_linux_amd64.tar.gz",
+        "https://github.com/trufflesecurity/trufflehog/releases/download/v3.99.4/trufflehog_3.99.4_linux_amd64.tar.gz",
         `${url}/archive`,
       );
       writeFileSync(

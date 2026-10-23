@@ -99,7 +99,7 @@ function valueFor(name: string): string {
     CLASSIFICATION: "success",
     INPUTS_WORKTREE_PATH: ".",
     INPUTS_AUTH_MODE: "proxy",
-    INPUTS_CODEX_VERSION: "0.162.1",
+    INPUTS_CODEX_VERSION: "0.164.0",
     INPUTS_PROXY_VERSION: "0.159.2",
     HYDRATE_STATE_BLOBS: "true",
     HYDRATE_RECORDS: "true",
