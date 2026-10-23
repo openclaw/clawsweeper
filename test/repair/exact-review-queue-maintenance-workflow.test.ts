@@ -358,6 +358,7 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
   let retirementCalls = 0;
   let retirementMode = "success";
   let canonicalCalls = 0;
+  let canonicalMode = "success";
   const server = createServer(
     { key: readFileSync(key), cert: readFileSync(cert) },
     async (request, response) => {
@@ -375,6 +376,44 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
         assert.equal(payload.expectedDeploymentSha, "e".repeat(40));
         assert.equal(payload.reviewedPreviewSha256, "f".repeat(64));
         response.setHeader("content-type", "application/json");
+        if (canonicalCalls === 3 && canonicalMode !== "success") {
+          response.setHeader(
+            "x-clawsweeper-exact-review-trace",
+            "12345678-1234-4123-8123-123456789abc",
+          );
+          response.statusCode =
+            canonicalMode === "conflict"
+              ? 409
+              : ["malformed", "checkpoint", "completion", "failed"].includes(canonicalMode)
+                ? 200
+                : 500;
+          response.end(
+            canonicalMode === "malformed"
+              ? "private-response-sentinel"
+              : ["checkpoint", "completion", "failed"].includes(canonicalMode)
+                ? JSON.stringify({
+                    ok: canonicalMode !== "failed",
+                    checkpoint: {
+                      after_rowid: canonicalMode === "checkpoint" ? -1 : 12,
+                      migrated: 12,
+                      completed_at:
+                        canonicalMode === "completion" ? "private-completion-sentinel" : null,
+                    },
+                  })
+                : JSON.stringify({
+                    error:
+                      canonicalMode === "conflict"
+                        ? "canonical_tiering_deployment_mismatch"
+                        : "private_snake_case_sentinel",
+                    failure_category:
+                      canonicalMode === "platform"
+                        ? "platform_overloaded"
+                        : "private-category-sentinel",
+                    message: "https://private.example.test/token synthetic-policy-token",
+                  }),
+          );
+          return;
+        }
         response.end(
           JSON.stringify({
             ok: true,
@@ -382,6 +421,7 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
               after_rowid: canonicalCalls * 4,
               migrated: canonicalCalls * 4,
               completed_at: canonicalCalls === 3 ? 1 : null,
+              plan_json: "private-plan-sentinel",
             },
           }),
         );
@@ -711,7 +751,7 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
   writeFileSync(attestationPath, JSON.stringify(attestation));
   writeFileSync(
     loader,
-    'const original=globalThis.fetch;globalThis.fetch=(input,init)=>String(input).startsWith("https://api.cloudflare.com/")?Promise.resolve(Response.json({success:true,result:{rules:process.env.SYNTHETIC_UNSAFE_POLICY?[{id:"unsafe",enabled:true,conditions:{prefix:""},deleteObjectsTransition:{}}]:[]}})):original(input,init);',
+    'const original=globalThis.fetch;globalThis.fetch=(input,init)=>{if(String(input).startsWith("https://api.cloudflare.com/")){if(process.env.SYNTHETIC_THROW_POLICY)throw new Error("private-policy-sentinel https://private.example.test/token "+process.env.CLOUDFLARE_API_TOKEN);return Promise.resolve(Response.json({success:true,result:{rules:process.env.SYNTHETIC_UNSAFE_POLICY?[{id:"unsafe",enabled:true,conditions:{prefix:""},deleteObjectsTransition:{}}]:[]}}));}return original(input,init);};',
   );
   const canonicalArgs = [
     "--import",
@@ -755,6 +795,77 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
     },
   );
   assert.equal(canonicalCalls, 3);
+  await assert.rejects(
+    promisify(execFile)(process.execPath, canonicalArgs, {
+      ...runtime,
+      env: { ...canonicalEnv, SYNTHETIC_THROW_POLICY: "1" },
+    }),
+    (error: Error & { stdout: string; stderr: string }) => {
+      const failure = JSON.parse(
+        error.stderr.split("\n").find((line) => line.startsWith('{"ok":false'))!,
+      );
+      assert.equal(failure.stage, "lifecycle");
+      assert.equal(failure.reason, "unknown");
+      assert.equal(failure.completed_passes, 0);
+      assert.equal(failure.last_observed_checkpoint, null);
+      assert.doesNotMatch(error.stdout + error.stderr, /private|synthetic-policy-token|https:/);
+      return true;
+    },
+  );
+  assert.equal(canonicalCalls, 3);
+  for (const mode of [
+    "platform",
+    "conflict",
+    "unknown",
+    "malformed",
+    "checkpoint",
+    "completion",
+    "failed",
+  ]) {
+    const localValidation = ["checkpoint", "completion", "failed"].includes(mode);
+    canonicalCalls = 0;
+    canonicalMode = mode;
+    await assert.rejects(
+      promisify(execFile)(process.execPath, canonicalArgs, {
+        ...runtime,
+        env: canonicalEnv,
+      }),
+      (error: Error & { stdout: string; stderr: string }) => {
+        const lines = error.stderr.trim().split("\n");
+        const failure = JSON.parse(lines.find((line) => line.startsWith('{"ok":false'))!);
+        assert.equal(failure.status, "canonical_tiering_failed");
+        assert.equal(failure.stage, localValidation ? "queue_response" : "queue_request");
+        assert.equal(failure.completed_passes, 2);
+        assert.deepEqual(failure.last_observed_checkpoint, {
+          after_rowid: 8,
+          migrated: 8,
+          completed_at: null,
+        });
+        assert.equal(
+          failure.reason,
+          mode === "malformed" || localValidation ? "invalid_response" : "http_error",
+        );
+        assert.equal(
+          failure.http_status,
+          mode === "conflict" ? 409 : mode === "malformed" ? 200 : localValidation ? null : 500,
+        );
+        assert.equal(
+          failure.code,
+          mode === "conflict" ? "canonical_tiering_deployment_mismatch" : null,
+        );
+        assert.equal(failure.failure_category, mode === "platform" ? "platform_overloaded" : null);
+        if (!localValidation)
+          assert.equal(failure.trace_id, "12345678-1234-4123-8123-123456789abc");
+        assert.doesNotMatch(
+          error.stdout + error.stderr,
+          /private[-_]|synthetic-policy-token|synthetic-maintenance-secret|https:/,
+        );
+        assert.equal(lines.at(-1), "[exact-review-queue-maintenance] FAILED (exit 1)");
+        return true;
+      },
+    );
+    assert.equal(canonicalCalls, 3, "the failed pass is never automatically retried");
+  }
 });
 
 test("usage workflow keeps read credentials separate from one authorized canary attempt", () => {

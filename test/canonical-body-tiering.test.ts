@@ -657,6 +657,57 @@ async function queueFixture() {
   const store = new ExactReviewDirectPublicationStore(storage, bucket);
   return { storage, bucket, queue, store };
 }
+
+test("canonical maintenance logs bounded failure stages and preserves thrown failures", async (t) => {
+  const events: unknown[][] = [];
+  t.mock.method(console, "error", (...values: unknown[]) => events.push(values));
+  const trace = "12345678-1234-4123-8123-123456789abc";
+  for (const phase of ["plan", "prepare", "commit"] as const) {
+    const { storage, bucket, queue, store } = await queueFixture();
+    store.accept(await plan(), Date.now());
+    const preview = await store.tieringPreview(sha, gates);
+    store.activateTieringSync(preview, Date.now());
+    const before = store.tieringStatusSync();
+    if (phase === "prepare")
+      t.mock.method(bucket, "put", async () => {
+        throw new Error("private-bucket-sentinel https://private.example.test/token");
+      });
+    if (phase === "commit")
+      storage.failNextSqlMatching(/UPDATE exact_review_canonical_body_tiering SET after_rowid/);
+    events.length = 0;
+    await assert.rejects(
+      queue.fetch(
+        new Request("https://queue/canonical-bodies/maintenance", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-clawsweeper-exact-review-trace": trace,
+          },
+          body: JSON.stringify({
+            action: "migrate",
+            execute: true,
+            expectedDeploymentSha: sha,
+            reviewedPreviewSha256: preview.sha256,
+            attestation: phase === "plan" ? { private: "private-plan-sentinel" } : gates,
+          }),
+        }),
+      ),
+      phase === "prepare" ? CanonicalBodyUnavailableError : Error,
+    );
+    assert.deepEqual(events[0], [
+      "canonical_tiering_failed",
+      {
+        phase,
+        trace_id: trace,
+        failure_category: phase === "prepare" ? "body_unavailable" : "handler_exception",
+      },
+    ]);
+    assert.equal(events[1]?.[0], "exact_review_queue_handler_failed");
+    assert.doesNotMatch(JSON.stringify(events), /private-|token|https:/);
+    assert.deepEqual(store.tieringStatusSync(), before);
+    assert.equal(store.readCanonical(repo, "items", 1)?.content, "雪🦊");
+  }
+});
 async function seedLease(storage: TestStorage, id: number, batch = false) {
   const key = `example/project#${id}`,
     now = Date.now(),

@@ -313,6 +313,21 @@ resumes the persisted cursor using the same approved plan; startup and alarms
 never schedule it. This makes large stores operable without one workflow dispatch
 per four tuples. Throughput from the synthetic fixture is not a production estimate.
 
+If maintenance fails, its final `canonical_tiering_failed` JSON reports the local
+stage, transport reason, HTTP status, known endpoint code, platform failure
+category, `completed_passes`, and `last_observed_checkpoint` (numeric fields only).
+The last observed checkpoint is a lower bound: a lost response can follow a committed pass.
+When the request reached the Durable Object, use the trace ID to correlate its
+`canonical_tiering_failed` log entry, which names the failing initialization,
+plan, preparation, or commit phase. A client timeout or network error does not
+guarantee a Durable Object log entry or a returned trace ID.
+Unknown exceptions still propagate. Diagnostics never include exception text,
+stacks, request URLs, record identities, plan JSON, or arbitrary server codes.
+These observations do not authorize an automatic retry or a new migration run.
+The [platform error contract](https://developers.cloudflare.com/durable-objects/best-practices/error-handling/)
+defines the reported flags. `remote_exception` does not distinguish application
+exceptions from infrastructure CPU or memory limits.
+
 The same manual maintenance workflow offers `canonical-records-verify` for a
 bounded before/after read check. It requires `execute=true`, the reviewed plan
 hash, expected Worker deployment SHA, repository slug, and a `baseline` or
