@@ -50,7 +50,7 @@ test("review prompt and generation schema deliver explicit next-step presentatio
   }
   assert.deepEqual(none.properties.kind.enum, ["none"]);
   assert.deepEqual(none.properties.text.enum, [""]);
-  assert.deepEqual(required.properties.kind.enum, ["required"]);
+  assert.deepEqual(required.properties.kind.enum, ["required", "maintainer"]);
   const pattern = new RegExp(required.properties.text.pattern);
   for (const text of ["", " ", "\n", " Owner approval.", "Owner approval. "])
     assert.equal(pattern.test(text), false);

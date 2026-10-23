@@ -4,6 +4,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
+import {
+  prStatusLabelKindFromReport,
+  nextPrStatusLabels,
+} from "../dist/clawsweeper-label-policy.js";
 interface FindingFixture {
   markdown: string;
   record: Record<string, unknown>;
@@ -240,6 +244,114 @@ test("structured next-step intent controls readiness independently of advice wor
     assertReadiness(required, "needs-changes");
     assert.doesNotMatch(reviewAutomationMarkersFromReport(required), /clawsweeper-verdict:pass/);
     assert.doesNotMatch(renderReviewCommentFromReport(required, "none"), /Automerge follow-up/);
+  }
+});
+
+test("maintainer-only approval waits stay blocked without blaming the author", () => {
+  for (const productDecision of [false, true]) {
+    const report = reviewReport({}, "", cleanFindings, {
+      nextStep: {
+        kind: "maintainer",
+        text: "A maintainer must approve the current-head security change.",
+      },
+      ...(productDecision
+        ? {
+            productReview: {
+              kind: "feature",
+              userProblem: "Removing one account reconnects siblings.",
+              fixScope: "complete",
+              worthIt: "needs_maintainer",
+              reason: "Accept the capability extension.",
+            },
+          }
+        : {}),
+    });
+    const comment = assertReadiness(report, "blocked");
+    assert.match(comment, /Await maintainer action/);
+    assert.match(comment, /current-head security change/);
+    const status = prStatusLabelKindFromReport(report, { comments: [], timeline: [] }, []);
+    assert.equal(status, "waiting_on_maintainer");
+    const authorActivity = {
+      comments: [
+        {
+          author: "vincentkoc",
+          body: "The security gate still needs a maintainer.",
+          createdAt: "2026-08-09T00:00:00.000Z",
+        },
+      ],
+      timeline: [],
+    };
+    assert.equal(prStatusLabelKindFromReport(report, authorActivity, []), "waiting_on_maintainer");
+    assert.equal(
+      prStatusLabelKindFromReport(
+        report,
+        {
+          comments: [{ ...authorActivity.comments[0], body: "@clawsweeper re-review" }],
+          timeline: [],
+        },
+        [],
+      ),
+      "re_review_loop",
+    );
+    assert.equal(
+      prStatusLabelKindFromReport(report, authorActivity, ["clawsweeper:human-review"]),
+      null,
+    );
+    assert.deepEqual(
+      nextPrStatusLabels(["security-review-required", "status: ⏳ waiting on author"], status),
+      ["security-review-required", "status: ⏳ waiting on maintainer"],
+    );
+    assert.doesNotMatch(
+      reviewAutomationMarkersFromReport(report),
+      /clawsweeper-verdict:pass|clawsweeper-action:fix-required/,
+    );
+  }
+});
+
+test("maintainer routing does not hide author findings, proof, or unknown blockers", () => {
+  const nextStep = {
+    kind: "maintainer",
+    text: "A maintainer must approve the current-head security change.",
+  };
+  const scenarios = [
+    { decision: { nextStep }, findings: finding(), expected: "waiting_on_author" },
+    {
+      decision: { nextStep, risks: ["Confirm the unresolved upgrade behavior."] },
+      findings: cleanFindings,
+      expected: null,
+    },
+    {
+      decision: {
+        nextStep,
+        realBehaviorProof: {
+          status: "missing",
+          evidenceKind: "none",
+          needsContributorAction: true,
+          summary: "Show a real runtime trace.",
+          dataModelCompatibility: "not_applicable",
+        },
+      },
+      findings: cleanFindings,
+      expected: "needs_proof",
+    },
+    {
+      decision: { nextStep: { ...nextStep, kind: "required" } },
+      findings: cleanFindings,
+      expected: "waiting_on_author",
+    },
+  ];
+  for (const scenario of scenarios) {
+    const report = reviewReport(
+      { author_association: "CONTRIBUTOR" },
+      "",
+      scenario.findings,
+      scenario.decision,
+    );
+    assert.equal(
+      prStatusLabelKindFromReport(report, { comments: [], timeline: [] }, []),
+      scenario.expected,
+    );
+    assert.doesNotMatch(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
   }
 });
 

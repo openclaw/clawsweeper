@@ -135,6 +135,12 @@ function requiredEnvironmentPath(env: NodeJS.ProcessEnv, name: string): string {
 export function snapshotOpenClawCodexSource(root: string, deadlineAt: number): string {
   if (!lstatSync(root).isDirectory() || !lstatSync(join(root, ".git")).isDirectory())
     throw new Error("Pinned Codex source requires an owned Git directory.");
+  return snapshotReviewReadRoot(root, deadlineAt);
+}
+
+/** Fingerprints an already admitted host-owned immutable tool-readable root. */
+export function snapshotReviewReadRoot(root: string, deadlineAt: number): string {
+  if (!lstatSync(root).isDirectory()) throw new Error("Read root must be an owned directory.");
   const canonicalRoot = realpathSync(root);
   const digest = createHash("sha256"),
     buffer = Buffer.alloc(64 * 1024);

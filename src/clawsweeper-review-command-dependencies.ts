@@ -296,8 +296,6 @@ export interface CreateReviewCommandWorkflowDependencies {
   runReviewCheckoutInspection: (options: {
     scanSource: AgentScanSource;
     initialPrompt: string;
-    nativeWorkspace?: string;
-    disableSkills?: boolean;
     reviewPhase?: "independent" | "consolidation";
     nativeReadRoots?: string[];
     reviewEnv?: NodeJS.ProcessEnv;
@@ -335,6 +333,8 @@ export interface CreateReviewCommandWorkflowDependencies {
     /** Host-admitted public source objects; never a repository-configured mount. */
     nativeReadRoots?: string[];
     nativeReferenceDir?: string;
+    /** Host-prepared media only; separate from all writable role scratch. */
+    preparedMediaDir?: string;
     selection?: import("./repository-review-config.js").ReviewModelSelection;
     reviewPhase?: "independent" | "consolidation";
     onExecution?: (receipt: import("./review-execution-receipt.js").ReviewExecutionReceipt) => void;

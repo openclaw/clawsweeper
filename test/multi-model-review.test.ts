@@ -29,6 +29,8 @@ import {
   reviewRecordFrontMatterLine,
   updateReviewRecordDecision,
 } from "../dist/review-record.js";
+import { pullRequestReviewReadinessFromReport } from "../dist/clawsweeper-report-comment-helpers.js";
+import { prStatusLabelKindFromReport } from "../dist/clawsweeper-label-policy.js";
 import { renderMultiModelAssessments } from "../dist/multi-model-review-presentation.js";
 import {
   projectOpenclawExecutionReceipt,
@@ -123,8 +125,6 @@ function fixture(t: TestContext) {
         revision: "c".repeat(40),
         digest: "d".repeat(64),
         configText: "{}",
-        files: [],
-        skills: [],
         additionalPrompt: "",
         multiModel: {
           reviewers: [selection, { ...selection, model: "second-model" }],
@@ -141,6 +141,7 @@ function fixture(t: TestContext) {
 function report(
   value: Decision,
   multiModel?: ReturnType<typeof runMultiModelReview>["multiModel"],
+  boundLease = false,
 ) {
   return markdownFor({
     item: subject,
@@ -154,6 +155,7 @@ function report(
     git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true } as never,
     action: { actionTaken: "kept_open", closeComment: "" },
     reviewMode: "propose",
+    ...(boundLease ? { reviewLeaseOwner: "github-run-123-1", reviewLeaseCommentId: 123 } : {}),
     snapshotHash: "e".repeat(64),
     contentDigest: "f".repeat(64),
     reviewPolicy: "fixture",
@@ -477,6 +479,66 @@ function cleanupAssessmentState(paths: Iterable<string>) {
   }
 }
 
+test("prepared media is shared read-only input, not peer scratch, across all three roles", (t) => {
+  const f = processFixture(t),
+    proof = join(f.root, "proof"),
+    media = join(proof, "prepared-media");
+  mkdirSync(media, { recursive: true });
+  const artifact = join(media, "proof-image-1.png");
+  writeFileSync(artifact, "synthetic-image-bytes");
+  writeFileSync(join(proof, "peer-result.json"), "private-peer-result");
+  f.options.assessment.proofScratchDir = proof;
+  f.options.assessment.preparedMediaDir = media;
+  f.options.assessment.prompt += " Prepared media: " + artifact;
+  const binary = join(f.root, "fake-codex.cjs");
+  writeFileSync(
+    binary,
+    readFileSync(binary, "utf8").replace(
+      'fs.readFileSync(0, "utf8");',
+      'const prompt=fs.readFileSync(0,"utf8");const argsText=args.join(" ");' +
+        "if(!prompt.includes(" +
+        JSON.stringify(artifact) +
+        ")||!argsText.includes(" +
+        JSON.stringify(media) +
+        "))process.exit(19);" +
+        "if(fs.readFileSync(" +
+        JSON.stringify(artifact) +
+        ',"utf8")!=="synthetic-image-bytes"||(fs.statSync(' +
+        JSON.stringify(artifact) +
+        ").mode&0o222))process.exit(20);",
+    ),
+  );
+  const result = runMultiModelReview(f.options);
+  assert.equal(result.multiModel.status, "complete", JSON.stringify(result.multiModel));
+  assert.equal(readFileSync(f.log, "utf8").trim().split("\n").length, 3);
+  assert.equal(readFileSync(artifact, "utf8"), "synthetic-image-bytes");
+  assert.ok(fs.statSync(artifact).mode & 0o200, "host media mode restored after settlement");
+  assert.equal(readFileSync(join(proof, "peer-result.json"), "utf8"), "private-peer-result");
+});
+
+test("a media parent or escaping media link is refused before native execution", (t) => {
+  for (const kind of ["parent", "link"] as const) {
+    if (kind === "link" && process.platform === "win32") continue;
+    const f = processFixture(t),
+      proof = join(f.root, "proof"),
+      media = join(proof, "prepared-media");
+    mkdirSync(media, { recursive: true });
+    const peer = join(proof, "peer-result.json");
+    writeFileSync(peer, "private-peer-result");
+    f.options.assessment.proofScratchDir = proof;
+    f.options.assessment.preparedMediaDir = kind === "parent" ? proof : media;
+    if (kind === "link") fs.symlinkSync(peer, join(media, "escape"));
+    if (kind === "parent")
+      assert.throws(
+        () => runMultiModelReview(f.options),
+        (error) => error instanceof AgentInputScanError && error.reason === "incomplete_source",
+      );
+    else assert.equal(runMultiModelReview(f.options).multiModel.status, "incomplete");
+    assert.equal(existsSync(f.log), false);
+    assert.equal(readFileSync(peer, "utf8"), "private-peer-result");
+  }
+});
+
 test("ordinary core workers use real Node processes, separate slots and concurrency two", (t) => {
   const f = processFixture(t);
   f.options.assessment.repositoryReview!.multiModel!.reviewers.push({
@@ -570,11 +632,9 @@ test("hosted exec startup facts are exact-version framed, not terminal or provid
   assert.equal(projectCodexExecExecutionReceipt("model prose\n" + header), undefined);
 });
 
-test("selected skills do not change the bounded N plus one full assessment phases or union labels", (t) => {
+test("short native-guidance prompt does not change bounded assessment phases or union labels", (t) => {
   const { options } = fixture(t);
-  options.assessment.repositoryReview!.skills = [
-    { name: "domain-review", directory: "domain-review" },
-  ];
+  options.assessment.repositoryReview!.additionalPrompt = "Use the native domain-review skill.";
   const labeled = (triagePriority: string, impact: string) =>
     decision({
       triagePriority,
@@ -589,7 +649,12 @@ test("selected skills do not change the bounded N plus one full assessment phase
   const reconciled = labeled("P2", "impact:ux-friction");
   let batch = 0;
   const result = runMultiModelReview(options, (jobs) => {
-    assert.ok(jobs.every((job) => job.options.repositoryReview!.skills.length === 1));
+    assert.ok(
+      jobs.every(
+        (job) =>
+          job.options.repositoryReview!.additionalPrompt === "Use the native domain-review skill.",
+      ),
+    );
     return ++batch === 1 ? [{ decision: first }, { decision: second }] : [{ decision: reconciled }];
   });
   assert.equal(batch, 2);
@@ -909,7 +974,7 @@ test(
 );
 
 test(
-  "combined pinned skills use isolated read-only parents for parallel mixed runners",
+  "native same-head skills use the actual isolated checkout for parallel mixed runners",
   { skip: process.platform === "win32" },
   (t) => {
     let cleanupSource = () => {};
@@ -933,7 +998,11 @@ test(
     };
     writeFileSync(
       join(target, ".clawsweeper/review.json"),
-      JSON.stringify({ version: 1, skills: ["sample"], multiModel: plan }),
+      JSON.stringify({
+        version: 1,
+        additionalPrompt: "Use the native sample skill while returning the normal full Decision.",
+        multiModel: plan,
+      }),
     );
     const commit = () => {
       f.git("add", "-A");
@@ -986,11 +1055,11 @@ test(
       'const fs=require("node:fs"),path=require("node:path");',
       'const args=process.argv.slice(2),root=process.env.OPENCLAW_WORKSPACE_DIR,config=JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH,"utf8"));',
       'if(args[0]==="sandbox")process.exit(0); const prompt=fs.readFileSync(args[args.indexOf("--message-file")+1],"utf8"); const probe=config.tools.exec.mode==="deny";',
-      'const source=path.join(root,"42"),trusted=fs.readFileSync(path.join(root,".agents/skills/sample/SKILL.md"),"utf8");',
-      'const record={probe,root,skills:config.agents.defaults.skills,workspaceOnly:config.tools.fs.workspaceOnly,readOnly:(fs.statSync(path.join(source,"tracked.txt")).mode&0o222)===0,trusted:trusted.includes("TRUSTED_NATIVE_GUIDANCE")};',
+      'const source=root,trusted=fs.readFileSync(path.join(root,".agents/skills/sample/SKILL.md"),"utf8");',
+      'const record={probe,root,skills:config.agents.defaults.skills,workspaceOnly:config.tools.fs.workspaceOnly,readOnly:(fs.statSync(path.join(source,"tracked.txt")).mode&0o222)===0,sameHead:trusted.includes("UNTRUSTED_HEAD_GUIDANCE"),cwd:process.cwd(),configuredWorkspace:config.agents.defaults.workspace};',
       "fs.appendFileSync(" + JSON.stringify(nativeLog) + ',JSON.stringify(record)+"\\n");',
       'if(probe){const rel=JSON.parse(prompt.match(/^Path: (.+)$/m)[1]),line=Number(prompt.match(/Return exactly line ([0-9]+)/)[1]); const text=fs.readFileSync(path.resolve(root,rel),"utf8").split("\\n")[line-1].trim(); const session=args[args.indexOf("--session-id")+1],file=path.join(process.env.OPENCLAW_STATE_DIR,"agents/main/sessions",session+".jsonl"); fs.mkdirSync(path.dirname(file),{recursive:true}); fs.writeFileSync(file,[{type:"message",message:{role:"assistant",content:[{type:"toolCall",id:"read",name:"read",arguments:{path:rel}}]}},{type:"message",message:{role:"toolResult",toolCallId:"read",toolName:"read",isError:false,content:[{type:"text",text}]}}].map(JSON.stringify).join("\\n")+"\\n"); console.log(JSON.stringify({payloads:[{text}],meta:{stopReason:"stop"}}));}',
-      'else setTimeout(()=>{if(!fs.readFileSync(path.join(root,".agents/skills/sample/SKILL.md"),"utf8").includes("TRUSTED_NATIVE_GUIDANCE"))process.exit(17);console.log(JSON.stringify({payloads:[{text:' +
+      'else setTimeout(()=>{if(!fs.readFileSync(path.join(root,".agents/skills/sample/SKILL.md"),"utf8").includes("UNTRUSTED_HEAD_GUIDANCE"))process.exit(17);console.log(JSON.stringify({payloads:[{text:' +
         JSON.stringify(
           JSON.stringify(closeDecision({ decision: "keep_open", closeReason: "none" })),
         ) +
@@ -1009,10 +1078,19 @@ test(
       .split("\n")
       .map((line) => JSON.parse(line));
     assert.equal(calls.length, 4);
-    assert.ok(calls.every((call) => call.workspaceOnly && call.readOnly && call.trusted));
+    assert.ok(
+      calls.every(
+        (call) =>
+          call.workspaceOnly &&
+          call.readOnly &&
+          call.sameHead &&
+          call.cwd === call.root &&
+          call.configuredWorkspace === call.root,
+      ),
+    );
     assert.equal(new Set(calls.map((call) => call.root)).size, 2);
     for (const call of calls) {
-      assert.deepEqual(call.skills, call.probe ? [] : ["sample"]);
+      assert.equal(call.skills, undefined, "native discovery must not be filtered");
       assert.equal(existsSync(call.root), false);
     }
     assert.equal(existsSync(join(owned, ".agents")), false);
@@ -1052,19 +1130,11 @@ test(
         (error) => {
           recovered = validationRecoveryRequired(error);
           assert.ok(recovered);
-          assert.equal(recovered.cause instanceof Error, true);
-          assert.equal((recovered.cause as Error).cause instanceof Error, true);
-          assert.ok(
-            ["Error", "CodexReviewError"].includes(
-              ((recovered.cause as Error).cause as Error).name,
-            ),
-          );
-          assert.match(
-            ((recovered.cause as Error).cause as Error).message,
-            /^Private worker cause digest [a-f0-9]{64}$/,
-          );
-          assert.equal(recovered.message.includes("MODEL_PRIVATE_DIAGNOSTIC"), false);
-          assert.ok([...recovered.recoveryPaths].some((path) => path.endsWith("review-trees")));
+          // Skill-workspace wrapping is gone. The surviving source owner still
+          // rejects and retains a relocated role without exposing diagnostics.
+          assert.ok(recovered instanceof ValidationRecoveryRequiredError);
+          assert.equal(JSON.stringify(recovered).includes("MODEL_PRIVATE_DIAGNOSTIC"), false);
+          assert.ok([...recovered.recoveryPaths].some((path) => path.includes("review-trees")));
           return true;
         },
       );
@@ -1144,37 +1214,28 @@ test("selected runners, not the ambient default, own shared preparation", (t) =>
   }
 });
 
-test("multi-model native skills reject arbitrary unowned source layouts before execution", (t) => {
-  const f = processFixture(t);
-  f.options.assessment.repositoryReview!.skills = [{ name: "sample", directory: "sample" }];
-  assert.throws(
-    () =>
-      runAssessmentJobs([
-        {
-          id: "member-1",
-          deadlineAt: Date.now() + 5000,
-          options: {
-            ...f.options.assessment,
-            selection: { runner: "openclaw", model: "fixture/selected" },
-            reviewPhase: "independent",
-          },
-        },
-      ]),
-    /host-owned review source/,
-  );
-  assert.equal(existsSync(f.log), false);
-});
-
-test("offline synthetic item zero supports skills plus Codex model assessments without a remote", (t) => {
+test("offline synthetic item zero retains ordinary native skill files in role source without a remote", (t) => {
   const f = processFixture(t);
   f.options.assessment.item = { ...f.options.assessment.item, number: 0 };
-  f.options.assessment.repositoryReview!.skills = [{ name: "sample", directory: "sample" }];
-  f.options.assessment.repositoryReview!.files = [
-    {
-      path: ".agents/skills/sample/SKILL.md",
-      text: "---\nname: sample\ndescription: Local pinned guidance\n---\nLOCAL_PINNED_GUIDANCE\n",
-    },
-  ];
+  const skill = join(f.options.assessment.openclawDir, ".agents/skills/sample/SKILL.md");
+  mkdirSync(join(f.options.assessment.openclawDir, ".agents/skills/sample"), { recursive: true });
+  writeFileSync(
+    skill,
+    "---\nname: sample\ndescription: Native local guidance\n---\nLOCAL_HEAD_GUIDANCE\n",
+  );
+  f.git("add", "-A");
+  f.git(
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "-qm",
+    "Native checkout fixture\n\nCo-authored-by: RomneyDa <6581799+RomneyDa@users.noreply.github.com>",
+  );
+  const head = f.git("rev-parse", "HEAD");
+  f.options.assessment.context.pullRequest = { head: { sha: head }, base: { sha: head } };
+  f.options.assessment.repositoryReview!.revision = head;
   const result = runMultiModelReview(f.options);
   assert.equal(result.multiModel.status, "complete");
   assert.equal(readFileSync(f.log, "utf8").trim().split("\n").length, 3);
@@ -1334,7 +1395,6 @@ test("unsupported checkout probes cannot authorize repeating paid batch members"
 
 test("expired role preparation never materializes or executes a source", (t) => {
   const f = processFixture(t);
-  f.options.assessment.repositoryReview!.skills = [{ name: "sample", directory: "sample" }];
   assert.throws(
     () =>
       runAssessmentJobs([
@@ -1355,7 +1415,6 @@ test(
   { skip: process.platform !== "linux" },
   (t) => {
     const f = processFixture(t);
-    f.options.assessment.repositoryReview!.skills = [{ name: "sample", directory: "sample" }];
     const script = join(f.root, "setup.sh"),
       child = join(f.root, "setup.cjs"),
       receipt = join(f.root, "setup-pids.json");
@@ -1605,7 +1664,6 @@ test("provider-only native mismatch prevents consolidation and preserves advisor
 for (const changed of ["source", "workspace"] as const)
   test("surviving batch host preserves relocated native " + changed + " for recovery", (t) => {
     const f = processFixture(t);
-    f.options.assessment.repositoryReview!.skills = [{ name: "sample", directory: "sample" }];
     const original = fs.writeFileSync;
     let source = "",
       moved = "",
@@ -2500,4 +2558,69 @@ test("post-member source recovery still bypasses incomplete advisory publication
       }),
     (value) => value === original && validationRecoveryRequired(value) === recovery,
   );
+});
+
+test("consolidation keeps maintainer-owned next steps instead of dropping or rerouting them", () => {
+  const held = decision({
+    nextStep: { kind: "maintainer", text: "A maintainer must approve the rollout." },
+  });
+  const kept = decision({
+    nextStep: { kind: "maintainer", text: "Await the maintainer rollout decision." },
+  });
+  for (const nextStep of [
+    { kind: "none", text: "" },
+    { kind: "required", text: "The contributor must approve the rollout." },
+  ]) {
+    const changed = decision({ nextStep });
+    assert.ok(
+      reconciliationVetoes([held], changed, report, subject).includes("maintainer-work-dropped"),
+    );
+  }
+  assert.ok(
+    !reconciliationVetoes([held], kept, report, subject).includes("maintainer-work-dropped"),
+  );
+});
+
+test("multi-model records and labels retain upstream maintainer versus author routing", (t) => {
+  const { options } = fixture(t);
+  const boundReport = (
+    value: Decision,
+    multi?: ReturnType<typeof runMultiModelReview>["multiModel"],
+  ) => report(value, multi, true);
+  options.report = boundReport;
+  const held = decision({
+    nextStep: { kind: "maintainer", text: "A maintainer must approve the rollout." },
+  });
+  let batch = 0;
+  const result = runMultiModelReview(options, () =>
+    ++batch === 1 ? [{ decision: held }, { decision: decision() }] : [{ decision: held }],
+  );
+  assert.equal(result.multiModel.status, "complete");
+  const markdown = boundReport(result.decision!, result.multiModel);
+  const record = readReviewRecord(markdown)!;
+  assert.equal(record.decision.nextStep.kind, "maintainer");
+  assert.equal(record.multiModel!.members[0]!.decision!.nextStep.kind, "maintainer");
+  const state = pullRequestReviewReadinessFromReport(markdown);
+  assert.ok(state.items.some((x) => x.owner === "maintainer" && x.state === "blocked"));
+  assert.equal(
+    prStatusLabelKindFromReport(markdown, { comments: [], timeline: [] }, []),
+    "waiting_on_maintainer",
+    JSON.stringify(state.items),
+  );
+  const comment = renderReviewCommentFromReport(markdown, "none");
+  assert.match(comment, /Await maintainer action/);
+  const author = decision({
+    nextStep: { kind: "required", text: "Add the missing regression case." },
+  });
+  assert.equal(
+    prStatusLabelKindFromReport(boundReport(author), { comments: [], timeline: [] }, []),
+    "waiting_on_author",
+  );
+  batch = 0;
+  const dropped = runMultiModelReview(options, () =>
+    ++batch === 1 ? [{ decision: held }, { decision: decision() }] : [{ decision: author }],
+  );
+  assert.equal(dropped.multiModel.status, "incomplete");
+  assert.ok(dropped.multiModel.vetoes.includes("maintainer-work-dropped"));
+  assert.equal(dropped.decision, undefined);
 });

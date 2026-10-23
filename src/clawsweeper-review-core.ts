@@ -1,7 +1,4 @@
-import {
-  ValidationRecoveryRequiredError,
-  validationRecoveryRequired,
-} from "./validation-recovery.js";
+import { validationRecoveryRequired } from "./validation-recovery.js";
 import {
   CODEX_FAILURE_LOG_KINDS,
   CodexReviewError,
@@ -28,10 +25,7 @@ import {
   ReviewPromptBudgetError,
 } from "./agent-runner.js";
 import { AgentInputScanError, type AgentScanSource } from "./agent-input-scan.js";
-import {
-  materializeNativeReviewSkills,
-  type RepositoryReviewConfig,
-} from "./repository-review-config.js";
+import type { RepositoryReviewConfig } from "./repository-review-config.js";
 import {
   omitReviewedFixtureReferences,
   serializeReviewContext,
@@ -78,7 +72,6 @@ import { emptyMaintainerDecision } from "./decision-packets.js";
 import {
   openClawCodexSourcePreparationFailureRetryable,
   prepareOpenClawCodexSourceForReview,
-  snapshotOpenClawCodexSource,
 } from "./openclaw-codex-source.js";
 import { repositoryProfileFor } from "./repository-profiles.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
@@ -809,8 +802,6 @@ ${extra}
     timeoutMs: number;
     scanSource: AgentScanSource;
     initialPrompt: string;
-    nativeWorkspace?: string;
-    disableSkills?: boolean;
     reviewPhase?: "independent" | "consolidation";
     nativeReadRoots?: string[];
   }): CodexProcessResult {
@@ -831,8 +822,6 @@ ${extra}
       scanSource: options.scanSource,
       initialPrompt: options.initialPrompt,
       cwd: options.openclawDir,
-      ...(options.nativeWorkspace ? { nativeWorkspace: options.nativeWorkspace } : {}),
-      ...(options.disableSkills ? { disableSkills: true } : {}),
       ...(options.nativeReadRoots ? { nativeReadRoots: options.nativeReadRoots } : {}),
       ...(options.reviewPhase ? { reviewPhase: options.reviewPhase } : {}),
       env:
@@ -871,6 +860,8 @@ ${extra}
     /** Host-admitted public source objects; never a repository-configured mount. */
     nativeReadRoots?: string[];
     nativeReferenceDir?: string;
+    /** Host-prepared media only; separate from all writable role scratch. */
+    preparedMediaDir?: string;
     selection?: import("./repository-review-config.js").ReviewModelSelection;
     reviewPhase?: "independent" | "consolidation";
     onExecution?: (receipt: import("./review-execution-receipt.js").ReviewExecutionReceipt) => void;
@@ -899,113 +890,6 @@ ${extra}
   };
 
   function runCodex(options: ReviewRunOptions): Decision {
-    let native: ReturnType<typeof materializeNativeReviewSkills> | undefined;
-    const referenceReadonlyModes: FileModeSnapshot[] = [];
-    const referenceIdentities = new Map<string, string>();
-    const referenceDeadline = Date.now() + options.timeoutMs;
-    let reference: { path: string; digest: string } | undefined;
-    let referencePath: string | undefined;
-    let wroteOutsideSource = false;
-    let referenceRestoreFailed = false;
-    let failure: unknown;
-    let failed = false;
-    let decision!: Decision;
-    try {
-      decision = runCodexInWorkspace(options, (preparedCodexSource) => {
-        if (!options.reviewTreeRoot || !options.repositoryReview)
-          throw new Error("Native OpenClaw skills require an isolated owned review tree.");
-        if (preparedCodexSource) {
-          referencePath = preparedCodexSource;
-          makeTreeReadOnly(
-            preparedCodexSource,
-            referenceReadonlyModes,
-            referenceDeadline,
-            referenceIdentities,
-          );
-          reference = {
-            path: preparedCodexSource,
-            digest: snapshotOpenClawCodexSource(preparedCodexSource, referenceDeadline),
-          };
-        }
-        native = materializeNativeReviewSkills(
-          options.repositoryReview,
-          options.openclawDir,
-          options.reviewTreeRoot,
-          preparedCodexSource,
-        );
-        return native;
-      });
-    } catch (error) {
-      failed = true;
-      failure = error;
-    }
-    if (reference) {
-      try {
-        if (snapshotOpenClawCodexSource(reference.path, referenceDeadline) !== reference.digest)
-          throw new Error("Pinned Codex reference source changed during review.");
-      } catch (error) {
-        failure = new ValidationRecoveryRequiredError(
-          "Pinned Codex reference source changed or could not be verified",
-          failed ? failure : error,
-          [reference.path, ...(options.reviewTreeRoot ? [options.reviewTreeRoot] : [])],
-        );
-        failed = true;
-      }
-    }
-    try {
-      wroteOutsideSource = native?.cleanup(failure) ?? false;
-    } catch (error) {
-      failure = error;
-      failed = true;
-    } finally {
-      // Restore parents first so an agent-chmodded directory cannot hide its
-      // original children; never chmod a replacement inode or symbolic link.
-      for (const snapshot of referenceReadonlyModes) {
-        try {
-          const current = lstatSync(snapshot.path, { bigint: true, throwIfNoEntry: false });
-          if (
-            !current ||
-            current.isSymbolicLink() ||
-            referenceIdentities.get(snapshot.path) !== `${current.dev}:${current.ino}`
-          ) {
-            referenceRestoreFailed = true;
-            continue;
-          }
-          chmodSync(snapshot.path, snapshot.mode);
-        } catch {
-          referenceRestoreFailed = true;
-        }
-      }
-    }
-    if (referenceRestoreFailed) {
-      failure = (
-        validationRecoveryRequired(failure) ??
-        new ValidationRecoveryRequiredError(
-          "Pinned Codex reference modes could not be restored safely",
-          failure,
-        )
-      ).retain([
-        ...(referencePath ? [referencePath] : []),
-        ...(options.reviewTreeRoot ? [options.reviewTreeRoot] : []),
-      ]);
-      failed = true;
-    }
-    if (failed) throw failure;
-    if (wroteOutsideSource)
-      throw new CodexReviewError({
-        message: "Native OpenClaw review changed its owned workspace or reference identities.",
-        status: null,
-        retryable: false,
-      });
-    return decision;
-  }
-
-  function runCodexInWorkspace(
-    options: ReviewRunOptions,
-    prepareNative: (
-      preparedCodexSource?: string,
-    ) => ReturnType<typeof materializeNativeReviewSkills>,
-  ): Decision {
     if (!Number.isSafeInteger(options.resultFileBytes) || options.resultFileBytes <= 0) {
       throw new UserFacingCommandError("Review result output requires a positive byte limit.");
     }
@@ -1022,16 +906,12 @@ ${extra}
             : {}),
         }
       : baseEnv;
-    const preparedCodexSource =
-      !options.sourcePrepared && (!options.selection || agentRunner(codexEnv) === "codex")
-        ? prepareOpenClawCodexSourceForReview({
-            targetRepo: options.item.repo,
-            reviewDir: options.openclawDir,
-            ...(options.reviewTreeRoot === undefined
-              ? {}
-              : { reviewTreeRoot: options.reviewTreeRoot }),
-          })
-        : undefined;
+    if (!options.sourcePrepared && (!options.selection || agentRunner(codexEnv) === "codex"))
+      prepareOpenClawCodexSourceForReview({
+        targetRepo: options.item.repo,
+        reviewDir: options.openclawDir,
+        ...(options.reviewTreeRoot === undefined ? {} : { reviewTreeRoot: options.reviewTreeRoot }),
+      });
     ensureDir(options.workDir);
     const promptPath = join(options.workDir, `${options.item.number}.prompt.md`);
     rmSync(promptPath, { force: true });
@@ -1096,25 +976,11 @@ ${extra}
             headSha: nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? "",
           }
         : { kind: "prompt" };
-    let native: ReturnType<typeof materializeNativeReviewSkills> | undefined;
-    if (options.repositoryReview?.skills.length && agentRunner(codexEnv) === "openclaw") {
-      try {
-        native = prepareNative(preparedCodexSource);
-      } catch (error) {
-        if (validationRecoveryRequired(error)) throw error;
-        throw new CodexReviewError({
-          message: error instanceof Error ? error.message : "Native skill workspace unavailable.",
-          status: null,
-          retryable: false,
-        });
-      }
-    }
     const checkoutInspection = runReviewCheckoutInspection({
       scanSource,
       reviewEnv: codexEnv,
       initialPrompt: prompt,
-      ...(native ? { nativeWorkspace: native.cwd } : {}),
-      ...(options.reviewPhase ? { disableSkills: true, reviewPhase: options.reviewPhase } : {}),
+      ...(options.reviewPhase ? { reviewPhase: options.reviewPhase } : {}),
       ...(options.nativeReadRoots ? { nativeReadRoots: options.nativeReadRoots } : {}),
       itemNumber: options.item.number,
       openclawDir: options.openclawDir,
@@ -1163,7 +1029,6 @@ ${extra}
       ...(options.reviewPhase ? { reviewPhase: options.reviewPhase } : {}),
       ...(options.nativeReadRoots ? { nativeReadRoots: options.nativeReadRoots } : {}),
       ...(options.repositoryReview ? { repositoryReview: options.repositoryReview } : {}),
-      ...(native ? { nativeWorkspace: native } : {}),
       scanSource,
       ...(options.promptFileBytes === 0 ? {} : { diagnosticPromptPath: promptPath }),
       ...(options.promptFileBytes === undefined

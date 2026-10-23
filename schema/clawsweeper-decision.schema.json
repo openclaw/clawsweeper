@@ -1046,7 +1046,7 @@
       "description": "Routing reason; for issues also next-action guidance."
     },
     "nextStep": {
-      "description": "PR next-step intent, never authority to fix or merge: required names the concrete action, human-owned blockers included, whatever its wording; none when nothing more is required.",
+      "description": "PR next-step intent, never authority to fix or merge: required names contributor work; maintainer names an enforced maintainer-only approval or action; none when no additional action remains. Legacy required records remain contributor work regardless of prose.",
       "anyOf": [
         {
           "type": "object",
@@ -1070,7 +1070,7 @@
           "properties": {
             "kind": {
               "type": "string",
-              "enum": ["required"]
+              "enum": ["required", "maintainer"]
             },
             "text": {
               "type": "string",

@@ -181,6 +181,7 @@ test("next-step parsing preserves absent legacy intent and validates supplied as
   for (const nextStep of [
     { kind: "none", text: "" },
     { kind: "required", text: "Owner approval." },
+    { kind: "maintainer", text: "Owner approval." },
   ]) {
     assert.deepEqual(parseDecision(closeDecision({ nextStep })).nextStep, nextStep);
   }
@@ -196,6 +197,9 @@ test("next-step parsing preserves absent legacy intent and validates supplied as
     {},
     { kind: "optional", text: "Wait." },
     { kind: "required", text: "" },
+    { kind: "maintainer", text: "" },
+    { kind: "maintainer", text: "   " },
+    { kind: "maintainer", text: 12 },
     { kind: "required", text: " \n " },
     { kind: "none", text: "Repair it." },
     { kind: "none", text: " " },

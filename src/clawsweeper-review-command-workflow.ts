@@ -554,9 +554,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               ? asRecord(asRecord(context.pullRequest).base).sha
               : structuralScanIdentity?.headSha === headSha ? structuralScanIdentity.baseSha : "";
             const inspection = runReviewCheckoutInspection({
-              // Cached selected-skill reviews still probe the source checkout,
-              // but must not activate its untrusted native skill catalog.
-              ...(itemRepositoryReview?.skills.length ? { disableSkills: true } : {}),
               // Structural reuse has no model payload. Hydrated reuse scans the
               // current context too, including source comments.
               initialPrompt: serializeReviewContext(
@@ -1442,9 +1439,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           pruneItemOutput(reportPath);
           continue;
         }
+        // Prepared evidence is immutable shared input, never a parent mount of role scratch.
+        const mediaProofDir = itemRepositoryReview?.multiModel
+          ? join(proofScratchDir, "prepared-media") : proofScratchDir;
         const preparedMediaProof = prepareMediaProofArtifacts(
-          context, proofScratchDir, undefined,
-          reviewOutputMediaLimits(outputBudget, proofScratchDir), writeOutputMetadata,
+          context, mediaProofDir, undefined,
+          reviewOutputMediaLimits(outputBudget, mediaProofDir), writeOutputMetadata,
         );
         if (itemRepositoryReview?.multiModel) configuredAssessmentAttempted = true;
         const { decision, runtime, codexFailure, codexFailureRetryable, snapshotHash, multiModel } = runPreparedReviewItem({

@@ -95,7 +95,7 @@ export function prReviewNeedsContributorWork(
 export function prStatusLabelKind(options: {
   reviewFailed: boolean;
   proofPolicy: Pick<RealBehaviorProofPolicy, "blocksMerge" | "needsContributorAction">;
-  beforeMergeItems: readonly Pick<PublicBeforeMergeItem, "state">[];
+  beforeMergeItems: readonly Pick<PublicBeforeMergeItem, "state" | "owner">[];
   securityReview: Pick<SecurityReview, "status">;
   mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
   hasRepairLoopPauseLabel: boolean;
@@ -111,6 +111,8 @@ export function prStatusLabelKind(options: {
   if (options.reviewFailed) return null;
   if (unresolvedWork) return "waiting_on_author";
   if (options.beforeMergeItems.length === 0) return "ready_for_maintainer_look";
+  if (options.beforeMergeItems.every((item) => item.owner === "maintainer"))
+    return "waiting_on_maintainer";
   return null;
 }
 

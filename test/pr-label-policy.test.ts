@@ -598,6 +598,7 @@ test("ClawSweeper PR status label scheme exposes workflow states", () => {
         color: "D93F0B",
       },
       { kind: "waiting_on_author", name: "status: ⏳ waiting on author", color: "FBCA04" },
+      { kind: "waiting_on_maintainer", name: "status: ⏳ waiting on maintainer", color: "FBCA04" },
       {
         kind: "ready_for_maintainer_look",
         name: "status: 👀 ready for maintainer look",

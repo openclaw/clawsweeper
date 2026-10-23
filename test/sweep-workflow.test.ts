@@ -6101,7 +6101,7 @@ test("explicit-item planning hydrates exactly the items selected for review", ()
   assert.ok(setup >= 0 && setup < parser && parser < hydration);
   assert.equal(
     YAML.parse(readText(".github/actions/setup-pnpm/action.yml")).inputs["node-version"].default,
-    "24",
+    "24.22.1",
   );
   const requested = steps.find((step: { id?: string }) => step.id === "requested-items");
   const hydrate = steps.find((step: { uses?: string }) => step.uses?.endsWith("/setup-state"));

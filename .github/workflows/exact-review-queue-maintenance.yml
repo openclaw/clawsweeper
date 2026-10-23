@@ -264,7 +264,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "24.22.1"
       # Body reads also run existing initialization/legacy cleanup; execute is required.
       - name: Verify bounded canonical record sample
         env:
@@ -335,7 +335,7 @@ jobs:
           sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "24.22.1"
       - name: Read guarded review usage
         id: usage
         env:
@@ -362,7 +362,7 @@ jobs:
           sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "24.22.1"
       - name: Submit four approved canary records once
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
@@ -392,7 +392,7 @@ jobs:
           sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "24.22.1"
       - name: Recheck deployment after the bounded write attempt
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.OPENCLAW_CLOUDFLARE_WORKERS_API_TOKEN }}

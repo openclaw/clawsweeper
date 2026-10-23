@@ -9,10 +9,7 @@ import { codexProcessCommand, runCodexProcess, type CodexProcessResult } from ".
 import { runOpenclawProcess } from "./openclaw-process.js";
 import { AgentInputScanError, scanAgentInput, type AgentScanSource } from "./agent-input-scan.js";
 import type { DecisionRepairOptions } from "./review-decision-repair.js";
-import {
-  materializeNativeReviewSkills,
-  type RepositoryReviewConfig,
-} from "./repository-review-config.js";
+import type { RepositoryReviewConfig } from "./repository-review-config.js";
 
 export type AgentRunner = "codex" | "openclaw";
 
@@ -47,7 +44,6 @@ export interface RunAgentProcessOptions {
   selection?: import("./repository-review-config.js").ReviewModelSelection;
   reviewPhase?: "independent" | "consolidation";
   nativeReadRoots?: string[];
-  nativeWorkspace?: { cwd: string; prompt: string };
 }
 
 export function agentRunner(env: NodeJS.ProcessEnv = process.env): AgentRunner {
@@ -96,10 +92,6 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     };
   }
   const runner = agentRunner(options.env);
-  if (runner === "openclaw" && options.repositoryReview?.skills.length && !options.nativeWorkspace)
-    throw new Error(
-      "Selected OpenClaw skills require an isolated owned native workspace; no skill workflow ran.",
-    );
   if (runner === "openclaw") openclawModel(options.env);
   const startedAt = Date.now();
   const outputPath = codexOutputLastMessagePath(options.codexExtraArgs);
@@ -126,7 +118,6 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
           additionalBytes: [
             Buffer.from(options.repositoryReview.configText),
             Buffer.from(options.repositoryReview.additionalPrompt),
-            ...options.repositoryReview.files.map((file) => Buffer.from(file.text)),
           ],
         }
       : {}),
@@ -147,10 +138,8 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
         options.prompt +
         "\n\n## Host review role\nPhase: " +
         options.reviewPhase +
-        ". The host schedules all reviewers. Produce one full ordinary Decision for this phase. Do not start another model, pair, agent, or nested review; selected skills supply analysis guidance, not orchestration authority. Configured role tools have no network access: use the admitted source and selected skills; unavailable external verification is a limit, not evidence against the PR.",
+        ". The host schedules all reviewers. Produce one full ordinary Decision for this phase. Do not start another model, pair, agent, or nested review; native repository skills supply analysis guidance, not orchestration authority. Configured role tools have no network access: use the admitted source and its native skills; unavailable external verification is a limit, not evidence against the PR.",
     };
-  if (runner === "openclaw" && options.nativeWorkspace)
-    options = { ...options, prompt: options.prompt + "\n\n" + options.nativeWorkspace.prompt };
 
   // OpenClaw has no structured-output option, so it reads the same schema file that Codex
   // receives through --output-schema as a prompt section.
@@ -164,62 +153,37 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     throw new AgentInputScanError("deadline");
   }
   if (runner === "codex") {
-    const reviewSourceDir = options.cwd;
-    const native = options.repositoryReview?.skills.length
-      ? materializeNativeReviewSkills(options.repositoryReview, options.cwd)
-      : undefined;
-    try {
-      if (native) {
-        const extraArgs = [...(options.codexExtraArgs ?? [])];
-        for (let i = 0; i < extraArgs.length; i++) {
-          if (extraArgs[i] === "-C" || extraArgs[i] === "--cd") extraArgs[++i] = native.cwd;
-        }
-        const stdin = extraArgs.at(-1) === "-" ? extraArgs.pop() : undefined;
-        extraArgs.push("--skip-git-repo-check", "-c", "project_root_markers=[]");
-        if (stdin) extraArgs.push(stdin);
-        options = {
-          ...options,
-          cwd: native.cwd,
-          prompt: options.prompt + "\n\n" + native.prompt,
-          codexExtraArgs: extraArgs,
-        };
-      }
-      retainDiagnosticPrompt(options, options.prompt);
-      const ordinaryArgs = codexAgentArgs(options);
-      const args = options.reviewPhase
-        ? isolatedCodexRoleArgs(options, ordinaryArgs, [
-            reviewSourceDir,
-            options.cwd,
-            ...(options.nativeReadRoots ?? []),
-          ])
-        : ordinaryArgs;
-      const managedOutput =
-        options.outputLastMessageBytes !== undefined && outputPath !== undefined;
-      return runCodexProcess({
-        args: managedOutput ? managedCodexStdoutArgs(args) : args,
-        cwd: options.cwd,
-        env: options.reviewPhase
-          ? { ...options.env, GH_TOKEN: undefined, GITHUB_TOKEN: undefined }
-          : options.env,
-        input: options.prompt,
-        timeoutMs: options.timeoutMs,
-        ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
-        ...(options.outputFileBytes === undefined
-          ? {}
-          : { outputFileBytes: options.outputFileBytes }),
-        ...(managedOutput
-          ? {
-              outputLastMessagePath: outputPath,
-              outputLastMessageBytes: options.outputLastMessageBytes,
-            }
-          : {}),
-        ...(options.stdoutPath ? { stdoutPath: options.stdoutPath } : {}),
-        ...(options.stderrPath ? { stderrPath: options.stderrPath } : {}),
-        ...(options.decisionRepair ? { decisionRepair: options.decisionRepair } : {}),
-      });
-    } finally {
-      native?.cleanup();
-    }
+    retainDiagnosticPrompt(options, options.prompt);
+    const ordinaryArgs = codexAgentArgs(options);
+    const args = options.reviewPhase
+      ? isolatedCodexRoleArgs(options, ordinaryArgs, [
+          options.cwd,
+          ...(options.nativeReadRoots ?? []),
+        ])
+      : ordinaryArgs;
+    const managedOutput = options.outputLastMessageBytes !== undefined && outputPath !== undefined;
+    return runCodexProcess({
+      args: managedOutput ? managedCodexStdoutArgs(args) : args,
+      cwd: options.cwd,
+      env: options.reviewPhase
+        ? { ...options.env, GH_TOKEN: undefined, GITHUB_TOKEN: undefined }
+        : options.env,
+      input: options.prompt,
+      timeoutMs: options.timeoutMs,
+      ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
+      ...(options.outputFileBytes === undefined
+        ? {}
+        : { outputFileBytes: options.outputFileBytes }),
+      ...(managedOutput
+        ? {
+            outputLastMessagePath: outputPath,
+            outputLastMessageBytes: options.outputLastMessageBytes,
+          }
+        : {}),
+      ...(options.stdoutPath ? { stdoutPath: options.stdoutPath } : {}),
+      ...(options.stderrPath ? { stderrPath: options.stderrPath } : {}),
+      ...(options.decisionRepair ? { decisionRepair: options.decisionRepair } : {}),
+    });
   }
 
   retainDiagnosticPrompt(options, prompt);
@@ -229,26 +193,17 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     prompt,
     model,
     ...(options.reasoningEffort?.trim() ? { reasoningEffort: options.reasoningEffort.trim() } : {}),
-    cwd: options.nativeWorkspace?.cwd ?? options.cwd,
+    cwd: options.cwd,
     ...(options.reviewPhase
       ? {
           roleIsolation: {
-            readRoots: [
-              options.nativeWorkspace?.cwd ?? options.cwd,
-              options.cwd,
-              ...(options.nativeReadRoots ?? []),
-            ],
+            readRoots: [options.cwd, ...(options.nativeReadRoots ?? [])],
             ...(options.env.CLAWSWEEPER_PROOF_SCRATCH_DIR
               ? { proofScratchDir: options.env.CLAWSWEEPER_PROOF_SCRATCH_DIR }
               : {}),
           },
         }
       : {}),
-    ...(options.nativeWorkspace
-      ? { skillFilter: options.repositoryReview!.skills.map((skill) => skill.name) }
-      : options.reviewPhase
-        ? { skillFilter: [] }
-        : {}),
     env: options.env,
     timeoutMs: options.timeoutMs,
     ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
@@ -387,8 +342,6 @@ export function runAgentCheckoutInspection(options: {
   scanSource: AgentScanSource;
   initialPrompt: string;
   schemaPath?: string;
-  nativeWorkspace?: string;
-  disableSkills?: boolean;
   reviewPhase?: "independent" | "consolidation";
   nativeReadRoots?: string[];
 }): CodexProcessResult {
@@ -427,9 +380,7 @@ export function runAgentCheckoutInspection(options: {
     }
     const challengePath = options.reviewPhase
       ? resolve(options.cwd, challenge.path)
-      : options.nativeWorkspace
-        ? relative(options.nativeWorkspace, join(options.cwd, challenge.path))
-        : challenge.path;
+      : challenge.path;
     const prompt = [
       options.reviewPhase
         ? "Use the read tool to inspect the exact admitted read-only file below."
@@ -450,16 +401,11 @@ export function runAgentCheckoutInspection(options: {
       label: "checkout-inspection",
       prompt,
       model: openclawModel(env),
-      cwd: options.nativeWorkspace ?? options.cwd,
-      ...(options.nativeWorkspace || options.disableSkills ? { skillFilter: [] } : {}),
+      cwd: options.cwd,
       ...(options.reviewPhase
         ? {
             roleIsolation: {
-              readRoots: [
-                options.nativeWorkspace ?? options.cwd,
-                options.cwd,
-                ...(options.nativeReadRoots ?? []),
-              ],
+              readRoots: [options.cwd, ...(options.nativeReadRoots ?? [])],
             },
           }
         : {}),

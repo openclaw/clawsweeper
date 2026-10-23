@@ -48,7 +48,6 @@ export interface OpenClawProcessOptions {
   stdoutPath?: string;
   stderrPath?: string;
   checkoutInspection?: { expectedText: string; expectedPath: string };
-  skillFilter?: string[];
   roleIsolation?: { readRoots: string[]; proofScratchDir?: string };
 }
 
@@ -85,7 +84,7 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
     const timeoutSeconds = Math.max(1, Math.ceil(options.timeoutMs / 1_000));
     writeFileSync(
       configPath,
-      `${JSON.stringify(openclawConfig({ ...options.env, CLAWSWEEPER_OPENCLAW_MODEL: options.model }, timeoutSeconds, Boolean(options.checkoutInspection), options.skillFilter, options.roleIsolation, options.cwd))}\n`,
+      `${JSON.stringify(openclawConfig({ ...options.env, CLAWSWEEPER_OPENCLAW_MODEL: options.model }, timeoutSeconds, Boolean(options.checkoutInspection), options.roleIsolation, options.cwd))}\n`,
 
       {
         encoding: "utf8",
@@ -126,7 +125,8 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
       OPENCLAW_STATE_DIR: stateDir,
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_WORKSPACE_DIR: options.cwd,
-      ...(options.skillFilter?.length ? { GIT_OPTIONAL_LOCKS: "0" } : {}),
+      // Read-only review metadata protection is independent of native skills.
+      GIT_OPTIONAL_LOCKS: "0",
     };
     if (options.roleIsolation) {
       delete childEnv.OPENCLAW_GATEWAY_TOKEN;
@@ -225,7 +225,6 @@ function openclawConfig(
   env: NodeJS.ProcessEnv,
   timeoutSeconds: number,
   checkoutInspection: boolean,
-  skillFilter?: string[],
   isolation?: OpenClawProcessOptions["roleIsolation"],
   workspaceDir?: string,
 ): Record<string, unknown> {
@@ -233,8 +232,7 @@ function openclawConfig(
     agents: {
       defaults: {
         skipBootstrap: true,
-        ...(isolation ? { workspace: workspaceDir } : {}),
-        ...(skillFilter === undefined ? {} : { skills: skillFilter }),
+        workspace: workspaceDir,
         sandbox: isolation ? isolatedRoleSandbox(env, isolation) : { mode: "off" },
         timeoutSeconds,
       },
@@ -668,6 +666,7 @@ const OPENCLAW_CHILD_ENV_ALLOWLIST = [
   "TMPDIR",
   "TERM",
   "NODE_OPTIONS",
+  "GIT_OPTIONAL_LOCKS",
   // Keep host-provided TLS roots for managed/corporate egress; verification stays enabled.
   "NODE_EXTRA_CA_CERTS",
   "HTTP_PROXY",

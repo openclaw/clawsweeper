@@ -77,6 +77,7 @@ const record = {
   stateDir: process.env.OPENCLAW_STATE_DIR,
   configPath: process.env.OPENCLAW_CONFIG_PATH,
   workspaceDir: process.env.OPENCLAW_WORKSPACE_DIR,
+  optionalGitLocks: process.env.GIT_OPTIONAL_LOCKS,
   config: JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8")),
   prompt: fs.readFileSync(process.argv[process.argv.indexOf("--message-file") + 1], "utf8"),
   env: {
@@ -167,10 +168,16 @@ test("OpenClaw process emits isolated config and invocation, joins payloads, and
     assert.equal(result.stdout, "first\nsecond");
     const record = JSON.parse(readFileSync(recordPath, "utf8"));
     assert.equal(record.workspaceDir, root);
+    assert.equal(record.optionalGitLocks, "0");
     assert.equal(record.prompt, "Inspect this patch.");
     assert.deepEqual(record.config, {
       agents: {
-        defaults: { skipBootstrap: true, sandbox: { mode: "off" }, timeoutSeconds: 13 },
+        defaults: {
+          skipBootstrap: true,
+          workspace: root,
+          sandbox: { mode: "off" },
+          timeoutSeconds: 13,
+        },
       },
       tools: {
         profile: "coding",

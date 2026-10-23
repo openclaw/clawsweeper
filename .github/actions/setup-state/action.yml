@@ -16,7 +16,7 @@ inputs:
   node-version:
     description: Node.js version used to run the TypeScript hydrator.
     required: false
-    default: "24"
+    default: "24.22.1"
   filter:
     description: Git partial clone filter for the generated state repository.
     required: false

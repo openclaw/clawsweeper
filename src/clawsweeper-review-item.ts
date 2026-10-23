@@ -4,7 +4,7 @@ import { CodexReviewError, retryableBatchFailure } from "./review-assessment-fai
 import { runMultiModelReview } from "./multi-model-review.js";
 import { markdownFor as renderDecisionReport } from "./clawsweeper-report-document.js";
 import type { MultiModelReviewRecord } from "./review-record.js";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { RepositoryReviewConfig } from "./repository-review-config.js";
 import { applyHiddenPayloadSecurityReview } from "./repair/security-signals.js";
 import { writeFileSync } from "node:fs";
@@ -227,6 +227,9 @@ export function runPreparedReviewItem(
           workDir: codexWorkDir,
           additionalPrompt,
           proofScratchDir,
+          ...(modelCalls > 1 && preparedMediaProof.manifestPath
+            ? { preparedMediaDir: dirname(preparedMediaProof.manifestPath) }
+            : {}),
           prompt: prompt.text,
           reviewEnv,
           ...modelBudget,

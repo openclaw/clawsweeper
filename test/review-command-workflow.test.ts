@@ -785,8 +785,6 @@ process.exitCode = 1;
               revision: baseSha,
               digest: digest("repository-config"),
               additionalPrompt: "configured instructions",
-              skills: [],
-              files: [],
               configText: "{}",
               ...(configuredBatch
                 ? {

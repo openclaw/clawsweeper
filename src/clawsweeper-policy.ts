@@ -221,6 +221,12 @@ export const PR_STATUS_LABELS = [
     description: "ClawSweeper has contributor-facing work open and is waiting for author action.",
   },
   {
+    kind: "waiting_on_maintainer",
+    name: "status: ⏳ waiting on maintainer",
+    color: "FBCA04",
+    description: "Only explicit maintainer approvals or decisions remain; merge is still blocked.",
+  },
+  {
     kind: "ready_for_maintainer_look",
     name: "status: 👀 ready for maintainer look",
     color: "2DA44E",

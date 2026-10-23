@@ -52,14 +52,14 @@ keeps the ordinary prompt, invocation, review cadence and cache identity.
 ```json
 {
   "version": 1,
-  "skills": ["domain-review"],
-  "additionalPrompt": "Repository-specific review instructions."
+  "additionalPrompt": "Use the native domain-review skill; return the normal full Decision."
 }
 ```
 
-`skills` selects at most eight exact names under `.agents/skills/<name>/SKILL.md`;
-frontmatter names must match. `additionalPrompt` appends at most 5,000 characters
-to the normal review contract. Unknown keys and versions are rejected.
+`additionalPrompt` appends at most 5,000 characters to the normal review contract.
+The strict version-1 JSON accepts only `additionalPrompt` and `multiModel`; unknown
+keys, including the removed `skills` selector, are rejected. The JSON file is
+limited to 16 KiB with host-owned blob-size, disk and deadline admission.
 
 The optional `multiModel` key selects two to four independent full assessments and
 one full consolidation, with at most two independent workers running at once:
@@ -86,16 +86,18 @@ is filtered for its selected role before launch, using only credentials already
 provisioned by the operator. Configuration never grants missing workflow secrets;
 an unprovisioned provider remains unavailable. Configuration cannot
 supply credentials, endpoints, executables, CLI arguments or mutation authority.
-Skills and model selection are independent: skills alone keep one assessment;
-models alone fan out; both use the same selected guidance in each host-assigned
-phase without another skill-owned model pair. No extra baseline assessment runs.
+Native skill discovery and model scheduling are independent: ordinary skill files
+do not enable fanout. Only `multiModel` opts into additional assessments. Keep
+`additionalPrompt` short, for example selecting Hanselman guidance; do not copy
+skill steps into configuration. The host role header owns no-nested-review and
+full-Decision requirements. No extra baseline assessment runs.
 
 Every worker uses the normal scanner, checkout inspection, strict Decision parser
 and host postprocessing. Model-authored results are scanned before they can become
 durable member evidence. Any scanner refusal is terminal, discards private model
 slots and prevents publication of the rejected batch. Codex source setup is serialized once per private role before that batch of
 workers runs in parallel. A surviving host owns each worker's
-private temporary root and removes native adapter, scanner and skill state after
+private temporary root and removes native adapter and scanner state after
 all workers settle, including timeout-killed workers. Independent workers and consolidation share the original
 source/configuration snapshot and one absolute deadline. Before boot, each worker
 verifies its options against a digest held in the host supervisor command channel;
@@ -145,28 +147,27 @@ native envelope supplies only the bounded allowlisted execution receipt fields.
 Actual-provider execution and the requested Windows pair remain qualification
 gates; this configuration example does not assert either has passed.
 
-Configuration, selected skills and relative references use the same pinned
-revision. Bundles are limited to 64 regular UTF-8 files and 256 KiB; symlinks,
-submodules, binary files, case-colliding or Windows-aliasing paths, escaping/missing
-Markdown references, nested skills and native tool-provisioning dependencies are
-rejected. When prompt retention is budgeted, the complete repository/native/schema
-prompt must fit the existing
-per-item allocation before retention or full assessment; deterministic prompt
-overruns are not retryable. Missing configuration and
-skill blobs require pinned size metadata and object-store disk admission before
-hydration; unavailable or truncated metadata fails closed. Their digest participates
-in hydrated content-cache identity, not the global admission policy. Configured
-reviews skip structural-only reuse because that receipt does not bind config
-bytes; unchanged hydrated content can still reuse its verdict. This does not
-request another review. The ordinary scanner also inspects the selected bytes.
+The host pins scheduling configuration to its verified trusted target revision,
+not native skill bundles. Missing configuration blobs require size metadata and
+object-store disk admission before hydration; unavailable metadata fails closed.
+Only that JSON's digest participates in hydrated content-cache identity, not the
+global admission policy. Configured reviews skip structural-only reuse because
+that receipt does not bind the settings; unchanged hydrated content can reuse
+its verdict. This does not request another review. The normal scanner also
+checks additional instructions and configuration bytes.
 
-Codex already loads skills natively. The adapter materializes only the selected
-pinned bundle in an isolated native working directory and invokes its exact
-native skill paths. The reviewed checkout remains unchanged and is referenced
-for source inspection, not native skill discovery. Skill instructions cannot
-grant writes, helper execution, installation, delegation or additional models.
-Unsupported methodology must be reported, not claimed complete. Selected Codex
-skills preserve the normal same-thread structured-decision repair lifecycle.
+Codex and OpenClaw run in the actual admitted review checkout. Their native
+catalogs discover ordinary repository skill files, including `.agents/skills`,
+from that source workspace. Those files come from the pinned reviewed HEAD like
+other tracked source; they are not a separately trusted default-branch bundle.
+No host skill selector, file/link/frontmatter validator, sidecar parser, bundle
+digest, staging workspace, path invocation, or forced skill filter is added.
+The native harness owns discovery, format and eligibility. A short
+`additionalPrompt` may request a native skill; it does not grant execution,
+installation, networking, delegation, extra models or mutation authority.
+Normal structured-Decision repair and final prompt/output budgets still apply.
+This is not a claim that native skills are supplied by trusted main rather than
+the reviewed source, or that methodology changes native runtime privileges.
 
 Every multi-model role, including models-only configuration, receives a pinned
 working copy with independent Git config, index and refs. A task-owned immutable
@@ -206,8 +207,14 @@ operators must provision the native Podman capability and set
 reference. Repository configuration cannot choose the image or widen mounts.
 The sandbox retains init, a read-only root, dropped capabilities, no networking,
 disabled elevation, and no gateway-exec fallback. Only this role's source, admitted
-objects, selected skills and proof scratch are bound; no home, common Git root,
+objects (including ordinary source skill files) and proof scratch are bound; no home, common Git root,
 provider configuration, peer temporary state or engine socket is exposed.
+Host-prepared media is shared through a distinct immutable `prepared-media`
+directory, with its manifest paths unchanged. Only that evidence directory is
+readable across roles; its parent and peer-writable scratch are never mounted.
+The existing bounded fingerprint, filesystem-identity and mode-restoration
+owners protect that root through worker settlement without re-downloading or
+multiplying the admitted media bytes.
 
 The surviving host retires configured native runtimes through their native owner
 before deleting adapter state, including after a killed worker. Retirement keeps
@@ -217,13 +224,12 @@ clean review. Existing Codex-source provisioning is not enabled where absent;
 when present, its verified setup-owned alias is replaced with a private pinned
 tracked copy and admitted objects, not a mount of the host dependency cache.
 
-OpenClaw uses the owned review-tree parent for selected native skills outside the
-reviewed checkout. Its name allowlist selects only the approved bundle; the
-read-only checkout probe allows none. Workspace-only restrictions remain enabled.
-A missing/shared parent, including an ordinary user checkout, is unsupported for
-selected OpenClaw skills and fails before inference. No source copy or move is
-performed on user checkouts. Adding a skill directory to the PR checkout alone is
-not safe. The configured probe reads the exact admitted absolute path through the
+OpenClaw's configured workspace and process CWD both remain the exact role
+checkout, not its parent or a staged skill directory. Workspace-only restrictions
+remain enabled, and admitted source roots include their ordinary `.agents`
+content. No selected-skill allowlist or empty checkout-probe filter suppresses
+native discovery. User checkouts are not moved or copied for skill routing.
+The configured probe reads the exact admitted absolute path through the
 native read tool, not Code Mode, and requires the paired successful receipt.
 Legacy transcripts or the current local `sessions export-trajectory` output must
 come from that adapter's own state; unavailable or mismatched receipts fail closed.
@@ -242,8 +248,8 @@ configuration. Hosted reviews always use the authenticated default branch above.
 This active contract is owned by ClawSweeper maintainers; source owners are
 `src/repository-review-config.ts`, `src/clawsweeper-review-runtime.ts` and
 `src/agent-runner.ts`, `src/multi-model-review.ts` and `src/review-record.ts`.
-Verified scope: the compiled worker path and synthetic process fixtures, not live
-provider qualification (2026-10-22). Update it when configuration, native harness isolation,
+Verified scope: compiled configuration/worker paths and controlled native
+workspace/catalog fixtures, not live provider qualification (2026-10-23). Update it when configuration, native harness isolation,
 source pinning, scanner, budgets or cache identity change.
 
 All profiles share the hidden-payload security guard in

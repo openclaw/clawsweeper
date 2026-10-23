@@ -216,7 +216,9 @@ merge, and why not yet" in this order:
    collapse to `None.` These items are the one source of merge readiness: the
    PR status label is `status: 👀 ready for maintainer look` only when this
    section is `None.`, and `status: ⏳ waiting on author` when an item needs
-   changes from the author. When a duplicate close is kept open because the
+   changes from the author. If every remaining item is explicitly maintainer-owned,
+   use `status: ⏳ waiting on maintainer` instead; readiness stays blocked.
+   Unknown ownership never implies maintainer-only work. When a duplicate close is kept open because the
    close check did not confirm coverage, the item asks a maintainer to close or
    keep the PR, not the author.
 9. `## Findings` always renders for completed reviews. Its leading block lists
@@ -316,24 +318,27 @@ retain their malformed-report blocker. OpenClaw Bay needs
 no code or schema change: the packet fields and observer projection are unchanged.
 
 New reviewer output requires a producer-owned `nextStep` assessment. Issues use
-none and retain their existing next-action guidance in `workReason`. Canonical
-report frontmatter stores `next_step` as JSON: `{"kind":"none","text":""}` means
+none and retain their existing next-action guidance in `workReason`. The canonical
+`review_record` stores the typed decision; the report also emits a compatibility
+`next_step` JSON field: `{"kind":"none","text":""}` means
 no additional required next step; `{"kind":"required","text":"..."}` carries
-nonempty trimmed action text. Explanatory routing prose stays in `workReason`.
+nonempty trimmed contributor action text. `{"kind":"maintainer","text":"..."}`
+carries an enforced maintainer-only action, such as current-head security approval.
+Both action kinds remain Before-merge blockers; neither approves a merge.
+Explanatory routing prose stays in `workReason`.
 One PR readiness calculation supplies the visible checklist, its count, the
 readiness state, and repair-loop pass eligibility. Explicit none suppresses only
 the derived next-step item, while required actions survive
-negation, contrast, routine-sounding prose, or lack of action keywords. Human-owned
-actions may be required even when `workCandidate` is none. Code does not remove
+negation, contrast, routine-sounding prose, or lack of action keywords. Legacy
+required actions are not reclassified by English wording; fresh producer output
+must record maintainer ownership. Maintainer-only actions may remain even when `workCandidate` is none. Code does not remove
 or rewrite model findings, next steps, risks, correctness, or ratings.
 
-Historical Decisions may omit the assessment, and reports are not migrated or
-rewritten. An unusable next-step field retains conservative legacy prose
-interpretation when the rest of the report is usable, never an inferred none.
-Ambiguous report frontmatter produces a bounded blocked notice requiring a fresh
-report; it cannot supply repair or merge permission. Only a unique valid
-value in leading canonical frontmatter counts; body or fenced examples cannot
-supply it. This compatibility limit means old false-positive prose needs a fresh
+Historical decisions may omit the assessment, and reports are not migrated or
+rewritten. Missing typed next-step intent requires a fresh review; malformed or
+missing canonical records cannot grant readiness. The compatibility `next_step`
+field, body prose, and fenced examples cannot supply or override the typed
+record. This compatibility limit means old false-positive prose needs a fresh
 producer assessment, not a guess from its summary, rating, or automation markers.
 The producer keeps only unresolved concerns in `risks`: each entry becomes a
 blocking checklist item. Explicit maintainer acceptance resolves only the
