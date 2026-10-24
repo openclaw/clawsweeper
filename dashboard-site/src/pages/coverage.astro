@@ -5,47 +5,45 @@ import Card from '../components/Card.astro';
 import SegmentBar from '../components/SegmentBar.astro';
 import ItemTable from '../components/ItemTable.astro';
 import { asOf, cover, coverText, lists, repos, totals } from '../lib/data';
-import { int, pct, stamp } from '../lib/format';
+import { int, label, pct, stamp } from '../lib/format';
 
 const openRepos = repos.filter(repo => repo.open > 0).sort((a, b) => b.staleOpen - a.staleOpen || b.open - a.open);
 const staleOpen = repos.reduce((total, repo) => total + repo.staleOpen, 0);
 ---
 <Layout title="Coverage" section="coverage">
   <h1 class="text-[22px] font-semibold tracking-tight">Coverage</h1>
-  <p class="mt-1 text-[13px] text-fg-muted">Whether every open item has a fresh review.</p>
+  <p class="mt-1 text-[13px] text-fg-muted">Stored-review freshness and the reviewable backlog.</p>
 
   <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
-    <Kpi label="Coverage" value={coverText} sub={`${int(cover.reviewed)} of ${int(cover.reviewable)}`}
-      tip={`Reviewable open items with a review in the last ${cover.windowDays} days.\nSnapshot ${stamp(asOf.coverage)}`} />
-    <Kpi label="Pending review" value={int(cover.pending)} tip="Expired plus never-reviewed items: due for a review now." />
-    <Kpi label="Stale" value={int(cover.stale)} tip={`Reviewable items whose latest review is older than ${cover.windowDays} days.`} />
-    <Kpi label="Open, not reviewed in 7d" value={int(staleOpen)} sub={`${pct(staleOpen / Math.max(totals.open, 1))} of ${int(totals.open)} open`}
-      tip="Open items in the stored corpus last reviewed more than seven days ago." />
+    <Kpi label="Coverage" value={coverText} sub={cover.known ? `${int(cover.reviewed)} of ${int(cover.reviewable)}` : 'Complete, current open-item census required'}
+      tip={`Open items matched to stored completed reviews from the last ${cover.windowDays} days. Missing, stale or incomplete identity inventories leave coverage unknown.\nSnapshot ${stamp(asOf.coverage)}`} />
+    <Kpi label="Pending review" value={cover.known ? int(cover.pending) : 'Unknown'} tip="Expired plus never-reviewed items: due for a review now. Unknown without a complete, current open-item census." />
+    <Kpi label="Invalidated" value={cover.known ? int(cover.stale) : 'Unknown'} tip="Stored reviews marked stale after an item changed or reopened. Completed reviews older than the review window are Expired." />
+    <Kpi label="Old reviews in open records" value={int(staleOpen)} sub={`${pct(staleOpen / Math.max(totals.open, 1))} of ${int(totals.open)} stored open records`}
+      tip="Records in the open corpus whose last review is more than seven days old. Missing review dates are not counted; corpus records may no longer be open on GitHub." />
   </div>
 
+  <p class="mt-3 rounded-lg border border-line px-4 py-3 text-[13px] text-fg-muted">
+    Inventory: {label(cover.inventoryStatus)}{cover.inventoryAt ? ` · ${stamp(cover.inventoryAt)}` : ' · timestamp unavailable'}.
+    {cover.inventoryStatus === 'missing' ? 'Open item count unavailable' : `${int(cover.open)} reported open items`} · {int(cover.tracked)} tracked records · {cover.known ? `${int(cover.drift)} records outside the open inventory · ${int(cover.excluded)} excluded · ${int(cover.unschedulable)} unschedulable records.` : 'Coverage and backlog are unknown until a complete, current open-item census is available.'}
+  </p>
+
   <Card title="Reviewable backlog" class="mt-3" tip={`Coverage snapshot ${stamp(asOf.coverage)}`}>
-    <SegmentBar segments={cover.segments} />
+    {cover.known ? <SegmentBar segments={cover.segments} /> : <p class="text-[13px] text-fg-muted">Reviewable backlog unavailable.</p>}
   </Card>
 
   <div class="mt-3 grid gap-3 xl:grid-cols-5">
-    <Card title="Repositories with open items" flush class="xl:col-span-3" tip="Sorted by stale open items. Stale means last reviewed over seven days ago.">
+    <Card title="Repositories with stored open records" flush class="xl:col-span-3" tip="Corpus snapshot, sorted by records last reviewed over seven days ago. Missing review dates are not counted as old. These counts are separate from the live inventory above.">
       <div class="max-h-[640px] overflow-auto">
         <table class="table">
-          <thead class="sticky top-0 z-10 bg-bg"><tr><th>Repository</th><th class="r">Open</th><th class="r">Stale</th><th>Fresh</th><th class="r">7d</th><th class="r">30d</th></tr></thead>
+          <thead class="sticky top-0 z-10 bg-bg"><tr><th>Repository</th><th class="r">Open records</th><th class="r">Review &gt;7d old</th><th class="r" data-tip="All corpus records last reviewed in the past 7 days, including archived records.">Reviewed 7d</th><th class="r" data-tip="All corpus records last reviewed in the past 30 days, including archived records.">Reviewed 30d</th></tr></thead>
           <tbody>
             {openRepos.map(repo => {
-              const fresh = (repo.open - repo.staleOpen) / repo.open;
               return (
                 <tr>
                   <td><a href={`/repos/${repo.slug}`} class="font-medium hover:underline">{repo.repo}</a></td>
                   <td class="r num">{int(repo.open)}</td>
                   <td class:list={['r num', repo.staleOpen > 0 ? 'text-warn' : 'text-fg-faint']}>{int(repo.staleOpen)}</td>
-                  <td class="w-40">
-                    <div class="flex items-center gap-2">
-                      <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-bg-muted"><div class:list={['h-full rounded-full', fresh >= 0.9 ? 'bg-ok' : fresh >= 0.6 ? 'bg-warn' : 'bg-bad']} style={`width:${fresh * 100}%`}></div></div>
-                      <span class="num w-10 text-right text-[12px] text-fg-muted">{pct(fresh, 0)}</span>
-                    </div>
-                  </td>
                   <td class="r num text-fg-muted">{int(repo.reviewed7d)}</td>
                   <td class="r num text-fg-muted">{int(repo.reviewed30d)}</td>
                 </tr>
@@ -55,7 +53,7 @@ const staleOpen = repos.reduce((total, repo) => total + repo.staleOpen, 0);
         </table>
       </div>
     </Card>
-    <Card title="Stalest open items" flush class="xl:col-span-2" tip="Open items with the oldest latest review.">
+    <Card title="Oldest reviews in stored open records" flush class="xl:col-span-2" tip="Stored open records with the oldest latest review. Items may no longer be open on GitHub.">
       <ItemTable items={lists.stale} meta="age" limit={16} />
     </Card>
   </div>

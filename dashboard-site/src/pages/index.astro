@@ -21,7 +21,7 @@ const success7 = kpis.runSuccess7d;
       <img src="/clawsweeper.png" alt="ClawSweeper" width="52" height="52" class="size-13 rounded-xl shadow-sm ring-1 ring-line" />
       <div>
         <h1 class="text-[22px] font-semibold tracking-tight">Overview</h1>
-        <p class="mt-1 text-[13px] text-fg-muted">Sweeping {int(cover.reviewable)} reviewable items across {totals.repositories} repositories.</p>
+        <p class="mt-1 text-[13px] text-fg-muted">{cover.known ? `Sweeping ${int(cover.reviewable)} reviewable items across ${totals.repositories} repositories.` : `Tracking ${totals.repositories} repositories; reviewable inventory unknown.`}</p>
       </div>
     </div>
     <a href="/queue/" class:list={['pill h-auto max-w-full whitespace-normal py-1', status.level === 'ok' ? 'bg-ok-soft text-ok' : 'bg-warn-soft text-warn']} data-tip={`Live queue snapshot\n${stamp(asOf.queue)}`}>
@@ -39,8 +39,8 @@ const success7 = kpis.runSuccess7d;
       tip="Items ClawSweeper closed in the last 7 complete days. Delta compares with the prior 7 days. PRs that were merged and items that a maintainer or another bot closed are counted apart." />
     <Kpi label="Sweep run success" value={pct(success7.current)} sub={`${int(success7.success)}/${int(success7.total)} runs · ${success7.recordedDays}/7 days recorded`} delta={success7.current !== null && success7.previous ? (success7.current - success7.previous) / success7.previous : null}
       spark={runs.days.slice(-14).map(day => (day.total ? day.success / day.total : null))} tip="Successful workflow runs divided by all recorded sweep runs in the last 7 complete UTC days. Missing days are not assumed healthy. Cancelled runs count as not successful. This measures execution, not review correctness." />
-    <Kpi label="Coverage" value={coverText} sub={`${int(cover.reviewed)} of ${int(cover.reviewable)}`}
-      tip={`Reviewable open items with a review in the last ${cover.windowDays} days.\nSnapshot ${stamp(asOf.coverage)}`} />
+    <Kpi label="Coverage" value={coverText} sub={cover.known ? `${int(cover.reviewed)} of ${int(cover.reviewable)}` : 'Complete, current open-item census required'}
+      tip={`Reviewable open items with a review in the last ${cover.windowDays} days. Unknown without a complete, current identity census.\nSnapshot ${stamp(asOf.coverage)}`} />
     <Kpi label="Review queue" value={int(live.pending)} sub={live.oldestPendingSeconds ? `oldest ${duration(live.oldestPendingSeconds)}` : 'nothing waiting'}
       tip={`Items waiting for a review slot. ${live.active} of ${live.capacity} slots busy.\nSnapshot ${stamp(asOf.queue)}`} />
     <Kpi label="Model time · p50" value={duration(kpis.reviewTime.p50)} sub={`p90 ${duration(kpis.reviewTime.p90)} · n=${int(kpis.reviewTime.count)}`}
@@ -63,7 +63,7 @@ const success7 = kpis.runSuccess7d;
   </div>
 
   <div class="mt-3 grid gap-3 xl:grid-cols-3">
-    <Card title="Sweep failure rate" tip="Failed + startup-failure sweep runs ÷ all sweep runs, per day.">
+    <Card title="Sweep failure rate" tip="Failure, startup_failure and timed_out sweep runs divided by all recorded sweep runs, per day.">
       <a slot="action" href="/throughput" class="flex items-center text-[12px] text-fg-muted hover:text-fg">Throughput<Icon name="chevronRight" size={14} /></a>
       <TimeChart points={failure30} kind="bar" unit="percent" noun="failed" color="var(--bad)" height={170} />
     </Card>
@@ -83,6 +83,7 @@ const success7 = kpis.runSuccess7d;
     </Card>
     <Card title="Backlog" tip={`Open items, latest coverage snapshot.\n${stamp(asOf.coverage)}`}>
       <a slot="action" href="/coverage" class="flex items-center text-[12px] text-fg-muted hover:text-fg">Coverage<Icon name="chevronRight" size={14} /></a>
+      {cover.known ? <>
       <dl class="grid gap-3 text-[13px]">
         {cover.segments.map(({ label: name, value, color }) => (
           <div class="flex items-center justify-between">
@@ -94,6 +95,7 @@ const success7 = kpis.runSuccess7d;
       <div class="mt-4 h-1.5 overflow-hidden rounded-full bg-bg-muted" data-tip={`${coverText} covered`}>
         <div class="h-full rounded-full bg-ok" style={`width:${cover.percent ?? 0}%`}></div>
       </div>
+      </> : <p class="text-[13px] text-fg-muted">Reviewable backlog unavailable.</p>}
     </Card>
   </div>
 
