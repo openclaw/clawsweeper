@@ -38,7 +38,7 @@ import { asRecord } from "./value-coerce.js";
 
 export function normalizeNoopReviewMarkerMetadata(body: string): string {
   // A completed re-review must publish its freshness even when the verdict is unchanged.
-  return body.replace(
+  return clearInPlaceReviewStartStatus(body).replace(
     /<!--\s+clawsweeper-(?:review-version|verdict:[^\s>]+|action:[^\s>]+|security:[^\s>]+)\b[^>]*-->/g,
     (marker) => marker.replace(/\s(?:updated_at|lease_owner|lease_comment_id)=[^\s>]+/g, ""),
   );
@@ -425,6 +425,17 @@ export function issueReviewComment(
   return issueReviewCommentState(number, fallbackBodies).reviewComment;
 }
 
+// Preservation needs the same raw transport as publication receipts: gh's display
+// sanitizer can change literal Unicode escapes as well as control characters.
+export function losslessReviewComment(id: number): Record<string, unknown> | undefined {
+  const comment = asRecord(
+    ghJson<unknown>(["api", `repos/${targetRepo()}/issues/comments/${id}`], {
+      losslessJson: true,
+    }),
+  );
+  return commentId(comment) === id && canPatchReviewComment(comment) ? comment : undefined;
+}
+
 export function issueReviewCommentWithBody(
   number: number,
   body: string,
@@ -434,11 +445,7 @@ export function issueReviewCommentWithBody(
   // gh sanitizes even literal Unicode escapes inside JSON. A receipt needs
   // original bytes; PATCH already knows the identity, so avoid a full list read.
   if (expectedId !== undefined) {
-    const comment = asRecord(
-      ghJson<unknown>(["api", `repos/${targetRepo()}/issues/comments/${expectedId}`], {
-        losslessJson: true,
-      }),
-    );
+    const comment = losslessReviewComment(expectedId);
     return isReviewPublicationReceipt(comment, body, expectedId) ? comment : undefined;
   }
   const comments: Record<string, unknown>[] = [];

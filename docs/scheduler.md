@@ -117,9 +117,14 @@ and runtime packaging rules.
 
 Queue-owned background re-reviews, including issue re-reviews after target-branch
 commits, carry their start lease by editing an existing durable review comment.
-They do not post a new start comment for subscribers. The old review remains
-readable during the run; completion replaces it, and cleanup removes only the
-owned status/lease. First and explicit reviews retain their existing start path.
+The old review remains readable during the run. Acquisition and owned cleanup
+read the original bytes through the lossless comment transport. If the combined
+body would exceed the 61,440-byte durable limit, reservation leaves it untouched
+and uses a separate placeholder. First and explicit reviews retain their existing
+start path. Separate leases outrank in-place leases; an in-place owner yields at
+the live apply mutation guards if an uncoordinated POST contender appears.
+Publication retains an adopted in-place lock through label and close mutations;
+final cleanup removes only the owned status/lease.
 Lease expiry and orphan recovery still apply to both forms; see
 [PR review comments](pr-review-comments.md#durable-comment-shape).
 
@@ -800,8 +805,8 @@ Exact PR review marks ClawSweeper's own acknowledgement comment
 (`clawsweeper-pr-ack`) complete after the review snapshot and before direct
 publication, and GitHub moves the PR's `updated_at` for that edit. The producer's
 apply then syncs the durable review comment, may edit managed labels, and
-releases its review lease (deleting a separate placeholder or replacing an
-in-place start status with the completed review). When direct publication is
+releases its review lease after all apply mutations (deleting a separate
+placeholder or removing the owned in-place status from the completed review). When direct publication is
 deferred, the batch publisher re-applies the same review against those writes.
 Apply freshness treats such an update as automation-only only when a receipt
 ClawSweeper recorded for the item accounts for the latest `updated_at` and the

@@ -5,10 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { createApplyLeaseGuards } from "../dist/clawsweeper-apply-lease-guards.js";
 import { shouldSyncReviewComment } from "../dist/clawsweeper-record-metadata.js";
 import * as publication from "../dist/clawsweeper-review-comment-publication.js";
 import * as state from "../dist/clawsweeper-review-comment-state.js";
 import {
+  freshDedicatedReviewStartLeases,
   postReviewStartStatusComment,
   deleteOwnedDedicatedReviewStartLease,
   ReviewLeaseSupersededError,
@@ -111,7 +113,7 @@ if (rawRead) {
 }
 const slash = String.fromCharCode(92);
 const output = value => console.log(JSON.stringify(value, (_key, value) =>
-  state.sanitize && typeof value === "string" ? value.replaceAll(slash + "u001b", slash + "^[") : value));
+  state.sanitize && typeof value === "string" ? value.replaceAll(slash + "u001b", slash + "^[").replaceAll(String.fromCharCode(27), "^[") : value));
 if (args.includes("--method") && args[args.indexOf("--method") + 1] === "DELETE") {
   state.calls.push(args);
   state.comments = state.comments.filter(comment => comment.id !== Number(args[1].split("/").at(-1)));
@@ -242,6 +244,220 @@ test("background re-review starts and releases its lease by editing the durable 
       ["PATCH", "PATCH"],
     );
   });
+});
+
+test("quiet acquisition and owned cleanup preserve literal escapes and controls losslessly", () => {
+  const previous = previousReview();
+  previous.body = String(previous.body).replace(
+    "Codex review:",
+    "Codex review: literal \\u001b and control \u001b; café 🦞",
+  );
+  withPublicationFixture([previous], (fixture) => {
+    fixture.update({ sanitize: true });
+    assert.notEqual(state.issueReviewComment(itemNumber)?.body, previous.body);
+    const result = postReviewStartStatusComment(
+      { ...startOptions(), queueAuthority, backgroundReview: true },
+      () => headSha,
+    );
+    assert.equal(result.status, "posted");
+    if (result.status !== "posted") return;
+    assert.equal(
+      clearInPlaceReviewStartStatus(String(fixture.read().comments[0]!.body)),
+      previous.body,
+    );
+    assert.equal(
+      deleteOwnedDedicatedReviewStartLease(itemNumber, result.lease, { throwOnError: true }),
+      true,
+    );
+    assert.equal(fixture.read().comments[0]!.body, previous.body);
+  });
+});
+
+function applyGuardsForFixture(lease: { owner: string; commentId: number; headSha: string }) {
+  let active: { itemNumber: number; lease: typeof lease } | null = null;
+  return createApplyLeaseGuards({
+    canonicalBoundStaleReviewReason: () => null,
+    closeDelayMs: 0,
+    currentReviewActivityBlock: () => null,
+    dryRun: false,
+    getActiveApplyMutationLease: () => active,
+    setActiveApplyMutationLease: (value) => {
+      active = value;
+    },
+    ghJson: () => ({ head: { sha: headSha } }),
+    GitHubRuntimeBudgetError: class extends Error {},
+    initialReviewHeadSha: headSha,
+    issueReviewCommentState: state.issueReviewCommentState,
+    item: startOptions().item,
+    liveIssueSourceRevision: () => headSha,
+    markdownBeforeApplyDecisionMutations: "",
+    number: itemNumber,
+    PATCHABLE_REVIEW_COMMENT_AUTHORS: new Set(["clawsweeper[bot]"]),
+    postReviewStartStatusComment: () => {
+      throw new Error("must adopt existing lease");
+    },
+    reportReviewRevision: headSha,
+    requiresApplyMutationLease: true,
+    shouldPreserveReviewStartLease: () => false,
+    targetRepo: () => "openclaw/openclaw",
+  } as Parameters<typeof createApplyLeaseGuards>[0]);
+}
+
+for (const oversized of [false, true]) {
+  test(`adopted in-place apply lock survives ${oversized ? "bounded fallback" : "completed review"} publication and subsequent mutation guards`, () => {
+    withPublicationFixture([previousReview()], (fixture) => {
+      const result = postReviewStartStatusComment(
+        { ...startOptions(), queueAuthority, backgroundReview: true },
+        () => headSha,
+      );
+      assert.equal(result.status, "posted");
+      if (result.status !== "posted") return;
+      const guards = applyGuardsForFixture(result.lease);
+      assert.equal(guards.acquireApplyMutationLease(guards.refreshReviewStartLeaseState()), null);
+      const completed = String(
+        durableReviewComment({
+          id: 20,
+          reviewedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }).body,
+      );
+      const publish = () =>
+        publication.upsertReviewComment(
+          itemNumber,
+          oversized ? "x".repeat(70_000) + completed : completed,
+          state.issueReviewComment(itemNumber),
+          undefined,
+          { preserveReviewStartLease: result.lease },
+        );
+      if (oversized) assert.throws(publish, publication.DurableReviewPublicationBlockedError);
+      else publish();
+      assert.equal(
+        guards.currentApplyMutationLeaseBlockReason(),
+        null,
+        "post-publication label guard",
+      );
+      assert.equal(guards.currentApplyMutationLeaseBlockReason(), null, "close guard");
+      assert.equal(
+        state.commentBodyMatches(
+          fixture.read().comments[0],
+          oversized
+            ? clearInPlaceReviewStartStatus(String(fixture.read().comments[0]!.body))
+            : completed,
+        ),
+        true,
+      );
+      assert.equal(
+        deleteOwnedDedicatedReviewStartLease(itemNumber, result.lease, { throwOnError: true }),
+        true,
+      );
+      assert.equal(
+        String(fixture.read().comments[0]!.body).includes("clawsweeper-review-status:started"),
+        false,
+      );
+      assert.equal(
+        fixture.read().calls.some((call) => call.includes("POST") || call.includes("DELETE")),
+        false,
+      );
+    });
+  });
+}
+
+for (const separateFirst of [true, false]) {
+  test(`separate lease 1000 fences in-place lease 42 (${separateFirst ? "separate listed first" : "in-place listed first"})`, () => {
+    const previous = { ...previousReview(), id: 42 };
+    withPublicationFixture([previous], (fixture) => {
+      const result = postReviewStartStatusComment(
+        { ...startOptions(), queueAuthority, backgroundReview: true },
+        () => headSha,
+      );
+      assert.equal(result.status, "posted");
+      if (result.status !== "posted") return;
+      const guards = applyGuardsForFixture(result.lease);
+      assert.equal(guards.acquireApplyMutationLease(guards.refreshReviewStartLeaseState()), null);
+      const separate = {
+        id: 1000,
+        user: { login: "clawsweeper[bot]" },
+        body: state.renderReviewStartStatusComment({
+          number: itemNumber,
+          kind: "pull_request",
+          title: "contender",
+          headSha,
+          startedAt: new Date().toISOString(),
+          leaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+          leaseOwner: "uncoordinated",
+        }),
+      };
+      const combined = fixture.read().comments[0]!;
+      const comments = separateFirst ? [separate, combined] : [combined, separate];
+      fixture.update({ comments });
+      assert.equal(
+        freshDedicatedReviewStartLeases({ comments, itemNumber, headSha, nowMs: Date.now() })[0]!
+          .commentId,
+        1000,
+      );
+      assert.match(guards.currentApplyMutationLeaseBlockReason()!, /no longer the elected/);
+      assert.equal(deleteOwnedDedicatedReviewStartLease(itemNumber, result.lease), true);
+      assert.equal(
+        fixture.read().comments.find((comment) => comment.id === 1000)?.body,
+        separate.body,
+      );
+      assert.equal(
+        fixture.read().comments.find((comment) => comment.id === 42)?.body,
+        previous.body,
+      );
+    });
+  });
+}
+
+test("quiet reservation fits exactly at the UTF-8 limit and falls back one byte above it", () => {
+  const previousRunId = process.env.GITHUB_RUN_ID;
+  const previousAttempt = process.env.GITHUB_RUN_ATTEMPT;
+  process.env.GITHUB_RUN_ID = "12345";
+  process.env.GITHUB_RUN_ATTEMPT = "1";
+  try {
+    const options = {
+      ...startOptions(),
+      startedAt: new Date().toISOString(),
+      leaseExpiresAt: new Date(Date.now() + 660_000).toISOString(),
+      leaseOwner: "github-run-12345-1",
+      number: itemNumber,
+      kind: "pull_request" as const,
+      title: "fixture",
+    };
+    const base = String(previousReview().body);
+    const overhead = Buffer.byteLength(
+      state.withQuietReviewStartStatusLease(base, options),
+      "utf8",
+    );
+    for (const extra of [0, 1]) {
+      const previous = {
+        ...previousReview(),
+        body:
+          "é" +
+          "x".repeat(publication.DURABLE_REVIEW_COMMENT_MAX_BYTES - overhead - 2 + extra) +
+          base,
+      };
+      withPublicationFixture([previous], (fixture) => {
+        const result = postReviewStartStatusComment(
+          { ...startOptions(), queueAuthority, backgroundReview: true },
+          () => headSha,
+        );
+        assert.equal(result.status, "posted");
+        assert.equal(fixture.read().calls[0]!.includes(extra === 0 ? "PATCH" : "POST"), true);
+        if (extra) assert.equal(fixture.read().comments[0]!.body, previous.body);
+        else
+          assert.equal(
+            Buffer.byteLength(String(fixture.read().comments[0]!.body)),
+            publication.DURABLE_REVIEW_COMMENT_MAX_BYTES,
+          );
+      });
+    }
+  } finally {
+    if (previousRunId === undefined) delete process.env.GITHUB_RUN_ID;
+    else process.env.GITHUB_RUN_ID = previousRunId;
+    if (previousAttempt === undefined) delete process.env.GITHUB_RUN_ATTEMPT;
+    else process.env.GITHUB_RUN_ATTEMPT = previousAttempt;
+  }
 });
 
 test("completed background re-review replaces the in-place lease without another comment", () => {

@@ -26,7 +26,7 @@ import { exactEventReviewLeaseDisposition } from "../dist/clawsweeper-record-met
 import { runText, runTextConcurrently, UserFacingCommandError } from "../dist/command.js";
 import { reviewMergeBase } from "../dist/pr-review-evidence.js";
 import { reviewStructuralPullStateDigest } from "../dist/review-structural-cache.js";
-import { mockGhBinEnv, workPlanCandidateReport } from "./helpers.ts";
+import { mockCommandBinEnv, mockGhBinEnv, workPlanCandidateReport } from "./helpers.ts";
 import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 import { withQuietReviewStartStatusLease } from "../dist/clawsweeper-review-comment-state.js";
 
@@ -59,9 +59,21 @@ if (args.includes("PATCH")) {
   if (!field) process.exit(2);
   fs.writeFileSync(${JSON.stringify(patchPath)}, JSON.stringify({ body: field.slice(5) }));
 }
-process.stdout.write(fs.readFileSync(${JSON.stringify(commentPath)}, "utf8"));
+const slash = String.fromCharCode(92);
+process.stdout.write(JSON.stringify(JSON.parse(fs.readFileSync(${JSON.stringify(commentPath)}, "utf8")), (_key, value) => typeof value === "string" ? value.replaceAll(slash + "u001b", slash + "^[").replaceAll(String.fromCharCode(27), "^[") : value));
 `,
   );
+  const rawPath = join(root, "curl.js");
+  writeFileSync(
+    rawPath,
+    `process.stdout.write("HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n" + require("node:fs").readFileSync(${JSON.stringify(commentPath)}, "utf8"));`,
+  );
+  const leaseEnv = {
+    ...process.env,
+    ...mockGhBinEnv(ghPath, root),
+    ...mockCommandBinEnv("curl", rawPath),
+    GH_TOKEN: "fixture-only",
+  };
   for (const fixture of [
     body,
     "Published review without a lease.\n",
@@ -78,7 +90,7 @@ process.stdout.write(fs.readFileSync(${JSON.stringify(commentPath)}, "utf8"));
       [CLI, "expire-review-lease", "--repo", repo, "--item-number", "357", "--comment-id", "9991"],
       {
         encoding: "utf8",
-        env: { ...process.env, ...mockGhBinEnv(ghPath, root) },
+        env: leaseEnv,
       },
     );
     if (fixture === body) {
@@ -89,7 +101,7 @@ process.stdout.write(fs.readFileSync(${JSON.stringify(commentPath)}, "utf8"));
     } else assert.equal(existsSync(patchPath), false);
   }
   const original =
-    "Codex review: keep open.\n\nPrevious findings.\n\n<!-- clawsweeper-review item=357 -->";
+    "Codex review: keep open.\n\nLiteral \\u001b, control \u001b, and 🦞 findings.\n\n<!-- clawsweeper-review item=357 -->";
   const quiet = withQuietReviewStartStatusLease(original, {
     number: 357,
     kind: "issue",
@@ -121,7 +133,7 @@ process.stdout.write(fs.readFileSync(${JSON.stringify(commentPath)}, "utf8"));
       ],
       {
         encoding: "utf8",
-        env: { ...process.env, ...mockGhBinEnv(ghPath, root) },
+        env: leaseEnv,
       },
     );
     if (owner === "worker-1")

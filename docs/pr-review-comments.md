@@ -93,8 +93,16 @@ a new-comment notification on every scheduled or target-branch-triggered review.
 First reviews and explicit reviews retain the separate temporary
 `clawsweeper-review-lease` comment. Uncoordinated callers also retain that path:
 their concurrent acquisitions need distinct server-assigned comment IDs.
-Final publication replaces the durable review and its in-place lease together;
-owned cleanup removes only the in-place status and marker, never the old review.
+Acquisition and owned cleanup (including `expire-review-lease --release-owner`)
+use the lossless comment GET, preserving literal Unicode escapes and controls
+that normal `gh` JSON output sanitizes. When adding the status and marker would
+exceed the publisher's 61,440 UTF-8 byte limit, reservation leaves the durable
+review untouched and falls back to a separate placeholder.
+Apply publication retains the adopted in-place marker on the completed review
+until all label and close mutations finish. This also applies to a bounded
+publication-failure notice. Owned cleanup removes only the status and marker,
+never the previous or newly published review. Normalized comment comparisons
+ignore that temporary status; durable report hashes describe the completed body.
 Command-triggered exact reviews rewrite their
 existing command acknowledgement and use the durable queue claim directly, without
 posting a second visible lease comment. The acknowledgement lease records the
@@ -140,6 +148,23 @@ compares a background re-review, an explicit re-review, a first review, and a
 superseded background owner, and exercises lease expiry and owned failure
 cleanup. It proves request behavior and review preservation, not GitHub email
 delivery or a real hosted queue race.
+
+The extended authority-chain proof runs built reservation, publication, apply
+lease guards and close execution against loopback HTTP. Both workers read the
+same initial snapshot; the driver releases their requests in both POST/PATCH
+orders and checks the final comment writes. It also checks the adopted lock
+through publication, label deletion and close, sanitized versus lossless bytes,
+and an old unversioned durable review alongside an expired legacy placeholder:
+
+```bash
+node scripts/e2e/review-lease-lifecycle.mjs .artifacts/review-lease-lifecycle
+```
+
+Each scenario writes its HTTP trace and final body/hash. `--case <name>` runs one
+scenario; `PROOF_DIST_ROOT` selects an independently built baseline. This is a
+local macOS/Node 24 proof with synthetic credentials and policy fixtures; it does
+not exercise model generation, full apply orchestration, hosted queue timing,
+or GitHub notification delivery.
 
 A publication blocked by a verified active review lease records
 `review_lease_active` and the normalized lease deadline in both its step outputs
@@ -190,9 +215,13 @@ is captured first, then the worker must still own the exact queue
 item/lease/revision/generation/run tuple and the live item revision must match
 its lease. For pull requests, the claimed queue source head must also match the
 live head. A stale worker therefore cannot treat a newer lease as superseded
-just because the SHAs differ. Same-revision contenders still use the
-server-assigned comment-id election, and expired leftovers retain the existing
-conservative cleanup path.
+just because the SHAs differ. Same-revision separate contenders use the server-assigned comment-id election.
+Separate leases always rank before in-place leases: patching old durable ID 42
+cannot displace a confirmed POST lease on ID 1000. An in-place holder rechecks
+that election at each apply mutation boundary and yields before publication,
+label changes, or close if a separate contender appears. GitHub offers no atomic
+compare-and-swap; the existing read-to-mutation interval remains. Expired leftovers
+retain the conservative cleanup path.
 
 For a PR that needs work, the visible comment starts with:
 

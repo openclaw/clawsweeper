@@ -50,6 +50,17 @@ fetch(process.env.RESERVATION_FIXTURE_URL + "/" + args[1], {
 }).catch(error => { console.error(error.message); process.exitCode = 1; });
 `,
 );
+const rawProxy = join(root, "raw-fixture.cjs");
+writeFileSync(
+  rawProxy,
+  `
+const args = process.argv.slice(2);
+const url = new URL(args[args.indexOf("--url") + 1]);
+fetch(process.env.RESERVATION_FIXTURE_URL + url.pathname + url.search).then(async response => {
+  process.stdout.write("HTTP/1.1 " + response.status + " OK\\r\\nContent-Type: application/json\\r\\n\\r\\n" + await response.text());
+}).catch(error => { console.error(error.message); process.exitCode = 1; });
+`,
+);
 const quietCases = [
   {
     name: "quiet-background",
@@ -236,6 +247,8 @@ try {
         GH_BIN_ARGS: JSON.stringify(["-u", "NODE_V8_COVERAGE", process.execPath, proxy]),
         ...(process.env.NODE_V8_COVERAGE ? { NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE } : {}),
         GH_TOKEN: "synthetic-fixture-no-live-access",
+        CURL_BIN: process.execPath,
+        CURL_BIN_ARGS: JSON.stringify([rawProxy]),
         RESERVATION_FIXTURE_URL: url,
         TARGET_REPO: repo,
         ITEM_NUMBER: String(number),

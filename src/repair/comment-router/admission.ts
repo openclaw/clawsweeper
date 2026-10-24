@@ -223,7 +223,7 @@ function canonicalReviewStartStatusMarker(body: string) {
   if (!/^<!--\s*clawsweeper-review-status:started\b[^>]*-->$/i.test(markerBody)) return null;
   const marker = clawsweeperMarker(markerBody, "review-status");
   if (marker?.action !== "started" || Number(marker.attrs.item) !== itemNumber) return null;
-  return { itemNumber, marker };
+  return { itemNumber, marker, inPlace: /^<!--\s*clawsweeper-review\s/i.test(identity[0]) };
 }
 
 export function isTrustedReviewStartStatusComment({
@@ -275,6 +275,7 @@ export function freshExactHeadReviewStartLease({
     owner: string | null;
     commentId: number | null;
     serverOrder: number;
+    inPlace: boolean;
   }> = [];
   for (const [serverOrder, comment] of comments.entries()) {
     const author = String(comment?.user?.login ?? "")
@@ -303,12 +304,20 @@ export function freshExactHeadReviewStartLease({
     if (durationMs <= 0 || durationMs > REVIEW_START_LEASE_MAX_MS) continue;
     if (startedAtMs > nowMs + REVIEW_START_LEASE_CLOCK_SKEW_MS) continue;
     if (expiresAtMs < nowMs) continue;
-    candidates.push({ startedAt, expiresAt, owner, commentId, serverOrder });
+    candidates.push({
+      startedAt,
+      expiresAt,
+      owner,
+      commentId,
+      serverOrder,
+      inPlace: canonical.inPlace,
+    });
   }
-  // GitHub comment ids are server-assigned and monotonic. Elect the first server-created lease;
-  // client clocks only validate the TTL and never choose the winner. Legacy id-less comments
-  // cannot displace a server-identified lease; if every candidate is legacy, preserve API order.
+  // A reused durable id must never displace a confirmed POST lease. In-place
+  // holders yield to separate leases at acquisition and every apply mutation.
+  // Within each form, server ids elect the winner; client clocks only validate TTL.
   const selected = candidates.sort((left, right) => {
+    if (left.inPlace !== right.inPlace) return Number(left.inPlace) - Number(right.inPlace);
     if (left.commentId !== null && right.commentId !== null) {
       return left.commentId - right.commentId;
     }

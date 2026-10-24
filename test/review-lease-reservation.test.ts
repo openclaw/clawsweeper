@@ -20,3 +20,19 @@ test(
     }
   },
 );
+
+test(
+  "mixed-owner lease lifecycle preserves apply locks and lossless existing state",
+  { timeout: 180_000 },
+  () => {
+    const output = mkdtempSync(join(tmpdir(), "lease-lifecycle-proof-"));
+    try {
+      execFileSync(process.execPath, ["scripts/e2e/review-lease-lifecycle.mjs", output], {
+        timeout: 170_000,
+      });
+      assert.equal(JSON.parse(readFileSync(join(output, "summary.json"), "utf8")).passed, 5);
+    } finally {
+      rmSync(output, { recursive: true, force: true });
+    }
+  },
+);

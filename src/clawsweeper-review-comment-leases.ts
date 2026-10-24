@@ -25,6 +25,7 @@ import { targetRepo } from "./repository-profiles.js";
 import {
   renderReviewStartStatusComment,
   issueReviewCommentState,
+  losslessReviewComment,
   commentId,
   commentBody,
   PATCHABLE_REVIEW_COMMENT_AUTHORS,
@@ -35,6 +36,7 @@ import {
   identitylessPublicationFallback,
 } from "./clawsweeper-review-comment-state.js";
 import {
+  DURABLE_REVIEW_COMMENT_MAX_BYTES,
   writeCommentPayload,
   reviewCommentFromMutationResponse,
   upsertReviewComment,
@@ -178,28 +180,29 @@ export function freshDedicatedReviewStartLeases(options: {
   const trustedAuthors = new Set(
     [...PATCHABLE_REVIEW_COMMENT_AUTHORS].map((author) => author.toLowerCase()),
   );
-  return (
-    options.comments
-      .map((comment) => {
-        const lease = freshExactHeadReviewStartLease({
-          comments: [comment],
-          itemNumber: options.itemNumber,
-          headSha: options.headSha,
-          trustedAuthors,
-          nowMs: options.nowMs,
-        });
-        return lease ? { comment, ...lease } : null;
-      })
-      .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
-      // GitHub comment ids are server-assigned and monotonic. A client timestamp cannot elect the
-      // winner: a delayed worker could publish an earlier timestamp after another worker acquired
-      // the lease, retroactively displacing it and allowing both reviews to run.
-      .sort(
-        (left, right) =>
-          (commentId(left.comment) ?? Number.MAX_SAFE_INTEGER) -
-          (commentId(right.comment) ?? Number.MAX_SAFE_INTEGER),
-      )
-  );
+  return options.comments
+    .map((comment) => {
+      const lease = freshExactHeadReviewStartLease({
+        comments: [comment],
+        itemNumber: options.itemNumber,
+        headSha: options.headSha,
+        trustedAuthors,
+        nowMs: options.nowMs,
+      });
+      return lease ? { comment, ...lease } : null;
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+    .sort((left, right) => {
+      if (left.commentId === right.commentId) return 0;
+      const winner = freshExactHeadReviewStartLease({
+        comments: [left.comment, right.comment],
+        itemNumber: options.itemNumber,
+        headSha: options.headSha,
+        trustedAuthors,
+        nowMs: options.nowMs,
+      });
+      return winner?.commentId === commentId(left.comment) ? -1 : 1;
+    });
 }
 
 export function postReviewStartStatusComment(
@@ -269,10 +272,10 @@ export function postReviewStartStatusComment(
     initialState.dedicatedLeaseComments,
     startedAtMs,
   );
-  const durable = initialState.reviewComment;
+  let durable = initialState.reviewComment;
   // Queue ownership serializes updates to an existing id; uncoordinated
   // callers still need a fresh server id for the competing-POST election.
-  const quiet =
+  let quiet =
     options.backgroundReview &&
     options.queueAuthority &&
     (options.purpose ?? "review") === "review" &&
@@ -281,12 +284,33 @@ export function postReviewStartStatusComment(
     (durableReviewVersion(durable, options.item.number) !== null ||
       isCodexReviewCommentBody(commentBody(durable) ?? "")) &&
     !identitylessPublicationFallback(options.item.number, durable);
-  const body = quiet
-    ? withQuietReviewStartStatusLease(commentBody(durable)!, leaseOptions)
-    : renderReviewStartStatusComment(leaseOptions);
-  if (quiet) assertExactReviewQueueAuthority(options.queueAuthority!);
-  if (quiet && Buffer.byteLength(body, "utf8") > 60 * 1024) {
-    throw new Error("durable review has no room for an in-place lease; leaving the review intact");
+  let body = renderReviewStartStatusComment(leaseOptions);
+  if (quiet) {
+    durable = losslessReviewComment(commentId(durable)!);
+    // Revalidate the raw GET, including a lease installed since the list read.
+    if (
+      !durable ||
+      !(
+        durableReviewVersion(durable, options.item.number) !== null ||
+        isCodexReviewCommentBody(commentBody(durable)!)
+      ) ||
+      identitylessPublicationFallback(options.item.number, durable)
+    ) {
+      throw new Error("durable review changed before in-place lease acquisition; retry required");
+    }
+    const competing = freshDedicatedReviewStartLeases({
+      comments: [durable],
+      itemNumber: options.item.number,
+      headSha: normalizedHead,
+      nowMs: Date.now(),
+    })[0];
+    if (competing) return heldReviewStartStatusCommentResult(competing.expiresAt, false);
+    const combined = withQuietReviewStartStatusLease(commentBody(durable)!, leaseOptions);
+    quiet = Buffer.byteLength(combined, "utf8") <= DURABLE_REVIEW_COMMENT_MAX_BYTES;
+    if (quiet) {
+      body = combined;
+      assertExactReviewQueueAuthority(options.queueAuthority!);
+    }
   }
   let created: Record<string, unknown> | undefined;
   if (quiet) {
@@ -400,7 +424,7 @@ export function deleteOwnedDedicatedReviewStartLease(
   options: { throwOnError?: boolean } = {},
 ): boolean {
   try {
-    const matching = issueReviewCommentState(itemNumber).leaseComments.find(
+    let matching = issueReviewCommentState(itemNumber).leaseComments.find(
       (comment) =>
         commentId(comment) === lease.commentId &&
         reviewStartLeaseOwner(comment) === lease.owner &&
@@ -410,10 +434,27 @@ export function deleteOwnedDedicatedReviewStartLease(
     if (/<!--\s*clawsweeper-command-(?:ack|status):/i.test(commentBody(matching) ?? "")) {
       return false;
     }
+    if (
+      clearInPlaceReviewStartStatus(commentBody(matching)!, itemNumber) !== commentBody(matching)
+    ) {
+      matching = losslessReviewComment(lease.commentId);
+      if (
+        !matching ||
+        reviewStartLeaseOwner(matching) !== lease.owner ||
+        !(commentBody(matching) ?? "").includes(`sha=${lease.headSha}`)
+      )
+        return false;
+    }
     const body = commentBody(matching)!;
     const cleared = clearInPlaceReviewStartStatus(body, itemNumber);
     if (cleared !== body) {
-      upsertReviewComment(itemNumber, cleared, matching);
+      upsertReviewComment(
+        itemNumber,
+        cleared,
+        matching,
+        `review_lease_release:${itemNumber}:${lease.commentId}`,
+        { suppressAutomationMarkers: true },
+      );
       return true;
     }
     if (!hasReviewStartLeaseCommentMarker(body, itemNumber)) return false;
