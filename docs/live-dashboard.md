@@ -186,8 +186,7 @@ The operator dashboard at `/` (Overview, Agent performance, Throughput, Review a
 Coverage, Repositories) is a static Astro site in `dashboard-site/`. The `Dashboard site`
 workflow (`.github/workflows/dashboard-site.yml`) rebuilds it every 15 minutes
 and publishes it to the Cloudflare Pages project `clawsweeper-dashboard`
-(`https://clawsweeper-dashboard.pages.dev`) with the Wrangler version pinned in
-`dashboard-site/package.json` and its lockfile, never fetched at publish time. This Worker serves those page
+(`https://clawsweeper-dashboard.pages.dev`). This Worker serves those page
 paths and their assets from Pages for GET and HEAD (`dashboard/dashboard-site.ts`;
 override the origin with `DASHBOARD_SITE_ORIGIN`). A data refresh never
 redeploys this Worker, so webhooks, the queue Durable Object and `/api/*` are
@@ -198,30 +197,21 @@ Each build reads four sources:
 - the corpus aggregate (totals, decisions, quality, closes, per-repository
   counts). The site build never reads canonical records: it restores the newest
   aggregate saved by the separate `Dashboard corpus` workflow
-  (`.github/workflows/dashboard-corpus.yml`) and keeps the copy in its own state
-  when the aggregate cache is missing, so a slow or failed
-  corpus refresh never blocks or times out a publish. The corpus workflow keeps a
-  cached tree of the `items` and `closed` records (the only sections the corpus
-  reads), trimmed to their front matter (the only part it reads), with a
-  per-repository cursor (`scripts/dashboard-corpus.ts`). The tree holds records
-  of private repositories too and default-branch Actions caches are readable from
-  pull-request workflows, so it is cached only as an AES-256-GCM archive keyed from
-  `CLAWSWEEPER_WEBHOOK_SECRET` (never available to fork pull requests), and the
-  cached `visibility.json` keeps public answers only. Every hour
-  it lists the record slugs, skips every repository whose newest store revision is
-  not above its cursor, and asks the export journal only for records above the
-  cursor; the journal keeps one row per record at its newest store revision and
-  keeps deletions as tombstones, so the replay carries every write, archive move
-  and deletion, applied in journal order. The cursor is the first page's
-  watermark, so a write that lands mid-export is read again next time. A full
-  rebuild (weekly at 00:20 UTC on Sundays, by hand with `mode=full`, or by the
-  first scheduled run in the 00 or 12 UTC hour that finds no saved tree) hydrates
-  the R2 snapshots plus the journal read-only, as `scripts/hydrate-state.ts` does,
-  and replaces the tree only when every repository hydrated. A refresh that fails
-  saves neither tree nor aggregate, so the site keeps the previous corpus and the
-  next hourly run replays from the last saved tree; an incremental retry costs one
-  slug listing plus the changed records. Rotating `CLAWSWEEPER_WEBHOOK_SECRET`
-  makes the saved tree unreadable: run the workflow once with `mode=full`.
+  (`.github/workflows/dashboard-corpus.yml`), so a slow or failed corpus refresh
+  never blocks a publish. That workflow keeps a tree of the `items` and
+  `closed` records, trimmed to front matter, with a per-repository cursor
+  (`scripts/dashboard-corpus.ts`). Every hour it skips repositories whose newest
+  store revision is not above their cursor and replays the export journal above
+  it, tombstones included; the cursor is the first page's watermark, so a write
+  that lands mid-export is read again next time. A full rebuild (Sundays at 00:20
+  UTC, by hand with `mode=full`, or by a scheduled run in the 00 or 12 UTC hour
+  that finds no saved tree) hydrates the R2 snapshots plus the journal, as
+  `scripts/hydrate-state.ts` does, and replaces the tree only when every
+  repository hydrated. The tree includes private repositories and default-branch
+  Actions caches are readable from pull-request workflows, so it is cached only as
+  an AES-256-GCM archive keyed from `CLAWSWEEPER_WEBHOOK_SECRET`; rotating that
+  secret needs one `mode=full` run. A failed refresh saves nothing and the next
+  hourly run replays from the last saved tree.
   The aggregate (`dashboard-site/scripts/build-corpus.ts`) reads front matter only and
   keeps repositories that GitHub reports as public. The cache keeps each
   repository's contribution apart, so every build checks visibility again,
@@ -291,8 +281,9 @@ not a ranking or proof of wasted execution.
 
 The site shows no report bodies, author identities or free-text concerns.
 Local preview: in `dashboard-site/`, install dependencies, run
-`dashboard-site/scripts/build-data.ts` with `GITHUB_TOKEN`, `--records <records dir>` and
-`--state <state dir>`, then start the Astro dev server.
+`scripts/build-corpus.ts --records <records dir> --out <state dir>` and
+`scripts/build-data.ts --state <state dir>` with `GITHUB_TOKEN`, then start the
+Astro dev server.
 
 ## Review usage metrics
 

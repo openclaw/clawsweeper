@@ -1,9 +1,9 @@
 // Aggregate the canonical review records (hydrated from the Worker's R2 snapshots) into the
 // dashboard corpus. Reads only each report's front matter, one file at a time, and keeps
 // public repositories only. No report bodies, author identities or free-text concerns leave here.
-import { closeSync, openSync, readSync } from "node:fs";
+import { createReadStream } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { StringDecoder } from "node:string_decoder";
+import { createInterface } from "node:readline";
 import { isRecord } from "./guards.ts";
 import { compareAttention, reviewerPriority } from "./attention.ts";
 import { isMaintainerAuthorAssociation } from "../../src/maintainer-review-policy.ts";
@@ -80,35 +80,28 @@ const quantiles = (values: number[]) => {
   return { count: values.length, p50: at(0.5), p90: at(0.9) };
 };
 
-const FRONT_MATTER_CHUNK = Buffer.alloc(16 * 1024);
-const FRONT_MATTER_END = /[\r\n]---(?:\r\n|\r|\n)/;
-
-// Reads a record up to its closing `---` line, never the report body. Synchronous on purpose: a
-// corpus is about 100k small files, and an asynchronous stream per file cost ten times the read.
-function frontMatter(path: string) {
+async function frontMatter(path: string) {
   const attrs: Record<string, unknown> = {};
-  const decoder = new StringDecoder("utf8");
-  const descriptor = openSync(path, "r");
-  let text = "";
+  const stream = createReadStream(path, { encoding: "utf8" });
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  let started = false;
   try {
-    for (let position = 0; ; ) {
-      const bytes = readSync(descriptor, FRONT_MATTER_CHUNK, { position });
-      position += bytes;
-      text += bytes ? decoder.write(FRONT_MATTER_CHUNK.subarray(0, bytes)) : decoder.end();
-      if (!bytes || !text.startsWith("---") || FRONT_MATTER_END.test(text)) break;
+    for await (const line of lines) {
+      if (!started) {
+        if (line !== "---") break;
+        started = true;
+        continue;
+      }
+      if (line === "---") break;
+      const colon = line.indexOf(":");
+      if (colon <= 0) continue;
+      const key = line.slice(0, colon);
+      const value = line.slice(colon + 1).trim();
+      attrs[key] = key === "review_record" || key === "title" ? parseScalar(value) : value;
     }
   } finally {
-    closeSync(descriptor);
-  }
-  const lines = text.split(/\r\n|\r|\n/);
-  if (lines[0] !== "---") return attrs;
-  for (const line of lines.slice(1)) {
-    if (line === "---") break;
-    const colon = line.indexOf(":");
-    if (colon <= 0) continue;
-    const key = line.slice(0, colon);
-    const value = line.slice(colon + 1).trim();
-    attrs[key] = key === "review_record" || key === "title" ? parseScalar(value) : value;
+    lines.close();
+    stream.destroy();
   }
   return attrs;
 }
@@ -263,7 +256,7 @@ export async function aggregateRecords(
       }
       for (const file of files) {
         if (!/^\d+\.md$/.test(file)) continue;
-        const attrs = frontMatter(`${root}/${directory.name}/${area}/${file}`);
+        const attrs = await frontMatter(`${root}/${directory.name}/${area}/${file}`);
         const repo = typeof attrs.repository === "string" ? attrs.repository : "";
         if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) continue;
         if (!repoChecked) {

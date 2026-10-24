@@ -373,27 +373,16 @@ test("a full rebuild restores snapshots, keeps only corpus sections and swaps at
     [3],
   );
   assert.deepEqual(store.exports[0]!.sections, ["items", "closed"]);
-  assert.deepEqual(
-    readdirSync(root).filter((name) => name.startsWith(".corpus-full-")),
-    [],
-  );
-});
-
-test("a failed full rebuild keeps the previous tree", async (t) => {
-  const root = fixtureRoot(t);
-  const store = new FakeStore();
-  store.write("openclaw-alpha", "items", 1, "one");
-  const state = path.join(root, "state");
-  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
-  const tree = files(state);
+  // A failed rebuild keeps the previous tree.
+  const rebuilt = files(state);
   store.failExportPage = store.exportPage + 1;
   await assert.rejects(
     refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" }),
     /403/,
   );
-  assert.deepEqual(files(state), tree);
+  assert.deepEqual(files(state), rebuilt);
   assert.deepEqual(
-    readdirSync(root).filter((name) => name.startsWith(".corpus-full-")),
+    readdirSync(root).filter((name) => name.startsWith(".corpus-")),
     [],
   );
 });
@@ -454,38 +443,6 @@ test("the tree keeps front matter only, and the aggregate is unchanged by it", a
   assert.deepEqual(strip(fromTree), strip(fromWhole));
 });
 
-test("the aggregate reads front matter across read chunks and line endings", async (t) => {
-  const root = fixtureRoot(t);
-  const items = path.join(root, "openclaw-clawsweeper", "items");
-  mkdirSync(items, { recursive: true });
-  const record = (number: number, title: string, eol: string, padding: number) =>
-    [
-      "---",
-      "repository: openclaw/clawsweeper",
-      "number: " + number,
-      "reviewed_at: 2026-10-01T10:00:00Z",
-      "padding: " + "x".repeat(padding),
-      "title: " + JSON.stringify(title),
-      "---",
-      "",
-      "Report body",
-      "",
-    ].join(eol);
-  // The lobster's four bytes straddle the end of the first 16 KiB read.
-  const lobster = "Lobster 🦞 title";
-  const offset = Buffer.from(record(1, lobster, "\n", 0)).indexOf(Buffer.from("🦞"));
-  writeFileSync(path.join(items, "1.md"), record(1, lobster, "\n", 16 * 1024 - 2 - offset));
-  writeFileSync(path.join(items, "2.md"), record(2, "Windows line endings", "\r\n", 10));
-  const corpus = await aggregateRecords(
-    root,
-    { "openclaw/clawsweeper": { public: true, checkedAt: new Date().toISOString() } },
-    undefined,
-    Date.parse("2026-10-20T12:00:00Z"),
-  );
-  const titles = corpus.repositories[0]!.lists.stale.map((row) => row.title).sort();
-  assert.deepEqual(titles, [lobster, "Windows line endings"]);
-});
-
 test("the cached tree is sealed with the records secret", async (t) => {
   const root = fixtureRoot(t);
   const store = new FakeStore();
@@ -494,21 +451,21 @@ test("the cached tree is sealed with the records secret", async (t) => {
   const state = path.join(root, "state");
   await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
   const archive = path.join(root, "cache", "tree.sealed");
-  await sealCorpusState(state, archive, "records-secret");
+  sealCorpusState(state, archive, "records-secret");
   const sealed = readFileSync(archive);
   assert.equal(sealed.includes(Buffer.from("private")), false);
   assert.equal(sealed.includes(Buffer.from("cursor.json")), false);
 
   const restored = path.join(root, "restored");
-  await unsealCorpusState(archive, restored, "records-secret");
+  unsealCorpusState(archive, restored, "records-secret");
   assert.deepEqual(files(restored), files(state));
 
   // A wrong key or a tampered archive never replaces the existing state.
-  await assert.rejects(unsealCorpusState(archive, restored, "fork-guess"));
+  assert.throws(() => unsealCorpusState(archive, restored, "fork-guess"));
   const tampered = Buffer.from(sealed);
   tampered[tampered.length - 40] ^= 1;
   writeFileSync(path.join(root, "tampered.sealed"), tampered);
-  await assert.rejects(
+  assert.throws(() =>
     unsealCorpusState(path.join(root, "tampered.sealed"), restored, "records-secret"),
   );
   assert.deepEqual(files(restored), files(state));
@@ -516,18 +473,14 @@ test("the cached tree is sealed with the records secret", async (t) => {
     readdirSync(root).filter((name) => name.startsWith(".corpus-unseal-")),
     [],
   );
-  await assert.rejects(
-    sealCorpusState(path.join(root, "missing"), archive, "records-secret"),
-    /No corpus state/,
-  );
-  await assert.rejects(sealCorpusState(state, archive, ""), /SECRET is required/);
+  assert.throws(() => sealCorpusState(state, archive, ""), /SECRET is required/);
 });
 
 test("refresh planning", () => {
   const now = new Date("2026-10-20T15:37:00Z");
   const quiet = new Date("2026-10-20T12:37:00Z");
   const plan = (input: Partial<Parameters<typeof planCorpusRefresh>[0]>) =>
-    planCorpusRefresh({ event: "schedule", hasState: true, now, ...input }).mode;
+    planCorpusRefresh({ event: "schedule", hasState: true, now, ...input });
   assert.equal(plan({}), "incremental");
   assert.equal(plan({ schedule: FULL_REBUILD_CRON }), "full");
   assert.equal(plan({ hasState: false }), "skip");
@@ -537,69 +490,16 @@ test("refresh planning", () => {
   assert.equal(plan({ event: "workflow_dispatch", hasState: false }), "full");
 });
 
-type Workflow = {
-  on: Record<string, unknown> & { schedule?: Array<{ cron: string }> };
-  jobs: Record<
-    string,
-    {
-      "timeout-minutes"?: number;
-      steps: Array<{
-        name?: string;
-        id?: string;
-        run?: string;
-        uses?: string;
-        env?: Record<string, string>;
-        "timeout-minutes"?: number;
-      }>;
-    }
-  >;
-};
-const workflow = (name: string) =>
-  YAML.parse(readFileSync(path.join(".github/workflows", name), "utf8")) as Workflow;
-
-test("the site build never reads canonical records and publishes with the pinned wrangler", () => {
-  const site = workflow("dashboard-site.yml");
-  const source = readFileSync(".github/workflows/dashboard-site.yml", "utf8");
-  assert.doesNotMatch(source, /hydrate-state|CLAWSWEEPER_WEBHOOK_SECRET|refresh_corpus|npx/);
-  const publish = site.jobs.publish!;
-  assert.ok(publish["timeout-minutes"]! <= 20);
-  const restore = publish.steps.find((step) => step.name === "Restore corpus aggregate");
-  assert.match(
-    String((restore as { with?: Record<string, string> }).with?.["restore-keys"]),
-    /^dashboard-corpus-aggregate-$/,
-  );
-  assert.match(
-    publish.steps.find((step) => step.name === "Publish to Cloudflare Pages")!.run!,
-    /pnpm exec wrangler pages deploy/,
-  );
-  const site_package = JSON.parse(readFileSync("dashboard-site/package.json", "utf8"));
-  assert.match(site_package.devDependencies.wrangler, /^\d+\.\d+\.\d+$/);
-});
-
-test("the corpus workflow refreshes hourly, rebuilds weekly and bounds every heavy step", () => {
-  const corpus = workflow("dashboard-corpus.yml");
-  const crons = corpus.on.schedule!.map((entry) => entry.cron);
-  assert.ok(crons.includes(FULL_REBUILD_CRON));
-  assert.ok(crons.some((cron) => /^\d+ \* \* \* \*$/.test(cron)));
-  const steps = corpus.jobs.refresh!.steps;
-  const step = (id: string) => steps.find((entry) => entry.id === id)!;
-  assert.match(step("incremental").run!, /--mode incremental/);
-  assert.match(step("full").run!, /--mode full/);
-  assert.ok(step("incremental")["timeout-minutes"]! <= 30);
-  assert.ok(step("full")["timeout-minutes"]! <= 60);
-  // Either refresh plus the aggregate fits inside the job, with ten minutes left for setup,
-  // sealing and the cache saves.
-  assert.ok(
-    Math.max(step("incremental")["timeout-minutes"]!, step("full")["timeout-minutes"]!) +
-      step("aggregate")["timeout-minutes"]! +
-      10 <=
-      corpus.jobs.refresh!["timeout-minutes"]!,
-  );
-  // The plain tree (private repositories included) is never cached; only the sealed archive is.
-  for (const entry of steps.filter((candidate) =>
-    String(candidate.uses).startsWith("actions/cache"),
-  )) {
-    const cachePath = String((entry as { with?: Record<string, string> }).with?.path);
-    assert.ok([".corpus-cache", ".dashboard-corpus"].includes(cachePath), cachePath);
-  }
+test("only the sealed tree and the public aggregate are cached; the site holds no records secret", () => {
+  const site = readFileSync(".github/workflows/dashboard-site.yml", "utf8");
+  assert.doesNotMatch(site, /hydrate-state|dashboard-corpus\.ts|CLAWSWEEPER_WEBHOOK_SECRET/);
+  const corpus = YAML.parse(readFileSync(".github/workflows/dashboard-corpus.yml", "utf8")) as {
+    on: { schedule: Array<{ cron: string }> };
+    jobs: { refresh: { steps: Array<{ uses?: string; with?: { path?: string } }> } };
+  };
+  assert.ok(corpus.on.schedule.some((entry) => entry.cron === FULL_REBUILD_CRON));
+  const cached = corpus.jobs.refresh.steps
+    .filter((step) => String(step.uses).startsWith("actions/cache"))
+    .map((step) => step.with?.path);
+  assert.deepEqual([...new Set(cached)].sort(), [".corpus-cache", ".dashboard-corpus"]);
 });

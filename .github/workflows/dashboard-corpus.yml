@@ -67,66 +67,36 @@ jobs:
           restore-keys: dashboard-corpus-aggregate-
 
       - name: Restore record tree
-        id: tree
         uses: actions/cache/restore@v6
         with:
           path: .corpus-cache
           key: dashboard-corpus-tree-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: dashboard-corpus-tree-
 
-      - name: Plan refresh
-        id: plan
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          SCHEDULE: ${{ github.event.schedule }}
-          REQUESTED_MODE: ${{ inputs.mode }}
-          HAS_STATE: ${{ steps.tree.outputs.cache-matched-key != '' }}
-        run: node scripts/dashboard-corpus.ts plan
-
-      - name: Refresh changed records
-        id: incremental
-        if: ${{ steps.plan.outputs.mode == 'incremental' }}
-        timeout-minutes: 30
-        env:
-          CLAWSWEEPER_RECORDS_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          CLAWSWEEPER_RECORDS_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-        run: |
-          set -euo pipefail
-          node scripts/dashboard-corpus.ts unpack --archive .corpus-cache/tree.sealed --state .corpus-records
-          node scripts/dashboard-corpus.ts refresh --state .corpus-records --mode incremental
-
-      - name: Rebuild every record
-        id: full
-        if: ${{ steps.plan.outputs.mode == 'full' }}
+      # Incremental from the restored tree; a full rebuild weekly, on request, or without a tree in
+      # the 00 or 12 UTC hour. Only a complete refresh rewrites the sealed archive.
+      - name: Refresh records
+        id: refresh
         timeout-minutes: 60
         env:
           CLAWSWEEPER_RECORDS_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_RECORDS_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-        run: node scripts/dashboard-corpus.ts refresh --state .corpus-records --mode full
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+        run: node scripts/dashboard-corpus.ts --state .corpus-records --archive .corpus-cache/tree.sealed
 
       - name: Build corpus aggregate
         id: aggregate
-        if: ${{ steps.incremental.outcome == 'success' || steps.full.outcome == 'success' }}
+        if: ${{ steps.refresh.outputs.refreshed == 'true' }}
         timeout-minutes: 15
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node dashboard-site/scripts/build-corpus.ts --records .corpus-records/records --out .dashboard-corpus
 
-      # Only a complete refresh saves the tree: after a failure the next run starts again from
-      # the previous tree and cursor, so nothing is half-applied.
-      - name: Seal record tree
-        id: seal-tree
-        if: ${{ steps.aggregate.outcome == 'success' }}
-        env:
-          CLAWSWEEPER_RECORDS_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-        run: |
-          set -euo pipefail
-          rm -rf .corpus-cache
-          node scripts/dashboard-corpus.ts pack --state .corpus-records --archive .corpus-cache/tree.sealed
-
       - name: Save record tree
         id: save-tree
-        if: ${{ steps.seal-tree.outcome == 'success' }}
+        if: ${{ steps.aggregate.outcome == 'success' }}
         uses: actions/cache/save@v6
         with:
           path: .corpus-cache

@@ -180,7 +180,7 @@ export class WorkerRecordExportBoundError extends Error {
   }
 }
 
-export type ExportWorkerRecordsOptions = {
+type ExportWorkerRecordsOptions = {
   baseUrl: string;
   webhookSecret: string;
   repoSlug: string;
