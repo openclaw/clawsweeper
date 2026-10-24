@@ -1,0 +1,129 @@
+name: Dashboard corpus
+
+# Keeps the review-corpus aggregate of the static dashboard (dashboard-site.yml) fresh without a
+# full canonical export. Every hour it asks the canonical export journal only for the items and
+# closed records written or deleted since the cursor saved with a cached record tree, merges them
+# into that tree and rebuilds the aggregate (scripts/dashboard-corpus.ts). A full rebuild runs
+# weekly in the quietest review hour and on request; it hydrates the R2 snapshots plus the journal
+# read-only and replaces the tree only when every repository hydrated.
+#
+# The record tree includes private repositories' records and default-branch caches are readable
+# from pull-request workflows, so the tree is cached only as an archive sealed with a key derived
+# from the records secret (never available to fork pull requests); the plain tree is never cached.
+#
+# Publishing never waits for this workflow: the 15-minute site build restores the newest saved
+# aggregate. A failed refresh saves nothing, so the site keeps the previous aggregate and the next
+# hourly run retries from the last saved tree.
+on:
+  schedule:
+    - cron: "37 * * * *"
+    # Keep in sync with FULL_REBUILD_CRON in scripts/dashboard-corpus.ts.
+    - cron: "20 0 * * 0"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: >-
+          incremental reads only records changed since the last refresh. full re-reads every
+          canonical items/closed record through the exact-review queue Durable Object (heavy;
+          use a quiet hour).
+        type: choice
+        options:
+          - incremental
+          - full
+        default: incremental
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-corpus
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      # Prunes superseded record-tree caches, which are large.
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          filter: blob:none
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.22.1"
+
+      # The aggregate (corpus.json) and repository visibility are small; the site build restores
+      # the newest one. Keys include the attempt so a rerun saves its own.
+      - name: Restore corpus aggregate
+        uses: actions/cache/restore@v6
+        with:
+          path: .dashboard-corpus
+          key: dashboard-corpus-aggregate-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: dashboard-corpus-aggregate-
+
+      - name: Restore record tree
+        uses: actions/cache/restore@v6
+        with:
+          path: .corpus-cache
+          key: dashboard-corpus-tree-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: dashboard-corpus-tree-
+
+      # Incremental from the restored tree; a full rebuild weekly, on request, or without a tree in
+      # the 00 or 12 UTC hour. Only a complete refresh rewrites the sealed archive.
+      - name: Refresh records
+        id: refresh
+        timeout-minutes: 60
+        env:
+          CLAWSWEEPER_RECORDS_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_RECORDS_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+        run: node scripts/dashboard-corpus.ts --state .corpus-records --archive .corpus-cache/tree.sealed
+
+      - name: Build corpus aggregate
+        id: aggregate
+        if: ${{ steps.refresh.outputs.refreshed == 'true' }}
+        timeout-minutes: 15
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node dashboard-site/scripts/build-corpus.ts --records .corpus-records/records --out .dashboard-corpus
+
+      - name: Save record tree
+        id: save-tree
+        if: ${{ steps.aggregate.outcome == 'success' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .corpus-cache
+          key: dashboard-corpus-tree-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Save corpus aggregate
+        if: ${{ steps.aggregate.outcome == 'success' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .dashboard-corpus
+          key: dashboard-corpus-aggregate-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # Keep the newest two of each; older entries are never restored again.
+      - name: Prune superseded corpus caches
+        if: ${{ steps.save-tree.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for prefix in dashboard-corpus-tree- dashboard-corpus-aggregate-; do
+            gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/caches" \
+              -f key="$prefix" -f ref="$GITHUB_REF" -f sort=created_at -f direction=desc -F per_page=100 |
+              jq -r --arg prefix "$prefix" '
+                [.actions_caches[] | select(.key | startswith($prefix))][2:][].id' |
+              while read -r cache_id; do
+                gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${cache_id}" > /dev/null ||
+                  echo "::notice::Corpus cache entry ${cache_id} was not deleted; it may already be gone."
+              done
+          done

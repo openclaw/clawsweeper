@@ -1,8 +1,8 @@
 // Build src/data/dashboard.json for one static dashboard deploy.
 //
-//   node scripts/build-data.ts --records <hydrated records dir> --state <state dir>
+//   node scripts/build-data.ts --state <state dir>
 //
-// Inputs: canonical records hydrated from the Worker (R2 snapshots), the public Worker
+// Inputs: the corpus aggregate <state dir>/corpus.json (scripts/build-corpus.ts), the public Worker
 // APIs for live queue, coverage, 7-day queue health history and apply outcomes, and an
 // incremental GitHub Actions history kept in the
 // state directory between runs. Tokens: GITHUB_TOKEN for incremental reads and repository
@@ -12,14 +12,14 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { backfillSweepCounts, loadActionsState, refreshActions, saveActionsState, summarizeActions } from './actions.ts';
-import { aggregateRecords, combineCorpus, type CorpusCache, type Visibility } from './records.ts';
+import { combineCorpus, type CorpusCache } from './records.ts';
 import { summarizeOperations } from './operations.ts';
 
 const ORIGIN = 'https://clawsweeper.openclaw.ai';
 const site = new URL('../', import.meta.url).pathname;
 
-const { values } = parseArgs({ options: { records: { type: 'string' }, state: { type: 'string' }, 'backfill-days': { type: 'string', default: '0' } } });
-if (!values.state) throw new Error('usage: build-data.ts --state <dir> [--records <hydrated records dir>] [--backfill-days <0-30>]');
+const { values } = parseArgs({ options: { state: { type: 'string' }, 'backfill-days': { type: 'string', default: '0' } } });
+if (!values.state) throw new Error('usage: build-data.ts --state <dir> [--backfill-days <0-30>]');
 const stateDir = values.state;
 const backfillDays = Number(values['backfill-days']);
 if (!Number.isInteger(backfillDays) || backfillDays < 0 || backfillDays > 30) throw new Error('--backfill-days must be a whole number from 0 to 30');
@@ -53,21 +53,10 @@ async function publicApi(path: string) {
   }
 }
 
-// Records are read only when a run was asked to refresh the corpus: the export runs inside
-// the exact-review queue Durable Object, so every other build reuses the cached aggregate.
-const corpusPath = join(stateDir, 'corpus.json');
-let cache: CorpusCache;
-if (values.records) {
-  const visibilityPath = join(stateDir, 'visibility.json');
-  const visibility = await readJson<Visibility>(visibilityPath, {});
-  cache = await aggregateRecords(values.records, visibility, token);
-  await writeFile(visibilityPath, JSON.stringify(visibility));
-  await writeFile(corpusPath, JSON.stringify(cache));
-} else {
-  const cached = await readJson<CorpusCache | null>(corpusPath, null);
-  if (cached?.version !== 2) throw new Error('no cached corpus: run the workflow once with refresh_corpus');
-  cache = cached;
-}
+// The build never reads records: the Dashboard corpus workflow refreshes the aggregate
+// (scripts/build-corpus.ts) and this build reuses the newest one.
+const cache = await readJson<CorpusCache | null>(join(stateDir, 'corpus.json'), null);
+if (cache?.version !== 2) throw new Error('no cached corpus: run the Dashboard corpus workflow once with mode=full');
 
 // A repository can turn private after the corpus was built. Every build lists the owners'
 // public repositories again; a corpus name not on that list (renamed or transferred) is

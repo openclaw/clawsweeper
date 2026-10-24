@@ -212,7 +212,7 @@ export async function exportWorkerRecords(
 // into its private staging tree before fetching the next page; the index keeps
 // revision ordering and the cold-repository identity bound without retaining
 // reports that have already been written.
-async function visitWorkerRecords(
+export async function visitWorkerRecords(
   options: ExportWorkerRecordsOptions,
   visit: (record: WorkerRecord) => void,
 ) {
@@ -308,6 +308,11 @@ type MaterializeWorkerRecordsOptions = {
   webhookSecret: string;
   repoSlugs: readonly string[];
   cacheRoot?: string;
+  // Readers that need only some sections (the dashboard corpus reads items and
+  // closed) drop the rest from the snapshot copy and never replay them.
+  sections?: readonly RecordSection[];
+  // Coverage manifests list canonical items; readers without one skip the listing.
+  trackCoverage?: boolean;
   fetch?: typeof globalThis.fetch;
   log?: (line: string) => void;
 };
@@ -381,6 +386,11 @@ async function materializeRecords(
             fetch: options.fetch,
           });
           cpSync(cached.treeRoot, stagedRepoRoot, { recursive: true });
+          for (const section of RECORD_SECTIONS) {
+            if (options.sections && !options.sections.includes(section)) {
+              rmSync(path.join(stagedRepoRoot, section), { force: true, recursive: true });
+            }
+          }
           snapshotBytes = storedSnapshot.bytes;
           snapshotCache = cached.cache;
         } else {
@@ -392,6 +402,7 @@ async function materializeRecords(
             webhookSecret: options.webhookSecret,
             repoSlug,
             sinceRevision: storedSnapshot?.revisionWatermark ?? 0,
+            ...(options.sections ? { sections: options.sections } : {}),
             ...(storedSnapshot ? {} : { maxRecords: coldRecordLimit }),
             fetch: options.fetch,
           },
@@ -412,12 +423,15 @@ async function materializeRecords(
           }
           throw error;
         });
-        const coverageTrackedItemIds = await fetchWorkerCanonicalItemIds({
-          baseUrl: options.baseUrl,
-          webhookSecret: options.webhookSecret,
-          repoSlug,
-          fetch: options.fetch,
-        });
+        const coverageTrackedItemIds =
+          options.trackCoverage === false
+            ? []
+            : await fetchWorkerCanonicalItemIds({
+                baseUrl: options.baseUrl,
+                webhookSecret: options.webhookSecret,
+                repoSlug,
+                fetch: options.fetch,
+              });
         repositories[repoSlug] = {
           revision: journal.revision,
           exportStartRevision: journal.exportStartRevision,
