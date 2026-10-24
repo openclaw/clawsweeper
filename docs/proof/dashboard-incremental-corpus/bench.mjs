@@ -35,10 +35,10 @@ try {
   const state = path.join(root, "seed");
   const now = Date.now();
   const at = new Date(now).toISOString();
-  const cursor = { schemaVersion: 1, sections: ["items", "closed"], fullRebuildAt: at, refreshedAt: at, repositories: {} };
+  const revisions = {};
   const visibility = {};
   for (let index = 0; index < repositories; index++) {
-    cursor.repositories["openclaw-repo" + index] = { revision: 1000 + index, refreshedAt: at, source: "full" };
+    revisions["openclaw-repo" + index] = 1000 + index;
     visibility["openclaw/repo" + index] = { public: true, checkedAt: at };
     for (const section of ["items", "closed"])
       mkdirSync(path.join(state, "records", "openclaw-repo" + index, section), { recursive: true });
@@ -75,9 +75,22 @@ try {
     ].join("\n");
     writeFileSync(path.join(state, "records", "openclaw-repo" + repo, archived ? "closed" : "items", number + ".md"), content);
   }
-  writeFileSync(path.join(state, "cursor.json"), JSON.stringify(cursor));
   const treeBytes = Number(execFileSync("du", ["-sb", path.join(state, "records")], { encoding: "utf8" }).split("\t")[0]);
 
+  // The cursor format of each checkout; the pre-simplification baseline (f9c158f0ad and earlier)
+  // kept per-repository objects with section and timestamp metadata.
+  const cursorFor = (checkout) =>
+    readFileSync(path.join(checkout, "scripts/dashboard-corpus.ts"), "utf8").includes("CORPUS_STATE_SCHEMA_VERSION")
+      ? {
+          schemaVersion: 1,
+          sections: ["items", "closed"],
+          fullRebuildAt: at,
+          refreshedAt: at,
+          repositories: Object.fromEntries(
+            Object.entries(revisions).map(([slug, revision]) => [slug, { revision, refreshedAt: at, source: "full" }]),
+          ),
+        }
+      : { schemaVersion: 1, repositories: revisions };
   const timings = {};
   const corpora = {};
   function run(name, checkout, phase, args) {
@@ -95,6 +108,7 @@ try {
       const out = path.join(root, "out-" + name);
       rmSync(live, { recursive: true, force: true });
       cpSync(state, live, { recursive: true });
+      writeFileSync(path.join(live, "cursor.json"), JSON.stringify(cursorFor(checkout)));
       mkdirSync(out, { recursive: true });
       writeFileSync(path.join(out, "visibility.json"), JSON.stringify(visibility));
       run(name, checkout, "seal", ["scripts/dashboard-corpus.ts", "pack", "--state", live, "--archive", archive]);
