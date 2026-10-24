@@ -246,14 +246,17 @@ test("a write that lands between export pages is never lost", async (t) => {
   await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
   for (const id of [1, 2, 3]) store.write("openclaw-alpha", "items", id, `item ${id} v2`);
   const firstWatermark = store.revision;
+  // Pages are counted across refreshes: write between this refresh's first and second page.
+  const secondPage = store.exportPage + 2;
   store.beforeExportPage = (page) => {
-    if (page === 2) {
+    if (page === secondPage) {
       store.write("openclaw-alpha", "items", 1, "item 1 v3 (written mid-export)");
       store.write("openclaw-alpha", "closed", 8, "closed mid-export");
     }
   };
   await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "incremental" });
   store.beforeExportPage = undefined;
+  assert.equal(store.revision, firstWatermark + 2);
   // The cursor is the first page's watermark, so the next refresh replays the mid-export writes.
   assert.equal(readCorpusCursor(state)!.repositories["openclaw-alpha"], firstWatermark);
   await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "incremental" });
