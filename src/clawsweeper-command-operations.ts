@@ -16,8 +16,13 @@ import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.js";
 import { createApplyActionLedger } from "./clawsweeper-apply-ledger.js";
 import { boolArg, numberArg, stringArg, type Args } from "./clawsweeper-args.js";
 import { createFailedReviewRetryWorkflow } from "./clawsweeper-failed-review-retry.js";
-import { expireReviewStartStatusLease } from "./clawsweeper-review-comment-state.js";
+import {
+  expireReviewStartStatusLease,
+  losslessReviewComment,
+} from "./clawsweeper-review-comment-state.js";
 import { ReviewLeaseSupersededError } from "./clawsweeper-review-comment-leases.js";
+import { backgroundReviewFromEnv } from "./clawsweeper-review-lease.js";
+import { clearInPlaceReviewStartStatus, trailingHtmlComments } from "./review-comment-markers.js";
 import type {
   ExactReviewQueueAuthority,
   ExpectedIssueSourceRevisionOptions,
@@ -102,6 +107,7 @@ interface CreateCommandOperationsDependencies {
     purpose?: "review" | "apply";
     queueAuthority?: ExactReviewQueueAuthority | null;
     allowSupersededLeaseCleanup?: boolean;
+    backgroundReview?: boolean;
   }) => ReviewStartStatusCommentResult;
   reconcileFolders: (options: {
     itemsDir: string;
@@ -239,10 +245,17 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
       throw new UserFacingCommandError("--item-number and --comment-id must be positive integers.");
     }
     const path = `repos/${targetRepo()}/issues/comments/${commentId}`;
-    const comment = ghJson<{ body?: string; user?: { login?: string } }>(["api", path]);
-    const body = comment.body ?? "";
-    if (!CLAWSWEEPER_BOT_LOGINS.has(comment.user?.login ?? "")) return;
-    const expired = expireReviewStartStatusLease(body, new Date().toISOString(), itemNumber);
+    const comment = losslessReviewComment(commentId);
+    if (!comment) return;
+    const body = typeof comment.body === "string" ? comment.body : "";
+    if (!CLAWSWEEPER_BOT_LOGINS.has(String((comment.user as { login?: string })?.login ?? "")))
+      return;
+    const releaseOwner = stringArg(args.release_owner, "");
+    const startedMarker = trailingHtmlComments(body).at(-2) ?? "";
+    if (releaseOwner && startedMarker.match(/\bowner=([^\s>]+)/)?.[1] !== releaseOwner) return;
+    const expired = releaseOwner
+      ? clearInPlaceReviewStartStatus(body, itemNumber)
+      : expireReviewStartStatusLease(body, new Date().toISOString(), itemNumber);
     if (expired !== body) {
       ghWithRetry(["api", path, "--method", "PATCH", "-f", `body=${expired}`]);
     }
@@ -310,6 +323,7 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
         shardIndex: 0,
         shardCount: 1,
         queueAuthority: reservationAuthority,
+        backgroundReview: backgroundReviewFromEnv(),
         allowSupersededLeaseCleanup:
           item.kind !== "pull_request" || Boolean(queueAuthority?.sourceHeadSha),
       });

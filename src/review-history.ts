@@ -1,3 +1,5 @@
+import { clearInPlaceReviewStartStatus } from "./review-comment-markers.js";
+
 export interface ReviewHistoryCycle {
   reviewedAt: string;
   sha: string;
@@ -514,6 +516,7 @@ export function reviewRankUpMovesForReviewer(body: string) {
 }
 
 export function reviewHistoryCycleFromCommentBody(body: string): ReviewHistoryCycle | null {
+  body = clearInPlaceReviewStartStatus(body);
   if (
     !body.trim() ||
     body.includes(REVIEW_START_PLACEHOLDER) ||

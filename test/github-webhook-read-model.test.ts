@@ -21,6 +21,7 @@ import { currentReviewRevision } from "../dist/clawsweeper-report-actions.js";
 import { githubTest, installGhFixture } from "./github-runtime-fixture.ts";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createCommandOperations } from "../dist/clawsweeper-command-operations.js";
+import { withQuietReviewStartStatusLease } from "../dist/clawsweeper-review-comment-state.js";
 
 const secret = "github-read-model-test-secret";
 const repository = {
@@ -31,6 +32,49 @@ const repository = {
   fork: false,
   has_issues: true,
 };
+
+test("read model discovers and retires an in-place review lease through comment edits", async () => {
+  const now = "2026-08-14T10:00:00Z";
+  const original = "Codex review: keep open.\n\n<!-- clawsweeper-review item=77 -->";
+  const body = withQuietReviewStartStatusLease(original, {
+    number: 77,
+    kind: "issue",
+    title: "fixture",
+    headSha: "a".repeat(64),
+    startedAt: now,
+    leaseExpiresAt: "2026-08-14T11:00:00Z",
+    leaseOwner: "fixture",
+  });
+  const store = new GithubWebhookReadModelStore(new MemoryDurableStorage());
+  store.ensureSchemaSync();
+  for (const [index, text] of [body, original].entries()) {
+    const at = `2026-08-14T10:0${index}:00Z`;
+    store.ingest(
+      requiredDelivery("issue_comment", `quiet-${index}`, at, {
+        action: "edited",
+        repository,
+        issue: issue(77, "fixture", at),
+        comment: {
+          id: 123,
+          body: text,
+          updated_at: at,
+          user: { login: "clawsweeper[bot]", type: "Bot" },
+        },
+      }),
+      Date.parse(at),
+    );
+    store.repair(
+      { repository: repository.full_name, repair_kind: "placeholders", objects: [] },
+      Date.parse(at),
+    );
+    const result = await store.readPlaceholders(
+      { repository: repository.full_name, state: "open" },
+      Date.parse(at),
+    );
+    assert.equal(result.usable, true);
+    assert.equal((result.candidates as unknown[]).length, index === 0 ? 1 : 0);
+  }
+});
 
 test("raw PR webhooks preserve the Issues API discriminator and earlier marker metadata", async () => {
   const now = "2026-08-14T10:06:00.000Z";
