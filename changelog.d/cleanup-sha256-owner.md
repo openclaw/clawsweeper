@@ -1,1 +1,0 @@
-- Route single-shot SHA-256 hex digests through `src/content-hash.ts` instead of 56 hand-rolled `createHash("sha256")` chains; digests are byte-identical.

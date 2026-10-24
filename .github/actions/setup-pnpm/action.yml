@@ -3,10 +3,10 @@ description: Setup Node, install pnpm dependencies, and optionally run a build s
 inputs:
   node-version:
     description: Node.js version.
-    default: "24"
+    default: "24.22.1"
   pnpm-version:
     description: pnpm version to activate through Corepack.
-    default: "12.4.1"
+    default: "12.15.0"
   working-directory:
     description: Directory containing package.json.
     default: "."

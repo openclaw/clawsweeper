@@ -1,1 +1,0 @@
-- Record token-only review-attempt usage and duration in Analytics Engine through signed direct Worker ingestion, with operator queries for daily token costs and per-repository/lane duration percentiles.

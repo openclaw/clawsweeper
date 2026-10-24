@@ -1,1 +1,0 @@
-- Identify failed canonical verification requests with bounded stage, status, attempt and failure-kind diagnostics without exposing record bodies or credentials.

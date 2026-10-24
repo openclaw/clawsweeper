@@ -1,1 +1,0 @@
-- Stream explicit R2 ledger/assets hydration one listing page at a time instead of retaining every object descriptor in memory before downloads start.

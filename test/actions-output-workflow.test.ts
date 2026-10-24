@@ -88,6 +88,7 @@ function valueFor(name: string): string {
     COMPLETION_KIND: "published",
     REASON_CODE: "publication_applied",
     ARTIFACT_NAME: "exact-review-123-1",
+    ARTIFACT_ID: "123",
     DIRECT_OUTCOME: "direct-outcome.json",
     LIVE_PROCEEDED: "false",
     LIVE_TERMINAL_NOOP: "false",
@@ -109,7 +110,7 @@ function valueFor(name: string): string {
     INPUTS_TARGET_DIR: "target",
     INPUTS_STATE_PATH: "state with spaces",
     PIN_FILE: "target/extensions/codex/package.json",
-    INPUTS_PNPM_VERSION: "12.4.1",
+    INPUTS_PNPM_VERSION: "12.15.0",
     INPUTS_CODEX_HOME: "codex home",
     INPUTS_OPENCLAW_SOURCE_REF: "a".repeat(40),
     STATE_COORDINATOR_URL: "https://queue.invalid",
@@ -156,6 +157,7 @@ function valueFor(name: string): string {
     COMMAND_STATUS_REQUIRE_TERMINAL_FENCE: "true",
     CLAWSWEEPER_APPLY_TOKEN_MINTED_AT_MS: String(Date.now()),
     EVENT_NAME: "workflow_dispatch",
+    CLAWSWEEPER_EXPECTED_DEPLOY_SHA: "a".repeat(40),
     WORKFLOW_EVENT_SCHEDULE: "",
     SCHEDULED_COMMENT_SYNC: "false",
   };
@@ -395,6 +397,7 @@ case "$1" in
   "$FIXTURE_ROOT/action/validate-install.mjs"|"$FIXTURE_ROOT/action/configure-api-context.mjs"|dist/intake-triage-workflow.js|dist/github-egress-observer-cli.js|dist/review-placeholder-recovery.js|dist/repair/state-repo-size.js|dist/repair/manual-review-enqueue.js) exit 0 ;;
   scripts/build-data.ts|scripts/dashboard-corpus.ts|scripts/prepare-exact-review-batch.mjs|scripts/exact-review-dead-letter-operator.mjs|scripts/stuck-queued-run-remediation.mjs|scripts/queue-storage-census.mjs|scripts/canonical-record-verification.ts|scripts/review-usage-operator.mjs|scripts/publish-apply-observability.mjs|./scripts/prepare-worker-record-cache.ts|--max-old-space-size=12288) exit 0 ;;
   scripts/worker-records.ts) echo '{"ok":true}' ;;
+  scripts/dashboard-smoke.mjs) exit 0 ;;
   *) echo "Unexpected node invocation: $*" >&2; exit 97 ;;
 esac
 exit 0

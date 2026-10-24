@@ -1,1 +1,0 @@
-- Collect bounded follow-up pages of active workflow runs so backlogs above 100 do not unnecessarily hide operational health.

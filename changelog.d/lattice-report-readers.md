@@ -1,1 +1,0 @@
-- Make the report readers (`clawsweeper-report-parser`, `clawsweeper-record-metadata`, `clawsweeper-report-helpers`) plain module exports that callers import, instead of runtime factories threaded through eight dependency interfaces and the runtime spreads.

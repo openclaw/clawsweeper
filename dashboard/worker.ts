@@ -4667,9 +4667,9 @@ async function exactReviewQueueFetch(
   path: string,
   request?: Request,
   service: "exact_review_queue" | "github_etag_cache" = "exact_review_queue",
+  traceId = newExactReviewQueueTraceId(),
 ) {
   const body = request ? await request.text() : undefined;
-  const traceId = newExactReviewQueueTraceId();
   const endpoint = exactReviewQueueEndpointTemplate(path);
   const preparedHostedTarget = request?.headers.get(HOSTED_TARGET_ELIGIBILITY_HEADER);
   const authenticatedBodyFingerprint = request?.headers.get(
@@ -4717,34 +4717,48 @@ async function exactReviewQueueFetch(
       return { response, malformedServerResponse: true };
     }
   } catch (error) {
-    const failure = objectValue(error);
-    const remote = failure.remote === true;
-    const retryable = failure.retryable === true;
-    const overloaded = failure.overloaded === true;
     console.error(`${service}_request_failed`, {
       trace_id: traceId,
       endpoint,
       phase: "request",
       transport: "throw",
       upstream_status: null,
-      remote,
-      retryable,
-      overloaded,
-      failure_category: overloaded
-        ? "platform_overloaded"
-        : retryable
-          ? "platform_retryable"
-          : remote
-            ? "remote_exception"
-            : "request_exception",
+      ...queuePlatformFailure(error),
     });
     throw error;
   }
 }
 
+function queuePlatformFailure(error: unknown) {
+  const failure = objectValue(error);
+  const remote = failure.remote === true;
+  const retryable = failure.retryable === true;
+  const overloaded = failure.overloaded === true;
+  return {
+    remote,
+    retryable,
+    overloaded,
+    failure_category: overloaded
+      ? "platform_overloaded"
+      : retryable
+        ? "platform_retryable"
+        : remote
+          ? "remote_exception"
+          : "request_exception",
+  };
+}
+
 async function exactReviewQueueRequest(env, path, request?: Request) {
+  const maintenance = path === "/canonical-bodies/maintenance";
+  const traceId = newExactReviewQueueTraceId();
+  const respond = (response: Response) => {
+    if (!maintenance) return response;
+    const headers = new Headers(response.headers);
+    headers.set(EXACT_REVIEW_QUEUE_TRACE_HEADER, traceId);
+    return new Response(response.body, { status: response.status, headers });
+  };
   const queue = exactReviewQueueStub(env);
-  if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
+  if (!queue) return respond(json({ error: "exact_review_queue_not_configured" }, 503));
   try {
     const { response, malformedServerResponse } = await statusOperation(env, "queue", (signal) =>
       exactReviewQueueFetch(
@@ -4753,13 +4767,35 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
         signal
           ? new Request(request || `https://clawsweeper-exact-review-queue${path}`, { signal })
           : request,
+        "exact_review_queue",
+        traceId,
       ),
     );
-    return malformedServerResponse
-      ? json({ error: "exact_review_queue_unavailable" }, response.status)
-      : response;
-  } catch {
-    return json({ error: "exact_review_queue_unavailable" }, 500);
+    return respond(
+      malformedServerResponse
+        ? json(
+            {
+              error: "exact_review_queue_unavailable",
+              ...(maintenance ? { failure_category: "malformed_server_response" } : {}),
+            },
+            response.status,
+          )
+        : response,
+    );
+  } catch (error) {
+    // Only the authenticated maintenance owner receives closed platform metadata.
+    // Remote/retryable are observations, not instructions to retry a mutation.
+    return respond(
+      json(
+        {
+          error: "exact_review_queue_unavailable",
+          ...(maintenance
+            ? { failure_category: queuePlatformFailure(error).failure_category }
+            : {}),
+        },
+        500,
+      ),
+    );
   }
 }
 

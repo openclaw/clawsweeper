@@ -1,1 +1,0 @@
-- Read remaining apply, promotion, review-context and live-proof decision fields from the stored review record, retaining legacy-report fallback and rejecting unreadable records before acting.

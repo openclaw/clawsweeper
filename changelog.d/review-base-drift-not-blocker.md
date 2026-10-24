@@ -1,1 +1,0 @@
-- Stop asking authors to sync a cleanly mergeable PR with the target branch: base drift blocks only on a GitHub conflict, overlapping hunks, or a named target-branch change the PR depends on.

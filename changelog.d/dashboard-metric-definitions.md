@@ -1,1 +1,0 @@
-- Make dashboard metric labels distinguish latest-reviewed items, model execution time and reviewer assessments; disclose recorded run-history days and avoid treating higher activity as better performance.

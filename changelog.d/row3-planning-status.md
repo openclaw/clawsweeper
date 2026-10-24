@@ -1,1 +1,0 @@
-- Simplify dashboard rendering and planning activity presentation through shared production imports without changing review selection or report loading.

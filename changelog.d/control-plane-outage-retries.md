@@ -1,1 +1,0 @@
-- Retry workflow control-plane calls through a 15-30 second Worker deploy or Durable Object reset instead of failing finished reviews: `control_plane_curl` now allows up to six attempts within 62 seconds of total backoff (previously four attempts within 14 seconds), with `Retry-After` waits drawn from the same budget.

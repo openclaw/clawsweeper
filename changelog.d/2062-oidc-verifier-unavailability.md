@@ -1,1 +1,0 @@
-- Distinguish keyless dispatcher token rejection from transient OIDC verifier failures, returning retryable 503 responses for JWKS outages and failing dispatcher runs on timeouts or throttling.

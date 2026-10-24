@@ -3,6 +3,10 @@ import { createHmac } from "node:crypto";
 import test from "node:test";
 
 import { ExactReviewBatchQueueClient } from "../../dist/repair/exact-review-batch-queue-client.js";
+import {
+  ExactReviewBatchQueueRequestError,
+  ExactReviewBatchQueueTransportError,
+} from "../../dist/repair/exact-review-queue-transport-error.js";
 
 const now = Date.UTC(2026, 8, 2);
 const payload =
@@ -13,6 +17,84 @@ const heartbeat = {
   leaseExpiresAt: new Date(now + 120_000).toISOString(),
   items: [],
 };
+
+for (const status of [409, 500]) {
+  test(`canonical maintenance retains typed HTTP ${status} diagnostics without retry`, async (t) => {
+    const trace = "12345678-1234-4123-8123-123456789abc";
+    const { client, calls } = fixture(t, () =>
+      Response.json(
+        {
+          error: "canonical_tiering_deployment_mismatch",
+          failure_category: "platform_overloaded",
+          private: "private-response-sentinel",
+        },
+        { status, headers: { "x-clawsweeper-exact-review-trace": trace } },
+      ),
+    );
+    await assert.rejects(client.maintainCanonicalBodies({ action: "migrate" }), (error) => {
+      assert.ok(error instanceof ExactReviewBatchQueueRequestError);
+      assert.equal(error instanceof ExactReviewBatchQueueTransportError, status === 500);
+      assert.equal(error.reason, `HTTP_${status}`);
+      assert.deepEqual(error.details, {
+        status,
+        code: "canonical_tiering_deployment_mismatch",
+        category: "platform_overloaded",
+        traceId: trace,
+      });
+      assert.doesNotMatch(error.message, /private-response-sentinel/);
+      return true;
+    });
+    assert.equal(calls.length, 1);
+  });
+}
+
+test("canonical maintenance distinguishes invalid JSON from unknown transport failures", async (t) => {
+  const { client, calls } = fixture(t, (attempt) => {
+    if (attempt === 1)
+      return new Response("private-response-sentinel", {
+        headers: {
+          "x-clawsweeper-exact-review-trace": "12345678-1234-4123-8123-123456789abc",
+        },
+      });
+    throw new Error("https://private.example.test/token private-transport-sentinel");
+  });
+  await assert.rejects(client.maintainCanonicalBodies({}), (error) => {
+    assert.ok(error instanceof ExactReviewBatchQueueRequestError);
+    assert.equal(error.reason, "invalid_response");
+    assert.deepEqual(error.details, {
+      status: 200,
+      traceId: "12345678-1234-4123-8123-123456789abc",
+    });
+    assert.doesNotMatch(error.message, /private/);
+    return true;
+  });
+  await assert.rejects(client.maintainCanonicalBodies({}), (error) => {
+    assert.ok(error instanceof ExactReviewBatchQueueTransportError);
+    assert.equal(error.reason, "network_error");
+    assert.doesNotMatch(error.message, /private/);
+    return true;
+  });
+  assert.equal(calls.length, 2);
+});
+
+test("canonical maintenance times out once without preserving exception text", async (t) => {
+  const { client, calls } = fixture(
+    t,
+    (_attempt, init) =>
+      new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+      }),
+  );
+  const rejected = assert.rejects(client.maintainCanonicalBodies({}), (error) => {
+    assert.ok(error instanceof ExactReviewBatchQueueTransportError);
+    assert.equal(error.reason, "timeout");
+    return true;
+  });
+  await flush();
+  t.mock.timers.tick(20_000);
+  await rejected;
+  assert.equal(calls.length, 1);
+});
 const dispatchedClaim = {
   claimId: "claim-proof",
   leaseOwner: "worker-proof",

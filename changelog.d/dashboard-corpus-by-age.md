@@ -1,1 +1,0 @@
-- Refresh the dashboard corpus by its age instead of one exact cron line: a scheduled build in the 00 or 12 UTC hour refreshes a corpus over 11 hours old, and any scheduled build refreshes one over 13 hours old. GitHub had delayed and dropped the 00:07 UTC run, so review totals went stale.

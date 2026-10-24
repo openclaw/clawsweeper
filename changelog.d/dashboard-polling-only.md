@@ -1,1 +1,0 @@
-- Use bounded GitHub polling exclusively for dashboard workflow health, retiring the unused webhook-source switch and repair path while preserving webhook ingress and queue APIs.

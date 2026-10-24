@@ -36,7 +36,7 @@ pnpm run build
 pnpm run check
 ```
 
-Corepack reads the pinned `pnpm@12.4.1` version from `package.json`; do not
+Corepack reads the pinned `pnpm@12.15.0` version from `package.json`; do not
 replace it with an unpinned global pnpm command in canonical examples.
 
 Workflow-intake fixtures require Bash 4+ for `mapfile`. macOS `/bin/bash` 3.2 is
@@ -113,7 +113,11 @@ not as a handoff.
    directly.
 
 `status: ⏳ waiting on author` or `status: 📣 needs proof` means the next action
-belongs to the author. Let the normal queue finish after a current re-review;
+belongs to the author. `status: ⏳ waiting on maintainer` instead means only
+explicit maintainer approvals or product decisions remain; the PR is still
+blocked from merge, not approved. Legacy reviews without typed maintainer
+ownership need a fresh review rather than a prose-based relabel.
+Let the normal queue finish after a current re-review;
 repeated commands before the requested changes are present add noise rather
 than evidence.
 

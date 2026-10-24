@@ -972,6 +972,10 @@ function rethrowQueueFailure(
   throw error;
 }
 
+type CanonicalMaintenanceContext = {
+  phase: "initialize" | "plan" | "prepare" | "commit" | "activate" | "requalify";
+};
+
 export class ExactReviewQueue {
   private state;
   private storage;
@@ -1117,12 +1121,28 @@ export class ExactReviewQueue {
     hostedTargetMetadataToken = exactReviewHostedTargetMetadataTokenSource(this.env),
   ) {
     const mutating = request.method !== "GET";
+    const maintenance: CanonicalMaintenanceContext | null =
+      request.method === "POST" && new URL(request.url).pathname === "/canonical-bodies/maintenance"
+        ? { phase: "initialize" }
+        : null;
     if (mutating) this.invalidateReadCaches();
     try {
-      return await this.handleFetch(request, hostedTargetMetadataToken);
+      return await this.handleFetch(request, hostedTargetMetadataToken, maintenance);
     } catch (error) {
       // A failed transaction may have rolled back the retention pass.
       this.reviewRunTelemetryPrunedAt = null;
+      if (maintenance) {
+        console.error("canonical_tiering_failed", {
+          phase: maintenance.phase,
+          trace_id: exactReviewQueueTraceId(request.headers.get(EXACT_REVIEW_QUEUE_TRACE_HEADER)),
+          failure_category:
+            error instanceof CanonicalBodyUnavailableError
+              ? "body_unavailable"
+              : error instanceof RecordExportConsistencyError
+                ? "record_export_consistency"
+                : "handler_exception",
+        });
+      }
       rethrowQueueFailure(error, "fetch", request);
     } finally {
       // Mutators can yield to a dashboard poll while awaiting external work.
@@ -1133,6 +1153,7 @@ export class ExactReviewQueue {
   private async handleFetch(
     request: Request,
     hostedTargetMetadataToken: HostedTargetMetadataToken,
+    maintenance: CanonicalMaintenanceContext | null,
   ) {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/lifecycle-audit/inventory") {
@@ -1172,6 +1193,7 @@ export class ExactReviewQueue {
     await this.ensureReady();
     this.cleanupLegacyCompatibilitySync();
     if (request.method === "POST" && url.pathname === "/canonical-bodies/maintenance") {
+      if (maintenance) maintenance.phase = "plan";
       const body = objectValue(await request.json().catch(() => null));
       const deploymentSha = String(this.env.CLAWSWEEPER_DEPLOY_SHA || "");
       if (body.expectedDeploymentSha !== deploymentSha || !/^[a-f0-9]{40}$/.test(deploymentSha))
@@ -1185,6 +1207,7 @@ export class ExactReviewQueue {
         if (body.action === "requalify-preview") return json({ ok: true, ...preview });
         if (body.execute !== true || body.reviewedPreviewSha256 !== preview.sha256)
           return json({ error: "canonical_tiering_reviewed_preview_required" }, 409);
+        if (maintenance) maintenance.phase = "requalify";
         return json({
           ok: true,
           checkpoint: this.directPublicationStore.requalifyTieringSync(preview),
@@ -1198,15 +1221,19 @@ export class ExactReviewQueue {
       if (body.action === "preview") return json({ ok: true, ...preview });
       if (body.execute !== true || body.reviewedPreviewSha256 !== preview.sha256)
         return json({ error: "canonical_tiering_reviewed_preview_required" }, 409);
-      if (body.action === "activate")
+      if (body.action === "activate") {
+        if (maintenance) maintenance.phase = "activate";
         return json({
           ok: true,
           checkpoint: this.directPublicationStore.activateTieringSync(preview, Date.now()),
         });
+      }
       if (body.action === "migrate") {
+        if (maintenance) maintenance.phase = "prepare";
         const pass = await this.directPublicationStore.prepareTieringPass(preview.progress);
         if (String(this.env.CLAWSWEEPER_DEPLOY_SHA || "") !== deploymentSha)
           return json({ error: "canonical_tiering_deployment_mismatch" }, 409);
+        if (maintenance) maintenance.phase = "commit";
         return json({
           ok: true,
           checkpoint: this.directPublicationStore.commitTieringPassSync(pass, Date.now()),

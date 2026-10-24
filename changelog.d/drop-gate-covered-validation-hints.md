@@ -1,1 +1,0 @@
-- Let issue fixes reach their trusted changed gate when well-formed planner validation hints are not allowlisted; record redacted dropped hints in the run summary while preserving shell-injection and mutation tripwires.

@@ -1,1 +1,0 @@
-- Stop unused Bay telemetry writes and recovery after the 2026-10-13 06:55 UTC `/lifecycle/router-receipt` spent 41.6 seconds wall time and 15.0 seconds CPU before a Durable Object storage timeout/reset; preserve canonical lifecycle records, publication outcomes, and Overview queue projections.

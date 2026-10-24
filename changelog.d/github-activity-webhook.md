@@ -1,1 +1,0 @@
-- Send eligible issue, comment, and pull-request activity from the signed GitHub App webhook directly to the ClawSweeper agent behind a deployment gate, sharing the relay's filters and message format, with a bounded best-effort retry budget; retain relay delivery for unsubscribed event families and skip covered relay notifications after cutover.

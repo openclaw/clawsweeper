@@ -1,1 +1,0 @@
-- Treat an exact review target that closes during setup as an empty selection so the workflow can verify its terminal state without reporting a model failure.

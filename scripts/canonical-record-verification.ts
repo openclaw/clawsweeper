@@ -33,10 +33,12 @@ type Options = {
   deploymentSha: string;
   operatorSha: string;
   planSha256: string;
-  baselineJson?: string;
   fetch?: typeof globalThis.fetch;
   attemptMs?: number;
-};
+} & (
+  | { baselineJson?: undefined; expectedBaselineSha256?: undefined }
+  | { baselineJson: string; expectedBaselineSha256: string }
+);
 
 const RECOVERY = {
   invalid_input:
@@ -158,9 +160,12 @@ function parseBaseline(json: string, options: Options): Baseline {
     "invalid baseline",
   );
   requireThat(
+    typeof input.operatorSha === "string" && /^[a-f0-9]{40}$/.test(input.operatorSha),
+    "invalid baseline producer",
+  );
+  requireThat(
     input.repoSlug === options.repoSlug &&
       input.deploymentSha === options.deploymentSha &&
-      input.operatorSha === options.operatorSha &&
       input.planSha256 === options.planSha256,
     "baseline identity mismatch",
     "plan_mismatch",
@@ -183,11 +188,17 @@ function parseBaseline(json: string, options: Options): Baseline {
     version: 1,
     repoSlug: options.repoSlug,
     deploymentSha: options.deploymentSha,
-    operatorSha: options.operatorSha,
+    operatorSha: input.operatorSha,
     planSha256: options.planSha256,
     records,
   };
-  requireThat(hash(JSON.stringify(baseline)) === envelope.sha256, "baseline checksum mismatch");
+  // The saved producer owns these bytes. A different verifier must neither
+  // relabel them nor trust a checksum supplied only by the same envelope.
+  const checksum = hash(JSON.stringify(baseline));
+  requireThat(
+    checksum === envelope.sha256 && checksum === options.expectedBaselineSha256,
+    "baseline checksum mismatch",
+  );
   return baseline;
 }
 
@@ -221,7 +232,15 @@ export async function verifyCanonicalRecords(options: Options) {
   );
   let prior: Baseline | undefined;
   try {
-    prior = options.baselineJson ? parseBaseline(options.baselineJson, options) : undefined;
+    requireThat(
+      options.baselineJson === undefined
+        ? options.expectedBaselineSha256 === undefined
+        : typeof options.expectedBaselineSha256 === "string" &&
+            /^[a-f0-9]{64}$/.test(options.expectedBaselineSha256),
+      "invalid expected baseline checksum",
+    );
+    prior =
+      options.baselineJson === undefined ? undefined : parseBaseline(options.baselineJson, options);
   } catch (error) {
     if (error instanceof VerificationError && error.category === "plan_mismatch") throw error;
     throw new VerificationError(
@@ -453,6 +472,9 @@ export async function verifyCanonicalRecords(options: Options) {
   return {
     baseline,
     sha256: hash(JSON.stringify(baseline)),
+    executionOperatorSha: options.operatorSha,
+    comparedBaselineSha256: prior ? hash(JSON.stringify(prior)) : null,
+    comparedBaselineOperatorSha: prior?.operatorSha ?? null,
     phase: prior ? "recheck" : "baseline",
     canonicalVerified: records.filter((record) => record.coverage === "canonical").length,
     exportOnly: records.filter((record) => record.coverage === "export-only").length,
@@ -477,7 +499,9 @@ async function main() {
     "invalid_input",
   );
   requireThat(
-    phase === "baseline" ? !env.VERIFICATION_BASELINE : !!env.VERIFICATION_BASELINE,
+    phase === "baseline"
+      ? !env.VERIFICATION_BASELINE && !env.EXPECTED_BASELINE_SHA256
+      : !!env.VERIFICATION_BASELINE,
     "baseline does not match phase",
     "invalid_input",
   );
@@ -488,7 +512,12 @@ async function main() {
     deploymentSha: env.EXPECTED_DEPLOYMENT_SHA ?? "",
     operatorSha: env.GITHUB_SHA ?? "",
     planSha256: env.REVIEWED_PLAN_SHA256 ?? "",
-    ...(phase === "recheck" ? { baselineJson: env.VERIFICATION_BASELINE! } : {}),
+    ...(phase === "recheck"
+      ? {
+          baselineJson: env.VERIFICATION_BASELINE!,
+          expectedBaselineSha256: env.EXPECTED_BASELINE_SHA256 ?? "",
+        }
+      : {}),
   });
   // Only normalized metadata reaches logs or the summary; bodies stay in memory.
   const output = JSON.stringify(result);

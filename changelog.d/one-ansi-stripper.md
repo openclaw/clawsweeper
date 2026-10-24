@@ -1,1 +1,0 @@
-- Share ANSI stripping across repair command, GitHub, and Codex diagnostics through the repair text utility owner.
