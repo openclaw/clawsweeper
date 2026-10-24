@@ -1,1 +1,0 @@
-- Exclude one strictly validated local preflight annotation from PR review content and semantic hashes while preserving human text, raw event guards, and advisory-only trust.

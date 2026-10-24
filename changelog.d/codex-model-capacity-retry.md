@@ -1,1 +1,0 @@
-- Treat "Selected model is at capacity" Codex failures as retryable provider throttling instead of non-retryable execution failures, so reviews retry with backoff during model capacity spikes; the capacity patterns now live in one shared matcher.

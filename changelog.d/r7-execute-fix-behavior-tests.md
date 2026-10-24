@@ -1,1 +1,0 @@
-- Replace the source-text tests of the repair executor with behavior tests that run `dist/repair/execute-fix-artifact.js` against a local Git remote and fake `gh`/`codex`, move its failure classifiers into `execute-fix-policy`, and check the repair workflow ordering through parsed steps; executor behavior is unchanged.

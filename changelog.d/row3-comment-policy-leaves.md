@@ -1,1 +1,0 @@
-- Simplify repository-scoped PR reference parsing and review comment identity and automation wiring without changing durable markers, close safety, or publication behavior.

@@ -1,1 +1,0 @@
-- Read ClawSweeper's commit author name and noreply email from the bot identity module in repair code; the repair workflows now pass only the repository variables, so an unset variable falls back to that one default.

@@ -1,1 +1,0 @@
-- Add bounded, submission-only intake classification through ordinary structured model responses, with raw-field secret scanning and a deadline covering durable intent recording; make the deployment revision timeout test deterministic.

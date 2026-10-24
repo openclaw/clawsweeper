@@ -1,1 +1,0 @@
-- Post-flight's "never closes" rule is now tested on the gh calls a real merge run makes, instead of grepping its source for `"close"`.

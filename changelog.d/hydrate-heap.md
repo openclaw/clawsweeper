@@ -1,1 +1,0 @@
-- Raise the Node heap for record hydration in setup-state to 12 GB, so openclaw-openclaw hydration fits after the review_record backfill (#1874).

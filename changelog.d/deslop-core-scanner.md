@@ -1,1 +1,0 @@
-- Validate the immutable reviewed-attribution policy in the mandatory scanner regression suite instead of repeating policy validation on every scan; retain per-scan native/material checks and validation for supplied test policies.

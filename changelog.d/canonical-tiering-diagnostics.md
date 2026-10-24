@@ -1,1 +1,0 @@
-- Report bounded, redacted canonical-body maintenance failures with transport status, platform category, trace correlation, and last acknowledged migration progress, while preserving existing retry and migration limits.

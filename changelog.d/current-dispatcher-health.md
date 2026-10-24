@@ -1,1 +1,0 @@
-- Distinguish overdue dispatcher retries from active backoff and legitimate queue waits in handoff health.

@@ -1,1 +1,0 @@
-- Add a read-only storage report for the exact-review queue: the **Maintain exact review queue** workflow's new `storage-stats` mode lists each SQLite table's row count and estimated size, and how many full-table Bay tide scans ran since the queue object started. Cloudflare shows only the total size.

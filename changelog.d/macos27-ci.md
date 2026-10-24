@@ -1,1 +1,0 @@
-- Qualify the installed local package on GitHub's macOS 27 Apple Silicon runner.

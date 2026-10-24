@@ -1,1 +1,0 @@
-- Add opt-in local-range preflight summaries to JSON review output, preserving native reports and refusing export when the reviewed source changes.

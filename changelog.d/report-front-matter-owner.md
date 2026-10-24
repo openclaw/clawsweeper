@@ -1,1 +1,0 @@
-- Read and write report front matter and sections through one shared module, so the repair lane no longer reads metadata from fenced report samples and front matter or section writes no longer expand `$&`, `$1` or `` $` `` in stored values.

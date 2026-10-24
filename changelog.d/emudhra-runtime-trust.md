@@ -1,1 +1,0 @@
-- Pin managed Node and native pnpm releases that reject the compromised certificate authority keys.

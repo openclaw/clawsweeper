@@ -1,1 +1,0 @@
-- Scope dashboard and dead-letter GitHub App tokens to explicit repositories and read permissions, and isolate cached tokens by their repository and permission sets.

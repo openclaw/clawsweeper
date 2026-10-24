@@ -1,1 +1,0 @@
-- Move audit runs from `sweep.yml` to `audit.yml`, preserving the six-hour schedules, admission and concurrency; route fanout audits to the dedicated workflow and accept only `target_repo` for manual audits.

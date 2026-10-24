@@ -1,1 +1,0 @@
-- Simplify review source identity and close-decision policy wiring while preserving source-change guards and repository-specific close safety.

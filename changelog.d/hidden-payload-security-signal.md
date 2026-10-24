@@ -1,1 +1,0 @@
-- Keep issues and pull requests with concealed shell payloads open for human security moderation across all repository profiles, including older close proposals.

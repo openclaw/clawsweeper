@@ -1,1 +1,0 @@
-- Read PR proof, ratings, showcase and status labels, merge readiness, and review comments from the saved typed review decision, retaining legacy reports and rejecting unreadable records.
