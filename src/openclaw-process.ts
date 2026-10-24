@@ -125,7 +125,7 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
       OPENCLAW_STATE_DIR: stateDir,
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_WORKSPACE_DIR: options.cwd,
-      // Read-only review metadata protection is independent of native skills.
+      // Read-only review metadata must not acquire optional Git locks.
       GIT_OPTIONAL_LOCKS: "0",
     };
     if (options.roleIsolation) {

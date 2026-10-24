@@ -634,7 +634,7 @@ test("hosted exec startup facts are exact-version framed, not terminal or provid
 
 test("short native-guidance prompt does not change bounded assessment phases or union labels", (t) => {
   const { options } = fixture(t);
-  options.assessment.repositoryReview!.additionalPrompt = "Use the native domain-review skill.";
+  options.assessment.repositoryReview!.additionalPrompt = "Preserve documented compatibility.";
   const labeled = (triagePriority: string, impact: string) =>
     decision({
       triagePriority,
@@ -652,7 +652,7 @@ test("short native-guidance prompt does not change bounded assessment phases or 
     assert.ok(
       jobs.every(
         (job) =>
-          job.options.repositoryReview!.additionalPrompt === "Use the native domain-review skill.",
+          job.options.repositoryReview!.additionalPrompt === "Preserve documented compatibility.",
       ),
     );
     return ++batch === 1 ? [{ decision: first }, { decision: second }] : [{ decision: reconciled }];
@@ -974,20 +974,16 @@ test(
 );
 
 test(
-  "native same-head skills use the actual isolated checkout for parallel mixed runners",
+  "parallel mixed runners retain source CWD, recovery custody and native cleanup",
   { skip: process.platform === "win32" },
   (t) => {
     let cleanupSource = () => {};
     t.after(() => cleanupSource());
     const f = processFixture(t);
     const target = f.options.assessment.openclawDir;
-    const skill = join(target, ".agents/skills/sample/SKILL.md");
+    const contextPath = join(target, "review-context.txt");
     mkdirSync(join(target, ".clawsweeper"));
-    mkdirSync(join(target, ".agents/skills/sample"), { recursive: true });
-    writeFileSync(
-      skill,
-      "---\nname: sample\ndescription: Sample native guidance\n---\nTRUSTED_NATIVE_GUIDANCE\n",
-    );
+    writeFileSync(contextPath, "BASE_REVIEW_CONTEXT\n");
     const plan = {
       reviewers: [
         { runner: "openclaw", model: "fixture/selected" },
@@ -1000,7 +996,7 @@ test(
       join(target, ".clawsweeper/review.json"),
       JSON.stringify({
         version: 1,
-        additionalPrompt: "Use the native sample skill while returning the normal full Decision.",
+        additionalPrompt: "Return the normal full Decision.",
         multiModel: plan,
       }),
     );
@@ -1021,10 +1017,7 @@ test(
     };
     const trusted = commit();
     const config = loadRepositoryReviewConfig(target, trusted)!;
-    writeFileSync(
-      skill,
-      "---\nname: sample\ndescription: Source head override\n---\nUNTRUSTED_HEAD_GUIDANCE\n",
-    );
+    writeFileSync(contextPath, "HEAD_REVIEW_CONTEXT\n");
     const head = commit();
     const owned = join(f.root, "incoming-review-trees");
     mkdirSync(owned);
@@ -1055,11 +1048,11 @@ test(
       'const fs=require("node:fs"),path=require("node:path");',
       'const args=process.argv.slice(2),root=process.env.OPENCLAW_WORKSPACE_DIR,config=JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH,"utf8"));',
       'if(args[0]==="sandbox")process.exit(0); const prompt=fs.readFileSync(args[args.indexOf("--message-file")+1],"utf8"); const probe=config.tools.exec.mode==="deny";',
-      'const source=root,trusted=fs.readFileSync(path.join(root,".agents/skills/sample/SKILL.md"),"utf8");',
-      'const record={probe,root,skills:config.agents.defaults.skills,workspaceOnly:config.tools.fs.workspaceOnly,readOnly:(fs.statSync(path.join(source,"tracked.txt")).mode&0o222)===0,sameHead:trusted.includes("UNTRUSTED_HEAD_GUIDANCE"),cwd:process.cwd(),configuredWorkspace:config.agents.defaults.workspace};',
+      'const source=root,trusted=fs.readFileSync(path.join(root,"review-context.txt"),"utf8");',
+      'const record={probe,root,workspaceOnly:config.tools.fs.workspaceOnly,readOnly:(fs.statSync(path.join(source,"tracked.txt")).mode&0o222)===0,sameHead:trusted.includes("HEAD_REVIEW_CONTEXT"),cwd:process.cwd(),configuredWorkspace:config.agents.defaults.workspace};',
       "fs.appendFileSync(" + JSON.stringify(nativeLog) + ',JSON.stringify(record)+"\\n");',
       'if(probe){const rel=JSON.parse(prompt.match(/^Path: (.+)$/m)[1]),line=Number(prompt.match(/Return exactly line ([0-9]+)/)[1]); const text=fs.readFileSync(path.resolve(root,rel),"utf8").split("\\n")[line-1].trim(); const session=args[args.indexOf("--session-id")+1],file=path.join(process.env.OPENCLAW_STATE_DIR,"agents/main/sessions",session+".jsonl"); fs.mkdirSync(path.dirname(file),{recursive:true}); fs.writeFileSync(file,[{type:"message",message:{role:"assistant",content:[{type:"toolCall",id:"read",name:"read",arguments:{path:rel}}]}},{type:"message",message:{role:"toolResult",toolCallId:"read",toolName:"read",isError:false,content:[{type:"text",text}]}}].map(JSON.stringify).join("\\n")+"\\n"); console.log(JSON.stringify({payloads:[{text}],meta:{stopReason:"stop"}}));}',
-      'else setTimeout(()=>{if(!fs.readFileSync(path.join(root,".agents/skills/sample/SKILL.md"),"utf8").includes("UNTRUSTED_HEAD_GUIDANCE"))process.exit(17);console.log(JSON.stringify({payloads:[{text:' +
+      'else setTimeout(()=>{if(!fs.readFileSync(path.join(root,"review-context.txt"),"utf8").includes("HEAD_REVIEW_CONTEXT"))process.exit(17);console.log(JSON.stringify({payloads:[{text:' +
         JSON.stringify(
           JSON.stringify(closeDecision({ decision: "keep_open", closeReason: "none" })),
         ) +
@@ -1090,14 +1083,10 @@ test(
     );
     assert.equal(new Set(calls.map((call) => call.root)).size, 2);
     for (const call of calls) {
-      assert.equal(call.skills, undefined, "native discovery must not be filtered");
       assert.equal(existsSync(call.root), false);
     }
-    assert.equal(existsSync(join(owned, ".agents")), false);
     assert.ok(
-      readFileSync(join(source, ".agents/skills/sample/SKILL.md"), "utf8").includes(
-        "UNTRUSTED_HEAD_GUIDANCE",
-      ),
+      readFileSync(join(source, "review-context.txt"), "utf8").includes("HEAD_REVIEW_CONTEXT"),
     );
     const registered = f.git("worktree", "list", "--porcelain");
     assert.ok(!registered.includes("clawsweeper-assessments-"));
@@ -1130,8 +1119,7 @@ test(
         (error) => {
           recovered = validationRecoveryRequired(error);
           assert.ok(recovered);
-          // Skill-workspace wrapping is gone. The surviving source owner still
-          // rejects and retains a relocated role without exposing diagnostics.
+          // The source owner retains a relocated role without exposing diagnostics.
           assert.ok(recovered instanceof ValidationRecoveryRequiredError);
           assert.equal(JSON.stringify(recovered).includes("MODEL_PRIVATE_DIAGNOSTIC"), false);
           assert.ok([...recovered.recoveryPaths].some((path) => path.includes("review-trees")));
@@ -1167,9 +1155,7 @@ test(
     }
     assert.ok(!f.git("worktree", "list", "--porcelain").includes("clawsweeper-assessments-"));
     assert.ok(
-      readFileSync(join(source, ".agents/skills/sample/SKILL.md"), "utf8").includes(
-        "UNTRUSTED_HEAD_GUIDANCE",
-      ),
+      readFileSync(join(source, "review-context.txt"), "utf8").includes("HEAD_REVIEW_CONTEXT"),
     );
   },
 );
@@ -1214,28 +1200,9 @@ test("selected runners, not the ambient default, own shared preparation", (t) =>
   }
 });
 
-test("offline synthetic item zero retains ordinary native skill files in role source without a remote", (t) => {
+test("offline synthetic item zero runs all roles without a remote", (t) => {
   const f = processFixture(t);
   f.options.assessment.item = { ...f.options.assessment.item, number: 0 };
-  const skill = join(f.options.assessment.openclawDir, ".agents/skills/sample/SKILL.md");
-  mkdirSync(join(f.options.assessment.openclawDir, ".agents/skills/sample"), { recursive: true });
-  writeFileSync(
-    skill,
-    "---\nname: sample\ndescription: Native local guidance\n---\nLOCAL_HEAD_GUIDANCE\n",
-  );
-  f.git("add", "-A");
-  f.git(
-    "-c",
-    "user.name=Fixture",
-    "-c",
-    "user.email=fixture@example.invalid",
-    "commit",
-    "-qm",
-    "Native checkout fixture\n\nCo-authored-by: RomneyDa <6581799+RomneyDa@users.noreply.github.com>",
-  );
-  const head = f.git("rev-parse", "HEAD");
-  f.options.assessment.context.pullRequest = { head: { sha: head }, base: { sha: head } };
-  f.options.assessment.repositoryReview!.revision = head;
   const result = runMultiModelReview(f.options);
   assert.equal(result.multiModel.status, "complete");
   assert.equal(readFileSync(f.log, "utf8").trim().split("\n").length, 3);

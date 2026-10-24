@@ -59,14 +59,7 @@ function fixture(t: TestContext) {
   const empty = commit();
   const configure = (value: unknown = { version: 1, additionalPrompt: "APPENDED" }) =>
     put(".clawsweeper/review.json", JSON.stringify(value));
-  const skill = (body = "Read [contract](references/contract.md).") => {
-    put(
-      ".agents/skills/sample/SKILL.md",
-      "---\nname: sample\ndescription: Sample review\n---\n" + body,
-    );
-    put(".agents/skills/sample/references/contract.md", "PINNED-REFERENCE");
-  };
-  return { root, git, put, commit, empty, configure, skill };
+  return { root, git, put, commit, empty, configure };
 }
 
 test("missing and empty configuration preserve ordinary cache identity", (t) => {
@@ -78,14 +71,13 @@ test("missing and empty configuration preserve ordinary cache identity", (t) => 
   assert.equal(loadRepositoryReviewConfig(f.root, f.commit()), undefined);
 });
 
-test("trusted scheduling config ignores head overrides and does not validate or pin native skills", (t) => {
+test("trusted scheduling config ignores head overrides and binds only configuration bytes", (t) => {
   const f = fixture(t);
   f.configure();
-  f.skill();
   const trusted = f.commit();
   const first = loadRepositoryReviewConfig(f.root, trusted)!;
   f.configure({ version: 1, additionalPrompt: "HEAD_OVERRIDE" });
-  f.skill("HEAD_GUIDANCE [ordinary native reference](../../outside.md)");
+  f.put("source.txt", "HEAD_GUIDANCE");
   f.commit();
   const config = loadLocalRepositoryReviewConfig(f.root, trusted)!;
   assert.equal(config.revision, trusted);
@@ -98,9 +90,13 @@ test("trusted scheduling config ignores head overrides and does not validate or 
   ]);
   assert.equal(config.digest, first.digest);
   f.configure();
-  f.put(".agents/skills/sample/SKILL.md", "No frontmatter [native reference](../../outside.md)\0");
+  f.put("source.txt", "CHANGED_SOURCE");
   const next = loadRepositoryReviewConfig(f.root, f.commit())!;
-  assert.equal(next.digest, first.digest, "native source is not a custom bundle digest");
+  assert.equal(
+    next.digest,
+    first.digest,
+    "unrelated source bytes do not change scheduling configuration",
+  );
   assert.equal(next.additionalPrompt, "APPENDED");
 });
 
@@ -108,8 +104,6 @@ for (const value of [
   null,
   [],
   { version: 2 },
-  { version: 1, skills: [] },
-  { version: 1, skills: ["sample"] },
   { version: 1, additionalPrompt: null },
   { version: 1, additionalPrompt: 4 },
   { version: 1, additionalPrompt: "x".repeat(5001) },
@@ -122,34 +116,25 @@ for (const value of [
     assert.throws(() => loadRepositoryReviewConfig(f.root, f.commit()));
   });
 
-for (const native of [false, true])
-  for (const models of [false, true])
-    test(
-      "native files and host model scheduling are independent native=" +
-        native +
-        " models=" +
-        models,
-      (t) => {
-        const f = fixture(t);
-        if (native) f.skill();
-        const role = {
-          runner: "codex",
-          model: "fixture",
-          reasoningEffort: "high",
-          contextTier: "default",
-        };
-        f.configure({
-          version: 1,
-          ...(models ? { multiModel: { reviewers: [role, role], coordinator: role } } : {}),
-        });
-        const head = f.commit(),
-          config = loadRepositoryReviewConfig(f.root, head);
-        assert.equal(Boolean(config?.multiModel), models);
-        assert.equal(Boolean(config), models);
-        assert.equal(config ? "skills" in config : false, false);
-        if (config) assert.equal(config.revision, head);
-      },
-    );
+for (const models of [false, true])
+  test("model scheduling is opt-in: " + models, (t) => {
+    const f = fixture(t);
+    const role = {
+      runner: "codex",
+      model: "fixture",
+      reasoningEffort: "high",
+      contextTier: "default",
+    };
+    f.configure({
+      version: 1,
+      ...(models ? { multiModel: { reviewers: [role, role], coordinator: role } } : {}),
+    });
+    const head = f.commit(),
+      config = loadRepositoryReviewConfig(f.root, head);
+    assert.equal(Boolean(config?.multiModel), models);
+    assert.equal(Boolean(config), models);
+    if (config) assert.equal(config.revision, head);
+  });
 
 for (const mode of ["symlink", "invalid-utf8", "oversize"])
   test("configuration raw file admission rejects " + mode, (t) => {
@@ -165,62 +150,53 @@ for (const mode of ["symlink", "invalid-utf8", "oversize"])
   });
 
 for (const runner of ["codex", "openclaw"] as const)
-  test(
-    "native runner keeps actual source CWD and leaves skill discovery to the harness: " + runner,
-    (t) => {
-      const f = fixture(t);
-      f.configure({
-        version: 1,
-        additionalPrompt: "Use the native sample skill; return the normal Decision.",
-      });
-      f.skill("SAME_HEAD_NATIVE_GUIDANCE");
-      const config = loadRepositoryReviewConfig(f.root, f.commit())!;
-      const bin = useFakeScanner(t),
-        binary = join(bin, "native-cwd"),
-        receipt = join(bin, "native-cwd.json");
-      writeFileSync(
-        binary,
-        "#!" +
-          process.execPath +
-          '\nconst fs=require("node:fs"),path=require("node:path"),a=process.argv.slice(2),native=a[0]==="agent",config=native?JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH,"utf8")):undefined,prompt=native?fs.readFileSync(a[a.indexOf("--message-file")+1],"utf8"):fs.readFileSync(0,"utf8");fs.writeFileSync(' +
-          JSON.stringify(receipt) +
-          ',JSON.stringify({cwd:process.cwd(),args:a,config,prompt,skill:fs.readFileSync(path.join(process.cwd(),".agents/skills/sample/SKILL.md"),"utf8")}));console.log(native?JSON.stringify({payloads:[{text:"done"}]}):"done");',
-        { mode: 0o755 },
-      );
-      const r = runAgentProcess({
-        label: "native-cwd",
-        prompt: "BASE_CONTRACT",
-        scanSource: { kind: "prompt" },
-        model: "internal",
-        cwd: f.root,
-        env: {
-          ...process.env,
-          CLAWSWEEPER_RUNNER: runner,
-          CODEX_BIN: binary,
-          CLAWSWEEPER_OPENCLAW_BIN: binary,
-          CLAWSWEEPER_OPENCLAW_MODEL: "fixture/native",
-        },
-        timeoutMs: 10000,
-        repositoryReview: config,
-        codexExtraArgs: ["-C", f.root, "--sandbox", "read-only", "-"],
-      });
-      assert.equal(r.status, 0, r.stderr);
-      const sent = JSON.parse(readFileSync(receipt, "utf8"));
-      assert.equal(sent.cwd, f.root);
-      assert.match(sent.skill, /SAME_HEAD_NATIVE_GUIDANCE/);
-      assert.match(sent.prompt, /BASE_CONTRACT/);
-      assert.match(sent.prompt, /Use the native sample skill/);
-      assert.ok(!sent.prompt.includes("SAME_HEAD_NATIVE_GUIDANCE"));
-      assert.ok(!sent.prompt.includes("[$sample]"));
-      assert.ok(!sent.args.includes("project_root_markers=[]"));
-      assert.ok(!sent.args.includes("--skip-git-repo-check"));
-      if (runner === "openclaw") {
-        assert.equal(sent.config.agents.defaults.workspace, f.root);
-        assert.equal(sent.config.agents.defaults.skills, undefined);
-      } else assert.equal(sent.args[sent.args.indexOf("-C") + 1], f.root);
-      assert.equal(f.git("status", "--porcelain"), "");
-    },
-  );
+  test("repository instructions preserve the actual runner source CWD: " + runner, (t) => {
+    const f = fixture(t);
+    f.configure({
+      version: 1,
+      additionalPrompt: "Preserve documented compatibility; return the normal Decision.",
+    });
+    const config = loadRepositoryReviewConfig(f.root, f.commit())!;
+    const bin = useFakeScanner(t),
+      binary = join(bin, "native-cwd"),
+      receipt = join(bin, "native-cwd.json");
+    writeFileSync(
+      binary,
+      "#!" +
+        process.execPath +
+        '\nconst fs=require("node:fs"),path=require("node:path"),a=process.argv.slice(2),native=a[0]==="agent",config=native?JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH,"utf8")):undefined,prompt=native?fs.readFileSync(a[a.indexOf("--message-file")+1],"utf8"):fs.readFileSync(0,"utf8");fs.writeFileSync(' +
+        JSON.stringify(receipt) +
+        ',JSON.stringify({cwd:process.cwd(),args:a,config,prompt,source:fs.readFileSync(path.join(process.cwd(),"source.txt"),"utf8")}));console.log(native?JSON.stringify({payloads:[{text:"done"}]}):"done");',
+      { mode: 0o755 },
+    );
+    const r = runAgentProcess({
+      label: "native-cwd",
+      prompt: "BASE_CONTRACT",
+      scanSource: { kind: "prompt" },
+      model: "internal",
+      cwd: f.root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_RUNNER: runner,
+        CODEX_BIN: binary,
+        CLAWSWEEPER_OPENCLAW_BIN: binary,
+        CLAWSWEEPER_OPENCLAW_MODEL: "fixture/native",
+      },
+      timeoutMs: 10000,
+      repositoryReview: config,
+      codexExtraArgs: ["-C", f.root, "--sandbox", "read-only", "-"],
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const sent = JSON.parse(readFileSync(receipt, "utf8"));
+    assert.equal(sent.cwd, f.root);
+    assert.match(sent.source, /ordinary reviewed source/);
+    assert.match(sent.prompt, /BASE_CONTRACT/);
+    assert.match(sent.prompt, /Preserve documented compatibility/);
+    if (runner === "openclaw") {
+      assert.equal(sent.config.agents.defaults.workspace, f.root);
+    } else assert.equal(sent.args[sent.args.indexOf("-C") + 1], f.root);
+    assert.equal(f.git("status", "--porcelain"), "");
+  });
 
 function partialClone(t: TestContext, source: string) {
   execFileSync("git", ["config", "uploadpack.allowFilter", "true"], { cwd: source });
@@ -242,12 +218,11 @@ function missingObjects(clone: string, revision: string) {
     .filter((s) => s.startsWith("?"));
 }
 
-test("hosted config hydration admits only its JSON blob, not native skill bundles", (t) => {
+test("hosted config hydration admits only its JSON blob, not unrelated source objects", (t) => {
   const f = fixture(t);
   f.configure();
-  f.skill();
   for (let i = 0; i < 70; i++)
-    f.put(".agents/skills/sample/reference-" + i + ".md", "native ordinary source " + i);
+    f.put("unrelated/assets/reference-" + i + ".dat", "ordinary source object " + i);
   const revision = f.commit(),
     clone = partialClone(t, f.root),
     before = missingObjects(clone, revision);
@@ -303,7 +278,6 @@ for (const mode of ["bytes", "disk"])
 test("offline configuration uses the operator base despite head deletion and no remote", (t) => {
   const f = fixture(t);
   f.configure();
-  f.skill();
   const trusted = f.commit();
   f.git("checkout", "-qb", "pull-head");
   rmSync(join(f.root, ".clawsweeper/review.json"));
@@ -483,7 +457,6 @@ test("model configuration changes invalidate content but never reopen ordinary a
 test("native source CWD retains the same-thread structured Decision repair lifecycle", (t) => {
   const f = fixture(t);
   f.configure();
-  f.skill();
   const config = loadRepositoryReviewConfig(f.root, f.commit())!;
   const bin = useFakeScanner(t),
     binary = join(bin, "native-repair"),
@@ -511,7 +484,7 @@ test("native source CWD retains the same-thread structured Decision repair lifec
     { mode: 0o755 },
   );
   const result = runAgentProcess({
-    label: "native-skill-repair",
+    label: "configured-decision-repair",
     prompt: "Review",
     scanSource: { kind: "prompt" },
     model: "internal",
@@ -557,7 +530,6 @@ for (const runner of ["codex", "openclaw"] as const)
   test("final native prompt bytes are admitted before retention or assessment: " + runner, (t) => {
     const f = fixture(t);
     f.configure({ version: 1, additionalPrompt: "é".repeat(8) });
-    f.skill();
     const config = loadRepositoryReviewConfig(f.root, f.commit())!;
     const bin = useFakeScanner(t),
       binary = join(bin, "budget-runner");
@@ -616,10 +588,6 @@ for (const runner of ["codex", "openclaw"] as const)
       );
       assert.equal(existsSync(receipt), false);
       assert.equal(existsSync(diagnostic), false);
-      assert.deepEqual(
-        fs.readdirSync(scratch).filter((name) => name.startsWith("clawsweeper-native-skills-")),
-        [],
-      );
       assert.equal(
         runAgentProcess({ ...options, diagnosticPromptPath: undefined, promptFileBytes: 0 }).status,
         0,

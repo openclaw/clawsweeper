@@ -86,7 +86,7 @@ export function runAssessmentJobs(jobs: readonly AssessmentJob[]): AssessmentRes
       if (!identity) throw new AgentInputScanError("incomplete_source");
       const closure = { modes, identity, digest: "" };
       closures.set(path, closure);
-      makeTreeReadOnly(path, modes, deadlineAt, undefined, true);
+      makeTreeReadOnly(path, modes, deadlineAt, true);
       closure.digest = snapshotReviewReadRoot(path, deadlineAt);
     }
     return realpathSync(path);
@@ -104,7 +104,7 @@ export function runAssessmentJobs(jobs: readonly AssessmentJob[]): AssessmentRes
       // Environment values travel through the host process channel, never the options file.
       const { reviewEnv, ...original } = job.options;
       let assessment = original;
-      // This host survives worker termination and owns all native/scanner/skill temp state.
+      // This host survives worker termination and owns all native and scanner temp state.
       const privateTemp = join(directory, job.id + ".private");
       mkdirSync(privateTemp, { mode: 0o700 });
       const workerEnv: NodeJS.ProcessEnv = {
@@ -233,11 +233,11 @@ export function runAssessmentJobs(jobs: readonly AssessmentJob[]): AssessmentRes
           const identity = ownedSourceIdentity(alias);
           if (!identity) throw new AgentInputScanError("incomplete_source");
           owned.reference = { path: alias, identity, digest: "", modes: [] };
-          makeTreeReadOnly(alias, owned.reference.modes, job.deadlineAt, undefined, true);
+          makeTreeReadOnly(alias, owned.reference.modes, job.deadlineAt, true);
           owned.reference.digest = snapshotOpenClawCodexSource(alias, job.deadlineAt);
           reference = alias;
         }
-        makeTreeReadOnly(source, owned.modes, job.deadlineAt, undefined, true);
+        makeTreeReadOnly(source, owned.modes, job.deadlineAt, true);
         owned.digest = snapshotOpenClawCodexSource(source, job.deadlineAt);
         // Only the immutable admitted pack is visible across roles. The original
         // canonical object store, refs, config and unrelated objects stay host-only.

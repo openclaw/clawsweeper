@@ -81,7 +81,7 @@ export interface RepositoryReviewConfig {
 }
 
 // Scheduling and paid-fanout authority comes only from the caller's verified
-// target revision. Native skills are ordinary checkout content, not this schema.
+// target revision.
 export function loadRepositoryReviewConfig(
   cwd: string,
   revision: string,

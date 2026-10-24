@@ -138,7 +138,7 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
         options.prompt +
         "\n\n## Host review role\nPhase: " +
         options.reviewPhase +
-        ". The host schedules all reviewers. Produce one full ordinary Decision for this phase. Do not start another model, pair, agent, or nested review; native repository skills supply analysis guidance, not orchestration authority. Configured role tools have no network access: use the admitted source and its native skills; unavailable external verification is a limit, not evidence against the PR.",
+        ". The host schedules all reviewers. Produce one full ordinary Decision for this phase. Do not start another model, pair, agent, or nested review. Configured role tools have no network access: use the admitted source; unavailable external verification is a limit, not evidence against the PR.",
     };
 
   // OpenClaw has no structured-output option, so it reads the same schema file that Codex
@@ -308,7 +308,7 @@ function isolatedCodexRoleArgs(
     }
     isolated.push(args[i]!);
   }
-  // CLI profiles are host-owned. Repository model/skill configuration cannot
+  // CLI profiles are host-owned. Repository model configuration cannot
   // select another profile or widen tool roots. Ordinary single reviews retain
   // their existing managed proxy and permissions unchanged.
   const stdin = isolated.at(-1) === "-" ? isolated.pop() : undefined;

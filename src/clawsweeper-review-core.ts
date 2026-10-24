@@ -122,7 +122,6 @@ export function makeTreeReadOnly(
   path: string,
   snapshots: FileModeSnapshot[] = [],
   deadlineAt?: number,
-  identities?: Map<string, string>,
   includeGit = false,
 ): FileModeSnapshot[] {
   if (deadlineAt !== undefined && Date.now() >= deadlineAt)
@@ -131,7 +130,6 @@ export function makeTreeReadOnly(
     const stat = lstatSync(file, { bigint: true });
     const identity = String(stat.dev) + ":" + String(stat.ino);
     const snapshot = { path: file, mode };
-    identities?.set(file, identity);
     modeIdentities.set(snapshot, identity);
     snapshots.push(snapshot);
   };
@@ -143,7 +141,7 @@ export function makeTreeReadOnly(
     const child = join(path, entry.name);
     if (entry.isSymbolicLink()) continue;
     if (!includeGit && entry.name === ".git" && entry.isDirectory()) continue;
-    if (entry.isDirectory()) makeTreeReadOnly(child, snapshots, deadlineAt, identities, includeGit);
+    if (entry.isDirectory()) makeTreeReadOnly(child, snapshots, deadlineAt, includeGit);
     else {
       const childStat = statSync(child);
       remember(child, childStat.mode);
@@ -947,7 +945,7 @@ ${extra}
         capability.hasGitHubToken +
         ".\n" +
         (options.reviewPhase
-          ? "Native role tool policy exposes only admitted source/Git/skills read-only and this role's proof scratch. Provider state and peer files remain outside tool roots. Git history stops at host-admitted shallow boundaries; unavailable older history is not evidence against the PR."
+          ? "Native role tools may read admitted source, Git objects and prepared evidence; only this role's proof scratch is writable. Provider state and peer files remain outside tool roots. Git history stops at host-admitted shallow boundaries; unavailable older history is not evidence against the PR."
           : options.selection.runner === "openclaw"
             ? "OpenClaw does not enforce Codex filesystem sandboxing. The checkout is still read-only by host policy; do not modify it."
             : "The configured Codex sandbox remains unchanged.") +
