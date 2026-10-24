@@ -181,7 +181,7 @@ Each build reads four sources:
   counts). The site build never reads canonical records: it restores the newest
   aggregate saved by the separate `Dashboard corpus` workflow
   (`.github/workflows/dashboard-corpus.yml`) and keeps the copy in its own state
-  when that one is newer or the aggregate cache is missing, so a slow or failed
+  when the aggregate cache is missing, so a slow or failed
   corpus refresh never blocks or times out a publish. The corpus workflow keeps a
   cached tree of the `items` and `closed` records (the only sections the corpus
   reads), trimmed to their front matter (the only part it reads), with a
@@ -194,16 +194,17 @@ Each build reads four sources:
   not above its cursor, and asks the export journal only for records above the
   cursor; the journal keeps one row per record at its newest store revision and
   keeps deletions as tombstones, so the replay carries every write, archive move
-  and deletion. Changes are staged and moved into the tree only after a
-  repository's export completes; the cursor is the first page's watermark, so a
-  write that lands mid-export is read again next time. A full rebuild (weekly at
-  00:20 UTC on Sundays, by hand with `mode=full`, or by the first scheduled run
-  in the 00 or 12 UTC hour that finds no saved tree) hydrates the R2 snapshots plus
-  the journal read-only, as `scripts/hydrate-state.ts` does, and replaces the tree
-  only when every repository hydrated. A refresh that fails saves no tree, keeps
-  the previous aggregate, and makes scheduled runs back off for 2, 4, 8, then
-  12 hours; a manual run ignores the backoff. The aggregate
-  (`dashboard-site/scripts/build-corpus.ts`) reads front matter only and
+  and deletion, applied in journal order. The cursor is the first page's
+  watermark, so a write that lands mid-export is read again next time. A full
+  rebuild (weekly at 00:20 UTC on Sundays, by hand with `mode=full`, or by the
+  first scheduled run in the 00 or 12 UTC hour that finds no saved tree) hydrates
+  the R2 snapshots plus the journal read-only, as `scripts/hydrate-state.ts` does,
+  and replaces the tree only when every repository hydrated. A refresh that fails
+  saves neither tree nor aggregate, so the site keeps the previous corpus and the
+  next hourly run replays from the last saved tree; an incremental retry costs one
+  slug listing plus the changed records. Rotating `CLAWSWEEPER_WEBHOOK_SECRET`
+  makes the saved tree unreadable: run the workflow once with `mode=full`.
+  The aggregate (`dashboard-site/scripts/build-corpus.ts`) reads front matter only and
   keeps repositories that GitHub reports as public. The cache keeps each
   repository's contribution apart, so every build checks visibility again,
   drops a repository that is no longer public and recomputes every total
@@ -243,7 +244,7 @@ Open pages check for a newer build every five minutes and when the tab becomes
 visible, and reload when one is published. The header shows both the build time
 and the review-corpus time. A page warns when its build is more than an hour old
 (the 15-minute rebuild has stopped) or when the corpus is more than 14 hours old
-(the hourly corpus refresh has stopped or is backing off). Unknown paths return the site's 404 page with
+(the hourly corpus refresh has stopped or keeps failing). Unknown paths return the site's 404 page with
 status 404. Pull requests that touch `dashboard-site/` build the site from
 `dashboard-site/fixtures/dashboard.json`, without secrets or publishing.
 

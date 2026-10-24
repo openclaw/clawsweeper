@@ -1,21 +1,21 @@
 #!/usr/bin/env node
 // Incremental record tree for the static dashboard's review corpus.
 //
-//   node scripts/dashboard-corpus.ts plan    --state <dir> --status <file>
+//   node scripts/dashboard-corpus.ts plan
 //   node scripts/dashboard-corpus.ts refresh --state <dir> --mode incremental|full
-//   node scripts/dashboard-corpus.ts record  --status <file> --outcome success|failure
-//                                            --mode incremental|full --started-at <iso>
 //   node scripts/dashboard-corpus.ts pack    --state <dir> --archive <file>
 //   node scripts/dashboard-corpus.ts unpack  --archive <file> --state <dir>
 //
-// The corpus reads only the `items» and `closed» sections. A full rebuild hydrates them from
+// The corpus reads only the `items` and `closed` sections. A full rebuild hydrates them from
 // the stored R2 snapshots plus the journal (the same lifecycle as scripts/hydrate-state.ts);
 // every later refresh asks the canonical export journal only for records whose store
 // revision is above the cursor saved with the tree. The journal keeps one row per record
 // identity at its newest store revision and keeps deletions as tombstones, so a cursor replay
 // sees every write and every deletion since the last refresh. The cursor is the first page's
 // export watermark: a write that lands while the export pages run is read again next time,
-// never lost, and re-applying a record is idempotent.
+// never lost, and re-applying a record is idempotent. A refresh that fails part-way leaves the
+// old cursor beside a partly updated tree, which the next replay brings up to date; the
+// workflow never saves the tree of a failed refresh.
 //
 // The corpus aggregate reads front matter only (dashboard-site/scripts/records.ts), so the tree
 // keeps each record's front matter and drops the report body. That keeps the cached tree, and
@@ -34,8 +34,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readSync,
   renameSync,
@@ -57,36 +57,15 @@ import {
 } from "./worker-records.ts";
 
 export const CORPUS_SECTIONS: readonly RecordSection[] = ["items", "closed"];
-export const CORPUS_STATE_SCHEMA_VERSION = 1;
 // Weekly full rebuild in the quietest review hour; keep in sync with dashboard-corpus.yml.
 export const FULL_REBUILD_CRON = "20 0 * * 0";
-// Hours (UTC) in which a scheduled run without any incremental state may rebuild in full.
-export const QUIET_HOURS_UTC: readonly number[] = [0, 12];
-export const MAX_BACKOFF_HOURS = 12;
-// Cron start times drift by minutes; do not let that turn a 2-hour backoff into 3 hours.
-const BACKOFF_GRACE_MS = 15 * 60_000;
+// Hours (UTC) in which a scheduled run without a saved tree may rebuild in full.
+const QUIET_HOURS_UTC: readonly number[] = [0, 12];
 
 export type CorpusMode = "incremental" | "full";
 
-export type CorpusCursorState = {
-  schemaVersion: typeof CORPUS_STATE_SCHEMA_VERSION;
-  sections: string[];
-  fullRebuildAt: string;
-  refreshedAt: string;
-  repositories: Record<
-    string,
-    { revision: number; refreshedAt: string; source: "full" | "bootstrap" | "incremental" }
-  >;
-};
-
-export type CorpusRefreshStatus = {
-  schemaVersion: 1;
-  consecutiveFailures: number;
-  lastAttemptAt?: string;
-  lastMode?: CorpusMode;
-  lastSuccessAt?: string;
-  lastFailureAt?: string;
-};
+// The newest store revision applied to the tree, per repository slug.
+type CorpusCursor = { schemaVersion: 1; repositories: Record<string, number> };
 
 export type CorpusRefreshPlan = { mode: CorpusMode | "skip"; reason: string };
 
@@ -138,44 +117,28 @@ function compactCorpusTree(root: string) {
 const cursorPath = (stateDir: string) => path.join(stateDir, "cursor.json");
 const recordsPath = (stateDir: string) => path.join(stateDir, "records");
 
-export function readCorpusCursorState(stateDir: string): CorpusCursorState | null {
+export function readCorpusCursor(stateDir: string): CorpusCursor | null {
   if (!existsSync(recordsPath(stateDir))) return null;
-  let value: unknown;
   try {
-    value = JSON.parse(readFileSync(cursorPath(stateDir), "utf8"));
+    const cursor = JSON.parse(readFileSync(cursorPath(stateDir), "utf8")) as Partial<CorpusCursor>;
+    const revisions =
+      cursor?.schemaVersion === 1 && cursor.repositories && typeof cursor.repositories === "object"
+        ? Object.values(cursor.repositories)
+        : null;
+    return revisions?.every((revision) => Number.isSafeInteger(revision) && revision >= 0)
+      ? (cursor as CorpusCursor)
+      : null;
   } catch {
     return null;
   }
-  const state = value as Partial<CorpusCursorState> | null;
-  if (
-    !state ||
-    typeof state !== "object" ||
-    state.schemaVersion !== CORPUS_STATE_SCHEMA_VERSION ||
-    !Array.isArray(state.sections) ||
-    state.sections.join(",") !== CORPUS_SECTIONS.join(",") ||
-    typeof state.fullRebuildAt !== "string" ||
-    typeof state.repositories !== "object" ||
-    state.repositories === null
-  ) {
-    return null;
-  }
-  for (const entry of Object.values(state.repositories)) {
-    if (!entry || !Number.isSafeInteger(entry.revision) || entry.revision < 0) return null;
-  }
-  return state as CorpusCursorState;
 }
 
-function writeJsonAtomic(file: string, value: unknown) {
-  mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  renameSync(temporary, file);
-}
+const writeCursor = (stateDir: string, cursor: CorpusCursor) =>
+  writeFileSync(cursorPath(stateDir), `${JSON.stringify(cursor, null, 2)}\n`, "utf8");
 
 export async function refreshCorpusRecords(
-  options: WorkerOptions & { stateDir: string; mode: CorpusMode; now?: () => Date },
+  options: WorkerOptions & { stateDir: string; mode: CorpusMode },
 ): Promise<CorpusRefreshSummary> {
-  const now = options.now ?? (() => new Date());
   const startedAt = Date.now();
   const log = options.log ?? ((line: string) => console.error(line));
   const stateDir = path.resolve(options.stateDir);
@@ -194,14 +157,14 @@ export async function refreshCorpusRecords(
   };
 
   if (options.mode === "full") {
-    await rebuildCorpusRecords({ ...options, stateDir, log, now }, discovered);
+    await rebuildCorpusRecords({ ...options, stateDir, log }, discovered);
     summary.bootstrapped = discovered.length;
     summary.durationMs = Date.now() - startedAt;
     return summary;
   }
 
-  const state = readCorpusCursorState(stateDir);
-  if (!state) {
+  const cursor = readCorpusCursor(stateDir);
+  if (!cursor) {
     throw new Error(
       `No usable incremental corpus state in ${stateDir}; run a full rebuild (mode=full) first`,
     );
@@ -209,112 +172,84 @@ export async function refreshCorpusRecords(
   const listed = new Set(discovered.map((entry) => entry.repoSlug));
   // A slug the store no longer lists has no canonical records left to show, and a directory
   // without a cursor cannot be trusted; it is bootstrapped again below if still listed.
-  for (const entry of readdirSync(recordsPath(stateDir), { withFileTypes: true })) {
-    if (listed.has(entry.name) && state.repositories[entry.name]) continue;
-    rmSync(path.join(recordsPath(stateDir), entry.name), { force: true, recursive: true });
+  for (const entry of readdirSync(recordsPath(stateDir), {
+    withFileTypes: true,
+  })) {
+    if (listed.has(entry.name) && cursor.repositories[entry.name] !== undefined) continue;
+    rmSync(path.join(recordsPath(stateDir), entry.name), {
+      force: true,
+      recursive: true,
+    });
   }
-  for (const repoSlug of Object.keys(state.repositories)) {
+  for (const repoSlug of Object.keys(cursor.repositories)) {
     if (listed.has(repoSlug)) continue;
-    rmSync(path.join(recordsPath(stateDir), repoSlug), { force: true, recursive: true });
-    delete state.repositories[repoSlug];
+    delete cursor.repositories[repoSlug];
     summary.removed++;
   }
 
   for (const { repoSlug, revision } of discovered) {
-    const cursor = state.repositories[repoSlug];
-    if (!cursor) {
-      const bootstrapped = await bootstrapRepository({ ...options, stateDir, log }, repoSlug);
-      state.repositories[repoSlug] = {
-        revision: bootstrapped,
-        refreshedAt: now().toISOString(),
-        source: "bootstrap",
-      };
+    const since = cursor.repositories[repoSlug];
+    if (since === undefined) {
+      cursor.repositories[repoSlug] = await bootstrapRepository(
+        { ...options, stateDir, log },
+        repoSlug,
+      );
       summary.bootstrapped++;
-    } else if (revision <= cursor.revision) {
+    } else if (revision <= since) {
       // The slug listing reports each slug's newest store revision: nothing changed.
       summary.unchanged++;
-      continue;
     } else {
-      const applied = await applyRepositoryChanges(
-        { ...options, stateDir },
-        repoSlug,
-        cursor.revision,
-      );
-      state.repositories[repoSlug] = {
-        revision: Math.max(cursor.revision, applied.revision),
-        refreshedAt: now().toISOString(),
-        source: "incremental",
-      };
+      const applied = await applyRepositoryChanges({ ...options, stateDir }, repoSlug, since);
+      cursor.repositories[repoSlug] = Math.max(since, applied.revision);
       summary.refreshed++;
       summary.written += applied.written;
       summary.deleted += applied.deleted;
       log(
-        `[dashboard-corpus] incremental repo=${repoSlug} since=${cursor.revision} cursor=${state.repositories[repoSlug].revision} written=${applied.written} deleted=${applied.deleted}`,
+        `[dashboard-corpus] incremental repo=${repoSlug} since=${since} cursor=${cursor.repositories[repoSlug]} written=${applied.written} deleted=${applied.deleted}`,
       );
     }
-    // Persist after every repository: a later failure leaves a tree and cursor that agree.
-    state.refreshedAt = now().toISOString();
-    writeJsonAtomic(cursorPath(stateDir), state);
   }
-  state.refreshedAt = now().toISOString();
-  writeJsonAtomic(cursorPath(stateDir), state);
+  writeCursor(stateDir, cursor);
   summary.durationMs = Date.now() - startedAt;
   return summary;
 }
 
-// Every record of one repository whose store revision is above `sinceRevision», staged
-// first and moved into the tree only after the whole export succeeded.
-export async function applyRepositoryChanges(
+// Applies every record of one repository whose store revision is above `sinceRevision`, in
+// journal order.
+async function applyRepositoryChanges(
   options: WorkerOptions & { stateDir: string },
   repoSlug: string,
   sinceRevision: number,
 ) {
   const repoRoot = path.join(recordsPath(options.stateDir), repoSlug);
-  mkdirSync(repoRoot, { recursive: true });
-  const stage = mkdtempSync(path.join(options.stateDir, ".stage-"));
-  const changes = new Map<string, boolean>();
-  try {
-    const journal = await visitWorkerRecords(
-      {
-        baseUrl: options.baseUrl,
-        webhookSecret: options.webhookSecret,
-        repoSlug,
-        sections: CORPUS_SECTIONS,
-        sinceRevision,
-        fetch: options.fetch,
-      },
-      (record) => {
-        const relative = path.join(
-          record.section,
-          `${record.id}${recordExtension(record.section)}`,
-        );
-        const staged = path.join(stage, relative);
-        if (record.deleted) {
-          rmSync(staged, { force: true });
-        } else {
-          mkdirSync(path.dirname(staged), { recursive: true });
-          writeFileSync(staged, corpusFrontMatter(record.content ?? ""), "utf8");
-        }
-        changes.set(relative, record.deleted);
-      },
-    );
-    let written = 0;
-    let deleted = 0;
-    for (const [relative, isDeleted] of changes) {
-      const destination = path.join(repoRoot, relative);
-      if (isDeleted) {
-        rmSync(destination, { force: true });
+  let written = 0;
+  let deleted = 0;
+  const journal = await visitWorkerRecords(
+    {
+      baseUrl: options.baseUrl,
+      webhookSecret: options.webhookSecret,
+      repoSlug,
+      sections: CORPUS_SECTIONS,
+      sinceRevision,
+      fetch: options.fetch,
+    },
+    (record) => {
+      const file = path.join(
+        repoRoot,
+        record.section,
+        `${record.id}${recordExtension(record.section)}`,
+      );
+      if (record.deleted) {
+        rmSync(file, { force: true });
         deleted++;
       } else {
-        mkdirSync(path.dirname(destination), { recursive: true });
-        renameSync(path.join(stage, relative), destination);
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, corpusFrontMatter(record.content ?? ""), "utf8");
         written++;
       }
-    }
-    return { revision: journal.exportStartRevision, written, deleted };
-  } finally {
-    rmSync(stage, { force: true, recursive: true });
-  }
+    },
+  );
+  return { revision: journal.exportStartRevision, written, deleted };
 }
 
 async function bootstrapRepository(
@@ -345,19 +280,14 @@ async function bootstrapRepository(
   }
 }
 
+// Hydrates beside the live tree and replaces it only when every repository hydrated.
 async function rebuildCorpusRecords(
-  options: WorkerOptions & {
-    stateDir: string;
-    log: (line: string) => void;
-    now: () => Date;
-  },
+  options: WorkerOptions & { stateDir: string; log: (line: string) => void },
   discovered: Array<{ repoSlug: string }>,
 ) {
   const parent = path.dirname(options.stateDir);
   mkdirSync(parent, { recursive: true });
-  // Built beside the live tree and swapped in only when every repository hydrated.
   const worktree = mkdtempSync(path.join(parent, ".corpus-full-"));
-  const next = path.join(worktree, "state");
   try {
     const result = await materializeWorkerRecords({
       worktreeRoot: worktree,
@@ -369,25 +299,19 @@ async function rebuildCorpusRecords(
       fetch: options.fetch,
       log: options.log,
     });
-    const at = options.now().toISOString();
-    const state: CorpusCursorState = {
-      schemaVersion: CORPUS_STATE_SCHEMA_VERSION,
-      sections: [...CORPUS_SECTIONS],
-      fullRebuildAt: at,
-      refreshedAt: at,
+    compactCorpusTree(result.recordsRoot);
+    rmSync(options.stateDir, { force: true, recursive: true });
+    mkdirSync(options.stateDir, { recursive: true });
+    renameSync(result.recordsRoot, recordsPath(options.stateDir));
+    writeCursor(options.stateDir, {
+      schemaVersion: 1,
       repositories: Object.fromEntries(
         Object.entries(result.repositories).map(([repoSlug, entry]) => [
           repoSlug,
-          { revision: entry.exportStartRevision, refreshedAt: at, source: "full" as const },
+          entry.exportStartRevision,
         ]),
       ),
-    };
-    compactCorpusTree(result.recordsRoot);
-    mkdirSync(next, { recursive: true });
-    renameSync(result.recordsRoot, recordsPath(next));
-    writeJsonAtomic(cursorPath(next), state);
-    rmSync(options.stateDir, { force: true, recursive: true });
-    renameSync(next, options.stateDir);
+    });
   } finally {
     rmSync(worktree, { force: true, recursive: true });
   }
@@ -413,7 +337,7 @@ function waitForExit(child: ReturnType<typeof spawn>, label: string) {
 
 // tar | gzip | AES-256-GCM: magic, IV, ciphertext, then the authentication tag.
 export async function sealCorpusState(stateDir: string, archive: string, secret: string) {
-  if (!readCorpusCursorState(stateDir)) throw new Error(`No corpus state to seal in ${stateDir}`);
+  if (!readCorpusCursor(stateDir)) throw new Error(`No corpus state to seal in ${stateDir}`);
   const key = sealingKey(secret);
   mkdirSync(path.dirname(archive), { recursive: true });
   const temporary = `${archive}.${process.pid}.tmp`;
@@ -475,13 +399,15 @@ export async function unsealCorpusState(archive: string, stateDir: string, secre
     const exited = waitForExit(tar, "tar");
     exited.catch(() => undefined);
     await pipeline(
-      createReadStream(archive, { start: header, end: size - SEALED_TAG_BYTES - 1 }),
+      createReadStream(archive, {
+        start: header,
+        end: size - SEALED_TAG_BYTES - 1,
+      }),
       decipher,
       tar.stdin!,
     );
     await exited;
-    if (!readCorpusCursorState(staging))
-      throw new Error("Sealed corpus tree holds no usable state");
+    if (!readCorpusCursor(staging)) throw new Error("Sealed corpus tree holds no usable state");
     rmSync(stateDir, { force: true, recursive: true });
     renameSync(staging, stateDir);
   } finally {
@@ -489,12 +415,14 @@ export async function unsealCorpusState(archive: string, stateDir: string, secre
   }
 }
 
+// A failed refresh is retried on the next hourly run: an incremental retry costs one slug listing
+// plus the changed records, and a scheduled full rebuild only runs weekly or, without a saved
+// tree, in the two quiet hours.
 export function planCorpusRefresh(input: {
   event: string;
   schedule?: string;
   requestedMode?: string;
   hasState: boolean;
-  status: CorpusRefreshStatus | null;
   now: Date;
 }): CorpusRefreshPlan {
   if (input.event === "workflow_dispatch") {
@@ -503,68 +431,17 @@ export function planCorpusRefresh(input: {
       ? { mode: "incremental", reason: "manual incremental refresh" }
       : { mode: "full", reason: "manual refresh without incremental state" };
   }
-  if (input.event !== "schedule") {
-    return { mode: "skip", reason: `unsupported event ${input.event}` };
-  }
-  const failures = input.status?.consecutiveFailures ?? 0;
-  const failedAt = Date.parse(input.status?.lastFailureAt ?? "");
-  if (failures > 0 && Number.isFinite(failedAt)) {
-    const hours = Math.min(2 ** failures, MAX_BACKOFF_HOURS);
-    const retryAt = failedAt + hours * 3_600_000 - BACKOFF_GRACE_MS;
-    if (input.now.getTime() < retryAt) {
-      return {
-        mode: "skip",
-        reason: `backing off after ${failures} failed refresh(es) until ${new Date(retryAt).toISOString()}`,
-      };
-    }
-  }
   if (input.schedule === FULL_REBUILD_CRON) return { mode: "full", reason: "weekly full rebuild" };
   if (input.hasState) return { mode: "incremental", reason: "scheduled incremental refresh" };
   return QUIET_HOURS_UTC.includes(input.now.getUTCHours())
-    ? { mode: "full", reason: "no incremental state; rebuilding in a quiet hour" }
+    ? {
+        mode: "full",
+        reason: "no incremental state; rebuilding in a quiet hour",
+      }
     : {
         mode: "skip",
         reason: "no incremental state; waiting for a quiet hour (00 or 12 UTC) or a manual run",
       };
-}
-
-export function recordCorpusRefreshResult(
-  status: CorpusRefreshStatus | null,
-  result: { outcome: "success" | "failure"; mode: CorpusMode; startedAt: string },
-): CorpusRefreshStatus {
-  const previous: CorpusRefreshStatus = status ?? { schemaVersion: 1, consecutiveFailures: 0 };
-  if (result.outcome === "success") {
-    return {
-      ...previous,
-      consecutiveFailures: 0,
-      lastAttemptAt: result.startedAt,
-      lastMode: result.mode,
-      lastSuccessAt: result.startedAt,
-    };
-  }
-  return {
-    ...previous,
-    consecutiveFailures: previous.consecutiveFailures + 1,
-    lastAttemptAt: result.startedAt,
-    lastMode: result.mode,
-    lastFailureAt: result.startedAt,
-  };
-}
-
-export function readCorpusRefreshStatus(file: string): CorpusRefreshStatus | null {
-  try {
-    const value = JSON.parse(readFileSync(file, "utf8")) as Partial<CorpusRefreshStatus> | null;
-    if (
-      value?.schemaVersion !== 1 ||
-      !Number.isSafeInteger(value.consecutiveFailures) ||
-      Number(value.consecutiveFailures) < 0
-    ) {
-      return null;
-    }
-    return value as CorpusRefreshStatus;
-  } catch {
-    return null;
-  }
 }
 
 function parseMode(value: string | undefined): CorpusMode {
@@ -578,56 +455,46 @@ async function main(argv: string[]) {
     args: rest,
     options: {
       state: { type: "string" },
-      status: { type: "string" },
       mode: { type: "string" },
-      outcome: { type: "string" },
-      "started-at": { type: "string" },
       archive: { type: "string" },
     },
   });
-  const secret = () =>
+  const secret =
     process.env.CLAWSWEEPER_RECORDS_SECRET || process.env.CLAWSWEEPER_WEBHOOK_SECRET || "";
-  if (command === "pack" || command === "unpack") {
-    if (!values.state || !values.archive)
-      throw new Error(`${command} requires --state and --archive`);
-    if (command === "pack") {
-      console.log(JSON.stringify(await sealCorpusState(values.state, values.archive, secret())));
-    } else {
-      await unsealCorpusState(values.archive, values.state, secret());
-    }
-    return;
-  }
   if (command === "plan") {
-    if (!values.state || !values.status) throw new Error("plan requires --state and --status");
-    const startedAt = new Date();
     const plan = planCorpusRefresh({
       event: process.env.EVENT_NAME ?? "",
       schedule: process.env.SCHEDULE || undefined,
       requestedMode: process.env.REQUESTED_MODE || undefined,
       hasState: process.env.HAS_STATE === "true",
-      status: readCorpusRefreshStatus(values.status),
-      now: startedAt,
+      now: new Date(),
     });
     console.log(JSON.stringify(plan));
-    if (process.env.GITHUB_OUTPUT) {
-      writeFileSync(
-        process.env.GITHUB_OUTPUT,
-        `mode=${plan.mode}\nstarted_at=${startedAt.toISOString()}\n`,
-        { flag: "a" },
-      );
-    }
+    if (process.env.GITHUB_OUTPUT)
+      writeFileSync(process.env.GITHUB_OUTPUT, `mode=${plan.mode}\n`, {
+        flag: "a",
+      });
     if (plan.mode === "skip") console.log(`::notice::Corpus refresh skipped: ${plan.reason}`);
+    return;
+  }
+  if (command === "pack" || command === "unpack") {
+    if (!values.state || !values.archive)
+      throw new Error(`${command} requires --state and --archive`);
+    if (command === "pack") {
+      console.log(JSON.stringify(await sealCorpusState(values.state, values.archive, secret)));
+    } else {
+      await unsealCorpusState(values.archive, values.state, secret);
+    }
     return;
   }
   if (command === "refresh") {
     if (!values.state) throw new Error("refresh requires --state");
-    const webhookSecret = secret();
-    if (!webhookSecret) throw new Error("CLAWSWEEPER_RECORDS_SECRET is required");
+    if (!secret) throw new Error("CLAWSWEEPER_RECORDS_SECRET is required");
     const summary = await refreshCorpusRecords({
       stateDir: values.state,
       mode: parseMode(values.mode),
       baseUrl: process.env.CLAWSWEEPER_RECORDS_URL || "https://clawsweeper.openclaw.ai",
-      webhookSecret,
+      webhookSecret: secret,
     });
     console.log(JSON.stringify(summary));
     if (process.env.GITHUB_STEP_SUMMARY) {
@@ -639,23 +506,7 @@ async function main(argv: string[]) {
     }
     return;
   }
-  if (command === "record") {
-    if (!values.status || !values["started-at"]) {
-      throw new Error("record requires --status and --started-at");
-    }
-    if (values.outcome !== "success" && values.outcome !== "failure") {
-      throw new Error("--outcome must be success or failure");
-    }
-    const status = recordCorpusRefreshResult(readCorpusRefreshStatus(values.status), {
-      outcome: values.outcome,
-      mode: parseMode(values.mode),
-      startedAt: values["started-at"],
-    });
-    writeJsonAtomic(values.status, status);
-    console.log(JSON.stringify(status));
-    return;
-  }
-  throw new Error("usage: dashboard-corpus.ts plan|refresh|record|pack|unpack [options]");
+  throw new Error("usage: dashboard-corpus.ts plan|refresh|pack|unpack [options]");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {

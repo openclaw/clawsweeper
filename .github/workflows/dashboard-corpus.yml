@@ -12,8 +12,8 @@ name: Dashboard corpus
 # from the records secret (never available to fork pull requests); the plain tree is never cached.
 #
 # Publishing never waits for this workflow: the 15-minute site build restores the newest saved
-# aggregate. A failed refresh saves no record tree, keeps the previous aggregate, and backs off
-# (2, 4, 8, then 12 hours between scheduled attempts) instead of retrying against the queue.
+# aggregate. A failed refresh saves nothing, so the site keeps the previous aggregate and the next
+# hourly run retries from the last saved tree.
 on:
   schedule:
     - cron: "37 * * * *"
@@ -57,8 +57,8 @@ jobs:
         with:
           node-version: "24"
 
-      # The aggregate (corpus.json), repository visibility and the refresh status are small;
-      # the site build restores the newest one. Keys include the attempt so a rerun saves its own.
+      # The aggregate (corpus.json) and repository visibility are small; the site build restores
+      # the newest one. Keys include the attempt so a rerun saves its own.
       - name: Restore corpus aggregate
         uses: actions/cache/restore@v6
         with:
@@ -66,14 +66,13 @@ jobs:
           key: dashboard-corpus-aggregate-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: dashboard-corpus-aggregate-
 
-      - name: Look up record tree
+      - name: Restore record tree
         id: tree
         uses: actions/cache/restore@v6
         with:
           path: .corpus-cache
           key: dashboard-corpus-tree-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: dashboard-corpus-tree-
-          lookup-only: true
 
       - name: Plan refresh
         id: plan
@@ -82,15 +81,7 @@ jobs:
           SCHEDULE: ${{ github.event.schedule }}
           REQUESTED_MODE: ${{ inputs.mode }}
           HAS_STATE: ${{ steps.tree.outputs.cache-matched-key != '' }}
-        run: node scripts/dashboard-corpus.ts plan --state .corpus-records --status .dashboard-corpus/status.json
-
-      - name: Restore record tree
-        if: ${{ steps.plan.outputs.mode == 'incremental' }}
-        uses: actions/cache/restore@v6
-        with:
-          path: .corpus-cache
-          key: dashboard-corpus-tree-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: dashboard-corpus-tree-
+        run: node scripts/dashboard-corpus.ts plan
 
       - name: Refresh changed records
         id: incremental
@@ -133,14 +124,6 @@ jobs:
           rm -rf .corpus-cache
           node scripts/dashboard-corpus.ts pack --state .corpus-records --archive .corpus-cache/tree.sealed
 
-      - name: Record refresh outcome
-        if: ${{ always() && (steps.plan.outputs.mode == 'incremental' || steps.plan.outputs.mode == 'full') }}
-        env:
-          MODE: ${{ steps.plan.outputs.mode }}
-          STARTED_AT: ${{ steps.plan.outputs.started_at }}
-          OUTCOME: ${{ steps.seal-tree.outcome == 'success' && 'success' || 'failure' }}
-        run: node scripts/dashboard-corpus.ts record --status .dashboard-corpus/status.json --outcome "$OUTCOME" --mode "$MODE" --started-at "$STARTED_AT"
-
       - name: Save record tree
         id: save-tree
         if: ${{ steps.seal-tree.outcome == 'success' }}
@@ -149,15 +132,14 @@ jobs:
           path: .corpus-cache
           key: dashboard-corpus-tree-${{ github.run_id }}-${{ github.run_attempt }}
 
-      # Saved after failures too, so the backoff survives; the previous corpus.json stays inside.
       - name: Save corpus aggregate
-        if: ${{ always() && (steps.plan.outputs.mode == 'incremental' || steps.plan.outputs.mode == 'full') && hashFiles('.dashboard-corpus/status.json') != '' }}
+        if: ${{ steps.aggregate.outcome == 'success' }}
         uses: actions/cache/save@v6
         with:
           path: .dashboard-corpus
           key: dashboard-corpus-aggregate-${{ github.run_id }}-${{ github.run_attempt }}
 
-      # Keep the newest entries; older trees are never restored again.
+      # Keep the newest two of each; older entries are never restored again.
       - name: Prune superseded corpus caches
         if: ${{ steps.save-tree.outcome == 'success' }}
         continue-on-error: true
@@ -166,12 +148,10 @@ jobs:
         run: |
           set -euo pipefail
           for prefix in dashboard-corpus-tree- dashboard-corpus-aggregate-; do
-            keep=2
-            if [ "$prefix" = dashboard-corpus-aggregate- ]; then keep=4; fi
             gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/caches" \
               -f key="$prefix" -f ref="$GITHUB_REF" -f sort=created_at -f direction=desc -F per_page=100 |
-              jq -r --arg prefix "$prefix" --argjson keep "$keep" '
-                [.actions_caches[] | select(.key | startswith($prefix))][$keep:][].id' |
+              jq -r --arg prefix "$prefix" '
+                [.actions_caches[] | select(.key | startswith($prefix))][2:][].id' |
               while read -r cache_id; do
                 gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${cache_id}" > /dev/null ||
                   echo "::notice::Corpus cache entry ${cache_id} was not deleted; it may already be gone."

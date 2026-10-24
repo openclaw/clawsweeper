@@ -92,8 +92,8 @@ jobs:
           key: dashboard-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: dashboard-state-
 
-      # The newest aggregate saved by the Dashboard corpus workflow. A miss (or an aggregate
-      # older than the one already in the state) keeps the state's copy.
+      # The newest aggregate saved by the Dashboard corpus workflow replaces the state's copy; the
+      # copy is kept when the aggregate cache is missing (evicted, or before the first refresh).
       - name: Restore corpus aggregate
         uses: actions/cache/restore@v6
         with:
@@ -103,19 +103,9 @@ jobs:
 
       - name: Use the newest corpus
         run: |
-          set -euo pipefail
-          candidate=.dashboard-corpus/corpus.json
-          current=.dashboard-state/corpus.json
-          if [ -f "$candidate" ] && jq -e '.version == 2 and (.generatedAt | type == "string")' "$candidate" > /dev/null; then
-            fresh="$(jq -r '.generatedAt' "$candidate")"
-            held="$( [ -f "$current" ] && jq -r '.generatedAt // ""' "$current" || echo "")"
-            if [[ "$fresh" > "$held" ]]; then
-              mkdir -p .dashboard-state
-              cp "$candidate" "$current"
-              echo "Using corpus built $fresh (previous: ${held:-none})"
-            else
-              echo "Keeping corpus built $held"
-            fi
+          if [ -f .dashboard-corpus/corpus.json ]; then
+            mkdir -p .dashboard-state
+            cp .dashboard-corpus/corpus.json .dashboard-state/corpus.json
           fi
 
       # Until the first corpus refresh there is nothing to show: skip quietly, do not fail.

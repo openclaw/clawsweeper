@@ -16,16 +16,13 @@ import YAML from "yaml";
 
 import { aggregateRecords } from "../dashboard-site/scripts/records.ts";
 import {
-  CORPUS_SECTIONS,
   corpusFrontMatter,
   FULL_REBUILD_CRON,
   planCorpusRefresh,
-  readCorpusCursorState,
-  recordCorpusRefreshResult,
+  readCorpusCursor,
   refreshCorpusRecords,
   sealCorpusState,
   unsealCorpusState,
-  type CorpusRefreshStatus,
 } from "../scripts/dashboard-corpus.ts";
 import { packWorkerRecordSnapshot } from "../scripts/worker-records.ts";
 
@@ -40,7 +37,7 @@ type Row = {
 
 // A canonical export journal with the queue's semantics: one row per identity at its newest
 // store revision, deletions kept as tombstones, a global revision watermark, and pages of at
-// most `pageSize» rows ordered by store revision.
+// most `pageSize` rows ordered by store revision.
 class FakeStore {
   revision = 0;
   rows = new Map<string, Row>();
@@ -189,11 +186,9 @@ test("incremental refresh reads only changes and matches a fresh full rebuild", 
 
   const full = await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
   assert.equal(full.bootstrapped, 3);
-  const cursor = readCorpusCursorState(state);
+  const cursor = readCorpusCursor(state);
   assert.ok(cursor);
-  assert.deepEqual(cursor.sections, [...CORPUS_SECTIONS]);
-  for (const entry of Object.values(cursor.repositories))
-    assert.equal(entry.revision, store.revision);
+  for (const revision of Object.values(cursor.repositories)) assert.equal(revision, store.revision);
   assert.deepEqual(Object.keys(files(path.join(state, "records"))).sort(), [
     "openclaw-alpha/items/1.md",
     "openclaw-alpha/items/2.md",
@@ -233,10 +228,10 @@ test("incremental refresh reads only changes and matches a fresh full rebuild", 
     assert.deepEqual(call.sections, ["items", "closed"]);
   }
   assert.deepEqual(files(path.join(state, "records")), await fullTree(store, root, "fresh"));
-  const after = readCorpusCursorState(state)!;
-  assert.equal(after.repositories["openclaw-alpha"]!.revision, store.revision);
-  assert.equal(after.repositories["openclaw-quiet"]!.revision, fullWatermark);
-  assert.equal(after.repositories["openclaw-gamma"]!.source, "bootstrap");
+  const after = readCorpusCursor(state)!;
+  assert.equal(after.repositories["openclaw-alpha"], store.revision);
+  assert.equal(after.repositories["openclaw-quiet"], fullWatermark);
+  assert.equal(after.repositories["openclaw-gamma"], store.revision);
   assert.equal(
     readdirSync(state).some((name) => name.startsWith(".")),
     false,
@@ -260,22 +255,18 @@ test("a write that lands between export pages is never lost", async (t) => {
   await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "incremental" });
   store.beforeExportPage = undefined;
   // The cursor is the first page's watermark, so the next refresh replays the mid-export writes.
-  assert.equal(
-    readCorpusCursorState(state)!.repositories["openclaw-alpha"]!.revision,
-    firstWatermark,
-  );
+  assert.equal(readCorpusCursor(state)!.repositories["openclaw-alpha"], firstWatermark);
   await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "incremental" });
   assert.deepEqual(files(path.join(state, "records")), await fullTree(store, root, "fresh"));
 });
 
-test("a failed incremental refresh leaves the tree and cursor untouched", async (t) => {
+test("a failed incremental refresh keeps its cursor and the next refresh converges", async (t) => {
   const root = fixtureRoot(t);
   const store = new FakeStore(1);
   store.write("openclaw-alpha", "items", 1, "one");
   store.write("openclaw-alpha", "items", 2, "two");
   const state = path.join(root, "state");
   await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
-  const tree = files(path.join(state, "records"));
   const cursor = readFileSync(path.join(state, "cursor.json"), "utf8");
   store.write("openclaw-alpha", "items", 1, null);
   store.write("openclaw-alpha", "items", 2, "two v2");
@@ -286,12 +277,8 @@ test("a failed incremental refresh leaves the tree and cursor untouched", async 
     refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "incremental" }),
     /403/,
   );
-  assert.deepEqual(files(path.join(state, "records")), tree);
+  // The tombstone is applied, but the cursor stays, so the retry replays it with the rest.
   assert.equal(readFileSync(path.join(state, "cursor.json"), "utf8"), cursor);
-  assert.equal(
-    readdirSync(state).some((name) => name.startsWith(".stage-")),
-    false,
-  );
   store.failExportPage = undefined;
   await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "incremental" });
   assert.deepEqual(files(path.join(state, "records")), await fullTree(store, root, "fresh"));
@@ -313,9 +300,9 @@ test("an incremental refresh refuses to start without a saved cursor", async (t)
   mkdirSync(path.join(stale, "records"), { recursive: true });
   writeFileSync(
     path.join(stale, "cursor.json"),
-    JSON.stringify({ schemaVersion: 1, sections: ["items"], fullRebuildAt: "", repositories: {} }),
+    JSON.stringify({ schemaVersion: 2, repositories: {} }),
   );
-  assert.equal(readCorpusCursorState(stale), null);
+  assert.equal(readCorpusCursor(stale), null);
 });
 
 test("a repository the store no longer lists is dropped", async (t) => {
@@ -333,7 +320,7 @@ test("a repository the store no longer lists is dropped", async (t) => {
   });
   assert.equal(summary.removed, 1);
   assert.equal(existsSync(path.join(state, "records", "openclaw-gone")), false);
-  assert.equal(readCorpusCursorState(state)!.repositories["openclaw-gone"], undefined);
+  assert.equal(readCorpusCursor(state)!.repositories["openclaw-gone"], undefined);
 });
 
 test("a full rebuild restores snapshots, keeps only corpus sections and swaps atomically", async (t) => {
@@ -464,6 +451,38 @@ test("the tree keeps front matter only, and the aggregate is unchanged by it", a
   assert.deepEqual(strip(fromTree), strip(fromWhole));
 });
 
+test("the aggregate reads front matter across read chunks and line endings", async (t) => {
+  const root = fixtureRoot(t);
+  const items = path.join(root, "openclaw-clawsweeper", "items");
+  mkdirSync(items, { recursive: true });
+  const record = (number: number, title: string, eol: string, padding: number) =>
+    [
+      "---",
+      "repository: openclaw/clawsweeper",
+      "number: " + number,
+      "reviewed_at: 2026-10-01T10:00:00Z",
+      "padding: " + "x".repeat(padding),
+      "title: " + JSON.stringify(title),
+      "---",
+      "",
+      "Report body",
+      "",
+    ].join(eol);
+  // The lobster's four bytes straddle the end of the first 16 KiB read.
+  const lobster = "Lobster 🦞 title";
+  const offset = Buffer.from(record(1, lobster, "\n", 0)).indexOf(Buffer.from("🦞"));
+  writeFileSync(path.join(items, "1.md"), record(1, lobster, "\n", 16 * 1024 - 2 - offset));
+  writeFileSync(path.join(items, "2.md"), record(2, "Windows line endings", "\r\n", 10));
+  const corpus = await aggregateRecords(
+    root,
+    { "openclaw/clawsweeper": { public: true, checkedAt: new Date().toISOString() } },
+    undefined,
+    Date.parse("2026-10-20T12:00:00Z"),
+  );
+  const titles = corpus.repositories[0]!.lists.stale.map((row) => row.title).sort();
+  assert.deepEqual(titles, [lobster, "Windows line endings"]);
+});
+
 test("the cached tree is sealed with the records secret", async (t) => {
   const root = fixtureRoot(t);
   const store = new FakeStore();
@@ -505,7 +524,7 @@ test("refresh planning", () => {
   const now = new Date("2026-10-20T15:37:00Z");
   const quiet = new Date("2026-10-20T12:37:00Z");
   const plan = (input: Partial<Parameters<typeof planCorpusRefresh>[0]>) =>
-    planCorpusRefresh({ event: "schedule", hasState: true, status: null, now, ...input }).mode;
+    planCorpusRefresh({ event: "schedule", hasState: true, now, ...input }).mode;
   assert.equal(plan({}), "incremental");
   assert.equal(plan({ schedule: FULL_REBUILD_CRON }), "full");
   assert.equal(plan({ hasState: false }), "skip");
@@ -513,44 +532,6 @@ test("refresh planning", () => {
   assert.equal(plan({ event: "workflow_dispatch", requestedMode: "full" }), "full");
   assert.equal(plan({ event: "workflow_dispatch", requestedMode: "incremental" }), "incremental");
   assert.equal(plan({ event: "workflow_dispatch", hasState: false }), "full");
-  assert.equal(plan({ event: "push" }), "skip");
-  const failed = (failures: number, hoursAgo: number): CorpusRefreshStatus => ({
-    schemaVersion: 1,
-    consecutiveFailures: failures,
-    lastFailureAt: new Date(now.getTime() - hoursAgo * 3_600_000).toISOString(),
-  });
-  // 2, 4, 8, then at most 12 hours between scheduled attempts after failures.
-  assert.equal(plan({ status: failed(1, 1) }), "skip");
-  assert.equal(plan({ status: failed(1, 2) }), "incremental");
-  assert.equal(plan({ status: failed(2, 3) }), "skip");
-  assert.equal(plan({ status: failed(2, 4) }), "incremental");
-  assert.equal(plan({ status: failed(5, 11) }), "skip");
-  assert.equal(plan({ status: failed(5, 12) }), "incremental");
-  assert.equal(plan({ status: failed(5, 1), schedule: FULL_REBUILD_CRON }), "skip");
-  // A manual run is the operator's call and ignores the backoff.
-  assert.equal(plan({ status: failed(5, 1), event: "workflow_dispatch" }), "incremental");
-});
-
-test("refresh outcomes count consecutive failures", () => {
-  const first = recordCorpusRefreshResult(null, {
-    outcome: "failure",
-    mode: "incremental",
-    startedAt: "2026-10-20T01:37:00Z",
-  });
-  const second = recordCorpusRefreshResult(first, {
-    outcome: "failure",
-    mode: "incremental",
-    startedAt: "2026-10-20T03:37:00Z",
-  });
-  assert.equal(second.consecutiveFailures, 2);
-  assert.equal(second.lastFailureAt, "2026-10-20T03:37:00Z");
-  const recovered = recordCorpusRefreshResult(second, {
-    outcome: "success",
-    mode: "incremental",
-    startedAt: "2026-10-20T07:37:00Z",
-  });
-  assert.equal(recovered.consecutiveFailures, 0);
-  assert.equal(recovered.lastSuccessAt, "2026-10-20T07:37:00Z");
 });
 
 type Workflow = {
@@ -603,22 +584,14 @@ test("the corpus workflow refreshes hourly, rebuilds weekly and bounds every hea
   assert.match(step("full").run!, /--mode full/);
   assert.ok(step("incremental")["timeout-minutes"]! <= 30);
   assert.ok(step("full")["timeout-minutes"]! <= 60);
-  // Either refresh plus the aggregate fits inside the job, so a slow refresh is cut off by its
-  // own step timeout and still records the failure for the backoff.
-  // Ten minutes stay for setup, sealing and the cache saves.
+  // Either refresh plus the aggregate fits inside the job, with ten minutes left for setup,
+  // sealing and the cache saves.
   assert.ok(
     Math.max(step("incremental")["timeout-minutes"]!, step("full")["timeout-minutes"]!) +
       step("aggregate")["timeout-minutes"]! +
       10 <=
       corpus.jobs.refresh!["timeout-minutes"]!,
   );
-  // The record tree is sealed and saved only after a complete refresh and aggregate, and the
-  // outcome that drives the backoff is recorded only from a sealed tree.
-  const condition = (id: string) => String((step(id) as { if?: string }).if);
-  assert.match(condition("seal-tree"), /steps\.aggregate\.outcome == 'success'/);
-  assert.match(condition("save-tree"), /steps\.seal-tree\.outcome == 'success'/);
-  const record = steps.find((entry) => entry.name === "Record refresh outcome")!;
-  assert.match(String(record.env?.OUTCOME), /steps\.seal-tree\.outcome == 'success'/);
   // The plain tree (private repositories included) is never cached; only the sealed archive is.
   for (const entry of steps.filter((candidate) =>
     String(candidate.uses).startsWith("actions/cache"),

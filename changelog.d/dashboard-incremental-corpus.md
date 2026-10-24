@@ -1,1 +1,1 @@
-- Refresh the dashboard review corpus hourly from only the canonical records changed since the last refresh, in its own workflow with backoff, so publishing the dashboard never waits on or times out in a full record export; Pages publishing uses a pinned Wrangler dev dependency.
+- Refresh the dashboard review corpus hourly from only the canonical records changed since the last refresh, in its own workflow, so publishing the dashboard never waits on or times out in a full record export; Pages publishing uses a pinned Wrangler dev dependency.
