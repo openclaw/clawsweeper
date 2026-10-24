@@ -28,6 +28,7 @@ import { reviewMergeBase } from "../dist/pr-review-evidence.js";
 import { reviewStructuralPullStateDigest } from "../dist/review-structural-cache.js";
 import { mockGhBinEnv, workPlanCandidateReport } from "./helpers.ts";
 import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
+import { withQuietReviewStartStatusLease } from "../dist/clawsweeper-review-comment-state.js";
 
 const CLI = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
 
@@ -86,6 +87,46 @@ process.stdout.write(fs.readFileSync(${JSON.stringify(commentPath)}, "utf8"));
       assert.ok(Date.parse(expiry) >= before && Date.parse(expiry) <= Date.now());
       assert.equal(patched, body.replace(expiresAt, expiry));
     } else assert.equal(existsSync(patchPath), false);
+  }
+  const original =
+    "Codex review: keep open.\n\nPrevious findings.\n\n<!-- clawsweeper-review item=357 -->";
+  const quiet = withQuietReviewStartStatusLease(original, {
+    number: 357,
+    kind: "issue",
+    title: "fixture",
+    headSha: "a".repeat(64),
+    startedAt: "2026-09-02T21:00:00Z",
+    leaseExpiresAt: expiresAt,
+    leaseOwner: "worker-1",
+  });
+  for (const owner of ["worker-1", "other-worker"]) {
+    writeFileSync(
+      commentPath,
+      JSON.stringify({ id: 9991, body: quiet, user: { login: "clawsweeper[bot]" } }),
+    );
+    rmSync(patchPath, { force: true });
+    execFileSync(
+      process.execPath,
+      [
+        CLI,
+        "expire-review-lease",
+        "--repo",
+        repo,
+        "--item-number",
+        "357",
+        "--comment-id",
+        "9991",
+        "--release-owner",
+        owner,
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, ...mockGhBinEnv(ghPath, root) },
+      },
+    );
+    if (owner === "worker-1")
+      assert.equal(JSON.parse(readFileSync(patchPath, "utf8")).body, original);
+    else assert.equal(existsSync(patchPath), false);
   }
 });
 

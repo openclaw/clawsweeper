@@ -23,6 +23,7 @@ import {
 } from "./review-history.js";
 import { asRecord, login } from "./value-coerce.js";
 import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.js";
+import { clearInPlaceReviewStartStatus } from "./review-comment-markers.js";
 
 export const CLAWSWEEPER_BOT_AUTHORS: ReadonlySet<string> = new Set(
   [...CLAWSWEEPER_BOT_LOGINS, process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN]
@@ -131,7 +132,7 @@ export function previousClawSweeperReviewFromComment(
   context: ReviewCommentContext,
 ): PreviousClawSweeperReview {
   const comment = asRecord(value);
-  const body = rawCommentBody(value);
+  const body = clearInPlaceReviewStartStatus(rawCommentBody(value));
   const verdictMarker = htmlMarkerWithPrefix(body, "clawsweeper-verdict:");
   const actionMarker = htmlMarkerWithPrefix(body, "clawsweeper-action:");
   const { ledger: history, coverage: historyCoverage } = reviewHistoryForReviewer(body);

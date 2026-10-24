@@ -8,12 +8,25 @@ import test from "node:test";
 import { shouldSyncReviewComment } from "../dist/clawsweeper-record-metadata.js";
 import * as publication from "../dist/clawsweeper-review-comment-publication.js";
 import * as state from "../dist/clawsweeper-review-comment-state.js";
-import { postReviewStartStatusComment } from "../dist/clawsweeper-review-comment-leases.js";
+import {
+  postReviewStartStatusComment,
+  deleteOwnedDedicatedReviewStartLease,
+  ReviewLeaseSupersededError,
+} from "../dist/clawsweeper-review-comment-leases.js";
+import {
+  isBackgroundReviewDecision,
+  backgroundReviewFromEnv,
+} from "../dist/clawsweeper-review-lease.js";
+import { clearInPlaceReviewStartStatus } from "../dist/review-comment-markers.js";
 import {
   reviewAutomationMarkersFromReport,
   reviewVersionMarkerFromReport,
 } from "../dist/clawsweeper-review-comment-automation.js";
-import { freshExactHeadReviewStartLease } from "../dist/repair/comment-router/admission.js";
+import {
+  freshExactHeadReviewStartLease,
+  isTrustedReviewStartStatusComment,
+  parseTrustedAutomation,
+} from "../dist/repair/comment-router/admission.js";
 import { manualPublicationOwnerFromEnv } from "../dist/manual-publication-authority.js";
 import {
   reviewReportFrontMatter,
@@ -65,6 +78,7 @@ interface GitHubFixtureState {
   updatedAt?: string;
   nextId?: number;
   sanitize?: boolean;
+  queueHttpStatus?: number;
 }
 
 function withPublicationFixture(
@@ -98,7 +112,10 @@ if (rawRead) {
 const slash = String.fromCharCode(92);
 const output = value => console.log(JSON.stringify(value, (_key, value) =>
   state.sanitize && typeof value === "string" ? value.replaceAll(slash + "u001b", slash + "^[") : value));
-if (args.includes("--input")) {
+if (args.includes("--method") && args[args.indexOf("--method") + 1] === "DELETE") {
+  state.calls.push(args);
+  state.comments = state.comments.filter(comment => comment.id !== Number(args[1].split("/").at(-1)));
+} else if (args.includes("--input")) {
   state.calls.push(args);
   state.payloads.push(args[args.indexOf("--input") + 1]);
   const body = JSON.parse(readFileSync(args[args.indexOf("--input") + 1], "utf8")).body;
@@ -120,9 +137,16 @@ writeFileSync(file, JSON.stringify(state));
       CURL_BIN: process.env.CURL_BIN,
       CURL_BIN_ARGS: process.env.CURL_BIN_ARGS,
       GH_TOKEN: process.env.GH_TOKEN,
+      PATH: process.env.PATH,
     };
     const curlPath = join(root, "curl.js");
     writeFileSync(curlPath, script);
+    writeFileSync(
+      join(root, "curl"),
+      `#!${process.execPath}\nprocess.stdout.write(String(JSON.parse(require("node:fs").readFileSync(${JSON.stringify(path)}, "utf8")).queueHttpStatus ?? 200));\n`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${root}:${process.env.PATH}`;
     Object.assign(process.env, mockCommandBinEnv("curl", curlPath));
     process.env.GH_TOKEN ??= "fixture-only";
     try {
@@ -150,6 +174,211 @@ const previousReview = () =>
     reviewedAt: "2026-08-07T16:00:00Z",
     updatedAt: "2026-08-07T16:01:00Z",
   });
+
+const queueAuthority = {
+  queueUrl: "https://queue.example.invalid",
+  itemKey: `openclaw/openclaw#${itemNumber}`,
+  leaseId: "fixture-lease",
+  leaseRevision: 1,
+  claimGeneration: 1,
+  runId: "12345",
+  runAttempt: 1,
+  sourceHeadSha: headSha,
+};
+const startOptions = () => ({
+  item: { ...item({ number: itemNumber }), kind: "pull_request" as const },
+  headSha,
+  reviewTimeoutMs: 60_000,
+  position: 1,
+  total: 1,
+  shardIndex: 0,
+  shardCount: 1,
+});
+
+test("background re-review starts and releases its lease by editing the durable review", () => {
+  const previous = previousReview();
+  withPublicationFixture([previous], (fixture) => {
+    const result = postReviewStartStatusComment(
+      { ...startOptions(), queueAuthority, backgroundReview: true },
+      () => headSha,
+    );
+    assert.equal(result.status, "posted");
+    if (result.status !== "posted") return;
+    assert.equal(result.lease.commentId, previous.id);
+    assert.equal(fixture.read().comments.length, 1);
+    const leased = fixture.read().comments[0]!;
+    assert.equal(clearInPlaceReviewStartStatus(String(leased.body), itemNumber), previous.body);
+    assert.equal(
+      state.durableReviewVersion(leased, itemNumber)?.reviewedAt,
+      "2026-08-07T16:00:00Z",
+    );
+    const parsed = freshExactHeadReviewStartLease({
+      comments: [leased],
+      itemNumber,
+      headSha,
+      trustedAuthors: new Set(["clawsweeper[bot]"]),
+    });
+    assert.equal(parsed?.owner, result.lease.owner);
+    assert.equal(parsed?.commentId, previous.id);
+    assert.equal(
+      isTrustedReviewStartStatusComment({
+        comment: leased,
+        trustedAuthors: new Set(["clawsweeper[bot]"]),
+      }),
+      true,
+    );
+    assert.equal(
+      parseTrustedAutomation(leased, { trustedAuthors: new Set(["clawsweeper[bot]"]) }),
+      null,
+    );
+    assert.equal(
+      deleteOwnedDedicatedReviewStartLease(itemNumber, { ...result.lease, owner: "wrong-owner" }),
+      false,
+    );
+    assert.equal(deleteOwnedDedicatedReviewStartLease(itemNumber, result.lease), true);
+    assert.equal(fixture.read().comments[0]!.body, previous.body);
+    assert.deepEqual(
+      fixture.read().calls.map((call) => call[call.indexOf("--method") + 1]),
+      ["PATCH", "PATCH"],
+    );
+  });
+});
+
+test("completed background re-review replaces the in-place lease without another comment", () => {
+  withPublicationFixture([previousReview()], (fixture) => {
+    const result = postReviewStartStatusComment(
+      { ...startOptions(), queueAuthority, backgroundReview: true },
+      () => headSha,
+    );
+    assert.equal(result.status, "posted");
+    if (result.status !== "posted") return;
+    const completed = durableReviewComment({
+      id: 20,
+      reviewedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    publication.upsertReviewComment(
+      itemNumber,
+      String(completed.body),
+      state.issueReviewComment(itemNumber),
+    );
+    assert.equal(deleteOwnedDedicatedReviewStartLease(itemNumber, result.lease), false);
+    assert.equal(fixture.read().comments.length, 1);
+    assert.equal(fixture.read().comments[0]!.body, completed.body);
+    assert.deepEqual(
+      fixture.read().calls.map((call) => call[call.indexOf("--method") + 1]),
+      ["PATCH", "PATCH"],
+    );
+  });
+});
+
+test("background issue re-review supports source revisions and legacy unversioned durable reviews", () => {
+  const revision = "a".repeat(64);
+  const previous = {
+    id: 20,
+    user: { login: "clawsweeper[bot]" },
+    body: `Codex review: keeping this issue open.\n\n${reviewMarker}`,
+  };
+  withPublicationFixture([previous], (fixture) => {
+    const result = postReviewStartStatusComment(
+      {
+        ...startOptions(),
+        item: { ...item({ number: itemNumber }), kind: "issue" },
+        headSha: revision,
+        queueAuthority: { ...queueAuthority, sourceHeadSha: null },
+        backgroundReview: true,
+      },
+      () => revision,
+    );
+    assert.equal(result.status, "posted");
+    if (result.status !== "posted") return;
+    assert.equal(result.lease.commentId, 20);
+    assert.equal(result.lease.headSha, revision);
+    assert.equal(clearInPlaceReviewStartStatus(String(result.lease.comment?.body)), previous.body);
+    assert.deepEqual(
+      fixture.read().calls.map((call) => call[call.indexOf("--method") + 1]),
+      ["PATCH"],
+    );
+  });
+});
+
+test("first, explicit, apply, and uncoordinated reviews keep the dedicated POST lease", () => {
+  for (const scenario of ["first", "explicit", "apply", "uncoordinated"] as const) {
+    withPublicationFixture(scenario === "first" ? [] : [previousReview()], (fixture) => {
+      const result = postReviewStartStatusComment(
+        {
+          ...startOptions(),
+          ...(scenario !== "uncoordinated" ? { queueAuthority } : {}),
+          backgroundReview: scenario !== "explicit",
+          ...(scenario === "apply" ? { purpose: "apply" as const } : {}),
+        },
+        () => headSha,
+      );
+      assert.equal(result.status, "posted", scenario);
+      assert.equal(
+        fixture.read().calls[0]![fixture.read().calls[0]!.indexOf("--method") + 1],
+        "POST",
+        scenario,
+      );
+      assert.match(String(fixture.read().comments.at(-1)!.body), /clawsweeper-review-lease item=/);
+    });
+  }
+});
+
+test("quiet reservation refuses lost queue authority before touching the durable review", () => {
+  withPublicationFixture([previousReview()], (fixture) => {
+    fixture.update({ queueHttpStatus: 409 });
+    assert.throws(
+      () =>
+        postReviewStartStatusComment(
+          { ...startOptions(), queueAuthority, backgroundReview: true },
+          () => headSha,
+        ),
+      ReviewLeaseSupersededError,
+    );
+    assert.deepEqual(fixture.read().calls, []);
+  });
+});
+
+test("background classification keeps manual and command requests explicit", () => {
+  for (const sourceAction of [
+    "scheduled_hot_intake",
+    "scheduled_normal_backfill",
+    "source_drift_requeue",
+    "review_placeholder_recovery",
+    "edited",
+  ]) {
+    assert.equal(isBackgroundReviewDecision({ sourceAction }), true);
+    assert.equal(
+      isBackgroundReviewDecision({ sourceAction, commandStatusMarker: "command" }),
+      false,
+    );
+    assert.equal(isBackgroundReviewDecision({ sourceAction, sourceCommentId: 123 }), false);
+  }
+  for (const sourceAction of [
+    "manual_explicit_review",
+    "command_re_review",
+    "unknown",
+    "command_proof_result",
+  ]) {
+    assert.equal(isBackgroundReviewDecision({ sourceAction }), false);
+  }
+});
+
+test("reservation classifies the claimed decision, with unknown context remaining explicit", () => {
+  const env = {
+    EXACT_REVIEW_DECISION: JSON.stringify({ sourceAction: "scheduled_normal_backfill" }),
+  };
+  assert.equal(backgroundReviewFromEnv(env), true);
+  assert.equal(backgroundReviewFromEnv({ ...env, COMMAND_STATUS_MARKER: "command" }), false);
+  assert.equal(
+    backgroundReviewFromEnv({
+      EXACT_REVIEW_DECISION: JSON.stringify({ sourceAction: "manual_explicit_review" }),
+    }),
+    false,
+  );
+  assert.equal(backgroundReviewFromEnv({}), false);
+});
 
 test("literal escape examples recover exact publication bytes through lossless readback", () => {
   const selected = previousReview();

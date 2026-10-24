@@ -25,6 +25,8 @@ import {
   reviewStartLeaseCommentMarker,
   trailingHtmlComments,
   validReviewLeaseIdentity,
+  clearInPlaceReviewStartStatus,
+  REVIEW_STARTED_STATUS,
 } from "./review-comment-markers.js";
 import { neutralizeReviewControlMarkers } from "./review-history.js";
 import { targetRepo } from "./repository-profiles.js";
@@ -116,6 +118,20 @@ export function withReviewStartStatusLease(
   options: ReviewStartStatusCommentOptions,
 ): string {
   return withReviewStartStatusLeaseIdentity(body, options, reviewCommentMarker(options.number));
+}
+
+export function withQuietReviewStartStatusLease(
+  body: string,
+  options: ReviewStartStatusCommentOptions,
+): string {
+  const clean = markedReviewCommentBody(
+    options.number,
+    clearInPlaceReviewStartStatus(body, options.number),
+  );
+  const index = clean.lastIndexOf(reviewCommentMarker(options.number));
+  const leased =
+    clean.slice(0, index) + reviewStartStatusCommentMarker(options) + "\n\n" + clean.slice(index);
+  return `${REVIEW_STARTED_STATUS}\n\n${leased}`;
 }
 
 function withReviewStartStatusLeaseIdentity(
@@ -255,11 +271,22 @@ function newestCausalReviewComment(
     (latest, candidate) => Math.max(latest, candidate.identity.leaseCommentId),
     -1,
   );
-  return newestReviewComment(
+  const elected = newestReviewComment(
     number,
     causalReviews
       .filter((candidate) => candidate.identity.leaseCommentId === latestLeaseCommentId)
       .map((candidate) => candidate.comment),
+  );
+  // Quiet reviews reuse the durable id. A strictly later completed cycle on
+  // that id can supersede the former POST lease, even though its id is lower.
+  const inPlace = causalReviews.filter(
+    ({ comment, identity }) => identity.leaseCommentId === commentId(comment),
+  );
+  return newestReviewComment(
+    number,
+    [elected, ...inPlace.map(({ comment }) => comment)].filter(
+      (comment): comment is Record<string, unknown> => comment !== undefined,
+    ),
   );
 }
 
@@ -531,7 +558,7 @@ function durableReviewVersionFromBody(
   return null;
 }
 
-function durableReviewVersion(
+export function durableReviewVersion(
   comment: Record<string, unknown> | undefined,
   number: number,
 ): ReturnType<typeof durableReviewVersionFromBody> {
@@ -721,9 +748,34 @@ export function staleReviewCommentSyncReason(
   }
   const liveLeaseCommentId = Number(liveVersion?.leaseCommentId);
   const reportLeaseCommentIdNumber = Number(reportLeaseCommentId);
+  if (
+    liveLeaseCommentId === commentId(existingReviewComment) &&
+    (reportReviewedAtMs === null || liveReviewedAtMs > reportReviewedAtMs)
+  ) {
+    return "live durable in-place review is newer than the local report";
+  }
   const reportRevision = reviewLeaseRevisionFromReport(markdown);
   const liveRevision =
     itemKind === "pull_request" ? liveVersion?.headSha : liveVersion?.sourceRevision;
+  const inPlaceMarkers = trailingHtmlComments(commentBody(existingReviewComment) ?? "");
+  const inPlaceStart = inPlaceMarkers.at(-2) ?? "";
+  const startAttribute = (name: string) =>
+    inPlaceStart.match(new RegExp(`\\b${name}=([^\\s>]+)`))?.[1];
+  const inPlaceStartedAt = parseIsoMs(startAttribute("started_at"));
+  if (
+    reportRevision &&
+    commentId(existingReviewComment) === reportLeaseCommentIdNumber &&
+    /^<!--\s*clawsweeper-review-status:started\b/.test(inPlaceStart) &&
+    startAttribute("item") === String(number) &&
+    startAttribute("v") === "1" &&
+    startAttribute("owner") === reportLeaseOwner &&
+    startAttribute("sha") === reportRevision &&
+    inPlaceStartedAt !== null &&
+    inPlaceStartedAt > liveReviewedAtMs &&
+    reportReviewedAtMs !== null &&
+    reportReviewedAtMs >= inPlaceStartedAt
+  )
+    return null;
   if (
     liveRevision &&
     reportRevision &&
@@ -818,7 +870,8 @@ export function newerDurableReviewTupleVerified(
     Number.isSafeInteger(reportLeaseCommentId) &&
     reportLeaseCommentId > 0 &&
     (liveLeaseCommentId > reportLeaseCommentId ||
-      (liveLeaseCommentId === reportLeaseCommentId &&
+      ((liveLeaseCommentId === reportLeaseCommentId ||
+        liveLeaseCommentId === commentId(existingReviewComment)) &&
         reusedLeaseReviewIsNewer(markdown, existingReviewComment, number))),
   );
 }

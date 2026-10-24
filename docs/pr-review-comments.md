@@ -86,9 +86,16 @@ Trailing marker recovery stops at visible prose, including prose ending in
 `-->`. An already-closed HTML comment cannot extend across that prose into the
 final marker block; valid contiguous trailing markers remain recoverable.
 
-Scheduled and other non-command review workers coordinate through a separate
-temporary `clawsweeper-review-lease` comment; final publication updates the durable
-review and removes the owned lease. Command-triggered exact reviews rewrite their
+Queue-owned background re-reviews of an item with an existing durable review
+edit that comment to carry the start status and lease. They preserve the previous
+review text, history, and completion markers while the new review runs, avoiding
+a new-comment notification on every scheduled or target-branch-triggered review.
+First reviews and explicit reviews retain the separate temporary
+`clawsweeper-review-lease` comment. Uncoordinated callers also retain that path:
+their concurrent acquisitions need distinct server-assigned comment IDs.
+Final publication replaces the durable review and its in-place lease together;
+owned cleanup removes only the in-place status and marker, never the old review.
+Command-triggered exact reviews rewrite their
 existing command acknowledgement and use the durable queue claim directly, without
 posting a second visible lease comment. The acknowledgement lease records the
 claimed decision's source head; router-dispatched autofix/automerge commands carry
@@ -108,6 +115,31 @@ review only while a freshly elected status lease matches the report's original
 owner, comment ID, and revision. Missing or expired leases and ambiguous review
 timestamps remain blocked; acquiring a new mutation lease does not establish
 that the original report is newer.
+
+An in-place review uses the durable comment's existing ID, which can be lower
+than a previous separate lease ID. Its original owner/revision/start marker and
+a strictly later review timestamp establish publication order. Expiring a lease
+for deferred publication keeps that inactive marker as provenance; it no longer
+blocks admission. A newer acquisition replaces it. Completed in-place cycles
+are ordered by review time, and an older higher-ID artifact cannot overwrite
+them. Recovery discovers the same start-status sentence in both forms. Closed
+item recovery removes only the in-place status/marker; legacy separate
+placeholders are still deleted. The previous completed review remains available
+to review-history readers throughout the background review.
+
+The controlled reservation proof runs the checked-in reservation shell, built
+CLI, and real curl against loopback GitHub/queue fixtures:
+
+```bash
+pnpm run build:all
+node scripts/e2e/review-reservation.mjs .artifacts/quiet-reservation --quiet
+```
+
+It records source hashes, the base commit, environment, and HTTP traces. It
+compares a background re-review, an explicit re-review, a first review, and a
+superseded background owner, and exercises lease expiry and owned failure
+cleanup. It proves request behavior and review preservation, not GitHub email
+delivery or a real hosted queue race.
 
 A publication blocked by a verified active review lease records
 `review_lease_active` and the normalized lease deadline in both its step outputs

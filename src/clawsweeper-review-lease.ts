@@ -5,6 +5,40 @@ import type {
 } from "./clawsweeper-types.js";
 import { UserFacingCommandError } from "./command.js";
 
+export function isBackgroundReviewDecision(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const decision = value as Record<string, unknown>;
+  if (
+    decision.commandStatusMarker ||
+    decision.statusCommentId ||
+    decision.sourceCommentId ||
+    decision.publicationPolicy
+  )
+    return false;
+  return new Set([
+    "scheduled_hot_intake",
+    "scheduled_normal_backfill",
+    "source_drift_requeue",
+    "failed_review_shard_recovery",
+    "artifact_retention_recovery",
+    "review_placeholder_recovery",
+    "opened",
+    "edited",
+    "reopened",
+    "labeled",
+    "unlabeled",
+    "synchronize",
+    "ready_for_review",
+  ]).has(String(decision.sourceAction));
+}
+
+export function backgroundReviewFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.COMMAND_STATUS_MARKER) return false;
+  if (env.EXACT_REVIEW_DECISION)
+    return isBackgroundReviewDecision(JSON.parse(env.EXACT_REVIEW_DECISION));
+  return false;
+}
+
 export function suppliedReviewStartLeaseFromArgs(
   args: Args,
 ): Pick<AcquiredReviewStartLease, "owner" | "commentId"> | null {

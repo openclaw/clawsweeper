@@ -519,6 +519,7 @@ jobs:
           CODEX_TIMEOUT_MS: ${{ steps.target.outputs.codex_timeout_ms }}
           MEDIA_PROOF_TIMEOUT_MS: ${{ steps.target.outputs.media_proof_timeout_ms }}
           MEDIA_PREPROCESSING_RESERVE_SECONDS: ${{ steps.target.outputs.media_preprocessing_reserve_seconds }}
+          EXACT_REVIEW_DECISION: ${{ steps.claim-exact-review-queue.outputs.decision }}
           EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
           EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
           EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
@@ -1576,9 +1577,19 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
+          lease_comments="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100" --paginate --jq '.[]')"
+          # Discover by owner even if the reservation's PATCH acknowledgement was lost.
+          in_place_ids="$(printf '%s\n' "$lease_comments" |
+            node src/workflow-bot-comments.ts review-lease-comment-ids \
+              --item-number "$ITEM_NUMBER" --owner "$LEASE_OWNER" --in-place)"
+          while IFS= read -r lease_id; do
+            [ -n "$lease_id" ] || continue
+            node dist/clawsweeper.js expire-review-lease \
+              --repo "$TARGET_REPO" --item-number "$ITEM_NUMBER" \
+              --comment-id "$lease_id" --release-owner "$LEASE_OWNER"
+          done <<< "$in_place_ids"
           lease_ids="$(
-            gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100" \
-              --paginate --jq '.[]' |
+            printf '%s\n' "$lease_comments" |
               node src/workflow-bot-comments.ts review-lease-comment-ids \
                 --item-number "$ITEM_NUMBER" --owner "$LEASE_OWNER"
           )"

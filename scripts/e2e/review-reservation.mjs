@@ -22,6 +22,8 @@ const sources = [
   "src/clawsweeper-review-comment-leases.ts",
   "src/clawsweeper-command-operations.ts",
   "src/clawsweeper-review-comment-state.ts",
+  "src/review-comment-markers.ts",
+  "src/clawsweeper-review-lease.ts",
   ".github/workflows/sweep.yml",
   "scripts/e2e/review-reservation.mjs",
 ];
@@ -38,8 +40,9 @@ if (args[0] !== "api") throw new Error("unexpected GitHub CLI command");
 const at = args.indexOf("--method");
 const method = at < 0 ? "GET" : args[at + 1];
 const input = args.indexOf("--input");
+const field = args.find(arg => arg.startsWith("body="));
 fetch(process.env.RESERVATION_FIXTURE_URL + "/" + args[1], {
-  method, ...(input < 0 ? {} : {body: fs.readFileSync(args[input + 1])}),
+  method, ...(input >= 0 ? {body: fs.readFileSync(args[input + 1])} : field ? {body: JSON.stringify({body: field.slice(5)})} : {}),
 }).then(async response => {
   const text = await response.text();
   if (!response.ok) { console.error("HTTP " + response.status); process.exitCode = 1; return; }
@@ -47,37 +50,94 @@ fetch(process.env.RESERVATION_FIXTURE_URL + "/" + args[1], {
 }).catch(error => { console.error(error.message); process.exitCode = 1; });
 `,
 );
-const cases = [
-  { name: "superseded-before-post", codes: [409], result: "superseded", posts: 0, deletes: 0 },
-  { name: "valid-owner", codes: [200], result: "posted", posts: 1, deletes: 0 },
-  { name: "preflight-service-recovery", codes: [503, 200], result: "posted", posts: 1, deletes: 0 },
-  { name: "post-service-recovery", codes: [200, 503, 200], result: "posted", posts: 1, deletes: 0 },
+const quietCases = [
   {
-    name: "post-throttle-recovery",
-    codes: [200, 429, 200],
+    name: "quiet-background",
+    codes: [200],
+    result: "posted",
+    posts: 0,
+    deletes: 0,
+    durable: true,
+    background: true,
+  },
+  {
+    name: "explicit-rereview",
+    codes: [200],
     result: "posted",
     posts: 1,
     deletes: 0,
+    durable: true,
   },
-  { name: "superseded-after-post", codes: [200, 409], result: "superseded", posts: 1, deletes: 1 },
   {
-    name: "head-changed-after-post",
+    name: "background-first-review",
     codes: [200],
-    drift: true,
-    result: "superseded",
+    result: "posted",
     posts: 1,
-    deletes: 1,
+    deletes: 0,
+    background: true,
   },
   {
-    name: "other-owner-held",
-    codes: [200],
-    otherOwner: true,
-    result: "held",
+    name: "quiet-superseded",
+    codes: [200, 200, 409],
+    result: "superseded",
     posts: 0,
     deletes: 0,
+    durable: true,
+    background: true,
   },
-  { name: "service-unavailable", codes: [503], result: "failure", posts: 0, deletes: 0 },
 ];
+const cases = process.argv.includes("--quiet")
+  ? quietCases
+  : [
+      { name: "superseded-before-post", codes: [409], result: "superseded", posts: 0, deletes: 0 },
+      { name: "valid-owner", codes: [200], result: "posted", posts: 1, deletes: 0 },
+      {
+        name: "preflight-service-recovery",
+        codes: [503, 200],
+        result: "posted",
+        posts: 1,
+        deletes: 0,
+      },
+      {
+        name: "post-service-recovery",
+        codes: [200, 503, 200],
+        result: "posted",
+        posts: 1,
+        deletes: 0,
+      },
+      {
+        name: "post-throttle-recovery",
+        codes: [200, 429, 200],
+        result: "posted",
+        posts: 1,
+        deletes: 0,
+      },
+      {
+        name: "superseded-after-post",
+        codes: [200, 409],
+        result: "superseded",
+        posts: 1,
+        deletes: 1,
+      },
+      {
+        name: "head-changed-after-post",
+        codes: [200],
+        drift: true,
+        result: "superseded",
+        posts: 1,
+        deletes: 1,
+      },
+      {
+        name: "other-owner-held",
+        codes: [200],
+        otherOwner: true,
+        result: "held",
+        posts: 0,
+        deletes: 0,
+      },
+      { name: "service-unavailable", codes: [503], result: "failure", posts: 0, deletes: 0 },
+      ...quietCases,
+    ];
 const results = [];
 try {
   for (const scenario of cases) {
@@ -86,6 +146,9 @@ try {
     let checks = 0;
     let currentHead = head;
     let nextId = 1000;
+    const durableBody = `Codex review: synthetic prior review.\n\nPrior findings remain readable.\n\n<!-- clawsweeper-review-version item=${number} reviewed_at=2026-09-21T00:00:00Z sha=${head} source_revision=${"c".repeat(64)} lease_owner=previous-owner lease_comment_id=900 v=1 -->\n\n<!-- clawsweeper-review item=${number} -->`;
+    if (scenario.durable)
+      comments.push({ id: 42, user: { login: "clawsweeper[bot]" }, body: durableBody });
     if (scenario.otherOwner)
       comments.push({
         id: 999,
@@ -149,6 +212,15 @@ try {
         event.commentId = id;
         return send(200, {});
       }
+      if (path.startsWith(`/repos/${repo}/issues/comments/`)) {
+        const comment = comments.find((entry) => entry.id === Number(path.split("/").at(-1)));
+        assert.ok(comment);
+        if (request.method === "GET") return send(200, comment);
+        assert.equal(request.method, "PATCH");
+        comment.body = JSON.parse(body).body;
+        event.commentId = comment.id;
+        return send(200, comment);
+      }
       send(404, { error: "unexpected_fixture_path" });
     });
     await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
@@ -156,34 +228,38 @@ try {
     const githubOutput = join(root, `${scenario.name}.output`);
     writeFileSync(githubOutput, "");
     try {
+      const childEnv = {
+        PATH: process.env.PATH,
+        HOME: root,
+        ...(process.env.COREPACK_HOME ? { COREPACK_HOME: process.env.COREPACK_HOME } : {}),
+        GH_BIN: "/usr/bin/env",
+        GH_BIN_ARGS: JSON.stringify(["-u", "NODE_V8_COVERAGE", process.execPath, proxy]),
+        ...(process.env.NODE_V8_COVERAGE ? { NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE } : {}),
+        GH_TOKEN: "synthetic-fixture-no-live-access",
+        RESERVATION_FIXTURE_URL: url,
+        TARGET_REPO: repo,
+        ITEM_NUMBER: String(number),
+        CODEX_TIMEOUT_MS: "1000",
+        MEDIA_PROOF_TIMEOUT_MS: "0",
+        MEDIA_PREPROCESSING_RESERVE_SECONDS: String(MAX_MEDIA_PROOF_TIMEOUT_MS / 1000),
+        GITHUB_OUTPUT: githubOutput,
+        GITHUB_RUN_ID: "999",
+        GITHUB_RUN_ATTEMPT: "1",
+        EXACT_REVIEW_QUEUE_URL: url,
+        EXACT_REVIEW_ITEM_KEY: `${repo}#${number}`,
+        EXACT_REVIEW_LEASE_ID: "fixture-lease",
+        EXACT_REVIEW_LEASE_REVISION: "3",
+        EXACT_REVIEW_CLAIM_GENERATION: "1",
+        EXACT_REVIEW_SOURCE_HEAD_SHA: head,
+        EXACT_REVIEW_DECISION: JSON.stringify({
+          sourceAction: scenario.background
+            ? "scheduled_normal_backfill"
+            : "manual_explicit_review",
+        }),
+        RESOLVED_STATUS_COMMENT_ID: "",
+      };
       const child = spawn("bash", ["-c", reservation], {
-        env: {
-          PATH: process.env.PATH,
-          HOME: root,
-          ...(process.env.COREPACK_HOME ? { COREPACK_HOME: process.env.COREPACK_HOME } : {}),
-          GH_BIN: "/usr/bin/env",
-          GH_BIN_ARGS: JSON.stringify(["-u", "NODE_V8_COVERAGE", process.execPath, proxy]),
-          ...(process.env.NODE_V8_COVERAGE
-            ? { NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE }
-            : {}),
-          GH_TOKEN: "synthetic-fixture-no-live-access",
-          RESERVATION_FIXTURE_URL: url,
-          TARGET_REPO: repo,
-          ITEM_NUMBER: String(number),
-          CODEX_TIMEOUT_MS: "1000",
-          MEDIA_PROOF_TIMEOUT_MS: "0",
-          MEDIA_PREPROCESSING_RESERVE_SECONDS: String(MAX_MEDIA_PROOF_TIMEOUT_MS / 1000),
-          GITHUB_OUTPUT: githubOutput,
-          GITHUB_RUN_ID: "999",
-          GITHUB_RUN_ATTEMPT: "1",
-          EXACT_REVIEW_QUEUE_URL: url,
-          EXACT_REVIEW_ITEM_KEY: `${repo}#${number}`,
-          EXACT_REVIEW_LEASE_ID: "fixture-lease",
-          EXACT_REVIEW_LEASE_REVISION: "3",
-          EXACT_REVIEW_CLAIM_GENERATION: "1",
-          EXACT_REVIEW_SOURCE_HEAD_SHA: head,
-          RESOLVED_STATUS_COMMENT_ID: "",
-        },
+        env: childEnv,
         stdio: ["ignore", "pipe", "pipe"],
       });
       let stdout = "",
@@ -206,10 +282,47 @@ try {
           .filter(Boolean)
           .map((line) => line.split("=")),
       );
+      if (scenario.durable && scenario.background && outputs.status === "posted") {
+        assert.equal(Number(outputs.comment_id), 42);
+        assert.ok(comments[0].body.includes("Prior findings remain readable."));
+        // Exercise the workflow's actual expiry and owned-failure cleanup CLI.
+        for (const extra of [[], ["--release-owner", "github-run-999-1"]]) {
+          const cleanup = spawn(
+            process.execPath,
+            [
+              "dist/clawsweeper.js",
+              "expire-review-lease",
+              "--repo",
+              repo,
+              "--item-number",
+              String(number),
+              "--comment-id",
+              "42",
+              ...extra,
+            ],
+            { env: childEnv, stdio: ["ignore", "pipe", "pipe"] },
+          );
+          let detail = "";
+          cleanup.stderr.on("data", (chunk) => {
+            detail += chunk;
+          });
+          const code = await new Promise((done, reject) => {
+            cleanup.on("error", reject);
+            cleanup.on("close", done);
+          });
+          assert.equal(code, 0, detail);
+        }
+        assert.equal(
+          comments[0].body,
+          durableBody,
+          "cleanup must restore every byte of the prior review",
+        );
+      }
       const posts = trace.filter(
         (event) => event.method === "POST" && event.path.endsWith("/comments"),
       );
       const deletes = trace.filter((event) => event.method === "DELETE");
+      const patches = trace.filter((event) => event.method === "PATCH");
       writeFileSync(join(output, `${scenario.name}.trace.json`), JSON.stringify(trace, null, 2));
       assert.equal(
         exitCode === 0,
@@ -221,12 +334,19 @@ try {
       assert.equal(deletes.length, scenario.deletes, scenario.name);
       assert.equal(
         comments.length,
-        scenario.otherOwner ? 1 : scenario.posts - scenario.deletes,
+        scenario.otherOwner
+          ? 1
+          : Number(Boolean(scenario.durable)) + scenario.posts - scenario.deletes,
         scenario.name,
       );
       if (scenario.name === "service-unavailable") assert.equal(checks, 5);
       if (scenario.name === "superseded-before-post") assert.equal(checks, 1);
-      if (outputs.status === "posted") assert.equal(Number(outputs.comment_id), posts[0].commentId);
+      if (outputs.status === "posted")
+        assert.equal(
+          Number(outputs.comment_id),
+          scenario.background && scenario.durable ? 42 : posts[0].commentId,
+        );
+      if (scenario.durable && scenario.background) assert.equal(comments[0].body, durableBody);
       const result = {
         name: scenario.name,
         exitCode,
@@ -234,6 +354,7 @@ try {
         checks,
         posts: posts.length,
         deletes: deletes.length,
+        patches: patches.length,
         remaining: comments.length,
         trace,
       };
@@ -243,7 +364,7 @@ try {
         JSON.stringify({ ...result, stdout, stderr }, null, 2),
       );
       console.log(
-        `${scenario.name}: ${result.status}, POST=${posts.length}, DELETE=${deletes.length}`,
+        `${scenario.name}: ${result.status}, POST=${posts.length}, PATCH=${patches.length}, DELETE=${deletes.length}`,
       );
     } finally {
       await new Promise((resolveClose) => server.close(resolveClose));

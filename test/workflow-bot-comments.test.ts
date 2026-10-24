@@ -11,6 +11,44 @@ import {
   commandReviewStartLeaseCommentMarker,
   reviewStartLeaseCommentMarker,
 } from "../dist/review-comment-markers.js";
+import { withQuietReviewStartStatusLease } from "../dist/clawsweeper-review-comment-state.js";
+
+test("workflow failure cleanup discovers only owned in-place leases without selecting them for DELETE", () => {
+  const body = withQuietReviewStartStatusLease(
+    "Codex review: keep open.\n\n<!-- clawsweeper-review item=42 -->",
+    {
+      number: 42,
+      kind: "issue",
+      title: "fixture",
+      headSha: "a".repeat(64),
+      leaseOwner: "run-1",
+      startedAt: "2026-10-01T00:00:00Z",
+      leaseExpiresAt: "2026-10-01T01:00:00Z",
+    },
+  );
+  const input = JSON.stringify({ id: 10, user: { login: "clawsweeper[bot]" }, body });
+  assert.equal(
+    workflowBotComments(
+      ["review-lease-comment-ids", "--item-number", "42", "--owner", "run-1", "--in-place"],
+      input,
+    ),
+    "10\n",
+  );
+  assert.equal(
+    workflowBotComments(
+      ["review-lease-comment-ids", "--item-number", "42", "--owner", "other", "--in-place"],
+      input,
+    ),
+    "",
+  );
+  assert.equal(
+    workflowBotComments(
+      ["review-lease-comment-ids", "--item-number", "42", "--owner", "run-1"],
+      input,
+    ),
+    "",
+  );
+});
 
 // Workflow steps run the source file with the runner Node before any build.
 function workflowBotComments(args: string[], input = ""): string {

@@ -8,14 +8,22 @@
 //     Reads REST issue comments as JSON lines on stdin (`gh api --jq '.[]'`) and
 //     prints the id of each review-start lease comment a ClawSweeper App posted
 //     for item N, limited to lease OWNER when given.
+//     With --in-place, selects combined leases for PATCH cleanup instead of DELETE.
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { CLAWSWEEPER_APP_BOT_LOGINS, CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.ts";
-import { hasReviewStartLeaseCommentMarker } from "./review-comment-markers.ts";
+import {
+  hasReviewStartLeaseCommentMarker,
+  clearInPlaceReviewStartStatus,
+} from "./review-comment-markers.ts";
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
-  options: { "item-number": { type: "string" }, owner: { type: "string" } },
+  options: {
+    "item-number": { type: "string" },
+    owner: { type: "string" },
+    "in-place": { type: "boolean" },
+  },
 });
 
 switch (positionals[0]) {
@@ -37,7 +45,9 @@ switch (positionals[0]) {
         // A REST login of bare "clawsweeper" is a user account, so only App logins count.
         typeof login === "string" &&
         CLAWSWEEPER_APP_BOT_LOGINS.has(login) &&
-        hasReviewStartLeaseCommentMarker(body, itemNumber) &&
+        (values["in-place"]
+          ? clearInPlaceReviewStartStatus(body, itemNumber) !== body
+          : hasReviewStartLeaseCommentMarker(body, itemNumber)) &&
         (owner === undefined || body.includes(`owner=${owner} `))
       ) {
         console.log(comment.id);
@@ -47,6 +57,6 @@ switch (positionals[0]) {
   }
   default:
     throw new Error(
-      "usage: workflow-bot-comments.ts bot-logins | review-lease-comment-ids --item-number N [--owner OWNER]",
+      "usage: workflow-bot-comments.ts bot-logins | review-lease-comment-ids --item-number N [--owner OWNER] [--in-place]",
     );
 }

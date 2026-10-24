@@ -115,6 +115,14 @@ content caches. Changed PR content goes to Codex, including source comments
 and formatting. See [Review Cache](review-cache.md) for admission, freshness,
 and runtime packaging rules.
 
+Queue-owned background re-reviews, including issue re-reviews after target-branch
+commits, carry their start lease by editing an existing durable review comment.
+They do not post a new start comment for subscribers. The old review remains
+readable during the run; completion replaces it, and cleanup removes only the
+owned status/lease. First and explicit reviews retain their existing start path.
+Lease expiry and orphan recovery still apply to both forms; see
+[PR review comments](pr-review-comments.md#durable-comment-shape).
+
 Ordinary PRs receive one automatic completed review after ten quiet minutes of
 stable head, title, body, and draft state. Pushes and edits after that answer need
 an explicit `@clawsweeper re-review`; the queue rejects hot/normal offers for them,
@@ -792,7 +800,8 @@ Exact PR review marks ClawSweeper's own acknowledgement comment
 (`clawsweeper-pr-ack`) complete after the review snapshot and before direct
 publication, and GitHub moves the PR's `updated_at` for that edit. The producer's
 apply then syncs the durable review comment, may edit managed labels, and
-releases (deletes) its review lease comment. When direct publication is
+releases its review lease (deleting a separate placeholder or replacing an
+in-place start status with the completed review). When direct publication is
 deferred, the batch publisher re-applies the same review against those writes.
 Apply freshness treats such an update as automation-only only when a receipt
 ClawSweeper recorded for the item accounts for the latest `updated_at` and the

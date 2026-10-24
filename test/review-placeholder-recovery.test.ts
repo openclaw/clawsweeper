@@ -4,6 +4,8 @@ import { createHmac } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { withQuietReviewStartStatusLease } from "../dist/clawsweeper-review-comment-state.js";
+import { isBackgroundReviewDecision } from "../dist/clawsweeper-review-lease.js";
 import test from "node:test";
 
 import {
@@ -14,6 +16,76 @@ import {
   runReviewPlaceholderRecovery,
   selectReviewPlaceholderComment,
 } from "../dist/review-placeholder-recovery.js";
+
+for (const state of ["open", "closed"] as const) {
+  test(`crashed in-place lease recovery on an ${state} item preserves the durable review`, async () => {
+    const original =
+      "Codex review: keep open.\n\nPrior findings stay available.\n\n<!-- clawsweeper-review item=42 -->";
+    const leased = withQuietReviewStartStatusLease(original, {
+      number: 42,
+      kind: "issue",
+      title: "fixture",
+      headSha: "a".repeat(64),
+      leaseOwner: "dead-worker",
+      startedAt: "2026-08-14T08:00:00Z",
+      leaseExpiresAt: "2026-08-14T09:00:00Z",
+    });
+    const comment = {
+      id: 4201,
+      body: leased,
+      updated_at: "2026-08-14T08:00:00Z",
+      user: { login: "clawsweeper[bot]", type: "Bot" },
+    };
+    const writes: string[] = [];
+    let enqueues = 0;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname.endsWith("/github-read-model/placeholders")) {
+        const query = JSON.parse(String(init?.body));
+        return Response.json({
+          usable: true,
+          candidates:
+            query.state === state
+              ? [{ number: 42, item: { number: 42, state, labels: [] }, comments: [comment] }]
+              : [],
+        });
+      }
+      if (url.pathname.endsWith("/github-read-model/repair"))
+        return Response.json({ accepted: true });
+      if (url.pathname === "/internal/exact-review/enqueue") {
+        assert.equal(isBackgroundReviewDecision(JSON.parse(String(init?.body)).decision), true);
+        enqueues++;
+        return Response.json({ queued: true });
+      }
+      if (url.pathname === "/repos/openclaw/openclaw/issues/42") return Response.json({ state });
+      if (url.pathname === "/repos/openclaw/openclaw/issues/comments/4201") {
+        if (!init?.method || init.method === "GET") return Response.json(comment);
+        writes.push(init.method);
+        assert.equal(init.method, "PATCH");
+        assert.equal(JSON.parse(String(init.body)).body, original);
+        return Response.json({ ...comment, body: original });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    };
+    const result = await runReviewPlaceholderRecovery({
+      now: new Date("2026-08-14T12:00:00Z"),
+      fetchImpl,
+      env: {
+        GH_TOKEN: "fixture-read",
+        TARGET_WRITE_TOKEN: "fixture-write",
+        CLAWSWEEPER_WEBHOOK_SECRET: "fixture-secret",
+        TARGET_REPO: "openclaw/openclaw",
+        QUEUE_URL: "https://queue.example.test",
+        GITHUB_API_URL: "https://api.github.test",
+      },
+    });
+    assert.equal(result.orphaned, 1);
+    assert.equal(result.errors, 0);
+    assert.equal(enqueues, state === "open" ? 1 : 0);
+    assert.deepEqual(writes, state === "closed" ? ["PATCH"] : []);
+    assert.equal(comment.body, leased);
+  });
+}
 
 test("placeholder snapshot and repair poll choose the same recovery with fewer GitHub reads", async () => {
   const now = new Date("2026-08-14T12:00:00.000Z");

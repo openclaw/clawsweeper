@@ -1,0 +1,1 @@
+- Keep background re-review start statuses in the existing durable review comment, avoiding repeated subscriber notifications while preserving review leases, history, and recovery.
