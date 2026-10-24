@@ -1442,9 +1442,22 @@ test("attribute acquisition consumes the original metadata deadline across retri
   const realNow = Date.now.bind(Date);
   let offset = 0;
   let fetches = 0;
+  let boundedCapacityProbes = 0;
   try {
     t.mock.method(Date, "now", () => realNow() + offset);
     mockReviewGitTransport(t, (command, args, options) => {
+      if (
+        offset > 0 &&
+        command === "git" &&
+        args.includes("--git-path") &&
+        args.includes("objects")
+      ) {
+        boundedCapacityProbes++;
+        assert.ok(
+          options.timeout <= 1000,
+          "attribute capacity probe must retain the original deadline",
+        );
+      }
       if (command === "git" && args.includes("fetch") && args.includes("--stdin")) {
         fetches++;
         assert.ok(options.timeout <= 1000);
@@ -1476,6 +1489,7 @@ test("attribute acquisition consumes the original metadata deadline across retri
       { diagnosticReason: "review_blobs_unavailable", errorCode: "ETIMEDOUT" },
     );
     assert.equal(fetches, 1);
+    assert.equal(boundedCapacityProbes, 1);
     assert.equal(existsSync(worktreeDir), false);
   } finally {
     t.mock.restoreAll();

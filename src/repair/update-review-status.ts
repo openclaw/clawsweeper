@@ -38,6 +38,11 @@ export function terminalReviewStatusCopy(reason: TerminalReviewFailureReason) {
           "The input-safety check rejected material in this revision. No detected value, path, or scanner output is reproduced here.",
         next: "If this is a genuine credential, remove and rotate it. If it is an intentional test fixture, a maintainer must review and qualify it.",
       };
+    case "batch_nonretryable":
+      return {
+        reason: "The configured review batch did not produce an accepted consolidated verdict.",
+        next: "Maintainers should inspect the linked run before requesting a fresh review. Individual assessments, if present, are advisory only.",
+      };
     case "source_incompatible":
       return {
         reason: "This revision does not contain a valid exact Codex version pin.",
@@ -95,11 +100,14 @@ export function renderReviewProgressSection(
     REVIEW_PROGRESS_START,
     "### ClawSweeper review blocked",
     "",
-    "Automated review did not run, so no review verdict was produced.",
+    options.failureReason === "batch_nonretryable"
+      ? "No consolidated review verdict was accepted; individual assessments may have run."
+      : "Automated review did not run, so no review verdict was produced.",
     "",
     `**Reason:** ${copy.reason}`,
     "",
-    options.failureReason === "source_incompatible"
+    options.failureReason === "source_incompatible" ||
+    options.failureReason === "batch_nonretryable"
       ? "ClawSweeper will not retry this unchanged revision."
       : "Automatic review is on hold, including after source changes. Request a fresh re-review after resolving the failure; maintainers can also release the hold through an intentional scanner-policy update.",
     "",

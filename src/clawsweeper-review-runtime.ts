@@ -3,7 +3,12 @@ import { dirname, join, resolve } from "node:path";
 import { stringArg, type Args } from "./clawsweeper-args.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
-import { refreshReviewTargetBranch, ReviewGitError } from "./clawsweeper-review-blobs.js";
+import {
+  refreshReviewTargetBranch,
+  ReviewGitError,
+  githubReviewTreeBlobSizes,
+} from "./clawsweeper-review-blobs.js";
+import { loadRepositoryReviewConfig } from "./repository-review-config.js";
 import { explainSpawnFailure, UserFacingCommandError } from "./command.js";
 import type {
   GitInfo,
@@ -25,6 +30,60 @@ export function createReviewRuntime(dependencies: ReviewRuntimeDependencies) {
   const { targetRepo, run, ghJson, ensureDir } = dependencies;
   const core = createReviewCoreRuntime(dependencies);
   const { displayPath, localExactReviewItem } = core;
+  function repositoryReviewConfig(openclawDir: string) {
+    // Unlike the review diff base, skill authority always belongs to the target's
+    // authenticated default branch, not a PR or an ingress-supplied branch.
+    const repo = targetRepo();
+    const metadata = ghJson<{ full_name: string; default_branch: string }>([
+      "api",
+      `repos/${repo}`,
+    ]);
+    if (metadata.full_name?.toLowerCase() !== repo.toLowerCase())
+      throw new UserFacingCommandError("Repository review configuration identity mismatch.");
+    const branch = requireSafeGitBranchName(metadata.default_branch, "repository default branch");
+    const origin = run("git", ["remote", "get-url", "origin"], { cwd: openclawDir })
+      .trim()
+      .replace(/\/$/, "")
+      .toLowerCase();
+    if (
+      ![
+        "https://github.com/",
+        "https://github.com:443/",
+        "git@github.com:",
+        "ssh://git@github.com/",
+        "ssh://git@github.com:22/",
+        "ssh://git@ssh.github.com:443/",
+      ].some((prefix) =>
+        [repo, repo + ".git"].some((path) => (prefix + path).toLowerCase() === origin),
+      )
+    )
+      throw new UserFacingCommandError(
+        "Repository review configuration requires the canonical target origin.",
+      );
+    refreshReviewTargetBranch(openclawDir, branch);
+    const revision = run("git", ["rev-parse", `refs/remotes/origin/${branch}^{commit}`], {
+      cwd: openclawDir,
+    }).trim();
+    let sizes: ReadonlyMap<string, number> | undefined;
+    return loadRepositoryReviewConfig(openclawDir, revision, {
+      allowFetch: true,
+      resolveBlobSizes: (_objectIds, deadlineAt) =>
+        (sizes ??= githubReviewTreeBlobSizes({
+          repository: repo,
+          headSha: revision,
+          request: (path) =>
+            ghJson(
+              [
+                "api",
+                path,
+                "--jq",
+                '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}',
+              ],
+              { deadlineAt },
+            ),
+        })),
+    });
+  }
   function gitInfo(openclawDir: string, options: ReviewGitInfoOptions = {}): GitInfo {
     const targetBranch = options.targetBranch ?? reviewTargetBranch(openclawDir);
     requireSafeGitBranchName(targetBranch, "target branch");
@@ -272,6 +331,7 @@ export function createReviewRuntime(dependencies: ReviewRuntimeDependencies) {
   return {
     ...core,
     gitInfo,
+    repositoryReviewConfig,
     isSafeGitBranchName,
     resolveReviewCheckout,
     prepareManagedLocalReviewCheckoutForTest,

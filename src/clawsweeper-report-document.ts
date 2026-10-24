@@ -460,6 +460,7 @@ export function markdownFor(options: {
   reviewPolicy: string;
   runtime: ReviewRuntime;
   structuralRecord?: ReviewStructuralRecord | null;
+  multiModel?: import("./review-record.js").MultiModelReviewRecord;
   reviewLeaseOwner?: string;
   reviewLeaseCommentId?: number;
 }): string {
@@ -554,7 +555,10 @@ export function markdownFor(options: {
   const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
   const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
   const reviewRecordLine = reviewRecordFrontMatterLine(
-    { decision: options.decision },
+    {
+      decision: options.decision,
+      ...(options.multiModel ? { multiModel: options.multiModel } : {}),
+    },
     options.item,
   );
   const markdown = `---

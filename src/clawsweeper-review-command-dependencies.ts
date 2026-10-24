@@ -2,6 +2,7 @@ import type { ActionEvent } from "./action-ledger.js";
 import type { ActionEventReasonCode, ActionEventStatus } from "./action-ledger.js";
 import type { Args } from "./clawsweeper-args.js";
 import type { AgentScanSource } from "./agent-input-scan.js";
+import type { RepositoryReviewConfig } from "./repository-review-config.js";
 import type {
   AcquiredReviewStartLease,
   Action,
@@ -35,7 +36,12 @@ import type { ReviewStructuralPullState } from "./review-structural-cache.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
 
 export interface CreateReviewCommandWorkflowDependencies {
-  reviewEnvironment: (sandboxMode: string, preserveCodexAuth?: boolean) => NodeJS.ProcessEnv;
+  repositoryReviewConfig: (targetDir: string) => RepositoryReviewConfig | undefined;
+  reviewEnvironment: (
+    sandboxMode: string,
+    preserveCodexAuth?: boolean,
+    runner?: "codex" | "openclaw",
+  ) => NodeJS.ProcessEnv;
   actionLedgerFailureDisposition: (error: unknown) => {
     status: ActionEventStatus;
     reasonCode: ActionEventReasonCode;
@@ -290,6 +296,9 @@ export interface CreateReviewCommandWorkflowDependencies {
   runReviewCheckoutInspection: (options: {
     scanSource: AgentScanSource;
     initialPrompt: string;
+    reviewPhase?: "independent" | "consolidation";
+    nativeReadRoots?: string[];
+    reviewEnv?: NodeJS.ProcessEnv;
     itemNumber: number;
     openclawDir: string;
     preserveCodexAuth?: boolean;
@@ -318,6 +327,17 @@ export interface CreateReviewCommandWorkflowDependencies {
     streamFileBytes?: number;
     quietLogs?: boolean;
     extraCodexConfig?: string[];
+    repositoryReview?: RepositoryReviewConfig;
+    /** Host-only receipt: shared preparation finished before parallel workers. */
+    sourcePrepared?: boolean;
+    /** Host-admitted public source objects; never a repository-configured mount. */
+    nativeReadRoots?: string[];
+    nativeReferenceDir?: string;
+    /** Host-prepared media only; separate from all writable role scratch. */
+    preparedMediaDir?: string;
+    selection?: import("./repository-review-config.js").ReviewModelSelection;
+    reviewPhase?: "independent" | "consolidation";
+    onExecution?: (receipt: import("./review-execution-receipt.js").ReviewExecutionReceipt) => void;
   }) => Decision;
   selectCandidates: (options: {
     batchSize: number;

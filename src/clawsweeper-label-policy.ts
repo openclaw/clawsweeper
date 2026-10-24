@@ -77,6 +77,19 @@ function securityReviewNeedsContributorWork(options: {
   return recommendedMergeRiskOptionCategory(options.mergeRiskOptions) !== "accept_risk";
 }
 
+export function prReviewNeedsContributorWork(
+  options: Pick<
+    Parameters<typeof prStatusLabelKind>[0],
+    "proofPolicy" | "beforeMergeItems" | "securityReview" | "mergeRiskOptions"
+  >,
+): boolean {
+  return (
+    options.proofPolicy.needsContributorAction ||
+    options.beforeMergeItems.some((item) => item.state === "needs-changes") ||
+    securityReviewNeedsContributorWork(options)
+  );
+}
+
 // The Before-merge items own merge readiness. The status label only routes them:
 // it is "ready" only when the published comment lists no Before-merge item.
 export function prStatusLabelKind(options: {
@@ -89,10 +102,7 @@ export function prStatusLabelKind(options: {
   hasRecentReReviewRequest: boolean;
   hasRecentAuthorActivity: boolean;
 }): PrStatusLabelKind | null {
-  const unresolvedWork =
-    options.proofPolicy.needsContributorAction ||
-    options.beforeMergeItems.some((item) => item.state === "needs-changes") ||
-    securityReviewNeedsContributorWork(options);
+  const unresolvedWork = prReviewNeedsContributorWork(options);
   if (options.hasRepairLoopPauseLabel) return null;
   if (options.hasRecentReReviewRequest) return "re_review_loop";
   if (options.hasRecentAuthorActivity && unresolvedWork) return "actively_grinding";

@@ -1,3 +1,8 @@
+import { retryableBatchFailure, batchSecondaryFailure } from "./review-assessment-failure.js";
+import {
+  NonretryableReviewBatchError,
+  nonretryableReviewBatchExitCode,
+} from "./exact-review-failure-reason.js";
 import { runLocalRangeReview } from "./clawsweeper-local-command.js";
 import { runPreparedReviewItem, writePreparedReviewReport } from "./clawsweeper-review-item.js";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
@@ -59,6 +64,10 @@ import {
 import { reviewContentCacheHit } from "./scheduler-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
+import {
+  repositoryReviewContentDigest,
+  type RepositoryReviewConfig,
+} from "./repository-review-config.js";
 import { reportWithoutHydrationCache } from "./report-hydration-cache.js";
 import { createCommitPullResolver } from "./pr-review-provenance.js";
 
@@ -280,6 +289,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       retainedReviewOutput,
       cleanupReviewOutput,
     } = preparation;
+    let repositoryReviewLoaded = false;
+    let repositoryReview: RepositoryReviewConfig | undefined;
     const {
       results: localOutputResults,
       writeReport: writeOutputReport,
@@ -287,6 +298,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     } = createReviewOutputWriter(preparation);
     let outputEmitted = false;
     let commandError: unknown;
+    let commandFailed = false;
+    let stopBatchRetries = false;
+    let configuredBatch = false;
+    let configuredAssessmentAttempted = false;
+    let transientBatchSummary: Error | undefined;
     let finalizationError: unknown;
     let reviewCompleted = false;
     const emitLocalOutput = (status: "completed" | "failed"): void => {
@@ -441,6 +457,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const reviewTreeCleanupFailures: string[] = [];
       // oxfmt-ignore
       for (const item of candidates) {
+        let itemRepositoryReview: RepositoryReviewConfig | undefined;
+        let batchAssessmentsFinished = false;
         const itemReadonlyModeSnapshots: ReturnType<typeof makeTreeReadOnly> = [];
         let reviewOpenclawDir = openclawDir;
         let pullRequestReviewTreeDir: string | null = null;
@@ -458,7 +476,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             itemNumber: item.number,
             retention: outputSelection.retention,
           });
-        const recordFailureDiagnostics = (error: unknown, classification = "codex_execution") => {
+        const recordFailureDiagnostics = (error: unknown, classification = "codex_execution", retryable?: boolean) => {
           if (!process.env.EXACT_REVIEW_ITEM_KEY) return;
           try {
             produceReviewOutput(outputBudget, {
@@ -478,8 +496,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               sourceSha: error instanceof ReviewSourcePreparationError || error instanceof AgentInputScanError
                 ? error.reviewedHeadSha ?? diagnosticSourceSha
                 : diagnosticSourceSha,
-              retryable: codexReviewFailureRetryable(error),
-              workflowExit: agentInputScanFailureExitCode(error) ?? 1,
+              retryable: retryable ?? (itemRepositoryReview?.multiModel &&
+                !(error instanceof ReviewSourcePreparationError) && !(error instanceof AgentInputScanError)
+                ? !batchAssessmentsFinished && retryableBatchFailure(error)
+                : codexReviewFailureRetryable(error)),
+              workflowExit: agentInputScanFailureExitCode(error) ?? nonretryableReviewBatchExitCode(error) ?? 1,
             }));
           } catch {
             console.error("[review] exact-review failure diagnostics could not be written.");
@@ -605,6 +626,14 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             console.error(`[review] oversized_pull_request #${item.number} total=${admission.decision.additions + admission.decision.deletions} hydration=0 scanner=0 codex=0 report=${reportPath}`);
             continue;
           }
+        }
+        if (item.kind === "pull_request") {
+          if (!repositoryReviewLoaded) {
+            repositoryReview = dependencies.repositoryReviewConfig(openclawDir);
+            repositoryReviewLoaded = true;
+          }
+          itemRepositoryReview = repositoryReview;
+          configuredBatch ||= Boolean(itemRepositoryReview?.multiModel);
         }
         let authorRepositoryPermission: string | null = null;
         const restoredMaintainerAssociation =
@@ -761,13 +790,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         let hydratedStructuralAnchor: ReviewStructuralRecord | null = null;
         {
           structuralCacheChecks += 1;
+          // Structural receipts do not bind config bytes: opted-in items must
+          // hydrate before testing their config-aware content cache identity.
           const structuralProbeDecision = reviewStructuralCacheProbeDecision({
             review: cacheEligibleReview,
             reviewPolicy,
             reviewModel: PUBLIC_CODEX_MODEL,
             explicitDispatch,
             maintainerRequest,
-            coordinationEnabled: structuralCacheCoordinationEnabled,
+            coordinationEnabled: structuralCacheCoordinationEnabled && !itemRepositoryReview,
           });
           if (!structuralProbeDecision.hit) {
             structuralCacheReasons.set(
@@ -811,7 +842,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               reviewModel: PUBLIC_CODEX_MODEL,
               explicitDispatch,
               maintainerRequest,
-              coordinationEnabled: structuralCacheCoordinationEnabled,
+              coordinationEnabled: structuralCacheCoordinationEnabled && !itemRepositoryReview,
             };
             let suppliedLeaseClaim: ReturnType<typeof claimSuppliedReviewLease> | null = null;
             let ownedReservationUpdatedAt: string | undefined;
@@ -1298,7 +1329,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             continue;
           }
         }
-        const contentDigest = itemContentDigest(item, context, git);
+        // Config bytes affect cache validity, not global admission policy.
+        const contentDigest = repositoryReviewContentDigest(
+          itemContentDigest(item, context, git), itemRepositoryReview,
+        );
         const currentPreviousReviewDigest = previousClawSweeperReviewDigest(
           context.previousClawSweeperReview,
         );
@@ -1405,32 +1439,42 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           pruneItemOutput(reportPath);
           continue;
         }
+        // Prepared evidence is immutable shared input, never a parent mount of role scratch.
+        const mediaProofDir = itemRepositoryReview?.multiModel
+          ? join(proofScratchDir, "prepared-media") : proofScratchDir;
         const preparedMediaProof = prepareMediaProofArtifacts(
-          context, proofScratchDir, undefined,
-          reviewOutputMediaLimits(outputBudget, proofScratchDir), writeOutputMetadata,
+          context, mediaProofDir, undefined,
+          reviewOutputMediaLimits(outputBudget, mediaProofDir), writeOutputMetadata,
         );
-        const { decision, runtime, codexFailure, codexFailureRetryable, snapshotHash } = runPreparedReviewItem({
+        if (itemRepositoryReview?.multiModel) configuredAssessmentAttempted = true;
+        const { decision, runtime, codexFailure, codexFailureRetryable, snapshotHash, multiModel } = runPreparedReviewItem({
           item, context, git, model, sandboxMode, localOnly, localRange: false,
           reviewOpenclawDir, reviewTreesDir, additionalPrompt, proofScratchDir,
           preparedMediaProof, resolveProvenancePull, shardIndex, shardCount, timeoutMs,
           humanLocalReview, outputSelection, outputBudget, itemOutputBudget, codexWorkDir,
           forcedLoginMethod, itemCodexProfile, existingPriorReview, contextElapsedMs,
           onPrompt: (prompt) => { diagnosticPrompt = prompt; },
+          ...(itemRepositoryReview ? { repositoryReview: itemRepositoryReview } : {}),
         }, dependencies);
         const codexElapsedMs = runtime.codexElapsedMs;
         const codexFailureDisposition = codexFailure
           ? actionLedgerFailureDisposition(codexFailure.error)
           : null;
-        if (codexFailure) codexFailures += 1;
+        batchAssessmentsFinished = Boolean(itemRepositoryReview?.multiModel);
+        if (codexFailure) {
+          codexFailures += 1;
+          if (itemRepositoryReview?.multiModel && !codexFailureRetryable) stopBatchRetries = true;
+        }
         structuralRecord = refreshStructuralRecordForVerdict();
         const { action, reportPath } = writePreparedReviewReport({
           item, context, decision, git, runtime, artifactDir, snapshotHash, contentDigest,
+          ...(multiModel ? { multiModel } : {}),
           reviewPolicy, structuralRecord, acquiredReviewLease,
           itemLocalReviewHistoryPath, previousLocalReviewCommentBody,
           localRange: false, metadataBytes: itemOutputBudget.metadataBytes,
           writeOutputReport, writeOutputMetadata,
           onReport: () => {
-            if (codexFailure) recordFailureDiagnostics(codexFailure.error, codexFailure.logKind);
+            if (codexFailure) recordFailureDiagnostics(codexFailure.error, codexFailure.logKind, codexFailureRetryable);
           },
           transformReport: (markdown) => hostReport(updateBulkFilerDetectedFrontMatter(markdown, bulkFilerDetection)),
         }, dependencies);
@@ -1482,6 +1526,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           reviewItemFailed = true;
           itemRecoveryRequired = validationRecoveryRequired(error) !== null;
           if (error instanceof AgentInputScanError || error instanceof ReviewSourcePreparationError) {
+            recordFailureDiagnostics(error);
+          } else if (itemRepositoryReview?.multiModel) {
+            stopBatchRetries ||= batchAssessmentsFinished || !retryableBatchFailure(error);
             recordFailureDiagnostics(error);
           }
           throw error;
@@ -1599,8 +1646,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const message = `Codex failed for ${codexFailures} item${
           codexFailures === 1 ? "" : "s"
         }; the workflow recovery lane can requeue evidence-backed retryable items.${retainedFailureReports}`;
-        if (humanLocalReview) throw new UserFacingCommandError(message);
-        throw new Error(message);
+        const failure = humanLocalReview ? new UserFacingCommandError(message) : new Error(message);
+        if (configuredBatch && !stopBatchRetries) transientBatchSummary = failure;
+        throw failure;
       }
       finishReviewActionLedger({
         ledger: reviewLedger,
@@ -1609,49 +1657,94 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       });
       reviewCompleted = true;
       assertCurrentOutputBudget();
-    } catch (error) {
+    } catch (caught) {
+      const error =
+        configuredAssessmentAttempted &&
+        (stopBatchRetries ||
+          (configuredBatch &&
+            caught !== transientBatchSummary &&
+            !retryableBatchFailure(caught))) &&
+        !(caught instanceof AgentInputScanError) &&
+        !(caught instanceof ReviewSourcePreparationError)
+          ? new NonretryableReviewBatchError(caught)
+          : caught;
       commandError = error;
-      emitLocalOutput("failed");
-      if (reviewLedger) {
-        for (const acquired of acquiredReviewLeases) {
-          const state = [...reviewLedger.items.values()].find(
-            (candidate) => candidate.item.number === acquired.itemNumber,
-          );
-          if (!state) continue;
-          const previousReviewMutationRunner = dependencies.activeReviewMutationRunner;
-          dependencies.activeReviewMutationRunner = reviewMutationRunner(reviewLedger, state.item);
-          try {
-            releaseOwnedReviewLease(acquired.itemNumber, acquired.lease);
-          } finally {
-            dependencies.activeReviewMutationRunner = previousReviewMutationRunner;
+      commandFailed = true;
+      try {
+        emitLocalOutput("failed");
+        if (reviewLedger) {
+          for (const acquired of acquiredReviewLeases) {
+            const state = [...reviewLedger.items.values()].find(
+              (candidate) => candidate.item.number === acquired.itemNumber,
+            );
+            if (!state) continue;
+            const previousReviewMutationRunner = dependencies.activeReviewMutationRunner;
+            dependencies.activeReviewMutationRunner = reviewMutationRunner(
+              reviewLedger,
+              state.item,
+            );
+            try {
+              releaseOwnedReviewLease(acquired.itemNumber, acquired.lease);
+            } finally {
+              dependencies.activeReviewMutationRunner = previousReviewMutationRunner;
+            }
           }
+          finishReviewActionLedger({
+            ledger: reviewLedger,
+            error,
+            activeItem: activeReviewItem,
+            completedCount: completed,
+            cacheHits,
+          });
         }
-        finishReviewActionLedger({
-          ledger: reviewLedger,
-          error,
-          activeItem: activeReviewItem,
-          completedCount: completed,
-          cacheHits,
-        });
+      } catch (secondary) {
+        commandError = configuredBatch ? batchSecondaryFailure(error, secondary) : secondary;
+        console.error(
+          "[review] error-path bookkeeping failed; original batch disposition retained.",
+        );
       }
+    } finally {
+      try {
+        finalizationError = finalizeReviewCommandOutput({
+          restoreTreeModes: () => restoreTreeModes(readonlyModeSnapshots),
+          outputSelection,
+          retainedReviewOutput,
+          results: localOutputResults,
+          cleanupReviewOutput,
+          captureSecondaryFailure: configuredBatch,
+          commandError,
+        });
+      } catch (secondary) {
+        finalizationError = secondary;
+      }
+    }
+    if (finalizationError !== undefined) {
+      if (configuredBatch) {
+        commandError = batchSecondaryFailure(
+          commandFailed ? commandError : undefined,
+          finalizationError,
+        );
+        commandFailed = true;
+      } else if (!commandFailed) throw finalizationError;
+    }
+    if (commandFailed) {
       if (outputEmitted && outputSelection.resultFormat === "json") {
-        console.error(error instanceof Error ? error.message : String(error));
-        process.exitCode = agentInputScanFailureExitCode(error) ?? 1;
+        console.error(commandError instanceof Error ? commandError.message : String(commandError));
+        process.exitCode =
+          agentInputScanFailureExitCode(commandError) ??
+          nonretryableReviewBatchExitCode(commandError) ??
+          1;
         return;
       }
-      throw error;
-    } finally {
-      finalizationError = finalizeReviewCommandOutput({
-        restoreTreeModes: () => restoreTreeModes(readonlyModeSnapshots),
-        outputSelection,
-        retainedReviewOutput,
-        results: localOutputResults,
-        cleanupReviewOutput,
-        commandError,
-      });
+      throw commandError;
     }
-    if (finalizationError !== undefined) throw finalizationError;
-    if (reviewCompleted) emitLocalOutput("completed");
+    if (reviewCompleted) {
+      try {
+        emitLocalOutput("completed");
+      } catch (error) {
+        throw configuredBatch ? batchSecondaryFailure(undefined, error) : error;
+      }
+    }
   }
 
   return { reviewCommand };

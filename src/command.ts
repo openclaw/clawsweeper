@@ -90,7 +90,15 @@ export type ConcurrentRunResult = { output: string } | { error: unknown } | { ex
 
 /** `runText` options, with an absolute deadline in place of a relative timeout. */
 export type ConcurrentRunOptions = Omit<RunTextOptions, "timeoutMs"> & {
+  /** Use the complete host-filtered environment without restoring ambient credentials. */
+  inheritEnv?: boolean;
   deadlineAt?: number | undefined;
+  /** Internal assessment workers forward timeout signals through managed native process groups. */
+  managedProcessGroup?: boolean;
+  /** Assessment owner loss cannot certify detached native descendants settled. */
+  retainOnAbnormalExit?: boolean;
+  /** Trusted setup scripts report ordinary failures by exit status, not a worker envelope. */
+  completionOnFailureExit?: boolean;
 };
 
 type SpawnedCommandResult =
@@ -113,8 +121,10 @@ const { spawn } = require("node:child_process");
 let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { input += chunk; });
-process.stdin.on("end", () => {
-  const { concurrency, commands } = JSON.parse(input);
+process.stdin.on("end", async () => {
+  const { concurrency, commands, managedLifecycleModule } = JSON.parse(input);
+  const terminateCodexProcessTree = commands.some((command) => command.managedProcessGroup)
+    ? (await import(managedLifecycleModule)).terminateCodexProcessTree : undefined;
   const results = new Array(commands.length);
   let started = 0;
   let finished = 0;
@@ -122,7 +132,7 @@ process.stdin.on("end", () => {
     // An expired command completes synchronously and may already have started the rest.
     if (started >= commands.length) return;
     const index = started++;
-    run(commands[index], (result) => {
+    run(commands[index], terminateCodexProcessTree, (result) => {
       results[index] = result;
       finished += 1;
       if (finished === commands.length) process.stdout.write(JSON.stringify(results));
@@ -132,7 +142,7 @@ process.stdin.on("end", () => {
   if (commands.length === 0) process.stdout.write("[]");
   for (let slot = 0; slot < Math.min(concurrency, commands.length); slot += 1) startNext();
 });
-function run(command, done) {
+function run(command, terminateProcessTree, done) {
   const timeoutMs = command.deadlineAt === undefined ? undefined : command.deadlineAt - Date.now();
   if (timeoutMs !== undefined && timeoutMs <= 0) {
     done({ expired: true });
@@ -146,11 +156,13 @@ function run(command, done) {
     cwd: command.cwd,
     env: command.env,
     stdio: ["ignore", "pipe", command.stderr],
+    detached: command.managedProcessGroup && process.platform !== "win32",
   });
   const fail = (code) => {
     if (errorCode) return;
     errorCode = code;
-    child.kill("SIGTERM");
+    if (command.managedProcessGroup) terminateProcessTree(child, "SIGTERM", 3000);
+    else child.kill("SIGTERM");
   };
   const collect = (chunks) => (chunk) => {
     bytes += chunk.length;
@@ -159,17 +171,40 @@ function run(command, done) {
   };
   child.stdout.on("data", collect(stdout));
   if (child.stderr) child.stderr.on("data", collect(stderr));
-  const timer = timeoutMs === undefined ? undefined : setTimeout(() => fail("ETIMEDOUT"), timeoutMs);
+  // Admission still uses the original deadline. A running assessment gets a
+  // bounded settlement allowance to return its own receipt, not more model time.
+  const timer = timeoutMs === undefined ? undefined : setTimeout(() => fail("ETIMEDOUT"),
+    timeoutMs + (command.retainOnAbnormalExit && !command.completionOnFailureExit ? 5000 : 0));
   child.on("error", (error) => { errorCode ??= error.code ?? "EUNKNOWN"; });
+  child.once("exit", (status, signal) => {
+    if (command.retainOnAbnormalExit && child.pid &&
+      ((!errorCode && (signal || (status !== 0 && !command.completionOnFailureExit))) || signal === "SIGKILL")) {
+      // The assessment owner disappeared without a settlement receipt. Kill
+      // its group, but detached native descendants cannot be proven stopped:
+      // retain the host's private source/credential state through typed recovery.
+      errorCode = "EPROCESSSETTLEMENT";
+      try { terminateProcessTree(child, "SIGKILL"); } catch {
+        // The typed settlement failure already forbids cleanup when signalling is refused.
+      }
+      child.stdout.destroy();
+      child.stderr?.destroy();
+    }
+  });
   child.on("close", (status, signal) => {
     clearTimeout(timer);
-    done({
+    if (command.retainOnAbnormalExit && child.pid && errorCode)
+      errorCode = "EPROCESSSETTLEMENT";
+    const settled = () => done({
       status: errorCode ? null : status,
       signal,
       stdout: Buffer.concat(stdout).toString("utf8"),
       stderr: Buffer.concat(stderr).toString("utf8"),
       errorCode,
     });
+    // Native workers have their own managed group. Let their SIGTERM handlers finish
+    // escalation before the assessment slot is considered settled.
+    if (errorCode && command.managedProcessGroup) setTimeout(settled, 3200);
+    else settled();
   });
 }
 `;
@@ -185,37 +220,83 @@ export function runTextConcurrently(
   concurrency: number,
 ): ConcurrentRunResult[] {
   const prepared = commands.map(({ command, args, options = {} }) => {
-    const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...options.env };
+    const env = {
+      ...(options.inheritEnv === false ? {} : process.env),
+      GIT_OPTIONAL_LOCKS: "0",
+      ...options.env,
+    };
     return { resolved: resolveCommand(command, args, env), env, options };
   });
   const outputLimit = prepared.reduce(
     (total, { options }) => total + (options.maxBuffer ?? 64 * 1024 * 1024),
     0,
   );
-  const batch = spawnSync(process.execPath, ["-e", CONCURRENT_RUN_SCRIPT], {
-    encoding: "utf8",
-    input: JSON.stringify({
-      concurrency: Math.max(1, Math.floor(concurrency)),
-      commands: prepared.map(({ resolved, env, options }) => ({
-        file: resolved.command,
-        args: resolved.args,
-        cwd: options.cwd,
-        env,
-        maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024,
-        stderr: options.stdio?.[2] ?? "pipe",
-        deadlineAt: options.deadlineAt,
-      })),
-    }),
-    // JSON escaping can double the commands' combined output; stay under one string's limit.
-    maxBuffer: Math.min(outputLimit * 2 + 1024 * 1024, 1024 * 1024 * 1024),
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  const supervisorFailure = (cause: unknown): ConcurrentRunResult[] =>
+    prepared.map(({ options }) => ({
+      error:
+        options.managedProcessGroup && options.retainOnAbnormalExit
+          ? Object.assign(
+              new Error("Managed assessment supervisor completion unverified", { cause }),
+              { code: "EPROCESSSETTLEMENT" },
+            )
+          : cause,
+    }));
+  let batch: ReturnType<typeof spawnSync> & { stdout: string; stderr: string };
+  try {
+    batch = spawnSync(process.execPath, ["-e", CONCURRENT_RUN_SCRIPT], {
+      encoding: "utf8",
+      input: JSON.stringify({
+        concurrency: Math.max(1, Math.floor(concurrency)),
+        managedLifecycleModule: new URL("./codex-spawn.js", import.meta.url).href,
+        commands: prepared.map(({ resolved, env, options }) => ({
+          file: resolved.command,
+          args: resolved.args,
+          cwd: options.cwd,
+          env,
+          maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024,
+          stderr: options.stdio?.[2] ?? "pipe",
+          deadlineAt: options.deadlineAt,
+          managedProcessGroup: options.managedProcessGroup === true,
+          retainOnAbnormalExit:
+            options.managedProcessGroup === true && options.retainOnAbnormalExit === true,
+          completionOnFailureExit: options.completionOnFailureExit === true,
+        })),
+      }),
+      // JSON escaping can double the commands' combined output; stay under one string's limit.
+      maxBuffer: Math.min(outputLimit * 2 + 1024 * 1024, 1024 * 1024 * 1024),
+      stdio: ["pipe", "pipe", "pipe"],
+    }) as typeof batch;
+  } catch (error) {
+    return supervisorFailure(error);
+  }
   if (batch.error || batch.status !== 0) {
     const failure =
       batch.error ?? new Error(`Concurrent command runner failed: ${String(batch.stderr).trim()}`);
-    return commands.map(() => ({ error: failure }));
+    return supervisorFailure(failure);
   }
-  const results = JSON.parse(batch.stdout) as SpawnedCommandResult[];
+  let results: SpawnedCommandResult[];
+  try {
+    const parsed: unknown = JSON.parse(batch.stdout);
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length !== commands.length ||
+      parsed.some(
+        (result) =>
+          !result ||
+          typeof result !== "object" ||
+          (result.expired !== true &&
+            (typeof result.stdout !== "string" ||
+              typeof result.stderr !== "string" ||
+              !(result.status === null || Number.isInteger(result.status)) ||
+              !(result.signal === null || typeof result.signal === "string") ||
+              !(result.errorCode === undefined || typeof result.errorCode === "string"))),
+      )
+    )
+      throw new Error("Invalid concurrent supervisor completion");
+    results = parsed as SpawnedCommandResult[];
+  } catch (error) {
+    return supervisorFailure(error);
+  }
   return results.map((result, index): ConcurrentRunResult => {
     if (result.expired) return { expired: true };
     const { resolved, options } = prepared[index]!;

@@ -1,3 +1,5 @@
+import { readReviewRecord } from "./review-record.js";
+import { renderMultiModelAssessments } from "./multi-model-review-presentation.js";
 import type {
   CloseReason,
   ProductFixScope,
@@ -609,7 +611,13 @@ export function renderReviewCommentFromReport(
   const markers = options.suppressAutomationMarkers
     ? ""
     : reviewAutomationMarkersFromReport(markdown, reviewReadiness);
-  return [body.trimEnd(), markers, reviewVersionMarkerFromReport(markdown)]
+  const multiModel = readReviewRecord(markdown)?.multiModel;
+  return [
+    body.trimEnd(),
+    multiModel ? renderMultiModelAssessments(multiModel) : "",
+    markers,
+    reviewVersionMarkerFromReport(markdown),
+  ]
     .filter(Boolean)
     .join("\n\n");
 }

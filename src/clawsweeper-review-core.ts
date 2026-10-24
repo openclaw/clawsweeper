@@ -1,20 +1,31 @@
+import { validationRecoveryRequired } from "./validation-recovery.js";
+import {
+  CODEX_FAILURE_LOG_KINDS,
+  CodexReviewError,
+  type CodexFailureReason,
+  type CodexFailureLogKind,
+} from "./review-assessment-failure.js";
+export type { CodexFailureLogKind } from "./review-assessment-failure.js";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
   unlinkSync,
 } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import {
   agentRunner,
   reviewNetworkCapability,
   runAgentCheckoutInspection,
   runAgentProcess,
+  ReviewPromptBudgetError,
 } from "./agent-runner.js";
 import { AgentInputScanError, type AgentScanSource } from "./agent-input-scan.js";
+import type { RepositoryReviewConfig } from "./repository-review-config.js";
 import {
   omitReviewedFixtureReferences,
   serializeReviewContext,
@@ -77,19 +88,6 @@ import {
 export type ReviewItemPrompts = Readonly<Record<"core" | Item["kind"] | "closeReasons", string>>;
 
 // Each Codex failure reason has one log kind. The review run logs this kind.
-const CODEX_FAILURE_LOG_KINDS = {
-  "dirty checkout": "codex_execution",
-  "missing structured output": "content_or_output",
-  "invalid structured output": "content_or_output",
-  "output buffer overflow": "content_or_output",
-  "model unavailable or access denied": "model_access",
-  timeout: "timeout",
-  "retryable codex transport failure (capacity)": "provider_throttle",
-  "retryable codex transport failure (network)": "transport_network",
-  "codex execution failed": "codex_execution",
-} as const;
-type CodexFailureReason = keyof typeof CODEX_FAILURE_LOG_KINDS;
-export type CodexFailureLogKind = (typeof CODEX_FAILURE_LOG_KINDS)[CodexFailureReason];
 type CodexProcessFailure = {
   errorCode?: string | null;
   signal?: NodeJS.Signals | null;
@@ -110,11 +108,94 @@ export interface ReviewRuntimeDependencies {
   untrustedCodexEnv: (options?: {
     ghToken?: string | undefined;
     preserveCodexAuth?: boolean | undefined;
+    runner?: "codex" | "openclaw" | undefined;
   }) => NodeJS.ProcessEnv;
-  ghJson: <T>(args: string[]) => T;
+  ghJson: <T>(args: string[], options?: { deadlineAt?: number }) => T;
   defaultRootCauseCluster: () => RootCauseClusterAssessment;
   parseDecision: (value: unknown, item?: RootCauseNormalizationItem) => Decision;
   ensureDir: (path: string) => void;
+}
+
+const modeIdentities = new WeakMap<FileModeSnapshot, string>();
+
+export function makeTreeReadOnly(
+  path: string,
+  snapshots: FileModeSnapshot[] = [],
+  deadlineAt?: number,
+  includeGit = false,
+): FileModeSnapshot[] {
+  if (deadlineAt !== undefined && Date.now() >= deadlineAt)
+    throw new AgentInputScanError("deadline");
+  const remember = (file: string, mode: number) => {
+    const stat = lstatSync(file, { bigint: true });
+    const identity = String(stat.dev) + ":" + String(stat.ino);
+    const snapshot = { path: file, mode };
+    modeIdentities.set(snapshot, identity);
+    snapshots.push(snapshot);
+  };
+  const stat = statSync(path);
+  remember(path, stat.mode);
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    if (deadlineAt !== undefined && Date.now() >= deadlineAt)
+      throw new AgentInputScanError("deadline");
+    const child = join(path, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    if (!includeGit && entry.name === ".git" && entry.isDirectory()) continue;
+    if (entry.isDirectory()) makeTreeReadOnly(child, snapshots, deadlineAt, includeGit);
+    else {
+      const childStat = statSync(child);
+      remember(child, childStat.mode);
+      chmodSync(child, childStat.mode & 0o111 ? 0o555 : 0o444);
+    }
+  }
+  chmodSync(path, 0o555);
+  return snapshots;
+}
+
+export function restoreTreeModes(snapshots: readonly FileModeSnapshot[]): boolean {
+  if (!snapshots.length) return true;
+  const root = resolve(snapshots[0]!.path);
+  const byPath = new Map(snapshots.map((snapshot) => [resolve(snapshot.path), snapshot]));
+  let restored = true;
+  for (const snapshot of snapshots) {
+    try {
+      const path = resolve(snapshot.path);
+      if (path !== root && !path.startsWith(root + sep)) {
+        restored = false;
+        continue;
+      }
+      const ancestors: string[] = [];
+      for (let parent = path; ; parent = dirname(parent)) {
+        ancestors.unshift(parent);
+        if (parent === root) break;
+        if (dirname(parent) === parent) throw new Error("Mode snapshot escaped its root.");
+      }
+      // Validate parents before ever resolving a descendant through their paths.
+      let valid = true;
+      for (const ancestor of ancestors) {
+        const expected = byPath.get(ancestor);
+        const current = lstatSync(ancestor, { bigint: true, throwIfNoEntry: false });
+        if (
+          !expected ||
+          !current ||
+          current.isSymbolicLink() ||
+          modeIdentities.get(expected) !== String(current.dev) + ":" + String(current.ino) ||
+          (ancestor !== path && !current.isDirectory())
+        ) {
+          valid = false;
+          break;
+        }
+      }
+      if (!valid) {
+        restored = false;
+        continue;
+      }
+      chmodSync(path, snapshot.mode);
+    } catch {
+      restored = false;
+    }
+  }
+  return restored;
 }
 
 export function createReviewCoreRuntime({
@@ -607,12 +688,17 @@ ${extra}
     logKind: CodexFailureLogKind;
   } {
     if (error instanceof CodexReviewError) {
-      return codexFailure(error.status, error.message, error.stdout, error.stderr, {
+      const failure = codexFailure(error.status, error.message, error.stdout, error.stderr, {
         errorCode: error.errorCode,
         signal: error.signal,
         diagnostic: error.diagnostic,
         ...(error.retryHint ? { retryHint: error.retryHint } : {}),
       });
+      if (error.failureDisposition) {
+        failure.logKind = error.failureDisposition.logKind;
+        failure.decision.codexTerminalFailure = error.failureDisposition.terminal;
+      }
+      return failure;
     }
     return codexFailure(
       null,
@@ -658,42 +744,13 @@ ${extra}
     );
   }
 
-  class CodexReviewError extends Error {
-    readonly status: number | null;
-    readonly stdout: string;
-    readonly stderr: string;
-    readonly errorCode: string | null;
-    readonly signal: NodeJS.Signals | null;
-    readonly retryable: boolean;
-    readonly diagnostic: string;
-    readonly retryHint?: string;
-
-    constructor(options: {
-      message: string;
-      status: number | null;
-      stdout?: string;
-      stderr?: string;
-      errorCode?: string | null;
-      signal?: NodeJS.Signals | null;
-      retryable?: boolean;
-      diagnostic?: string;
-      retryHint?: string;
-    }) {
-      super(options.message);
-      this.name = "CodexReviewError";
-      this.status = options.status;
-      this.stdout = options.stdout ?? "";
-      this.stderr = options.stderr ?? "";
-      this.errorCode = options.errorCode ?? null;
-      this.signal = options.signal ?? null;
-      this.retryable = options.retryable ?? false;
-      this.diagnostic = options.diagnostic ?? "";
-      if (options.retryHint !== undefined) this.retryHint = options.retryHint;
-    }
-  }
-
   function codexReviewFailureRetryable(error: unknown): boolean {
-    if (error instanceof AgentInputScanError) return false;
+    if (
+      error instanceof AgentInputScanError ||
+      error instanceof ReviewPromptBudgetError ||
+      validationRecoveryRequired(error)
+    )
+      return false;
     if (!openClawCodexSourcePreparationFailureRetryable(error)) return false;
     return error instanceof CodexReviewError ? error.retryable : true;
   }
@@ -713,34 +770,6 @@ ${extra}
       cwd: openclawDir,
       env: { GIT_OPTIONAL_LOCKS: "0" },
     });
-  }
-
-  function makeTreeReadOnly(path: string, snapshots: FileModeSnapshot[] = []): FileModeSnapshot[] {
-    const stat = statSync(path);
-    snapshots.push({ path, mode: stat.mode });
-    for (const entry of readdirSync(path, { withFileTypes: true })) {
-      const child = join(path, entry.name);
-      if (entry.isSymbolicLink()) continue;
-      if (entry.name === ".git" && entry.isDirectory()) continue;
-      if (entry.isDirectory()) makeTreeReadOnly(child, snapshots);
-      else {
-        const childStat = statSync(child);
-        snapshots.push({ path: child, mode: childStat.mode });
-        chmodSync(child, childStat.mode & 0o111 ? 0o555 : 0o444);
-      }
-    }
-    chmodSync(path, 0o555);
-    return snapshots;
-  }
-
-  function restoreTreeModes(snapshots: readonly FileModeSnapshot[]): void {
-    for (const snapshot of [...snapshots].reverse()) {
-      try {
-        chmodSync(snapshot.path, snapshot.mode);
-      } catch {
-        // Best-effort cleanup after review; missing temp files should not hide the review result.
-      }
-    }
   }
 
   function makeTreeReadOnlyForTest(path: string): FileModeSnapshot[] {
@@ -765,11 +794,14 @@ ${extra}
 
   function runReviewCheckoutInspection(options: {
     itemNumber: number;
+    reviewEnv?: NodeJS.ProcessEnv;
     openclawDir: string;
     preserveCodexAuth?: boolean;
     timeoutMs: number;
     scanSource: AgentScanSource;
     initialPrompt: string;
+    reviewPhase?: "independent" | "consolidation";
+    nativeReadRoots?: string[];
   }): CodexProcessResult {
     const dirtyBefore = openclawDirtyStatus(options.openclawDir);
     if (dirtyBefore) {
@@ -788,18 +820,28 @@ ${extra}
       scanSource: options.scanSource,
       initialPrompt: options.initialPrompt,
       cwd: options.openclawDir,
-      env: untrustedCodexEnv({
-        ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
-        preserveCodexAuth: options.preserveCodexAuth,
-      }),
+      ...(options.nativeReadRoots ? { nativeReadRoots: options.nativeReadRoots } : {}),
+      ...(options.reviewPhase ? { reviewPhase: options.reviewPhase } : {}),
+      env:
+        options.reviewEnv ??
+        untrustedCodexEnv({
+          ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
+          preserveCodexAuth: options.preserveCodexAuth,
+        }),
+
       timeoutMs: options.timeoutMs,
     });
   }
 
-  function reviewEnvironment(sandboxMode: string, preserveCodexAuth?: boolean): NodeJS.ProcessEnv {
+  function reviewEnvironment(
+    sandboxMode: string,
+    preserveCodexAuth?: boolean,
+    runner?: "codex" | "openclaw",
+  ): NodeJS.ProcessEnv {
     const env = untrustedCodexEnv({
       ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
       preserveCodexAuth,
+      ...(runner === undefined ? {} : { runner }),
     });
     // The allowlisted proxy rejects Git's POST object fetch with HTTP 403. The
     // host prefetches the history the reviewer needs; any other miss fails at
@@ -809,7 +851,18 @@ ${extra}
     return env;
   }
 
-  function runCodex(options: {
+  type ReviewRunOptions = {
+    repositoryReview?: RepositoryReviewConfig;
+    /** Host-only receipt: shared preparation finished before parallel workers. */
+    sourcePrepared?: boolean;
+    /** Host-admitted public source objects; never a repository-configured mount. */
+    nativeReadRoots?: string[];
+    nativeReferenceDir?: string;
+    /** Host-prepared media only; separate from all writable role scratch. */
+    preparedMediaDir?: string;
+    selection?: import("./repository-review-config.js").ReviewModelSelection;
+    reviewPhase?: "independent" | "consolidation";
+    onExecution?: (receipt: import("./review-execution-receipt.js").ReviewExecutionReceipt) => void;
     item: Item;
     context: ItemContext;
     git: GitInfo;
@@ -832,16 +885,31 @@ ${extra}
     streamFileBytes?: number;
     quietLogs?: boolean;
     extraCodexConfig?: string[];
-  }): Decision {
+  };
+
+  function runCodex(options: ReviewRunOptions): Decision {
     if (!Number.isSafeInteger(options.resultFileBytes) || options.resultFileBytes <= 0) {
       throw new UserFacingCommandError("Review result output requires a positive byte limit.");
     }
     const startedAt = Date.now();
-    prepareOpenClawCodexSourceForReview({
-      targetRepo: options.item.repo,
-      reviewDir: options.openclawDir,
-      ...(options.reviewTreeRoot === undefined ? {} : { reviewTreeRoot: options.reviewTreeRoot }),
-    });
+    const baseEnv =
+      options.reviewEnv ??
+      reviewEnvironment(options.sandboxMode, options.preserveCodexAuth, options.selection?.runner);
+    const codexEnv = options.selection
+      ? {
+          ...baseEnv,
+          CLAWSWEEPER_RUNNER: options.selection.runner,
+          ...(options.selection.runner === "openclaw"
+            ? { CLAWSWEEPER_OPENCLAW_MODEL: options.selection.model }
+            : {}),
+        }
+      : baseEnv;
+    if (!options.sourcePrepared && (!options.selection || agentRunner(codexEnv) === "codex"))
+      prepareOpenClawCodexSourceForReview({
+        targetRepo: options.item.repo,
+        reviewDir: options.openclawDir,
+        ...(options.reviewTreeRoot === undefined ? {} : { reviewTreeRoot: options.reviewTreeRoot }),
+      });
     ensureDir(options.workDir);
     const promptPath = join(options.workDir, `${options.item.number}.prompt.md`);
     rmSync(promptPath, { force: true });
@@ -854,23 +922,48 @@ ${extra}
       : prepareMediaProofArtifacts(options.context, proofScratchDir);
     const outputPath = join(options.workDir, `${options.item.number}.json`);
     if (existsSync(outputPath)) unlinkSync(outputPath);
-    const codexEnv =
-      options.reviewEnv ?? reviewEnvironment(options.sandboxMode, options.preserveCodexAuth);
-    const prompt =
+    let prompt =
       options.prompt ??
       buildReviewPrompt(options.item, options.context, options.git, options.additionalPrompt, {
         ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
         targetDir: options.openclawDir,
         ...reviewNetworkCapability(options.sandboxMode, codexEnv),
       }).text;
+    if (options.selection) {
+      const capability = options.reviewPhase
+        ? { networkCapability: "none", hasGitHubToken: false }
+        : reviewNetworkCapability(options.sandboxMode, codexEnv);
+      prompt +=
+        "\n\n## Effective host execution context (overrides generic runtime descriptions)\n" +
+        "Runner: " +
+        options.selection.runner +
+        "; phase: " +
+        options.reviewPhase +
+        "; network: " +
+        capability.networkCapability +
+        "; GitHub token available: " +
+        capability.hasGitHubToken +
+        ".\n" +
+        (options.reviewPhase
+          ? "Native role tools may read admitted source, Git objects and prepared evidence; only this role's proof scratch is writable. Provider state and peer files remain outside tool roots. Git history stops at host-admitted shallow boundaries; unavailable older history is not evidence against the PR."
+          : options.selection.runner === "openclaw"
+            ? "OpenClaw does not enforce Codex filesystem sandboxing. The checkout is still read-only by host policy; do not modify it."
+            : "The configured Codex sandbox remains unchanged.") +
+        (options.nativeReferenceDir
+          ? " Host-pinned dependency source: " + JSON.stringify(options.nativeReferenceDir) + "."
+          : "") +
+        " The pinned source checkout for this role is " +
+        JSON.stringify(options.openclawDir) +
+        ". Use it instead of original context filesystem paths. No repository setting grants writes, installation, helper execution, delegation or publication. Scratch directory: " +
+        JSON.stringify(proofScratchDir) +
+        ".";
+    }
     if (
       options.promptFileBytes !== undefined &&
       options.promptFileBytes > 0 &&
       Buffer.byteLength(prompt) > options.promptFileBytes
     ) {
-      throw new UserFacingCommandError(
-        `Review prompt exceeded its ${options.promptFileBytes}-byte output budget.`,
-      );
+      throw new ReviewPromptBudgetError(options.promptFileBytes);
     }
     const pull = asRecord(options.context.pullRequest);
     const scanSource: AgentScanSource =
@@ -883,7 +976,10 @@ ${extra}
         : { kind: "prompt" };
     const checkoutInspection = runReviewCheckoutInspection({
       scanSource,
+      reviewEnv: codexEnv,
       initialPrompt: prompt,
+      ...(options.reviewPhase ? { reviewPhase: options.reviewPhase } : {}),
+      ...(options.nativeReadRoots ? { nativeReadRoots: options.nativeReadRoots } : {}),
       itemNumber: options.item.number,
       openclawDir: options.openclawDir,
       timeoutMs: options.timeoutMs - (Date.now() - startedAt),
@@ -927,8 +1023,15 @@ ${extra}
     }
     const processStartedAt = Date.now();
     const result = runAgentProcess({
+      ...(options.selection ? { selection: options.selection } : {}),
+      ...(options.reviewPhase ? { reviewPhase: options.reviewPhase } : {}),
+      ...(options.nativeReadRoots ? { nativeReadRoots: options.nativeReadRoots } : {}),
+      ...(options.repositoryReview ? { repositoryReview: options.repositoryReview } : {}),
       scanSource,
       ...(options.promptFileBytes === 0 ? {} : { diagnosticPromptPath: promptPath }),
+      ...(options.promptFileBytes === undefined
+        ? {}
+        : { promptFileBytes: options.promptFileBytes }),
       label: `review-${options.item.number}-attempt-1`,
       prompt,
       model: options.model,
@@ -960,6 +1063,7 @@ ${extra}
         item: { repo: options.item.repo, number: options.item.number, kind: options.item.kind },
       },
     });
+    if (result.execution) options.onExecution?.(result.execution);
     const processFinishedAt = Date.now();
     // Complete the best-effort local handoff before failure can terminate the process.
     appendReviewUsage({

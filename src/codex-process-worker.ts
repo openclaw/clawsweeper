@@ -1,3 +1,4 @@
+import { projectCodexExecExecutionReceipt } from "./review-execution-receipt.js";
 import {
   closeSync,
   fstatSync,
@@ -60,7 +61,7 @@ const stderr = openCodexOutputCapture(options.stderrPath, {
 process.env.CODEX_BIN = options.command;
 let child: ChildProcessWithoutNullStreams | undefined;
 let input: Readable = process.stdin;
-let sessionHeader = options.decisionRepair ? Buffer.alloc(0) : undefined;
+let sessionHeader: Buffer | undefined = Buffer.alloc(0);
 let timeoutError: Error | undefined;
 let terminating = false;
 let forceKillTimer: NodeJS.Timeout | undefined;
@@ -91,6 +92,9 @@ const repairError =
     ? decisionOutputError(turn.text, options.decisionRepair.item)
     : undefined;
 const repairThreadId = repairError ? codexExecSessionId(sessionHeader) : undefined;
+const execution = sessionHeader
+  ? projectCodexExecExecutionReceipt(sessionHeader.toString("utf8"))
+  : undefined;
 sessionHeader = undefined;
 if (repairError && repairThreadId && options.args.at(-1) === "-" && !terminating && !timeoutError) {
   // One repair turn on the same thread, with the same sandbox, schema, and timeout budget.
@@ -128,6 +132,7 @@ writeFileSync(
     // the process itself failed so callers cannot trust interrupted stderr.
     ...(error ? { error: serializedError(error), processError: Boolean(turn.processError) } : {}),
     ...(decisionRepairError ? { decisionRepairError } : {}),
+    ...(execution && !error && turn.status === 0 ? { execution } : {}),
     stdout: codexOutputTail(stdout),
     stderr: codexOutputTail(stderr),
   }),

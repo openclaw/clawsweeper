@@ -103,6 +103,10 @@ for (const source of [
           return { mainSha: "a".repeat(40), releaseStateComplete: true, latestRelease: null };
         },
         reviewPolicyHash: () => "test-policy",
+        repositoryReviewConfig: () => {
+          assert.ok(total <= 50000, "oversized admission precedes target skill loading");
+          return undefined;
+        },
         selectCandidates: () => {
           assert.equal(metadataOnly, false, "metadata handoff must supply its candidate");
           return { candidates: [candidate], scannedPages: 1 };

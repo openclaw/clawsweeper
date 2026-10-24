@@ -1,15 +1,89 @@
 import assert from "node:assert/strict";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  statSync,
+  renameSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   OPENCLAW_CODEX_SOURCE_INCOMPATIBLE_EXIT_CODE,
   openClawCodexSourcePreparationFailureRetryable,
   prepareOpenClawCodexSourceForReview,
+  snapshotOpenClawCodexSource,
 } from "../dist/openclaw-codex-source.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
+
+test("reference snapshots stream content, bind Git metadata and enforce deadline", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-reference-snapshot-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, ".git"));
+  writeFileSync(join(root, ".git/config"), "original");
+  const bytes = Buffer.alloc(128 * 1024, 97);
+  writeFileSync(join(root, "source.bin"), bytes);
+  const snapshot = () => snapshotOpenClawCodexSource(root, Date.now() + 5000);
+  const before = snapshot();
+  bytes[bytes.length - 1] = 98;
+  writeFileSync(join(root, "source.bin"), bytes);
+  assert.notEqual(snapshot(), before);
+  bytes[bytes.length - 1] = 97;
+  writeFileSync(join(root, "source.bin"), bytes);
+  assert.notEqual(snapshot(), before, "restored content still records intervening mutation");
+  writeFileSync(join(root, ".git/config"), "changed");
+  assert.notEqual(snapshot(), before);
+  assert.throws(() => snapshotOpenClawCodexSource(root, Date.now() - 1), /review budget/);
+});
+
+test(
+  "reference snapshots refuse links outside the owned clone",
+  { skip: process.platform === "win32" },
+  (t) => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-reference-link-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, ".git"));
+    symlinkSync(tmpdir(), join(root, "outside"), "dir");
+    assert.throws(
+      () => snapshotOpenClawCodexSource(root, Date.now() + 5000),
+      /escaping symbolic link/,
+    );
+  },
+);
+
+test(
+  "checkout mode restoration never chmods replaced files or symlinks",
+  { skip: process.platform === "win32" },
+  (t) => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-mode-identity-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const source = join(root, "source"),
+      outside = join(root, "outside");
+    mkdirSync(source);
+    writeFileSync(outside, "outside");
+    chmodSync(outside, 0o600);
+    const file = join(source, "file");
+    writeFileSync(file, "source");
+    chmodSync(file, 0o640);
+    const runtime = createReviewRuntime({} as Parameters<typeof createReviewRuntime>[0]);
+    const snapshots = runtime.makeTreeReadOnlyForTest(source);
+    chmodSync(source, 0o755);
+    renameSync(file, file + "-original");
+    symlinkSync(outside, file);
+    runtime.restoreTreeModesForTest(snapshots);
+    assert.equal(statSync(outside).mode & 0o777, 0o600);
+    rmSync(file);
+    writeFileSync(file, "replacement");
+    chmodSync(file, 0o600);
+    runtime.restoreTreeModesForTest(snapshots);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+  },
+);
 
 test("Codex source pin validation accepts only one exact version", (t) => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-codex-pin-"));
@@ -41,7 +115,7 @@ test("Codex source pin validation accepts only one exact version", (t) => {
 
 test("PR review source preparation invokes the workflow-provisioned setup for the current tree", () => {
   const calls: Array<{ command: string; args: readonly string[] }> = [];
-  prepareOpenClawCodexSourceForReview({
+  const preparedSource = prepareOpenClawCodexSourceForReview({
     targetRepo: "openclaw/openclaw",
     reviewDir: "/private-review/review-trees/131584",
     reviewTreeRoot: "/private-review/review-trees",
@@ -71,6 +145,7 @@ test("PR review source preparation invokes the workflow-provisioned setup for th
     },
   });
 
+  assert.equal(preparedSource, resolve("/workspace/codex"));
   assert.deepEqual(calls, [
     {
       command: "bash",
@@ -132,6 +207,7 @@ test("review runtime forwards the private root before source preparation failure
     };
     const runtime = createReviewRuntime({
       ensureDir: () => assert.fail("source preparation must finish before model output setup"),
+      untrustedCodexEnv: () => ({ CLAWSWEEPER_RUNNER: "codex" }),
     } as Parameters<typeof createReviewRuntime>[0]);
     assert.throws(
       () =>

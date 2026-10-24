@@ -18,6 +18,7 @@ export const PUBLIC_REVIEW_FAILURE_REASONS = [
   "configuration_missing",
   "setup_script_failed",
   "source_incompatible",
+  "batch_nonretryable",
   "review_commits_unavailable",
   "review_history_unavailable",
   "review_blob_metadata_unavailable",
@@ -83,6 +84,8 @@ const EXPLANATIONS: Record<PublicReviewFailure["reason"], string> = {
   configuration_missing: "Required review configuration was missing.",
   setup_script_failed: "The review setup script failed.",
   source_incompatible: "The source was incompatible with review preparation.",
+  batch_nonretryable:
+    "The configured review batch did not produce an accepted consolidated verdict; automatic retry is disabled.",
   review_commits_unavailable: "Required review commits were unavailable.",
   review_history_unavailable: "Required review history was unavailable.",
   review_blob_metadata_unavailable: "Review blob metadata was unavailable.",

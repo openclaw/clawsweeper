@@ -1329,6 +1329,23 @@ test("local exact review selects PATH Codex instead of the Desktop app binary", 
 
     mkdirSync(binDir);
     writeFakeScanner(binDir);
+    // Keep fixture transport local while modeling the authenticated target origin.
+    const gitPath = join(binDir, "git");
+    writeFileSync(
+      gitPath,
+      `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.join(" ") === "remote get-url origin") {
+  console.log("https://github.com/openclaw/openclaw.git");
+} else {
+  const result = require("node:child_process").spawnSync("git", args, {
+    stdio: "inherit", env: { ...process.env, PATH: ${JSON.stringify(process.env.PATH)} },
+  });
+  process.exit(result.status ?? 1);
+}
+`,
+    );
+    chmodSync(gitPath, 0o755);
     const ghPath = join(binDir, "gh.js");
     writeFileSync(
       ghPath,
@@ -1372,6 +1389,10 @@ const pull = {
   updated_at: issue.updated_at,
   body: "body"
 };
+if (args[0] === "api" && args[1] === "repos/openclaw/openclaw") {
+  console.log(JSON.stringify({ full_name: "openclaw/openclaw", default_branch: "main" }));
+  process.exit(0);
+}
 if (args[0] === "api" && args[1] === "repos/openclaw/openclaw/issues/96221") {
   console.log(JSON.stringify(issue));
   process.exit(0);
@@ -1491,3 +1512,89 @@ process.stdin.on("end", () => process.exit(1));
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("concurrent commands keep explicitly filtered environments closed", () => {
+  const name = "CLAWSWEEPER_TEST_AMBIENT_SECRET",
+    before = process.env[name];
+  process.env[name] = "fixture-secret";
+  try {
+    const result = runTextConcurrently(
+      [
+        {
+          command: process.execPath,
+          args: [
+            "-e",
+            "console.log(JSON.stringify({ambient:process.env.CLAWSWEEPER_TEST_AMBIENT_SECRET!==undefined,explicit:process.env.EXPLICIT_FIXTURE}))",
+          ],
+          options: {
+            inheritEnv: false,
+            env: { PATH: process.env.PATH, EXPLICIT_FIXTURE: "preserved" },
+          },
+        },
+      ],
+      1,
+    );
+    assert.deepEqual(result, [
+      { output: JSON.stringify({ ambient: false, explicit: "preserved" }) },
+    ]);
+  } finally {
+    if (before === undefined) delete process.env[name];
+    else process.env[name] = before;
+  }
+});
+
+test(
+  "abnormal managed assessment exit retains unverified settlement instead of ordinary failure",
+  { skip: process.platform === "win32" },
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "cmd-abnormal-managed-"));
+    const marker = join(root, "descendant.pid");
+    let descendant = 0;
+    const cleanup = () => {
+      if (descendant) {
+        try {
+          process.kill(descendant, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
+      rmSync(root, { recursive: true, force: true });
+    };
+    try {
+      const script = [
+        'const cp=require("node:child_process"),fs=require("node:fs");',
+        'const child=cp.spawn(process.execPath,["-e",\'process.on("SIGTERM",()=>{});setInterval(()=>{},1000)\'],{stdio:"ignore"});',
+        "fs.writeFileSync(" + JSON.stringify(marker) + ",String(child.pid));",
+        'process.kill(process.pid,"SIGKILL");',
+      ].join("\n");
+      const [result] = runTextConcurrently(
+        [
+          {
+            command: process.execPath,
+            args: ["-e", script],
+            options: {
+              managedProcessGroup: true,
+              retainOnAbnormalExit: true,
+              deadlineAt: Date.now() + 10000,
+            },
+          },
+        ],
+        1,
+      );
+      descendant = Number(readFileSync(marker, "utf8"));
+      assert.ok(result && "error" in result);
+      assert.equal((result.error as NodeJS.ErrnoException).code, "EPROCESSSETTLEMENT");
+      // The supervisor kills the dead owner's group. The typed failure still does
+      // not claim that a detached native group can be verified after owner loss.
+      if (process.platform === "linux") {
+        try {
+          assert.match(readFileSync("/proc/" + descendant + "/stat", "utf8"), /\) Z /);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    } finally {
+      cleanup();
+    }
+  },
+);

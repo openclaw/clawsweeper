@@ -4,6 +4,9 @@ import {
   existsSync,
   lstatSync,
   mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -12,6 +15,7 @@ import {
 } from "node:fs";
 import { devNull } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { validationRecoveryRequired } from "./validation-recovery.js";
 import { readReviewGit, reviewMergeBase } from "./pr-review-evidence.js";
 import { AgentInputScanError, MAX_SCAN_BYTES } from "./agent-input-scan.js";
 import {
@@ -45,15 +49,25 @@ interface ReviewTreeMetadata {
   missingBlobs?: ReadonlyArray<{ objectId: string; bytes: number }>;
 }
 
+function remainingReviewTime(deadlineAt = Date.now() + REVIEW_TREE_METADATA_DEADLINE_MS): number {
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) throw new AgentInputScanError("deadline");
+  return remaining;
+}
+
 export interface ReviewTreeMaterializationOptions {
   targetDir: string;
   worktreeDir: string;
   itemNumber: number;
   headSha: string;
+  deadlineAt?: number;
   resolveBlobSizes?: (
     objectIds: readonly string[],
     timeoutMs: number,
   ) => ReadonlyMap<string, number>;
+  independentGit?: boolean;
+  /** Host-verified revision identities, never extracted from PR text/model output. */
+  admittedObjects?: { directory: string; baseSha: string; configurationSha?: string };
 }
 
 type ReviewGitFailureReason =
@@ -338,15 +352,18 @@ export function ensurePullRequestReviewHead({
   targetDir,
   itemNumber,
   headSha,
+  deadlineAt,
 }: {
   targetDir: string;
   itemNumber: number;
   headSha: string;
+  deadlineAt?: number;
 }): boolean {
   if (!Number.isSafeInteger(itemNumber) || itemNumber <= 0) return false;
   try {
     return ensureReviewTreeCommit({
       targetDir,
+      ...(deadlineAt === undefined ? {} : { deadlineAt }),
       sha: headSha,
       sourceRef: `refs/pull/${itemNumber}/head`,
       destinationRef: `refs/clawsweeper/review-cache/head-${itemNumber}`,
@@ -393,11 +410,21 @@ export function hydratePullRequestReviewHistory(options: {
   return mergeBase.sha;
 }
 
-function reviewTreeMatchesCommit({ targetDir, sha }: { targetDir: string; sha: string }): boolean {
+function reviewTreeMatchesCommit({
+  targetDir,
+  sha,
+  deadlineAt,
+}: {
+  targetDir: string;
+  sha: string;
+  deadlineAt?: number;
+}): boolean {
   const head = spawnSync("git", ["rev-parse", "HEAD"], {
     cwd: targetDir,
     encoding: "utf8",
     env: localReviewGitEnv(),
+    timeout: remainingReviewTime(deadlineAt),
+    killSignal: "SIGKILL",
   });
   if (
     checkedReviewGit(head, "review_git_inspection_failed").trim().toLowerCase() !==
@@ -409,6 +436,8 @@ function reviewTreeMatchesCommit({ targetDir, sha }: { targetDir: string; sha: s
     cwd: targetDir,
     encoding: "utf8",
     env: localReviewGitEnv(),
+    timeout: remainingReviewTime(deadlineAt),
+    killSignal: "SIGKILL",
   });
   return checkedReviewGit(status, "review_git_inspection_failed").trim() === "";
 }
@@ -447,7 +476,11 @@ function reviewTreeDiskCapacity(path: string, headSha: string): ReviewTreeDiskCa
   }
 }
 
-function reviewTreeObjectStoreCapacity(targetDir: string, headSha: string): ReviewTreeDiskCapacity {
+function reviewTreeObjectStoreCapacity(
+  targetDir: string,
+  headSha: string,
+  deadlineAt?: number,
+): ReviewTreeDiskCapacity {
   const result = spawnSync(
     "git",
     ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
@@ -456,6 +489,8 @@ function reviewTreeObjectStoreCapacity(targetDir: string, headSha: string): Revi
       env: localReviewGitEnv(),
       encoding: "utf8",
       maxBuffer: MAX_GIT_OUTPUT_BYTES,
+      timeout: remainingReviewTime(deadlineAt),
+      killSignal: "SIGKILL",
     },
   );
   const objectPath = checkedReviewGit(result, "review_git_inspection_failed").trim();
@@ -514,13 +549,20 @@ function reviewTreeMetadata(
     objectIds: readonly string[],
     timeoutMs: number,
   ) => ReadonlyMap<string, number>,
+  hostDeadlineAt?: number,
+  metadataEnv?: NodeJS.ProcessEnv,
 ): ReviewTreeMetadata {
-  const deadlineAt = Date.now() + REVIEW_TREE_METADATA_DEADLINE_MS;
+  const deadlineAt = Math.min(
+    hostDeadlineAt ?? Infinity,
+    Date.now() + REVIEW_TREE_METADATA_DEADLINE_MS,
+  );
   const result = spawnSync("git", ["ls-tree", "-r", "-z", "--full-tree", headSha], {
     cwd: targetDir,
-    env: localReviewGitEnv(),
+    env: metadataEnv ?? localReviewGitEnv(),
     encoding: "utf8",
     maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
+    timeout: remainingReviewTime(deadlineAt),
+    killSignal: "SIGKILL",
   });
   const output = checkedReviewGit(result, "review_git_inspection_failed");
   if (!output) return { paths: [], blobBytes: 0n };
@@ -565,9 +607,11 @@ function reviewTreeMetadata(
     ["rev-list", "--objects", "--missing=print", `${headSha}^{tree}`],
     {
       cwd: targetDir,
-      env: localReviewGitEnv({ GIT_NO_REPLACE_OBJECTS: "1" }),
+      env: metadataEnv ?? localReviewGitEnv({ GIT_NO_REPLACE_OBJECTS: "1" }),
       encoding: "utf8",
       maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
+      timeout: remainingReviewTime(deadlineAt),
+      killSignal: "SIGKILL",
     },
   );
   const availabilityOutput = checkedReviewGit(availability, "review_git_inspection_failed");
@@ -592,10 +636,12 @@ function reviewTreeMetadata(
       ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
       {
         cwd: targetDir,
-        env: localReviewGitEnv(),
+        env: metadataEnv ?? localReviewGitEnv(),
         encoding: "utf8",
         input: `${localObjectIds.join("\n")}\n`,
         maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
+        timeout: remainingReviewTime(deadlineAt),
+        killSignal: "SIGKILL",
       },
     );
     const localOutput = checkedReviewGit(local, "review_git_inspection_failed").trim();
@@ -659,7 +705,7 @@ function reviewTreeMetadata(
     );
   }
   if (missingAttributeBlobs.length > 0) {
-    const objectStore = reviewTreeObjectStoreCapacity(targetDir, headSha);
+    const objectStore = reviewTreeObjectStoreCapacity(targetDir, headSha, deadlineAt);
     assertReviewTreeDiskAdmission(
       headSha,
       0n,
@@ -673,7 +719,14 @@ function reviewTreeMetadata(
     );
     fetchMissingReviewTreeBlobs(targetDir, headSha, missingAttributeBlobs, deadlineAt);
   }
-  assertReviewTreeHasBoundedTransforms(targetDir, headSha, paths, reviewWorkspaceDir);
+  assertReviewTreeHasBoundedTransforms(
+    targetDir,
+    headSha,
+    paths,
+    reviewWorkspaceDir,
+    deadlineAt,
+    metadataEnv,
+  );
 
   const remainingMissing = [...missing].filter((objectId) => !attributeObjectIds.has(objectId));
   resolveMissingSizes(remainingMissing);
@@ -818,12 +871,40 @@ export function fetchReviewBlobs(
   });
 }
 
+/** Selected configuration blobs use the existing size-checked acquisition and disk admission. */
+export function admitAndFetchReviewBlobs(
+  targetDir: string,
+  headSha: string,
+  blobs: ReadonlyArray<{ objectId: string; bytes: number }>,
+  deadlineAt: number,
+): void {
+  if (!blobs.length) return;
+  if (
+    blobs.some(
+      (blob) =>
+        !GIT_OBJECT_ID.test(blob.objectId) || !Number.isSafeInteger(blob.bytes) || blob.bytes < 0,
+    )
+  )
+    throw reviewTreeBudgetError(headSha, "invalid admitted blob metadata");
+  const bytes = blobs.reduce((sum, blob) => sum + BigInt(blob.bytes), 0n);
+  const store = reviewTreeObjectStoreCapacity(targetDir, headSha, deadlineAt);
+  assertReviewTreeDiskAdmission(headSha, 0n, bytes, BigInt(REVIEW_TREE_DISK_RESERVE_BYTES), {
+    workspaceAvailableBytes: store.availableBytes,
+    objectStoreAvailableBytes: store.availableBytes,
+    sameFileSystem: true,
+  });
+  fetchMissingReviewTreeBlobs(targetDir, headSha, blobs, deadlineAt);
+}
+
 function assertReviewTreeHasBoundedTransforms(
   targetDir: string,
   headSha: string,
   paths: readonly string[],
   reviewWorkspaceDir: string,
+  deadlineAt: number,
+  metadataEnv?: NodeJS.ProcessEnv,
 ): void {
+  remainingReviewTime(deadlineAt);
   const workspace = reviewTreeDiskCapacity(reviewWorkspaceDir, headSha);
   assertReviewTreeDiskAdmission(
     headSha,
@@ -848,7 +929,7 @@ function assertReviewTreeHasBoundedTransforms(
   const indexDir = mkdtempSync(join(reviewWorkspaceDir, ".clawsweeper-attributes-"));
   chmodSync(indexDir, 0o700);
   const indexPath = join(indexDir, "index");
-  const env = localReviewGitEnv({ GIT_INDEX_FILE: indexPath });
+  const env = { ...(metadataEnv ?? localReviewGitEnv()), GIT_INDEX_FILE: indexPath };
   try {
     checkedReviewGit(
       spawnSync(
@@ -868,6 +949,8 @@ function assertReviewTreeHasBoundedTransforms(
           env,
           encoding: "utf8",
           maxBuffer: MAX_GIT_OUTPUT_BYTES,
+          timeout: remainingReviewTime(deadlineAt),
+          killSignal: "SIGKILL",
         },
       ),
       "review_git_inspection_failed",
@@ -876,6 +959,7 @@ function assertReviewTreeHasBoundedTransforms(
       indexDir,
       REVIEW_ATTRIBUTE_INDEX_MAX_FILES,
       REVIEW_ATTRIBUTE_INDEX_MAX_BYTES,
+      deadlineAt,
     );
     if (
       totals.files > REVIEW_ATTRIBUTE_INDEX_MAX_FILES ||
@@ -911,6 +995,8 @@ function assertReviewTreeHasBoundedTransforms(
           encoding: "utf8",
           input: `${batch.join("\0")}\0`,
           maxBuffer: MAX_REVIEW_ATTRIBUTE_OUTPUT_BYTES,
+          timeout: remainingReviewTime(deadlineAt),
+          killSignal: "SIGKILL",
         },
       );
       const output = checkedReviewGit(result, "review_git_inspection_failed");
@@ -945,6 +1031,7 @@ function reviewTreeTotals(
   root: string,
   maxFiles: number,
   maxBytes: number,
+  deadlineAt?: number,
 ): {
   files: number;
   bytes: number;
@@ -953,8 +1040,10 @@ function reviewTreeTotals(
   let bytes = 0;
   const pending = [root];
   while (pending.length > 0) {
+    remainingReviewTime(deadlineAt);
     const directory = pending.pop()!;
     for (const name of readdirSync(directory)) {
+      remainingReviewTime(deadlineAt);
       if (directory === root && name === ".git") continue;
       const path = join(directory, name);
       const metadata = lstatSync(path);
@@ -972,16 +1061,346 @@ function reviewTreeTotals(
   return { files, bytes };
 }
 
+function admittedReviewGitEnv(): NodeJS.ProcessEnv {
+  return {
+    PATH: process.env.PATH,
+    SystemRoot: process.env.SystemRoot,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE,
+    GIT_ATTR_NOSYSTEM: "1",
+    GIT_NO_LAZY_FETCH: "1",
+    GIT_ALLOW_PROTOCOL: "",
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_GRAFT_FILE: GIT_NULL_DEVICE,
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_TERMINAL_PROMPT: "0",
+  };
+}
+
+/** A bounded PR-range projection; no refs/config/unreachable objects are borrowed. */
+export function prepareAdmittedReviewObjects(options: {
+  targetDir: string;
+  directory: string;
+  revisions: readonly string[];
+  deadlineAt: number;
+}): { objects: string; boundaries: string[]; revisions: string[] } {
+  const { targetDir, directory, deadlineAt } = options;
+  remainingReviewTime(deadlineAt);
+  const revisions = [...new Set(options.revisions)];
+  const refuse = (detail: string): never => {
+    const error = new AgentInputScanError("incomplete_source");
+    error.message =
+      "Admitted review object closure unavailable: " +
+      detail +
+      ". Restore bounded trusted source hydration before requesting another review.";
+    throw error;
+  };
+  if (
+    !revisions.length ||
+    revisions.length > 3 ||
+    revisions.some((sha) => !GIT_OBJECT_ID.test(sha) || sha.length !== revisions[0]!.length)
+  )
+    refuse("invalid pinned inputs");
+  const objects = join(directory, ".git", "objects");
+  if (existsSync(directory)) {
+    try {
+      const file = join(directory, "admitted.json");
+      const stat = lstatSync(file);
+      if (
+        lstatSync(directory).isSymbolicLink() ||
+        !stat.isFile() ||
+        stat.isSymbolicLink() ||
+        stat.size > MAX_REVIEW_TREE_LIST_BYTES ||
+        realpathSync(objects) !== join(realpathSync(directory), ".git", "objects") ||
+        readdirSync(objects).some((name) => name !== "pack")
+      )
+        refuse("unverified cached object store");
+      const receipt = JSON.parse(readFileSync(file, "utf8")) as {
+        revisions: string[];
+        boundaries: string[];
+      };
+      if (
+        Object.keys(receipt).some((key) => !["revisions", "boundaries"].includes(key)) ||
+        JSON.stringify(receipt.revisions) !== JSON.stringify(revisions) ||
+        !Array.isArray(receipt.boundaries) ||
+        !receipt.boundaries.length ||
+        receipt.boundaries.length > REVIEW_TREE_MAX_FILES ||
+        receipt.boundaries.some((sha) => typeof sha !== "string" || !GIT_OBJECT_ID.test(sha))
+      )
+        refuse("cached input identity or history boundary changed");
+      return { objects: realpathSync(objects), revisions, boundaries: receipt.boundaries };
+    } catch (error) {
+      if (error instanceof AgentInputScanError) throw error;
+      refuse("partial or invalid cached closure");
+    }
+  }
+  const view = mkdtempSync(join(dirname(directory), ".closure-metadata-"));
+  let recovery = false;
+  try {
+    const originalObjects = readReviewGit(
+      targetDir,
+      ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
+      { deadlineAt },
+    )
+      ?.toString("utf8")
+      .trim();
+    if (!originalObjects || !isAbsolute(originalObjects) || originalObjects.includes("\n"))
+      refuse("source object store unavailable");
+    const format =
+      revisions[0]!.length === 64
+        ? "[core]\nrepositoryformatversion=1\nbare=true\n[extensions]\nobjectFormat=sha256\n"
+        : "[core]\nrepositoryformatversion=0\nbare=true\n";
+    mkdirSync(join(view, "objects", "info"), { recursive: true });
+    mkdirSync(join(view, "refs"));
+    writeFileSync(join(view, "HEAD"), "ref: refs/heads/unborn\n");
+    writeFileSync(join(view, "config"), format);
+    writeFileSync(
+      join(view, "objects", "info", "alternates"),
+      realpathSync(originalObjects!) + "\n",
+    );
+    const env = admittedReviewGitEnv();
+    const execute = (args: string[], input?: string, cwd = view): string =>
+      checkedReviewGit(
+        runGitAcquisitionResult(
+          [
+            "-c",
+            "core.hooksPath=" + GIT_NULL_DEVICE,
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "pack.threads=1",
+            ...args,
+          ],
+          {
+            cwd,
+            env,
+            input,
+            maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
+            timeoutMs: remainingReviewTime(deadlineAt),
+          },
+        ),
+        "review_git_inspection_failed",
+      );
+    // Preserve a valid shallow floor without traversing deliberately absent parents.
+    const shallowPath = readReviewGit(
+      targetDir,
+      ["rev-parse", "--path-format=absolute", "--git-path", "shallow"],
+      { deadlineAt },
+    )
+      ?.toString("utf8")
+      .trim();
+    const sourceBoundaries = new Set<string>();
+    if (!shallowPath || !isAbsolute(shallowPath) || shallowPath.includes("\n"))
+      refuse("source ancestry boundaries unavailable");
+    if (existsSync(shallowPath!)) {
+      const stat = lstatSync(shallowPath!);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > REVIEW_TREE_MAX_FILES * 65)
+        refuse("invalid source ancestry boundaries");
+      for (const sha of readFileSync(shallowPath!, "utf8").trim().split("\n")) {
+        if (!GIT_OBJECT_ID.test(sha) || sha.length !== revisions[0]!.length)
+          refuse("invalid source ancestry boundary");
+        sourceBoundaries.add(sha);
+      }
+      if (sourceBoundaries.size > REVIEW_TREE_MAX_FILES)
+        refuse("ancestry boundary budget exceeded");
+      writeFileSync(join(view, "shallow"), [...sourceBoundaries].join("\n") + "\n");
+    }
+    const floorOutput =
+      revisions.length === 1
+        ? revisions[0]!
+        : execute(["merge-base", "--all", "--octopus", ...revisions]).trim();
+    if (!GIT_OBJECT_ID.test(floorOutput)) refuse("unique bounded merge base unavailable");
+    const lines = execute(["rev-list", "--parents", ...revisions, "--not", floorOutput])
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.split(" "));
+    if (lines.some((line) => line.some((sha) => !GIT_OBJECT_ID.test(sha))))
+      refuse("invalid ancestry metadata");
+    if (lines.some((line) => sourceBoundaries.has(line[0]!)))
+      refuse("shallow boundary intersects the required review range");
+    const commits = new Set([floorOutput, ...lines.map((line) => line[0]!)]);
+    const boundaries = new Set([floorOutput]);
+    for (const line of lines)
+      for (const parent of line.slice(1)) if (!commits.has(parent)) boundaries.add(parent);
+    for (const boundary of boundaries) commits.add(boundary);
+    if (commits.size > REVIEW_TREE_MAX_FILES) refuse("history object-count budget exceeded");
+    const ids = new Set(commits);
+    const trees = execute(
+      ["rev-list", "--objects", "--no-object-names", "--missing=print", "--stdin"],
+      [...commits].map((sha) => sha + "^{tree}").join("\n") + "\n",
+    );
+    for (const line of trees.trim().split("\n").filter(Boolean)) {
+      if (!GIT_OBJECT_ID.test(line)) refuse("required history/tree/blob objects are incomplete");
+      ids.add(line);
+      if (ids.size > REVIEW_TREE_MAX_FILES) refuse("object-count budget exceeded");
+    }
+    const input = [...ids].join("\n") + "\n";
+    const sizes = execute(
+      ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+      input,
+    )
+      .trim()
+      .split("\n");
+    let bytes = 0n;
+    const seen = new Set<string>();
+    for (const line of sizes) {
+      const match = /^([a-f0-9]{40}(?:[a-f0-9]{24})?) (blob|tree|commit) (\d+)$/.exec(line);
+      if (!match || !ids.has(match[1]!) || seen.has(match[1]!)) refuse("incomplete object sizes");
+      seen.add(match![1]!);
+      bytes += BigInt(match![3]!);
+      if (bytes > BigInt(REVIEW_TREE_MAX_BYTES)) refuse("object-byte budget exceeded");
+    }
+    if (seen.size !== ids.size) refuse("object sizes missing");
+    // Compression plus pack/index headers are conservatively admitted before Git
+    // writes a pack, creates a working copy, or expands any selected history.
+    const packBytes =
+      bytes * BigInt(REVIEW_TREE_WORKING_COPY_EXPANSION_FACTOR) + BigInt(ids.size * 128 + 4096);
+    const tree = reviewTreeMetadata(
+      view,
+      revisions[0]!,
+      dirname(directory),
+      undefined,
+      deadlineAt,
+      env,
+    );
+    const checkoutBytes = tree.blobBytes * BigInt(REVIEW_TREE_WORKING_COPY_EXPANSION_FACTOR);
+    if (packBytes + checkoutBytes > BigInt(REVIEW_TREE_MAX_BYTES))
+      refuse("combined private byte budget exceeded");
+    const capacity = reviewTreeDiskCapacity(dirname(directory), revisions[0]!);
+    assertReviewTreeDiskAdmission(
+      revisions[0]!,
+      packBytes + checkoutBytes,
+      0n,
+      BigInt(REVIEW_TREE_DISK_RESERVE_BYTES),
+      {
+        workspaceAvailableBytes: capacity.availableBytes,
+        objectStoreAvailableBytes: capacity.availableBytes,
+        sameFileSystem: true,
+      },
+    );
+    if (
+      capacity.availableFiles !== null &&
+      capacity.availableFiles < BigInt(tree.paths.length + 16)
+    )
+      refuse("private filesystem inode budget exceeded");
+    mkdirSync(join(objects, "pack"), { recursive: true });
+    mkdirSync(join(directory, ".git", "refs"), { recursive: true });
+    writeFileSync(join(directory, ".git", "config"), format);
+    writeFileSync(join(directory, ".git", "HEAD"), revisions[0]! + "\n");
+    writeFileSync(join(directory, ".git", "shallow"), [...boundaries].join("\n") + "\n");
+    // Exact object IDs, no rev expansion, thin packs, reused deltas, inherited
+    // configuration, filters or promisor callbacks. Git streams to the owned file.
+    const hash = execute(
+      [
+        "pack-objects",
+        "--no-reuse-delta",
+        "--no-reuse-object",
+        "--window=0",
+        "--depth=0",
+        "--compression=1",
+        join(objects, "pack", "pack"),
+      ],
+      input,
+    ).trim();
+    if (!GIT_OBJECT_ID.test(hash)) refuse("pack receipt invalid");
+    const packed = execute(["verify-pack", "-v", join(objects, "pack", "pack-" + hash + ".idx")]);
+    const packedIds = new Set(
+      packed.split("\n").flatMap((line) => {
+        const match = /^([a-f0-9]{40}(?:[a-f0-9]{24})?) (blob|tree|commit) /.exec(line);
+        return match ? [match[1]!] : [];
+      }),
+    );
+    if (packedIds.size !== ids.size || [...packedIds].some((id) => !ids.has(id)))
+      refuse("packed object set differs from admitted objects");
+    const actual = reviewTreeTotals(
+      directory,
+      REVIEW_TREE_MAX_FILES,
+      Number(packBytes),
+      deadlineAt,
+    );
+    // reviewTreeTotals excludes .git; account its two pack files explicitly.
+    for (const suffix of ["pack", "idx"]) {
+      const stat = lstatSync(join(objects, "pack", "pack-" + hash + "." + suffix));
+      if (!stat.isFile() || stat.isSymbolicLink()) refuse("invalid pack file");
+      actual.bytes += stat.size;
+    }
+    if (BigInt(actual.bytes) > packBytes) refuse("packed bytes exceeded admission");
+    const receipt = { revisions, boundaries: [...boundaries] };
+    writeFileSync(join(directory, "admitted.json"), JSON.stringify(receipt), {
+      flag: "wx",
+      mode: 0o400,
+    });
+    return { objects, ...receipt };
+  } catch (error) {
+    const retained = validationRecoveryRequired(error);
+    if (retained) {
+      recovery = true;
+      throw retained.retain([view, directory]);
+    }
+    if (error instanceof AgentInputScanError) throw error;
+    const failure = new AgentInputScanError("incomplete_source");
+    failure.message =
+      "Admitted review object closure preparation failed; verify pinned source history and objects before a new review.";
+    failure.cause = error;
+    throw failure;
+  } finally {
+    if (!recovery) rmSync(view, { recursive: true, force: true });
+  }
+}
+
 export function materializePullRequestReviewTree({
   targetDir,
   worktreeDir,
   itemNumber,
   headSha,
   resolveBlobSizes,
+  deadlineAt,
+  independentGit,
+  admittedObjects,
 }: ReviewTreeMaterializationOptions): boolean {
-  if (!ensurePullRequestReviewHead({ targetDir, itemNumber, headSha })) return false;
+  remainingReviewTime(deadlineAt);
+  // Item zero is the host-created local range, never a GitHub PR/ref acquisition.
+  if (itemNumber === 0) {
+    if (
+      !GIT_OBJECT_ID.test(headSha) ||
+      !gitCommitExists(targetDir, headSha, remainingReviewTime(deadlineAt))
+    )
+      return false;
+  } else if (
+    !ensurePullRequestReviewHead({
+      targetDir,
+      itemNumber,
+      headSha,
+      ...(deadlineAt === undefined ? {} : { deadlineAt }),
+    })
+  )
+    return false;
   if (existsSync(worktreeDir)) return false;
-  const metadata = reviewTreeMetadata(targetDir, headSha, dirname(worktreeDir), resolveBlobSizes);
+  let admitted: ReturnType<typeof prepareAdmittedReviewObjects> | undefined;
+  if (independentGit && admittedObjects) {
+    admitted = prepareAdmittedReviewObjects({
+      targetDir,
+      directory: admittedObjects.directory,
+      revisions: [
+        headSha,
+        admittedObjects.baseSha,
+        ...(admittedObjects.configurationSha ? [admittedObjects.configurationSha] : []),
+      ],
+      deadlineAt: deadlineAt ?? Date.now() + REVIEW_TREE_METADATA_DEADLINE_MS,
+    });
+    // All subsequent metadata/attribute/checkout reads use the host-created
+    // configuration view, not the source checkout's local/worktree settings.
+    targetDir = admittedObjects.directory;
+  }
+  const metadata = reviewTreeMetadata(
+    targetDir,
+    headSha,
+    dirname(worktreeDir),
+    resolveBlobSizes,
+    deadlineAt,
+    admittedObjects ? admittedReviewGitEnv() : undefined,
+  );
   if (metadata.paths.length > REVIEW_TREE_MAX_FILES) {
     throw reviewTreeBudgetError(
       headSha,
@@ -1000,7 +1419,7 @@ export function materializePullRequestReviewTree({
     0n,
   );
   const workspace = reviewTreeDiskCapacity(dirname(worktreeDir), headSha);
-  const objectStore = reviewTreeObjectStoreCapacity(targetDir, headSha);
+  const objectStore = reviewTreeObjectStoreCapacity(targetDir, headSha, deadlineAt);
   const capacities = {
     workspaceAvailableBytes: workspace.availableBytes,
     objectStoreAvailableBytes: objectStore.availableBytes,
@@ -1013,36 +1432,105 @@ export function materializePullRequestReviewTree({
     BigInt(REVIEW_TREE_DISK_RESERVE_BYTES),
     capacities,
   );
-  fetchMissingReviewTreeBlobs(targetDir, headSha, metadata.missingBlobs ?? []);
-  const worktree = spawnSync(
-    "git",
-    [
+  fetchMissingReviewTreeBlobs(targetDir, headSha, metadata.missingBlobs ?? [], deadlineAt);
+  const worktreeArgs = [
+    "-c",
+    "core.hooksPath=/dev/null",
+    "worktree",
+    "add",
+    "--detach",
+    "--force",
+    worktreeDir,
+    headSha,
+  ];
+  const worktreeOptions = {
+    cwd: targetDir,
+    env: localReviewGitEnv(),
+    maxBuffer: MAX_GIT_OUTPUT_BYTES,
+  };
+  const execute = (args: string[], cwd = targetDir) => {
+    const options = { ...worktreeOptions, cwd };
+    const result =
+      deadlineAt === undefined
+        ? spawnSync("git", args, { ...options, encoding: "utf8" })
+        : runGitAcquisitionResult(args, { ...options, timeoutMs: remainingReviewTime(deadlineAt) });
+    return checkedReviewGit(result, "review_checkout_failed");
+  };
+  if (independentGit && admittedObjects) {
+    if (!admitted) throw new AgentInputScanError("incomplete_source");
+    const closure = admitted;
+    mkdirSync(worktreeDir);
+    const safeEnv = admittedReviewGitEnv();
+    const run = (args: string[]) =>
+      checkedReviewGit(
+        runGitAcquisitionResult(args, {
+          cwd: worktreeDir,
+          env: safeEnv,
+          maxBuffer: MAX_GIT_OUTPUT_BYTES,
+          timeoutMs: remainingReviewTime(deadlineAt),
+        }),
+        "review_checkout_failed",
+      );
+    run([
+      "init",
+      "--template=",
+      "--object-format=" + (headSha.length === 64 ? "sha256" : "sha1"),
+      ".",
+    ]);
+    mkdirSync(join(worktreeDir, ".git", "objects", "info"), { recursive: true });
+    writeFileSync(
+      join(worktreeDir, ".git", "objects", "info", "alternates"),
+      closure.objects + "\n",
+    );
+    writeFileSync(join(worktreeDir, ".git", "shallow"), closure.boundaries.join("\n") + "\n");
+    run([
       "-c",
-      "core.hooksPath=/dev/null",
-      "worktree",
-      "add",
+      "core.hooksPath=" + GIT_NULL_DEVICE,
+      "-c",
+      "core.autocrlf=false",
+      "checkout",
       "--detach",
       "--force",
-      worktreeDir,
       headSha,
-    ],
-    {
-      cwd: targetDir,
-      env: localReviewGitEnv(),
-      encoding: "utf8",
-      maxBuffer: MAX_GIT_OUTPUT_BYTES,
-    },
+    ]);
+  } else if (independentGit) {
+    // Fresh metadata/index/config per assessment; immutable objects are borrowed,
+    // never hardlinked or repacked into the target repository by ordinary Git writes.
+    execute([
+      "-c",
+      "core.hooksPath=/dev/null",
+      "clone",
+      "--shared",
+      "--no-hardlinks",
+      "--no-checkout",
+      "--",
+      targetDir,
+      worktreeDir,
+    ]);
+    execute(
+      ["-c", "core.hooksPath=/dev/null", "checkout", "--detach", "--force", headSha],
+      worktreeDir,
+    );
+  } else execute(worktreeArgs);
+  const totals = reviewTreeTotals(
+    worktreeDir,
+    REVIEW_TREE_MAX_FILES,
+    REVIEW_TREE_MAX_BYTES,
+    deadlineAt,
   );
-  checkedReviewGit(worktree, "review_checkout_failed");
-  const totals = reviewTreeTotals(worktreeDir, REVIEW_TREE_MAX_FILES, REVIEW_TREE_MAX_BYTES);
   if (totals.files > REVIEW_TREE_MAX_FILES || totals.bytes > REVIEW_TREE_MAX_BYTES) {
-    removePullRequestReviewTree({ targetDir, worktreeDir });
+    if (independentGit) rmSync(worktreeDir, { recursive: true, force: true });
+    else removePullRequestReviewTree({ targetDir, worktreeDir });
     throw reviewTreeBudgetError(
       headSha,
       `${totals.files} files and ${totals.bytes} bytes exceed the ${REVIEW_TREE_MAX_FILES}-file or ${REVIEW_TREE_MAX_BYTES}-byte limit`,
     );
   }
-  return reviewTreeMatchesCommit({ targetDir: worktreeDir, sha: headSha });
+  return reviewTreeMatchesCommit({
+    targetDir: worktreeDir,
+    sha: headSha,
+    ...(deadlineAt === undefined ? {} : { deadlineAt }),
+  });
 }
 
 export function removePullRequestReviewTree({

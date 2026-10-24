@@ -20,7 +20,7 @@ npm pack /tmp/clawsweeper-local-stage --ignore-scripts --json
 ```
 
 The staging command prints the files, sizes, and SHA-256 hashes. It follows the
-compiled ESM imports and the three explicit worker entrypoints, then adds the
+compiled ESM imports and the four explicit worker entrypoints, then adds the
 review prompts, decision schema, configuration, and scanner setup script.
 Missing or unresolved imports fail staging. The generated manifest is private
 and has no install hooks or development dependencies. It declares the production

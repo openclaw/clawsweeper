@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,7 +16,11 @@ import { fileURLToPath } from "node:url";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 
 import { reviewNetworkCapability, runAgentProcess } from "../dist/agent-runner.js";
-import { parseOpenclawJsonEnvelope, runOpenclawProcess } from "../dist/openclaw-process.js";
+import {
+  parseOpenclawJsonEnvelope,
+  runOpenclawProcess,
+  retireOpenclawRoleStates,
+} from "../dist/openclaw-process.js";
 import { codexProcessErrorCode } from "../dist/codex-process.js";
 
 const OPENCLAW_PROCESS_WORKER_PATH = fileURLToPath(
@@ -34,11 +46,38 @@ function fakeOpenclaw(root: string): string {
     binary,
     `#!/usr/bin/env node
 const fs = require("node:fs");
+if (process.argv[2] === "sandbox") process.exit(0);
+if (process.argv[2] === "sessions") {
+  if (!process.env.OPENCLAW_TEST_SQLITE_EXPORT) process.exit(4);
+  if (process.env.OPENCLAW_TEST_HANG_EXPORT) {
+    const cp = require("node:child_process");
+    const child = cp.spawn(process.execPath, ["-e", 'process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'], {stdio:"ignore"});
+    fs.writeFileSync(process.env.OPENCLAW_TEST_HANG_EXPORT, JSON.stringify({pid:process.pid, child:child.pid}));
+    process.on("SIGTERM",()=>{});
+    setInterval(()=>{},1000);
+    return;
+  }
+  const path = require("node:path");
+  const key = process.argv[process.argv.indexOf("--session-key") + 1];
+  const sessionId = key.slice("agent:main:explicit:".length);
+  const outputDir = path.join(process.env.OPENCLAW_STATE_DIR, ".openclaw", "trajectory-exports", "checkout-receipt");
+  fs.mkdirSync(outputDir, { recursive: true });
+  const entries = JSON.parse(fs.readFileSync(path.join(process.env.OPENCLAW_STATE_DIR, "export-entries.json"), "utf8"));
+  const events = entries.flatMap(({message}) => {
+    if (message.role === "assistant") return message.content.filter(c => c.type === "toolCall").map(c => ({type: "tool.call", data: {toolCallId: c.id, name: c.name, arguments: c.arguments}}));
+    return message.role === "toolResult" ? [{type: "tool.result", data: {message}}] : [];
+  }).map(e => ({traceSchema: "openclaw-trajectory", schemaVersion: 1, sessionId, source: "transcript", ...e}));
+  fs.writeFileSync(path.join(outputDir, "events.jsonl"), events.map(e => JSON.stringify(e)).join("\\n") + "\\n");
+  fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify({sessionId: process.env.OPENCLAW_TEST_WRONG_EXPORT_ID ? "wrong-session" : sessionId, eventCount: events.length}));
+  console.log(JSON.stringify({sessionId, outputDir}));
+  process.exit(0);
+}
 const record = {
   args: process.argv.slice(2),
   stateDir: process.env.OPENCLAW_STATE_DIR,
   configPath: process.env.OPENCLAW_CONFIG_PATH,
   workspaceDir: process.env.OPENCLAW_WORKSPACE_DIR,
+  optionalGitLocks: process.env.GIT_OPTIONAL_LOCKS,
   config: JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8")),
   prompt: fs.readFileSync(process.argv[process.argv.indexOf("--message-file") + 1], "utf8"),
   env: {
@@ -48,6 +87,8 @@ const record = {
     CLAWSWEEPER_APP_PRIVATE_KEY: process.env.CLAWSWEEPER_APP_PRIVATE_KEY ?? null,
     KIMI_API_KEY: process.env.KIMI_API_KEY ?? null,
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? null,
+    NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS ?? null,
+    NODE_TLS_REJECT_UNAUTHORIZED: process.env.NODE_TLS_REJECT_UNAUTHORIZED ?? null,
   },
 };
 fs.writeFileSync(process.env.OPENCLAW_TEST_RECORD, JSON.stringify(record));
@@ -78,7 +119,11 @@ if (process.env.OPENCLAW_TEST_READ_PATH) {
   if (process.env.OPENCLAW_TEST_RECEIPT_EXTRA) {
     entries.push(...JSON.parse(process.env.OPENCLAW_TEST_RECEIPT_EXTRA));
   }
+if (process.env.OPENCLAW_TEST_SQLITE_EXPORT) {
+  fs.writeFileSync(require("node:path").join(record.stateDir, "export-entries.json"), JSON.stringify(entries));
+} else {
   fs.writeFileSync(sessionFile, entries.map((entry) => JSON.stringify(entry)).join("\\n") + "\\n");
+}
 }
 process.stderr.write(process.env.OPENCLAW_TEST_STDERR || "");
 process.stdout.write(process.env.OPENCLAW_TEST_STDOUT || JSON.stringify({ payloads: [{ text: "done" }], meta: { stopReason: "stop" } }));
@@ -123,10 +168,16 @@ test("OpenClaw process emits isolated config and invocation, joins payloads, and
     assert.equal(result.stdout, "first\nsecond");
     const record = JSON.parse(readFileSync(recordPath, "utf8"));
     assert.equal(record.workspaceDir, root);
+    assert.equal(record.optionalGitLocks, "0");
     assert.equal(record.prompt, "Inspect this patch.");
     assert.deepEqual(record.config, {
       agents: {
-        defaults: { skipBootstrap: true, sandbox: { mode: "off" }, timeoutSeconds: 13 },
+        defaults: {
+          skipBootstrap: true,
+          workspace: root,
+          sandbox: { mode: "off" },
+          timeoutSeconds: 13,
+        },
       },
       tools: {
         profile: "coding",
@@ -198,6 +249,7 @@ test("OpenClaw checkout inspection requires structured read evidence", () => {
     const record = JSON.parse(readFileSync(recordPath, "utf8"));
     assert.deepEqual(record.config.tools, {
       allow: ["read"],
+      codeMode: false,
       fs: { workspaceOnly: true },
       exec: { host: "gateway", mode: "deny" },
     });
@@ -340,6 +392,85 @@ test("OpenClaw checkout inspection requires structured read evidence", () => {
       });
       assert.equal(mixedReceipt.status, 1, label);
       assert.match(mixedReceipt.error?.message ?? "", /exact challenged path/);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("OpenClaw canonical export preserves exact read and session binding", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-export-test-"));
+  const binary = fakeOpenclaw(root);
+  try {
+    for (const mode of [
+      "valid",
+      "wrong-session",
+      "wrong-path",
+      "failed-read",
+      "home",
+      "profile",
+      "same-home",
+      "ambiguous-home",
+      "wrong-home-path",
+      "missing-home",
+      "near-prefix",
+      "wrong-workspace",
+      "wrong-state",
+    ]) {
+      const recordPath = join(root, mode + ".json");
+      const result = runOpenclawProcess({
+        label: mode,
+        prompt: "read the tracked file",
+        model: "openai/test",
+        cwd: root,
+        env: {
+          ...process.env,
+          CLAWSWEEPER_OPENCLAW_BIN: binary,
+          OPENCLAW_TEST_RECORD: recordPath,
+          OPENCLAW_TEST_SQLITE_EXPORT: "1",
+          OPENCLAW_TEST_WRONG_EXPORT_ID: mode === "wrong-session" ? "1" : "",
+          OPENCLAW_TEST_READ_ERROR: mode === "failed-read" ? "1" : "",
+          HOME: ["profile", "missing-home"].includes(mode) ? undefined : root,
+          USERPROFILE: ["profile", "same-home"].includes(mode)
+            ? root
+            : mode === "ambiguous-home"
+              ? join(root, "other-home")
+              : undefined,
+          OPENCLAW_TEST_READ_PATH:
+            mode === "wrong-path"
+              ? "other.txt"
+              : mode === "wrong-home-path"
+                ? "~/other.txt"
+                : mode === "near-prefix"
+                  ? "~other/tracked.txt"
+                  : mode === "wrong-workspace"
+                    ? "$WORKSPACE_DIR/tracked.txt"
+                    : mode === "wrong-state"
+                      ? "$OPENCLAW_STATE_DIR/tracked.txt"
+                      : ["home", "profile", "same-home", "ambiguous-home", "missing-home"].includes(
+                            mode,
+                          )
+                        ? "~/tracked.txt"
+                        : "tracked.txt",
+          OPENCLAW_TEST_STDOUT: JSON.stringify({
+            payloads: [{ text: "tracked checkout content" }],
+            meta: { stopReason: "stop" },
+          }),
+        },
+        timeoutMs: 10_000,
+        checkoutInspection: {
+          expectedText: "tracked checkout content",
+          expectedPath: "tracked.txt",
+        },
+      });
+      const accepted = ["valid", "home", "profile", "same-home"].includes(mode);
+      assert.equal(result.status, accepted ? 0 : 1, mode + ": " + result.error?.message);
+      const record = JSON.parse(readFileSync(recordPath, "utf8"));
+      assert.deepEqual(record.config.tools.allow, ["read"]);
+      assert.equal(record.config.tools.codeMode, false);
+      assert.equal(record.config.tools.exec.mode, "deny");
+      assert.equal(record.config.tools.fs.workspaceOnly, true);
+      assert.equal(existsSync(record.stateDir), false);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -595,6 +726,8 @@ test("OpenClaw subprocess env strips workflow credentials and keeps provider key
       CLAWSWEEPER_WEBHOOK_SECRET: "workflow-webhook",
       CLAWSWEEPER_APP_PRIVATE_KEY: "workflow-app",
       KIMI_API_KEY: "provider-kimi",
+      NODE_EXTRA_CA_CERTS: join(root, "trusted-ca.pem"),
+      NODE_TLS_REJECT_UNAUTHORIZED: "0",
     };
     const capability = reviewNetworkCapability("clawsweeper-review", {
       ...env,
@@ -617,6 +750,8 @@ test("OpenClaw subprocess env strips workflow credentials and keeps provider key
     assert.equal(record.env.CLAWSWEEPER_WEBHOOK_SECRET, null);
     assert.equal(record.env.CLAWSWEEPER_APP_PRIVATE_KEY, null);
     assert.equal(record.env.KIMI_API_KEY, "provider-kimi");
+    assert.equal(record.env.NODE_EXTRA_CA_CERTS, env.NODE_EXTRA_CA_CERTS);
+    assert.equal(record.env.NODE_TLS_REJECT_UNAUTHORIZED, null);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -883,3 +1018,211 @@ setInterval(() => {}, 1000);
     }
   },
 );
+
+for (const modelId of ["selected", "vendor/selected"])
+  test("immutable per-call OpenClaw selection preserves the native model ID: " + modelId, (t) => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-selection-test-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    useFakeScanner(t);
+    const binary = fakeOpenclaw(root);
+    const recordPath = join(root, "record.json");
+    const envelope = {
+      payloads: [{ text: "native answer" }],
+      meta: {
+        stopReason: "stop",
+        agentMeta: {
+          provider: "fixture",
+          model: modelId,
+          sessionId: "safe-session",
+          runtimeModelSelection: { provider: "fixture", model: modelId },
+          terminalReceipt: {
+            requested: { provider: "fixture", model: modelId },
+            effective: { provider: "fixture", model: modelId, responseModel: "selected-v1" },
+            rerouted: false,
+          },
+        },
+        requestShaping: { thinking: "medium", thinkingClamp: "private clamp prose" },
+      },
+    };
+    const env = {
+      ...process.env,
+      CLAWSWEEPER_RUNNER: "codex",
+      CLAWSWEEPER_OPENCLAW_MODEL: "legacy/old",
+      CLAWSWEEPER_OPENCLAW_BIN: binary,
+      OPENCLAW_TEST_RECORD: recordPath,
+      OPENCLAW_TEST_STDOUT: JSON.stringify(envelope),
+      CLAWSWEEPER_OPENCLAW_SANDBOX_IMAGE: "localhost/fixture@sha256:" + "1".repeat(64),
+    };
+    const before = { ...env };
+    const configured = process.platform === "linux" && (process.getuid?.() ?? 0) > 0;
+    const result = runAgentProcess({
+      label: "selection",
+      prompt: "review",
+      scanSource: { kind: "prompt" },
+      model: "internal",
+      cwd: root,
+      env,
+      timeoutMs: 10_000,
+      selection: {
+        runner: "openclaw",
+        model: "fixture/" + modelId,
+        reasoningEffort: "high",
+        contextTier: "default",
+      },
+      ...(configured ? { reviewPhase: "independent" as const } : {}),
+    });
+    assert.equal(result.status, 0, result.error?.message);
+    assert.equal(result.stdout, "native answer");
+    assert.equal(result.execution!.terminalReceipt!.effective.responseModel, "selected-v1");
+    assert.equal(result.execution!.requestShaping!.thinking, "medium");
+    assert.equal(result.execution!.requestShaping!.thinkingClamped, true);
+    assert.deepEqual(env, before);
+    const record = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.equal(record.args[record.args.indexOf("--model") + 1], "fixture/" + modelId);
+    assert.equal(record.args[record.args.indexOf("--thinking") + 1], "high");
+    assert.equal(record.config.agents.defaults.sandbox.mode, configured ? "all" : "off");
+    if (configured) assert.equal(record.config.agents.defaults.sandbox.backend, "podman");
+    assert.equal(record.config.tools.exec.host, configured ? "sandbox" : "gateway");
+    assert.equal(existsSync(record.stateDir), configured);
+    // The surviving assessment owner now retires configured native state. This
+    // unit fixture creates no native container; remove only its recorded state.
+    rmSync(record.stateDir, { recursive: true, force: true });
+  });
+
+test(
+  "native receipt export deadline settles SIGTERM-resistant descendants",
+  { skip: process.platform !== "linux" },
+  (t) => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-export-deadline-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const binary = fakeOpenclaw(root),
+      pids = join(root, "pids.json"),
+      recordPath = join(root, "record.json");
+    const started = Date.now();
+    const result = runOpenclawProcess({
+      label: "export-deadline",
+      prompt: "challenge",
+      model: "openai/test",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: binary,
+        OPENCLAW_TEST_RECORD: recordPath,
+        OPENCLAW_TEST_SQLITE_EXPORT: "1",
+        OPENCLAW_TEST_HANG_EXPORT: pids,
+        OPENCLAW_TEST_READ_PATH: "tracked.txt",
+        OPENCLAW_TEST_STDOUT: JSON.stringify({
+          payloads: [{ text: "tracked checkout content" }],
+          meta: { stopReason: "stop" },
+        }),
+      },
+      timeoutMs: 1200,
+      checkoutInspection: { expectedText: "tracked checkout content", expectedPath: "tracked.txt" },
+    });
+    assert.equal(result.status, 1);
+    // The native process worker reserves its existing one-second kill escalation.
+    assert.ok(Date.now() - started < 4000);
+    const receipt = JSON.parse(readFileSync(pids, "utf8"));
+    assert.equal(processAlive(receipt.pid), false);
+    assert.equal(processAlive(receipt.child), false);
+    assert.equal(existsSync(JSON.parse(readFileSync(recordPath, "utf8")).stateDir), false);
+  },
+);
+
+test("configured native state fails closed before launch when a key-bearing state path is tool-readable", () => {
+  const root = mkdtempSync(join(tmpdir(), "openclaw-state-overlap-"));
+  try {
+    const record = join(root, "record.json");
+    const result = runOpenclawProcess({
+      label: "overlap",
+      prompt: "fixture",
+      model: "fixture/model",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: fakeOpenclaw(root),
+        OPENCLAW_TEST_RECORD: record,
+        CLAWSWEEPER_OPENCLAW_SANDBOX_IMAGE: "localhost/fixture@sha256:" + "1".repeat(64),
+      },
+      timeoutMs: 1000,
+      roleIsolation: { readRoots: [tmpdir()] },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.error?.message ?? "", /provider state.*outside/);
+    assert.equal(existsSync(record), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("configured native state retirement retains binding while dropping provider models and secrets", () => {
+  const root = mkdtempSync(join(tmpdir(), "openclaw-retire-"));
+  try {
+    const state = join(root, "clawsweeper-openclaw-process-owned");
+    const config = {
+      agents: { defaults: { sandbox: { mode: "all", backend: "podman" } } },
+      models: { providers: { fixture: { apiKey: "SYNTHETIC_ONLY" } } },
+    };
+    mkdirSync(state);
+    writeFileSync(join(state, "role-isolation.json"), "1");
+    writeFileSync(join(state, "openclaw.json"), JSON.stringify(config));
+    const marker = join(root, "retired.json");
+    const binary = join(root, "retire-native.cjs");
+    writeFileSync(
+      binary,
+      "#!" +
+        process.execPath +
+        "\n" +
+        'const fs=require("node:fs"),assert=require("node:assert/strict");' +
+        'assert.deepEqual(process.argv.slice(2),["sandbox","recreate","--agent","main","--force"]);' +
+        "assert.equal(process.env.OPENAI_API_KEY,undefined);assert.equal(process.env.OPENCLAW_GATEWAY_TOKEN,undefined);" +
+        'const c=JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH,"utf8"));' +
+        'assert.equal(c.models,undefined);assert.equal(c.agents.defaults.sandbox.backend,"podman");' +
+        "fs.writeFileSync(" +
+        JSON.stringify(marker) +
+        ",JSON.stringify({state:process.env.OPENCLAW_STATE_DIR,config:c}));",
+      { mode: 0o755 },
+    );
+    retireOpenclawRoleStates(
+      root,
+      {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: binary,
+        OPENAI_API_KEY: "SYNTHETIC_ONLY",
+        OPENCLAW_GATEWAY_TOKEN: "SYNTHETIC_ONLY",
+      },
+      Date.now() + 5000,
+    );
+    assert.equal(JSON.parse(readFileSync(marker, "utf8")).state, state);
+    assert.deepEqual(JSON.parse(readFileSync(join(state, "openclaw.json"), "utf8")), config);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("configured native roles reject an unsupported host without launching broad host tools", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "native-host-refusal-"));
+  try {
+    if (process.getuid) t.mock.method(process, "getuid", () => 0);
+    const record = join(root, "record.json");
+    const result = runOpenclawProcess({
+      label: "unqualified-host",
+      prompt: "fixture",
+      model: "fixture/model",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: fakeOpenclaw(root),
+        OPENCLAW_TEST_RECORD: record,
+        CLAWSWEEPER_OPENCLAW_SANDBOX_IMAGE: "localhost/fixture@sha256:" + "1".repeat(64),
+      },
+      timeoutMs: 1000,
+      roleIsolation: { readRoots: [root] },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.error?.message ?? "", /qualified non-root native sandbox host/);
+    assert.equal(existsSync(record), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

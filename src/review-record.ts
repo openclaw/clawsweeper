@@ -1,3 +1,15 @@
+import {
+  parseAssessmentFailureDisposition,
+  type AssessmentFailureDisposition,
+} from "./review-assessment-failure.js";
+import {
+  parseReviewModelSelection,
+  type ReviewModelSelection,
+} from "./repository-review-config.js";
+import {
+  parseReviewExecutionReceipt,
+  type ReviewExecutionReceipt,
+} from "./review-execution-receipt.js";
 import { isDeepStrictEqual } from "node:util";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import { parseOversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
@@ -34,7 +46,32 @@ const storedDecisionParser = createDecisionParser({
 
 type ReviewRecordSubject = Pick<Item, "repo" | "number" | "kind">;
 
+export interface MultiModelAssessment {
+  id: string;
+  selection: ReviewModelSelection;
+  /** Assessment content status, not verification of requested model or effort. */
+  status: "complete" | "failed" | "model_mismatch";
+  decision?: Decision;
+  execution?: ReviewExecutionReceipt;
+  failure?: AssessmentFailureDisposition;
+}
+export interface MultiModelReviewRecord {
+  version: 1;
+  /** Native runtime facts do not qualify an exact actual-model/high-effort pair. */
+  executionQualification?: "unverified";
+  status: "complete" | "incomplete";
+  source: {
+    snapshotHash: string;
+    configRevision: string;
+    configDigest: string;
+    promptDigest: string;
+  };
+  members: MultiModelAssessment[];
+  coordinator: Omit<MultiModelAssessment, "decision">;
+  vetoes: string[];
+}
 export interface ReviewRecord {
+  readonly multiModel?: MultiModelReviewRecord;
   readonly decision: Decision;
   readonly origin?: "backfill";
 }
@@ -50,7 +87,8 @@ export class ReviewRecordFormatError extends Error {
 // regular expressions end a line there, and front-matter readers work line by line.
 function reviewRecordValue(record: ReviewRecord): string {
   const stored = {
-    version: REVIEW_RECORD_VERSION,
+    version: record.multiModel ? 2 : REVIEW_RECORD_VERSION,
+    ...(record.multiModel ? { multiModel: record.multiModel } : {}),
     ...(record.origin ? { origin: record.origin } : {}),
     decision: record.decision,
   };
@@ -91,6 +129,7 @@ export function reviewRecordFrontMatterLine(
   record: ReviewRecord,
   subject: ReviewRecordSubject,
 ): string | null {
+  if (record.multiModel) parseMultiModelReviewRecord(record.multiModel, subject);
   return storableDecision(record.decision, subject)
     ? `${REVIEW_RECORD_KEY}: ${reviewRecordValue(record)}`
     : null;
@@ -108,16 +147,22 @@ export function readReviewRecord(markdown: string): ReviewRecord | null {
     throw new ReviewRecordFormatError("the value is not JSON");
   }
   const record = storedObject(stored, "the record");
-  const { version, origin, decision, ...unexpected } = record;
+  const { version, origin, decision, multiModel, ...unexpected } = record;
   if (Object.keys(unexpected).length > 0) {
     throw new ReviewRecordFormatError(`unexpected keys: ${Object.keys(unexpected).join(", ")}`);
   }
-  if (version !== REVIEW_RECORD_VERSION) throw new ReviewRecordFormatError("unknown version");
+  if (version !== REVIEW_RECORD_VERSION && version !== 2)
+    throw new ReviewRecordFormatError("unknown version");
+  if ((version === 2) !== (multiModel !== undefined))
+    throw new ReviewRecordFormatError("invalid multi-model version");
   if (origin !== undefined && origin !== "backfill") {
     throw new ReviewRecordFormatError("unknown origin");
   }
   return {
     decision: parseStoredDecision(decision, reviewRecordSubject(markdown)),
+    ...(multiModel === undefined
+      ? {}
+      : { multiModel: parseMultiModelReviewRecord(multiModel, reviewRecordSubject(markdown)) }),
     ...(origin ? { origin } : {}),
   };
 }
@@ -263,7 +308,7 @@ function withoutRetiredDecisionFields(stored: Record<string, unknown>): Record<s
 // The model schema fields use the review parser. The runner-owned fields use their
 // own readers. The stored value must be a fixed point: if parsing changes anything
 // (an unknown key, a default, a normalized value), the record is invalid.
-function parseStoredDecision(value: unknown, subject: ReviewRecordSubject): Decision {
+export function parseStoredDecision(value: unknown, subject: ReviewRecordSubject): Decision {
   const stored = withoutRetiredDecisionFields(storedObject(value, "decision"));
   const {
     oversizedPullRequest,
@@ -326,4 +371,108 @@ function parseStoredDecision(value: unknown, subject: ReviewRecordSubject): Deci
     throw new ReviewRecordFormatError(`decision.${changed.join(", decision.")} is not canonical`);
   }
   return decision;
+}
+
+/** Version two is deliberately rejected by old strict readers rather than silently losing members. */
+export function parseMultiModelReviewRecord(
+  input: unknown,
+  subject: ReviewRecordSubject,
+): MultiModelReviewRecord {
+  const value = storedObject(input, "multiModel");
+  const exact = (record: Record<string, unknown>, keys: string[]) => {
+    if (Object.keys(record).some((key) => !keys.includes(key)))
+      throw new ReviewRecordFormatError("unexpected multi-model keys");
+  };
+  exact(value, [
+    "version",
+    "executionQualification",
+    "status",
+    "source",
+    "members",
+    "coordinator",
+    "vetoes",
+  ]);
+  if (
+    value.version !== 1 ||
+    (value.executionQualification !== undefined && value.executionQualification !== "unverified") ||
+    (value.status !== "complete" && value.status !== "incomplete") ||
+    !Array.isArray(value.members) ||
+    value.members.length < 2 ||
+    value.members.length > 4 ||
+    !Array.isArray(value.vetoes) ||
+    value.vetoes.length > 32 ||
+    value.vetoes.some((entry) => typeof entry !== "string" || entry.length > 160)
+  )
+    throw new ReviewRecordFormatError("invalid multi-model record");
+  const source = storedObject(value.source, "multiModel.source");
+  exact(source, ["snapshotHash", "configRevision", "configDigest", "promptDigest"]);
+  if (
+    !/^[a-f0-9]{40}$/.test(String(source.configRevision)) ||
+    [source.snapshotHash, source.configDigest, source.promptDigest].some(
+      (hash) => typeof hash !== "string" || !/^[a-f0-9]{16,64}$/.test(hash),
+    )
+  )
+    throw new ReviewRecordFormatError("invalid multi-model source binding");
+  const assessment = (input: unknown, member: boolean): MultiModelAssessment => {
+    const entry = storedObject(input, "multiModel.assessment");
+    exact(entry, [
+      "id",
+      "selection",
+      "status",
+      "execution",
+      "failure",
+      ...(member ? ["decision"] : []),
+    ]);
+    if (
+      typeof entry.id !== "string" ||
+      !/^(member-[1-4]|coordinator)$/.test(entry.id) ||
+      !["complete", "failed", "model_mismatch"].includes(String(entry.status)) ||
+      (entry.status === "complete" && entry.failure !== undefined) ||
+      (member && entry.status === "complete" && entry.decision === undefined)
+    )
+      throw new ReviewRecordFormatError("invalid multi-model assessment");
+    try {
+      return {
+        id: entry.id,
+        selection: parseReviewModelSelection(entry.selection),
+        status: entry.status as MultiModelAssessment["status"],
+        ...(entry.decision === undefined
+          ? {}
+          : { decision: parseStoredDecision(entry.decision, subject) }),
+        ...(entry.failure === undefined
+          ? {}
+          : { failure: parseAssessmentFailureDisposition(entry.failure) }),
+        ...(entry.execution === undefined
+          ? {}
+          : { execution: parseReviewExecutionReceipt(entry.execution) }),
+      };
+    } catch (error) {
+      if (error instanceof ReviewRecordFormatError) throw error;
+      throw new ReviewRecordFormatError(
+        error instanceof Error ? error.message : "invalid assessment",
+      );
+    }
+  };
+  const members = value.members.map((entry) => assessment(entry, true));
+  const coordinator = assessment(value.coordinator, false);
+  if (
+    members.some((member, index) => member.id !== "member-" + (index + 1)) ||
+    coordinator.id !== "coordinator" ||
+    (value.status === "complete" &&
+      (members.some((member) => member.status !== "complete") ||
+        coordinator.status !== "complete" ||
+        value.vetoes.length))
+  )
+    throw new ReviewRecordFormatError("inconsistent multi-model completion");
+  return {
+    version: 1,
+    ...(value.executionQualification === "unverified"
+      ? { executionQualification: value.executionQualification }
+      : {}),
+    status: value.status,
+    source: source as unknown as MultiModelReviewRecord["source"],
+    members,
+    coordinator,
+    vetoes: value.vetoes as string[],
+  };
 }

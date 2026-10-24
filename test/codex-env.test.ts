@@ -110,3 +110,30 @@ test(`${builder.name} strips case variants and unused numbered override keys`, (
     process.env = original;
   }
 });
+
+test("per-call runner is selected before filtering already-provisioned credentials", () => {
+  const previous = process.env;
+  try {
+    process.env = {
+      ...previous,
+      CLAWSWEEPER_RUNNER: "codex",
+      OPENAI_API_KEY: "synthetic-openai-key",
+      ANTHROPIC_API_KEY: "synthetic-anthropic-key",
+      CLAWSWEEPER_OPENCLAW_OPENAI_KEY: "synthetic-alias-key",
+      CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON: "synthetic-provider-config",
+    };
+    const openclaw = codexEnv({ runner: "openclaw" });
+    const codex = codexEnv({ runner: "codex" });
+    assert.equal(openclaw.OPENAI_API_KEY, "synthetic-openai-key");
+    assert.equal(codex.OPENAI_API_KEY, undefined);
+    assert.equal(codex.ANTHROPIC_API_KEY, undefined);
+    assert.equal(codex.CLAWSWEEPER_OPENCLAW_OPENAI_KEY, undefined);
+    assert.equal(codex.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON, undefined);
+    assert.equal(codex.CLAWSWEEPER_RUNNER, "codex");
+    assert.equal(openclaw.CLAWSWEEPER_RUNNER, "openclaw");
+    assert.equal(process.env.OPENAI_API_KEY, "synthetic-openai-key");
+    assert.equal(process.env.CLAWSWEEPER_RUNNER, "codex");
+  } finally {
+    process.env = previous;
+  }
+});
