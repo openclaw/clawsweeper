@@ -58,7 +58,8 @@ export function writeExactReviewFailureDiagnostics(options: {
           /^(?:configuration_missing|setup_script_failed|source_incompatible|review_commits_unavailable|review_history_unavailable|review_blob_metadata_unavailable|review_blobs_unavailable|review_checkout_unavailable|review_commit_fetch_failed|review_checkout_failed|review_git_inspection_failed)$/,
         )
       : null;
-  const values = exactValues(options.prompt, options.model, options.env ?? process.env);
+  const env = options.env ?? process.env;
+  const values = exactValues(options.prompt, options.model, env);
   const acquisition =
     options.error instanceof ReviewSourcePreparationError
       ? options.error.commitAcquisition
@@ -118,6 +119,20 @@ export function writeExactReviewFailureDiagnostics(options: {
           ? options.sourceSha!.toLowerCase()
           : null,
       },
+      ...(safeCode(
+        env.GITHUB_REPOSITORY,
+        /^[A-Za-z0-9_][A-Za-z0-9_.-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/,
+      ) &&
+      safeCode(env.GITHUB_RUN_ID, /^[1-9][0-9]{0,19}$/) &&
+      safeCode(env.GITHUB_RUN_ATTEMPT, /^[1-9][0-9]{0,19}$/)
+        ? {
+            run: {
+              repository: env.GITHUB_REPOSITORY,
+              id: env.GITHUB_RUN_ID,
+              attempt: env.GITHUB_RUN_ATTEMPT,
+            },
+          }
+        : {}),
       omitted_files: files.filter((file) => file.omitted).map((file) => file.name),
     },
     null,
@@ -224,7 +239,7 @@ function unsafeControl(value: string): boolean {
 }
 
 function safeCode(value: unknown, pattern: RegExp): string | null {
-  return typeof value === "string" && pattern.test(value) ? value : null;
+  return typeof value === "string" && !/[\r\n]/.test(value) && pattern.test(value) ? value : null;
 }
 
 function record(value: unknown): Record<string, unknown> {
