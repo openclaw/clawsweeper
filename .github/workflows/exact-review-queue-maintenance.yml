@@ -85,6 +85,9 @@ on:
       canonical_verification_baseline_json:
         description: "Record verification recheck only: metadata JSON from the baseline run"
         type: string
+      canonical_verification_baseline_sha256:
+        description: "Record verification recheck only: independently approved baseline SHA256"
+        type: string
 
       usage_deploy_sha:
         description: "Usage operator only: approved deployed Worker source SHA (not workflow source)"
@@ -276,6 +279,7 @@ jobs:
           VERIFICATION_PHASE: ${{ inputs.canonical_verification_phase }}
           VERIFICATION_REPO_SLUG: ${{ inputs.canonical_verification_repo_slug }}
           VERIFICATION_BASELINE: ${{ inputs.canonical_verification_baseline_json }}
+          EXPECTED_BASELINE_SHA256: ${{ inputs.canonical_verification_baseline_sha256 }}
         run: node scripts/canonical-record-verification.ts
 
   canonical-bodies:

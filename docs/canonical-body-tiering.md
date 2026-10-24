@@ -333,9 +333,20 @@ exceptions from infrastructure CPU or memory limits.
 The same manual maintenance workflow offers `canonical-records-verify` for a
 bounded before/after read check. It requires `execute=true`, the reviewed plan
 hash, expected Worker deployment SHA, repository slug, and a `baseline` or
-`recheck` phase. Recheck takes the baseline JSON emitted by the first run.
-The workflow source SHA is separate from the Worker SHA; changing this operator
-does not require redeploying the Worker.
+`recheck` phase. Recheck takes the baseline JSON emitted by the first run and
+`canonical_verification_baseline_sha256`, the independently reviewed checksum
+from that run. The CLI reads this pin from `EXPECTED_BASELINE_SHA256`.
+Baseline creation rejects a recheck-only checksum. Recheck validates the saved
+producer SHA and hashes the original normalized metadata against both its
+envelope checksum and the independently supplied pin before any request.
+
+The workflow source SHA is separate from the Worker SHA and may differ from the
+saved baseline's producer. Each result reports `executionOperatorSha`,
+`comparedBaselineSha256`, and `comparedBaselineOperatorSha` (the latter two are
+null for baseline creation). Its `baseline` and `sha256` describe the new observed
+snapshot produced by the current operator; they do not replace the saved input
+baseline. Keep the approved input and checksum unchanged for later rechecks.
+Updating the verifier does not require redeploying the Worker.
 
 Each phase verifies the Worker and signed Durable Object identity before and
 after reading one export page per canonical section, at most 32 records each,
@@ -347,7 +358,9 @@ step; no Cloudflare API token is needed.
 
 Failures emit a fixed diagnostic category and recovery action, never raw error
 text or response bodies. Correct invalid inputs using the saved baseline;
-deployment or operator identity drift requires a newly reviewed execution plan.
+repository, deployment or plan mismatch requires a newly reviewed execution plan.
+An updated verifier runs as its actual workflow SHA; it does not impersonate the
+baseline producer or rewrite the baseline to satisfy provenance checks.
 Record mismatches stop migration for investigation. Request or read-limit
 failures preserve the baseline and checkpoint for reviewed recovery.
 

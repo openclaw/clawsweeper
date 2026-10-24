@@ -65,6 +65,7 @@ test("queue maintenance is explicit, bounded, and non-cancelling", () => {
     "canonical_verification_phase",
     "canonical_verification_repo_slug",
     "canonical_verification_baseline_json",
+    "canonical_verification_baseline_sha256",
     "usage_deploy_sha",
     "usage_version_id",
     "usage_canary_run_id",
@@ -108,6 +109,10 @@ test("canonical verification is isolated to explicit main-branch dispatch withou
     "${{ inputs.canonical_verification_baseline_json }}",
   );
   assert.equal(step.env?.EXPECTED_DEPLOYMENT_SHA, "${{ inputs.expected_deployment_sha }}");
+  assert.equal(
+    step.env?.EXPECTED_BASELINE_SHA256,
+    "${{ inputs.canonical_verification_baseline_sha256 }}",
+  );
   assert.equal(step.env?.CLOUDFLARE_API_TOKEN, undefined);
   assert.ok(job.steps.every((entry) => !entry.run?.includes("${{")));
 });

@@ -9,6 +9,7 @@ import { verifyCanonicalRecords } from "../scripts/canonical-record-verification
 
 const deploymentSha = "a".repeat(40);
 const operatorSha = "b".repeat(40);
+const nextOperatorSha = "d".repeat(40);
 const planSha256 = "c".repeat(64);
 const secret = "synthetic-record-verification-secret";
 const options = {
@@ -20,6 +21,13 @@ const options = {
   planSha256,
 };
 const sections = ["items", "closed", "plans", "decision-packets"] as const;
+function recheckOptions(result: Awaited<ReturnType<typeof verifyCanonicalRecords>>) {
+  return {
+    operatorSha: result.baseline.operatorSha === operatorSha ? nextOperatorSha : operatorSha,
+    baselineJson: JSON.stringify(result),
+    expectedBaselineSha256: result.sha256,
+  };
+}
 function record(content: string | null = "private body 🦊", revision = 1) {
   return {
     content,
@@ -115,7 +123,7 @@ test("bounded baseline and recheck verify HMAC, Unicode, empty bodies and explic
   const recheck = await verifyCanonicalRecords({
     ...options,
     fetch: next.fetch,
-    baselineJson: JSON.stringify(baseline),
+    ...recheckOptions(baseline),
   });
   assert.equal(recheck.canonicalVerified, 3);
   assert.equal(recheck.changed, 0);
@@ -123,6 +131,89 @@ test("bounded baseline and recheck verify HMAC, Unicode, empty bodies and explic
   const empty = fixture({ point: record(""), exported: record("") });
   const result = await verifyCanonicalRecords({ ...options, fetch: empty.fetch });
   assert.ok(result.baseline.records.every((entry) => entry.bytes === 0));
+});
+
+test("rechecks preserve the pinned producer while reporting actual execution and new snapshot provenance", async () => {
+  const original = await verifyCanonicalRecords({ ...options, fetch: fixture().fetch });
+  const saved = JSON.stringify(original);
+  assert.equal(original.executionOperatorSha, operatorSha);
+  assert.equal(original.comparedBaselineSha256, null);
+  assert.equal(original.comparedBaselineOperatorSha, null);
+  const recheck = await verifyCanonicalRecords({
+    ...options,
+    ...recheckOptions(original),
+    fetch: fixture().fetch,
+  });
+  assert.equal(JSON.stringify(original), saved);
+  assert.equal(recheck.executionOperatorSha, nextOperatorSha);
+  assert.equal(recheck.comparedBaselineSha256, original.sha256);
+  assert.equal(recheck.comparedBaselineOperatorSha, operatorSha);
+  assert.equal(recheck.baseline.operatorSha, nextOperatorSha);
+  assert.notEqual(recheck.sha256, original.sha256);
+  const chained = await verifyCanonicalRecords({
+    ...options,
+    ...recheckOptions(recheck),
+    fetch: fixture().fetch,
+  });
+  assert.equal(chained.comparedBaselineSha256, recheck.sha256);
+  assert.equal(chained.comparedBaselineOperatorSha, nextOperatorSha);
+  assert.equal(chained.executionOperatorSha, operatorSha);
+});
+
+test("rechecks reject unpinned, malformed or altered baselines before any network request", async () => {
+  const original = await verifyCanonicalRecords({ ...options, fetch: fixture().fetch });
+  const transport = fixture();
+  const recheck = { ...options, ...recheckOptions(original), fetch: transport.fetch };
+  for (const override of [
+    { expectedBaselineSha256: undefined },
+    { expectedBaselineSha256: "" },
+    { expectedBaselineSha256: "wrong" },
+    { expectedBaselineSha256: "0".repeat(64) },
+    { repoSlug: "different-project" },
+    { deploymentSha: "e".repeat(40) },
+    { planSha256: "f".repeat(64) },
+  ]) {
+    await assert.rejects(
+      verifyCanonicalRecords({ ...recheck, ...override } as Parameters<
+        typeof verifyCanonicalRecords
+      >[0]),
+    );
+  }
+  for (const producer of [null, 123, "e".repeat(39), "G".repeat(40)]) {
+    const altered = JSON.parse(recheck.baselineJson);
+    altered.baseline.operatorSha = producer;
+    altered.sha256 = createHash("sha256").update(JSON.stringify(altered.baseline)).digest("hex");
+    await assert.rejects(
+      verifyCanonicalRecords({
+        ...recheck,
+        baselineJson: JSON.stringify(altered),
+        expectedBaselineSha256: altered.sha256,
+      }),
+      /invalid baseline producer/,
+    );
+  }
+  for (const change of ["producer", "record", "envelope"] as const) {
+    const altered = JSON.parse(recheck.baselineJson);
+    if (change === "producer") altered.baseline.operatorSha = "e".repeat(40);
+    if (change === "record") altered.baseline.records[0].revision++;
+    if (change === "envelope") altered.sha256 = "0".repeat(64);
+    else
+      altered.sha256 = createHash("sha256").update(JSON.stringify(altered.baseline)).digest("hex");
+    await assert.rejects(
+      verifyCanonicalRecords({ ...recheck, baselineJson: JSON.stringify(altered) }),
+      /checksum/,
+    );
+  }
+  await assert.rejects(
+    // Baseline creation cannot silently ignore a recheck-only integrity pin.
+    verifyCanonicalRecords({
+      ...options,
+      fetch: transport.fetch,
+      expectedBaselineSha256: original.sha256,
+    } as Parameters<typeof verifyCanonicalRecords>[0]),
+    /expected baseline checksum/,
+  );
+  assert.equal(transport.calls.length, 0);
 });
 
 test("full sample stays within 136 logical reads and round-trips bounded metadata", async () => {
@@ -136,7 +227,7 @@ test("full sample stays within 136 logical reads and round-trips bounded metadat
   const result = await verifyCanonicalRecords({
     ...options,
     fetch: fixture({ count: 32 }).fetch,
-    baselineJson: JSON.stringify(baseline),
+    ...recheckOptions(baseline),
   });
   assert.equal(result.canonicalVerified, 128);
   assert.equal(result.logicalRequests, 136);
@@ -157,7 +248,7 @@ test("canonical repository slugs preserve case, dots and underscores", async () 
       ...options,
       repoSlug,
       fetch: fixture({ repoSlug }).fetch,
-      baselineJson: JSON.stringify(baseline),
+      ...recheckOptions(baseline),
     });
     assert.equal(result.canonicalVerified, 4);
   }
@@ -175,7 +266,7 @@ test("same-revision corruption, regressed revisions and missing records fail", a
       verifyCanonicalRecords({
         ...options,
         fetch: fixture(configuration).fetch,
-        baselineJson: JSON.stringify(baseline),
+        ...recheckOptions(baseline),
       }),
     );
   }
@@ -183,7 +274,7 @@ test("same-revision corruption, regressed revisions and missing records fail", a
   const changed = await verifyCanonicalRecords({
     ...options,
     fetch: fixture({ point: newer, exported: newer }).fetch,
-    baselineJson: JSON.stringify(baseline),
+    ...recheckOptions(baseline),
   });
   assert.equal(changed.changed, 4);
 });
@@ -198,7 +289,7 @@ test("explicit newer point tombstones survive export-page movement; resurrection
       point: { ...tombstone, error: "record_not_found" },
       pointStatus: 404,
     }).fetch,
-    baselineJson: JSON.stringify(baseline),
+    ...recheckOptions(baseline),
   });
   assert.equal(deleted.changed, 4);
   const moved = await verifyCanonicalRecords({
@@ -208,14 +299,14 @@ test("explicit newer point tombstones survive export-page movement; resurrection
       point: { ...tombstone, error: "record_not_found" },
       pointStatus: 404,
     }).fetch,
-    baselineJson: JSON.stringify(baseline),
+    ...recheckOptions(baseline),
   });
   assert.equal(moved.changed, 4);
   const resurrected = record("restored", 3);
   const result = await verifyCanonicalRecords({
     ...options,
     fetch: fixture({ point: resurrected, exported: resurrected }).fetch,
-    baselineJson: JSON.stringify(deleted),
+    ...recheckOptions(deleted),
   });
   assert.equal(result.changed, 4);
 });
@@ -230,7 +321,7 @@ test("regressed exports and missing baseline identities on complete pages fail i
     verifyCanonicalRecords({
       ...options,
       fetch: fixture({ count: 2, point: current, exported: record("prior", 1) }).fetch,
-      baselineJson: JSON.stringify(baseline),
+      ...recheckOptions(baseline),
     }),
     /record revision regressed/,
   );
@@ -238,7 +329,7 @@ test("regressed exports and missing baseline identities on complete pages fail i
     verifyCanonicalRecords({
       ...options,
       fetch: fixture({ exportId: "2", complete: true, point: current, exported: current }).fetch,
-      baselineJson: JSON.stringify(baseline),
+      ...recheckOptions(baseline),
     }),
     /record missing from complete export/,
   );
@@ -261,7 +352,7 @@ test("invalid identities, baselines, page rows and deployment drift stop before 
     verifyCanonicalRecords({
       ...options,
       fetch: fixture({ emptyExport: true }).fetch,
-      baselineJson: JSON.stringify(baseline),
+      ...recheckOptions(baseline),
     }),
     /previously populated export section is empty/,
   );
@@ -271,7 +362,7 @@ test("invalid identities, baselines, page rows and deployment drift stop before 
     verifyCanonicalRecords({
       ...options,
       fetch: transport.fetch,
-      baselineJson: JSON.stringify(baseline),
+      ...recheckOptions(baseline),
     }),
     /checksum/,
   );
@@ -444,7 +535,12 @@ test("CLI exercises real loopback HTTP with metadata output and safe failure rec
         VERIFICATION_EXECUTE: "true",
         VERIFICATION_PHASE: baseline ? "recheck" : "baseline",
         VERIFICATION_REPO_SLUG: options.repoSlug,
-        ...(baseline ? { VERIFICATION_BASELINE: baseline } : {}),
+        ...(baseline
+          ? {
+              VERIFICATION_BASELINE: baseline,
+              EXPECTED_BASELINE_SHA256: JSON.parse(baseline).sha256,
+            }
+          : {}),
         ...env,
       },
     });
@@ -452,9 +548,13 @@ test("CLI exercises real loopback HTTP with metadata output and safe failure rec
   assert.equal(before.stderr, "");
   assert.equal(JSON.parse(before.stdout).canonicalVerified, 4);
   generation++;
-  const after = await run(before.stdout);
+  const after = await run(before.stdout, { GITHUB_SHA: nextOperatorSha });
   assert.equal(after.stderr, "");
   assert.equal(JSON.parse(after.stdout).changed, 4);
+  assert.equal(JSON.parse(after.stdout).executionOperatorSha, nextOperatorSha);
+  assert.equal(JSON.parse(after.stdout).comparedBaselineOperatorSha, operatorSha);
+  assert.equal(JSON.parse(after.stdout).comparedBaselineSha256, JSON.parse(before.stdout).sha256);
+  assert.equal(JSON.parse(after.stdout).baseline.operatorSha, nextOperatorSha);
   assert.equal(requests, 24);
   assert.ok(!`${before.stdout}${after.stdout}`.includes("private body"));
   assert.ok(!`${before.stdout}${after.stdout}`.includes(secret));
@@ -491,8 +591,14 @@ test("CLI exercises real loopback HTTP with metadata output and safe failure rec
   const tampered = JSON.parse(after.stdout);
   tampered.sha256 = "0".repeat(64);
   await expectFailure(JSON.stringify(tampered), "invalid_input", /exact saved baseline/);
-  await expectFailure(after.stdout, "plan_mismatch", /newly reviewed execution plan/, {
-    GITHUB_SHA: "e".repeat(40),
+  await expectFailure(after.stdout, "invalid_input", /exact saved baseline/, {
+    EXPECTED_BASELINE_SHA256: "",
+  });
+  await expectFailure(after.stdout, "invalid_input", /exact saved baseline/, {
+    EXPECTED_BASELINE_SHA256: "0".repeat(64),
+  });
+  await expectFailure("", "invalid_input", /exact saved baseline/, {
+    EXPECTED_BASELINE_SHA256: JSON.parse(before.stdout).sha256,
   });
   assert.equal(requests, 24); // Invalid inputs must fail before any authenticated read.
   failure = "deployment";
