@@ -1,3 +1,4 @@
+import { readReviewRecord } from "../dist/review-record.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -131,7 +132,7 @@ test("exact local bootstrap rejects a same-number report from another repository
   let renderCalls = 0;
   const render = () => {
     renderCalls += 1;
-    return "rendered review history";
+    return { markdown: report, comment: "rendered review history" };
   };
 
   assert.equal(
@@ -139,6 +140,7 @@ test("exact local bootstrap rejects a same-number report from another repository
       report,
       { repo: "openclaw/clawsweeper", number: ITEM_NUMBER },
       render,
+      () => assert.fail("unchanged report does not need persistence"),
     ),
     "rendered review history",
   );
@@ -147,6 +149,7 @@ test("exact local bootstrap rejects a same-number report from another repository
       report,
       { repo: "openclaw/openclaw", number: ITEM_NUMBER },
       render,
+      () => assert.fail("unchanged report does not need persistence"),
     ),
     "",
   );
@@ -155,6 +158,7 @@ test("exact local bootstrap rejects a same-number report from another repository
       report,
       { repo: "openclaw/clawsweeper", number: ITEM_NUMBER + 1 },
       render,
+      () => assert.fail("unchanged report does not need persistence"),
     ),
     "",
   );
@@ -714,10 +718,14 @@ process.exitCode = 1;
         throw new Error("scheduled delivery must not post a second lease");
       },
       previousClawSweeperReviewDigestFromReport: () => digest("previous"),
-      renderReviewCommentFromReport: () =>
-        outputCase?.surface === "history"
-          ? "x".repeat(4 * 1024 * 1024 + 1)
-          : "rendered review history",
+      prepareReviewCommentFromReport: (markdown) => ({
+        decision: readReviewRecord(markdown).decision,
+        markdown,
+        comment:
+          outputCase?.surface === "history"
+            ? "x".repeat(4 * 1024 * 1024 + 1)
+            : "rendered review history",
+      }),
       repoFromArgs: () => ({ owner: "openclaw", repo: "openclaw" }),
       reportFileName: (_repo, number) => `${number}.md`,
       reportReviewFindings: () => [],

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "generatedAt": "2026-10-18T12:00:00.000Z",
+  "updatedAt": "2026-01-01T00:00:00Z",
+  "subject": {
+    "repo": "openclaw/clawsweeper",
+    "kind": "issue",
+    "number": 123,
+    "title": "Sample item",
+    "url": "https://github.com/openclaw/openclaw/issues/123",
+    "state": "open",
+    "labels": [],
+    "createdAt": "2026-01-01T00:00:00Z",
+    "updatedAt": "2026-01-01T00:00:00Z"
+  },
+  "lane": "product_direction",
+  "priority": "P2",
+  "question": "Which stored-record policy should remain supported?",
+  "rationale": "The existing data needs a deliberate compatibility decision.",
+  "options": [
+    {
+      "title": "Preserve records",
+      "body": "Retain the existing stored-record contract.",
+      "recommended": true
+    },
+    {
+      "title": "Replace records",
+      "body": "Use a documented migration.",
+      "recommended": false
+    }
+  ],
+  "recommendation": {
+    "title": "Preserve records",
+    "body": "Retain the existing stored-record contract.",
+    "recommended": true
+  },
+  "likelyOwner": {
+    "person": "@maintainer",
+    "reason": "Owns the stored-record contract.",
+    "confidence": "high"
+  },
+  "source": {
+    "reportPath": "records/openclaw-clawsweeper/items/123.md",
+    "reviewedAt": "2026-10-18T12:00:00.000Z",
+    "mainSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

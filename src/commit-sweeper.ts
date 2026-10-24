@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { redactPublication, registerPublicationCapability } from "./publication-dlp.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -320,24 +321,42 @@ function runCodex(options: {
     ...(options.streamFileBytes === undefined ? {} : { outputFileBytes: options.streamFileBytes }),
     outputLastMessageBytes: options.resultFileBytes,
   });
-  if (result.error || result.status !== 0 || !existsSync(outputPath)) {
+  const safe = redactPublication({
+    markdown:
+      !result.error && result.status === 0 && existsSync(outputPath)
+        ? stripMarkdownFence(readBoundedReviewResult(outputPath, options.resultFileBytes))
+        : "",
+    stdout: result.stdout,
+    stderr: result.stderr,
+    error: result.error?.message,
+  });
+  if (
+    result.compromised ||
+    safe.redactions ||
+    result.error ||
+    result.status !== 0 ||
+    !existsSync(outputPath)
+  ) {
     const timeout = codexProcessErrorCode(result.error) === "ETIMEDOUT";
     const detail =
       result.error instanceof Error
-        ? `${result.error.message}\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout)}`
+        ? `${safe.value.error}\n${safeOutputTail(safe.value.stderr) || safeOutputTail(safe.value.stdout)}`
         : `exit ${result.status ?? "unknown"}\n${
-            safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
+            safeOutputTail(safe.value.stderr) || safeOutputTail(safe.value.stdout) || "No output."
           }`;
     return failureReport({
       targetRepo: options.targetRepo,
       sha: options.sha,
       baseSha: options.baseSha,
       metadata: options.metadata,
-      detail: detail.trim(),
+      detail:
+        result.compromised || safe.redactions
+          ? `Credential output was redacted; a fresh review is required.\n${safe.value.markdown}\n${detail.trim()}`
+          : detail.trim(),
       timeout,
     });
   }
-  return stripMarkdownFence(readBoundedReviewResult(outputPath, options.resultFileBytes));
+  return safe.value.markdown;
 }
 
 // GitHub credential env vars scrubbed before the offline local-review engine runs.
@@ -365,6 +384,7 @@ export function dirtyWorktree(targetDir: string): string {
 // committed-range review paths so neither can leak a token to the engine it spawns.
 export function scrubGitHubCredentialEnv(): void {
   for (const tokenVar of LOCAL_REVIEW_SCRUBBED_TOKEN_ENV) {
+    registerPublicationCapability(process.env[tokenVar], true);
     delete process.env[tokenVar];
   }
 }
@@ -472,38 +492,54 @@ function localReviewCommand(args: Args): void {
       `[local-review] repo=${targetRepo} profile=${profileSlug} base=${baseBranch} range=${baseSha.slice(0, 8)}..${headSha.slice(0, 8)}`,
     );
 
-    const markdown = ensureCommitReportTimestamps(
-      produceReviewOutput(
-        outputBudget,
-        {
-          paths: [join(runDir, `${headSha}.md`)],
-          maxBytes: itemOutputBudget.resultFileBytes,
-          maxFiles: 1,
-        },
-        () =>
-          runCodex({
-            targetDir,
+    const safe = redactPublication(
+      ensureCommitReportTimestamps(
+        produceReviewOutput(
+          outputBudget,
+          {
+            paths: [join(runDir, `${headSha}.md`)],
+            maxBytes: itemOutputBudget.resultFileBytes,
+            maxFiles: 1,
+          },
+          () =>
+            runCodex({
+              targetDir,
+              targetRepo,
+              sha: headSha,
+              baseSha,
+              metadata,
+              model: argString(args, "codex_model", DEFAULT_CODEX_MODEL),
+              reasoningEffort: argString(args, "codex_reasoning_effort", DEFAULT_REASONING_EFFORT),
+              sandboxMode: argString(args, "codex_sandbox", "read-only"),
+              serviceTier: argString(args, "codex_service_tier", DEFAULT_SERVICE_TIER),
+              timeoutMs: argNumber(args, "codex_timeout_ms", 1_800_000),
+              workDir: runDir,
+              additionalPrompt,
+              extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG],
+              resultFileBytes: itemOutputBudget.resultFileBytes,
+              streamFileBytes: itemOutputBudget.streamFileBytes,
+            }),
+        ),
+        metadata,
+      ),
+    );
+    const markdown = safe.redactions
+      ? redactPublication(
+          failureReport({
             targetRepo,
             sha: headSha,
             baseSha,
             metadata,
-            model: argString(args, "codex_model", DEFAULT_CODEX_MODEL),
-            reasoningEffort: argString(args, "codex_reasoning_effort", DEFAULT_REASONING_EFFORT),
-            sandboxMode: argString(args, "codex_sandbox", "read-only"),
-            serviceTier: argString(args, "codex_service_tier", DEFAULT_SERVICE_TIER),
-            timeoutMs: argNumber(args, "codex_timeout_ms", 1_800_000),
-            workDir: runDir,
-            additionalPrompt,
-            extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG],
-            resultFileBytes: itemOutputBudget.resultFileBytes,
-            streamFileBytes: itemOutputBudget.streamFileBytes,
+            detail: `Credential output was redacted; a fresh review is required.\n${safe.value}`,
+            timeout: false,
           }),
-      ),
-      metadata,
-    );
+        ).value
+      : safe.value;
 
     const outputPath = join(runDir, "local-review.md");
     const report = markdown.endsWith("\n") ? markdown : `${markdown}\n`;
+    // Debug retention keeps the producer artifact alongside the final report.
+    writeReviewOutput(outputBudget, join(runDir, `${headSha}.md`), report, "report");
     writeReviewOutput(outputBudget, outputPath, report, "report");
     if (outputSelection.retention === "summary") {
       finalizeSummaryReviewOutput(retainedReviewOutput!, [outputPath]);

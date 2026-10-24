@@ -21,6 +21,7 @@ import {
   codexSpawnInvocation,
   runCodexProcess,
 } from "../dist/codex-process.js";
+import { registerPublicationCapability } from "../dist/publication-dlp.js";
 
 const tmpPrefix = join(tmpdir(), "clawsweeper-codex-process-test-");
 
@@ -111,6 +112,48 @@ if (process.env.CODEX_TEST_MODE === "timeout") setInterval(() => {}, 1000);
   });
   return { outputPath, result, stdoutPath, stderrPath };
 }
+
+test("parent-registered capabilities in full diagnostics compromise clean managed results", (t) => {
+  const root = mkdtempSync(tmpPrefix);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const token = ["opaque", "parent", "registered", "capability"].join("-");
+  registerPublicationCapability(token, true);
+  const binary = join(root, "codex");
+  writeFileSync(
+    binary,
+    `#!${process.execPath}\nprocess.stderr.write(${JSON.stringify(token)} + "x".repeat(8192));\nprocess.stdout.write("clean");\n`,
+    { mode: 0o755 },
+  );
+  const stderrPath = join(root, "stderr.log");
+  const result = runCodexProcess({
+    args: [],
+    cwd: root,
+    env: { ...process.env, CODEX_BIN: binary },
+    input: "",
+    timeoutMs: 10_000,
+    tailBytes: 1024,
+    stderrPath,
+  });
+  assert.equal(result.status, 0, result.error?.message);
+  assert.equal(result.compromised, true);
+  const diagnostics = readFileSync(stderrPath, "utf8");
+  assert.ok(!diagnostics.includes(token));
+  assert.match(diagnostics, /\[redacted credential\]/);
+});
+
+test("managed final-message artifacts redact parent-only capabilities", (t) => {
+  const token = ["opaque", "managed", "parent", "capability"].join("-");
+  registerPublicationCapability(token, true);
+  const fixture = runManagedOutputFixture(t, {
+    payload: managedCompletedOutput(token),
+    cap: 1024,
+    outputFileBytes: 1024,
+    tailBytes: 1,
+  });
+  assert.equal(fixture.result.status, 0);
+  assert.equal(fixture.result.compromised, true);
+  assert.equal(readFileSync(fixture.outputPath, "utf8"), "[redacted credential]");
+});
 
 test("managed Codex result enforces exact UTF-8 bytes and rejects cap plus one", (t) => {
   const exact = runManagedOutputFixture(t, {
@@ -297,8 +340,9 @@ test("managed Codex result survives diagnostic capture truncation", (t) => {
   assert.equal(fixture.result.error, undefined);
   assert.equal(readFileSync(fixture.outputPath, "utf8"), "final result");
   assert.equal(readFileSync(fixture.stdoutPath, "utf8"), "final result\n");
-  assert.equal(readFileSync(fixture.stderrPath).length, 128);
-  assert.match(readFileSync(fixture.stderrPath, "utf8"), /Codex output truncated/);
+  assert.equal(fixture.result.compromised, true);
+  assert.ok(readFileSync(fixture.stderrPath).length <= 128);
+  assert.match(readFileSync(fixture.stderrPath, "utf8"), /diagnostic output omitted/);
 });
 
 test("completed Codex result remains available after a non-zero shutdown exit", (t) => {
@@ -618,6 +662,7 @@ process.stderr.write("e".repeat(16 * 1024 * 1024) + "stderr-tail-marker");
     assert.equal(result.error, undefined);
     assert.ok(Buffer.byteLength(result.stdout) <= 4096);
     assert.ok(Buffer.byteLength(result.stderr) <= 4096);
+    assert.equal(result.compromised, false);
     assert.match(result.stdout, /stdout-tail-marker$/);
     assert.match(result.stderr, /stderr-tail-marker$/);
     assert.equal(readFileSync(stdoutPath, "utf8").length, 16 * 1024 * 1024 + 18);
@@ -627,7 +672,7 @@ process.stderr.write("e".repeat(16 * 1024 * 1024) + "stderr-tail-marker");
   }
 });
 
-test("Codex process caps durable logs while preserving the final output tail", () => {
+test("Codex process omits oversized durable streams and marks compromise", () => {
   const root = mkdtempSync(tmpPrefix);
   const binDir = join(root, "bin");
   const stdoutPath = join(root, "codex.stdout.log");
@@ -658,16 +703,17 @@ process.stderr.write("e".repeat(2 * 1024 * 1024) + "stderr-tail-marker");
     });
 
     assert.equal(result.status, 0);
-    assert.match(result.stdout, /stdout-tail-marker$/);
-    assert.match(result.stderr, /stderr-tail-marker$/);
+    assert.equal(result.compromised, true);
+    assert.match(result.stdout, /diagnostic output omitted/);
+    assert.match(result.stderr, /diagnostic output omitted/);
     for (const [filePath, tailMarker] of [
       [stdoutPath, "stdout-tail-marker"],
       [stderrPath, "stderr-tail-marker"],
     ] as const) {
       const output = readFileSync(filePath);
-      assert.equal(output.length, outputFileBytes);
-      assert.match(output.toString("utf8"), /Codex output truncated; final tail follows/);
-      assert.match(output.toString("utf8"), new RegExp(`${tailMarker}$`));
+      assert.ok(output.length <= outputFileBytes);
+      assert.match(output.toString("utf8"), /diagnostic output omitted/);
+      assert.ok(!output.toString("utf8").includes(tailMarker));
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -734,5 +780,35 @@ setInterval(() => {}, 1000);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("hosted Codex uses a fresh credential-free HOME and removes it on exit", async (t) => {
+  const { codexEnv } = await import("../dist/codex-env.js");
+  const root = mkdtempSync(tmpPrefix);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const binary = join(root, "codex");
+  writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+console.log(JSON.stringify({ home: process.env.HOME, config: process.env.XDG_CONFIG_HOME, cache: process.env.XDG_CACHE_HOME, files: fs.readdirSync(process.env.HOME), codexHome: process.env.CODEX_HOME }));
+`,
+    { mode: 0o755 },
+  );
+  const env = { ...codexEnv(), CODEX_BIN: binary };
+  const homes = [];
+  for (const index of [0, 1]) {
+    const result = runCodexProcess({ args: [], cwd: root, env, input: "", timeoutMs: 5000 });
+    assert.equal(result.status, 0, result.error?.message);
+    const record = JSON.parse(result.stdout);
+    assert.notEqual(record.home, process.env.HOME);
+    assert.equal(record.config, join(record.home, ".config"));
+    assert.equal(record.cache, join(record.home, ".cache"));
+    assert.deepEqual(record.files.sort(), [".cache", ".config"]);
+    assert.equal(record.codexHome, env.CODEX_HOME);
+    assert.equal(existsSync(record.home), false);
+    homes.push(record.home);
+    if (index) assert.notEqual(homes[0], homes[1]);
   }
 });

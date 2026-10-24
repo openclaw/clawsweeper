@@ -1,3 +1,4 @@
+import { credentialPublicationBlocked } from "./publication-dlp.js";
 import { join } from "node:path";
 import { applyHiddenPayloadSecurityReview } from "./repair/security-signals.js";
 import { writeFileSync } from "node:fs";
@@ -248,7 +249,7 @@ export function writePreparedReviewReport(
   },
   dependencies: Pick<
     CreateReviewCommandWorkflowDependencies,
-    "reviewActionForDecision" | "reportFileName" | "markdownFor" | "renderReviewCommentFromReport"
+    "reviewActionForDecision" | "reportFileName" | "markdownFor" | "prepareReviewCommentFromReport"
   >,
 ) {
   const {
@@ -272,7 +273,7 @@ export function writePreparedReviewReport(
     transformReport,
     onReport,
   } = options;
-  const { reviewActionForDecision, reportFileName, markdownFor, renderReviewCommentFromReport } =
+  const { reviewActionForDecision, reportFileName, markdownFor, prepareReviewCommentFromReport } =
     dependencies;
   const action = reviewActionForDecision({ item, decision, git, runtime });
   const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
@@ -295,19 +296,20 @@ export function writePreparedReviewReport(
         }
       : {}),
   });
-  const reportMarkdown = transformReport ? transformReport(markdown) : markdown;
+  const prepared = prepareReviewCommentFromReport(
+    transformReport ? transformReport(markdown) : markdown,
+    "none",
+    previousLocalReviewCommentBody
+      ? { previousReviewCommentBody: previousLocalReviewCommentBody }
+      : undefined,
+  );
+  const reportMarkdown = prepared.markdown;
   writeOutputReport(item, reportPath, reportMarkdown);
   onReport?.();
   if (itemLocalReviewHistoryPath) {
     const nextLocalReviewCommentBody =
-      reviewStatusForDecision(decision) === "complete"
-        ? renderReviewCommentFromReport(
-            reportMarkdown,
-            "none",
-            previousLocalReviewCommentBody
-              ? { previousReviewCommentBody: previousLocalReviewCommentBody }
-              : undefined,
-          )
+      reviewStatusForDecision(prepared.decision) === "complete"
+        ? prepared.comment
         : previousLocalReviewCommentBody;
     if (nextLocalReviewCommentBody) {
       if (localRange) {
@@ -321,5 +323,13 @@ export function writePreparedReviewReport(
       }
     }
   }
-  return { action, reportPath, reportMarkdown };
+  return {
+    action: reviewActionForDecision({ item, decision: prepared.decision, git, runtime }),
+    decision: prepared.decision,
+    publicationFailure: credentialPublicationBlocked(prepared.decision)
+      ? new Error(prepared.decision.summary)
+      : null,
+    reportPath,
+    reportMarkdown,
+  };
 }

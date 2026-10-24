@@ -31,7 +31,7 @@ import { createRegressionProvenanceVerifier } from "./clawsweeper-regression-pro
 import { pullHeadShaFromContext } from "./clawsweeper-review-comment-identity.js";
 import { reviewActionForDecision } from "./clawsweeper-review-action.js";
 import { markdownFor } from "./clawsweeper-report-document.js";
-import { renderReviewCommentFromReport } from "./clawsweeper-report-comment-presentation.js";
+import { prepareReviewCommentFromReport } from "./clawsweeper-report-comment-presentation.js";
 import type { Args } from "./clawsweeper-args.js";
 
 export function localReviewCommand(args: Args): void {
@@ -95,7 +95,7 @@ export function localReviewCommand(args: Args): void {
       reviewActionForDecision,
       reportFileName,
       markdownFor,
-      renderReviewCommentFromReport,
+      prepareReviewCommentFromReport,
       verifyRegressionProvenance: (decision, item, context, checkoutDir, git) => ({
         ...decision,
         regressionProvenance: verifier.verify({

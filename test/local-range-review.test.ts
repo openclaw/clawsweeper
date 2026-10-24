@@ -1,4 +1,4 @@
-import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { renderReviewCommentFromReport } from "./helpers.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
@@ -58,6 +58,16 @@ function spawnReview(
   args: string[],
   options: { cwd?: string; env?: NodeJS.ProcessEnv; encoding: "utf8"; timeout?: number },
 ) {
+  if (options.env?.CODEX_BIN && options.env.LOCAL_REVIEW_CAPTURE) {
+    writeFileSync(
+      join(dirname(options.env.CODEX_BIN), "fixture.json"),
+      JSON.stringify({
+        capture: options.env.LOCAL_REVIEW_CAPTURE,
+        decision: options.env.LOCAL_REVIEW_DECISION,
+        fail: options.env.LOCAL_REVIEW_FAIL,
+      }),
+    );
+  }
   const batch = cli.endsWith(".cmd");
   const invocation = resolveSpawnCommand(
     batch ? cli : process.execPath,
@@ -722,7 +732,7 @@ test("--local-range failure emits one JSON result and removes default scratch", 
   const fakeCodex = writeNodeCodex(
     codexDir,
     `import fs from "node:fs";
-fs.writeFileSync(process.env.FAKE_CODEX_MARKER, process.cwd() + "\\n" + process.env.GH_CONFIG_DIR + "\\n");
+fs.writeFileSync(${JSON.stringify(fakeCodexMarker)}, process.cwd() + "\\n" + process.env.GH_CONFIG_DIR + "\\n");
 process.exit(1);
 `,
   );
@@ -795,7 +805,7 @@ test("--local-range does not host-download proof video URLs from the body", asyn
   const fakeCodex = writeNodeCodex(
     codexDir,
     `import fs from "node:fs";
-fs.writeFileSync(process.env.FAKE_CODEX_MARKER, "ran\\n");
+fs.writeFileSync(${JSON.stringify(fakeCodexMarker)}, "ran\\n");
 process.exit(1);
 `,
   );
@@ -891,20 +901,21 @@ if (args[0] === "sandbox") {
   process.exit(result.status ?? 1);
 }
 const prompt = fs.readFileSync(0, "utf8");
-const captures = fs.existsSync(process.env.LOCAL_REVIEW_CAPTURE)
-  ? JSON.parse(fs.readFileSync(process.env.LOCAL_REVIEW_CAPTURE, "utf8"))
+const fixture = JSON.parse(fs.readFileSync(new URL("./fixture.json", import.meta.url), "utf8"));
+const captures = fs.existsSync(fixture.capture)
+  ? JSON.parse(fs.readFileSync(fixture.capture, "utf8"))
   : [];
 captures.push({
   hasPreviousReview: prompt.includes('"previousClawSweeperReview"'),
   hasPriorFinding: prompt.includes(${JSON.stringify(priorFindingTitle)}),
   previousReviewedSha: prompt.match(/"reviewedSha":\\s*"([0-9a-f]{40})"/)?.[1] ?? null,
 });
-fs.writeFileSync(process.env.LOCAL_REVIEW_CAPTURE, JSON.stringify(captures));
-if (process.env.LOCAL_REVIEW_FAIL === "1") {
+fs.writeFileSync(fixture.capture, JSON.stringify(captures));
+if (fixture.fail === "1") {
   process.stderr.write("deterministic local review failure\\n");
   process.exit(1);
 }
-process.stdout.write(fs.readFileSync(process.env.LOCAL_REVIEW_DECISION, "utf8") + "\\n");
+process.stdout.write(fs.readFileSync(fixture.decision, "utf8") + "\\n");
 `,
   );
 }
@@ -1280,6 +1291,61 @@ test("--local-range preserves native history and exports current preflight summa
     assert.doesNotMatch(JSON.stringify(captures[2]), new RegExp(failedHead));
     assert.doesNotMatch(readFileSync(historyPath, "utf8"), /Review history \(/);
     assert.equal(git(dir, "status", "--porcelain"), "");
+  } finally {
+    rmSync(harness, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("local range render-only disclosure fails output and preflight without completing history", (t) => {
+  useFakeScanner(t);
+  const dir = initRepo();
+  const harness = mkdtempSync(join(tmpdir(), "lrr-publication-"));
+  try {
+    git(dir, "commit", "--allow-empty", "-qm", "base");
+    git(dir, "branch", "base-ref");
+    writeFileSync(join(dir, "feature.txt"), "change\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "feat: example");
+    const prefix = "synthetic-local-range-render-capability";
+    const decisionPath = join(harness, "decision.json");
+    writeFileSync(decisionPath, JSON.stringify(changelogReviewDecision({ summary: prefix })));
+    const result = spawnReview(
+      CLI,
+      [
+        "review",
+        "--local-range",
+        "--preflight",
+        "--result-format",
+        "json",
+        "--base",
+        "base-ref",
+        "--target-repo",
+        "openclaw/clawsweeper",
+        "--target-dir",
+        dir,
+        "--artifact-dir",
+        join(harness, "artifacts"),
+      ],
+      {
+        encoding: "utf8",
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          GH_TOKEN: `${prefix}.`,
+          CODEX_BIN: writeLocalReviewCodex(harness),
+          LOCAL_REVIEW_CAPTURE: join(harness, "capture.json"),
+          LOCAL_REVIEW_DECISION: decisionPath,
+        },
+      },
+    );
+    assert.notEqual(result.status, 0);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.status, "failed");
+    assert.match(output.reports[0].report, /^review_status: failed$/m);
+    assert.match(output.reports[0].report, /^action_taken: kept_open$/m);
+    assert.equal(JSON.parse(output.preflight.block.split("\n")[1]).completion, "failed");
+    assert.doesNotMatch(result.stderr, /action=proposed_close/);
   } finally {
     rmSync(harness, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });

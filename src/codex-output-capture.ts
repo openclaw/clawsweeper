@@ -1,3 +1,4 @@
+import { redactPublication } from "./publication-dlp.js";
 import { closeSync, ftruncateSync, openSync, writeSync } from "node:fs";
 
 export const DEFAULT_CODEX_OUTPUT_FILE_BYTES = 128 * 1024 * 1024;
@@ -10,6 +11,11 @@ const TRUNCATION_MARKER = Buffer.from(
 
 export interface CodexOutputCapture {
   file: number;
+  compromised: boolean;
+  pending: Buffer[];
+  pendingBytes: number;
+  tailOffset: number;
+  omitted: boolean;
   maxFileBytes: number;
   tailBytes: number;
   writtenBytes: number;
@@ -23,7 +29,12 @@ export function openCodexOutputCapture(
 ): CodexOutputCapture {
   return {
     file: openSync(filePath, "w"),
-    maxFileBytes: normalizedMaxFileBytes(options.maxFileBytes),
+    compromised: false,
+    pending: [],
+    pendingBytes: 0,
+    tailOffset: 0,
+    omitted: false,
+    maxFileBytes: normalizedOutputFileBytes(options.maxFileBytes),
     tailBytes: normalizedTailBytes(options.tailBytes),
     writtenBytes: 0,
     truncated: false,
@@ -32,6 +43,21 @@ export function openCodexOutputCapture(
 }
 
 export function appendCodexOutputCapture(capture: CodexOutputCapture, chunk: Buffer): void {
+  // Hold complete frames until redaction; chunk boundaries can split credentials.
+  // Oversized diagnostic streams fail closed instead of retaining partial secrets.
+  if (capture.omitted) return;
+  if (capture.pendingBytes + chunk.length > capture.maxFileBytes) {
+    capture.pending = [];
+    capture.pendingBytes = 0;
+    capture.omitted = true;
+    capture.compromised = true;
+    return;
+  }
+  capture.pending.push(Buffer.from(chunk));
+  capture.pendingBytes += chunk.length;
+}
+
+function appendSafeOutput(capture: CodexOutputCapture, chunk: Buffer): void {
   capture.tail = appendTail(capture.tail, chunk, capture.tailBytes);
   const remaining = capture.maxFileBytes - capture.writtenBytes;
   const retained = chunk.subarray(0, Math.max(0, remaining));
@@ -42,7 +68,20 @@ export function appendCodexOutputCapture(capture: CodexOutputCapture, chunk: Buf
 
 export function closeCodexOutputCapture(capture: CodexOutputCapture): void {
   try {
-    if (capture.truncated) {
+    const bytes = Buffer.concat(capture.pending, capture.pendingBytes);
+    const raw = capture.omitted
+      ? "[diagnostic output omitted: stream exceeded redaction buffer]\n"
+      : bytes.toString("utf8");
+    const safe = redactPublication(raw);
+    capture.compromised ||= safe.redactions > 0;
+    const turnTail =
+      !capture.omitted && capture.tailOffset > 0
+        ? redactPublication(bytes.subarray(capture.tailOffset).toString("utf8"))
+        : undefined;
+    capture.pending = [];
+    capture.pendingBytes = 0;
+    appendSafeOutput(capture, Buffer.from(safe.value));
+    if (capture.truncated && capture.maxFileBytes >= TRUNCATION_MARKER.length) {
       const tail = capture.tail.subarray(
         Math.max(0, capture.tail.length - availableTailBytes(capture.maxFileBytes)),
       );
@@ -51,9 +90,18 @@ export function closeCodexOutputCapture(capture: CodexOutputCapture): void {
       writeAll(capture.file, TRUNCATION_MARKER, headBytes);
       writeAll(capture.file, tail, headBytes + TRUNCATION_MARKER.length);
     }
+    if (turnTail !== undefined) {
+      capture.compromised ||= turnTail.redactions > 0;
+      capture.tail = appendTail(Buffer.alloc(0), Buffer.from(turnTail.value), capture.tailBytes);
+    }
   } finally {
     closeSync(capture.file);
   }
+}
+
+/** Keep both turns on disk, but classify failures from the current turn only. */
+export function resetCodexOutputTail(capture: CodexOutputCapture): void {
+  capture.tailOffset = capture.pendingBytes;
 }
 
 export function codexOutputTail(capture: CodexOutputCapture): string {
@@ -65,12 +113,6 @@ function appendTail(current: Buffer, chunk: Buffer, maxBytes: number): Buffer {
   if (chunk.length >= maxBytes) return chunk.subarray(chunk.length - maxBytes);
   const combined = Buffer.concat([current, chunk]);
   return combined.length > maxBytes ? combined.subarray(combined.length - maxBytes) : combined;
-}
-
-function normalizedMaxFileBytes(value: number | undefined): number {
-  if (value === undefined) return DEFAULT_CODEX_OUTPUT_FILE_BYTES;
-  const normalized = Number.isFinite(value) ? Math.floor(value) : DEFAULT_CODEX_OUTPUT_FILE_BYTES;
-  return Math.max(TRUNCATION_MARKER.length, normalized);
 }
 
 export function normalizedTailBytes(value: number | undefined): number {

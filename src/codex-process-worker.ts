@@ -1,3 +1,4 @@
+import { redactPublication } from "./publication-dlp.js";
 import {
   closeSync,
   fstatSync,
@@ -14,6 +15,7 @@ import {
   closeCodexOutputCapture,
   codexOutputTail,
   openCodexOutputCapture,
+  resetCodexOutputTail,
 } from "./codex-output-capture.js";
 import { OutputLastMessageParser } from "./codex-output-last-message.js";
 import { spawnCodex, terminateCodexProcessTree } from "./codex-spawn.js";
@@ -97,14 +99,20 @@ if (repairError && repairThreadId && options.args.at(-1) === "-" && !terminating
   decisionRepairError = repairError;
   appendCodexOutputCapture(stderr, Buffer.from("\n[clawsweeper] decision repair turn\n"));
   // The log files keep both turns; the returned tails classify only the repair turn's outcome.
-  stdout.tail = Buffer.alloc(0);
-  stderr.tail = Buffer.alloc(0);
+  resetCodexOutputTail(stdout);
+  resetCodexOutputTail(stderr);
   input = Readable.from([decisionRepairPrompt(repairError)]);
   turn = await runTurn([...options.args.slice(0, -1), "resume", repairThreadId, "-"]);
 }
 clearTimeout(timeout);
 closeCodexOutputCapture(stdout);
 closeCodexOutputCapture(stderr);
+let compromised = stdout.compromised || stderr.compromised;
+const sanitize = (value: string): string => {
+  const safe = redactPublication(value);
+  compromised ||= safe.redactions > 0;
+  return safe.value;
+};
 let outputLastMessageError = turn.outputLastMessageError;
 if (
   !turn.processError &&
@@ -113,26 +121,24 @@ if (
   options.outputLastMessagePath
 ) {
   try {
-    writeManagedResult(options.outputLastMessagePath, turn.text);
+    writeManagedResult(options.outputLastMessagePath, sanitize(turn.text));
   } catch (error) {
     outputLastMessageError = error instanceof Error ? error : new Error(String(error));
   }
 }
 const error = turn.processError ?? outputLastMessageError;
-writeFileSync(
-  options.resultPath,
-  JSON.stringify({
-    status: turn.status,
-    signal: turn.signal,
-    // A native failure can also omit the final stdout frame. Preserve whether
-    // the process itself failed so callers cannot trust interrupted stderr.
-    ...(error ? { error: serializedError(error), processError: Boolean(turn.processError) } : {}),
-    ...(decisionRepairError ? { decisionRepairError } : {}),
-    stdout: codexOutputTail(stdout),
-    stderr: codexOutputTail(stderr),
-  }),
-  "utf8",
-);
+const safeResult = redactPublication({
+  status: turn.status,
+  signal: turn.signal,
+  // A native failure can also omit the final stdout frame. Preserve whether
+  // the process itself failed so callers cannot trust interrupted stderr.
+  ...(error ? { error: serializedError(error), processError: Boolean(turn.processError) } : {}),
+  ...(decisionRepairError ? { decisionRepairError: sanitize(decisionRepairError) } : {}),
+  stdout: codexOutputTail(stdout),
+  stderr: codexOutputTail(stderr),
+});
+compromised ||= safeResult.redactions > 0;
+writeFileSync(options.resultPath, JSON.stringify({ ...safeResult.value, compromised }), "utf8");
 process.exit(0);
 
 function runTurn(args: readonly string[]): Promise<TurnResult> {
@@ -232,7 +238,7 @@ function writeManagedResult(path: string, text: string): void {
 function serializedError(error: Error): { message: string; code?: string } {
   const code = "code" in error ? (error as NodeJS.ErrnoException).code : undefined;
   return {
-    message: error.message,
+    message: sanitize(error.message),
     ...(typeof code === "string" ? { code } : {}),
   };
 }

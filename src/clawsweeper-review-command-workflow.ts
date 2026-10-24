@@ -110,7 +110,11 @@ export function withRunnerPreflightProvenance(markdown: string): string {
 export function localExactBootstrapReviewCommentBody(
   markdown: string,
   item: Pick<Item, "repo" | "number">,
-  renderReviewCommentFromReport: (markdown: string, reason: "none") => string,
+  prepareReviewCommentFromReport: (
+    markdown: string,
+    reason: "none",
+  ) => { markdown: string; comment: string },
+  persistReport: (markdown: string) => void,
 ): string {
   if (
     frontMatterValue(markdown, "repository")?.toLowerCase() !== item.repo.toLowerCase() ||
@@ -118,7 +122,9 @@ export function localExactBootstrapReviewCommentBody(
   ) {
     return "";
   }
-  return renderReviewCommentFromReport(markdown, "none");
+  const prepared = prepareReviewCommentFromReport(markdown, "none");
+  if (prepared.markdown !== markdown) persistReport(prepared.markdown);
+  return prepared.comment;
 }
 
 export function restoreVerifiedMaintainerAuthorAssociation(
@@ -185,7 +191,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     pullRequestHeadSha,
     recordReviewLogPublication,
     removePullRequestReviewTree,
-    renderReviewCommentFromReport,
+    prepareReviewCommentFromReport,
     reportFileName,
     restoreTreeModes,
     reviewActionForDecision,
@@ -662,7 +668,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           previousLocalReviewCommentBody = localExactBootstrapReviewCommentBody(
             bootstrapReport,
             item,
-            renderReviewCommentFromReport,
+            prepareReviewCommentFromReport,
+            (safe) => writeOutputReport(item, join(artifactDir, reportFileName(item.repo, item.number)), safe),
           );
         }
         const existingPriorReview = existingReview(item, itemsDir);
@@ -1409,7 +1416,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           context, proofScratchDir, undefined,
           reviewOutputMediaLimits(outputBudget, proofScratchDir), writeOutputMetadata,
         );
-        const { decision, runtime, codexFailure, codexFailureRetryable, snapshotHash } = runPreparedReviewItem({
+        let { decision, codexFailure, ...reviewResult } = runPreparedReviewItem({
           item, context, git, model, sandboxMode, localOnly, localRange: false,
           reviewOpenclawDir, reviewTreesDir, additionalPrompt, proofScratchDir,
           preparedMediaProof, resolveProvenancePull, shardIndex, shardCount, timeoutMs,
@@ -1417,13 +1424,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           forcedLoginMethod, itemCodexProfile, existingPriorReview, contextElapsedMs,
           onPrompt: (prompt) => { diagnosticPrompt = prompt; },
         }, dependencies);
+        const { runtime, codexFailureRetryable, snapshotHash } = reviewResult;
         const codexElapsedMs = runtime.codexElapsedMs;
-        const codexFailureDisposition = codexFailure
-          ? actionLedgerFailureDisposition(codexFailure.error)
-          : null;
-        if (codexFailure) codexFailures += 1;
         structuralRecord = refreshStructuralRecordForVerdict();
-        const { action, reportPath } = writePreparedReviewReport({
+        const { action, reportPath, decision: effectiveDecision, publicationFailure } = writePreparedReviewReport({
           item, context, decision, git, runtime, artifactDir, snapshotHash, contentDigest,
           reviewPolicy, structuralRecord, acquiredReviewLease,
           itemLocalReviewHistoryPath, previousLocalReviewCommentBody,
@@ -1434,6 +1438,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           },
           transformReport: (markdown) => hostReport(updateBulkFilerDetectedFrontMatter(markdown, bulkFilerDetection)),
         }, dependencies);
+        decision = effectiveDecision;
+        if (publicationFailure && !codexFailure) {
+          codexFailure = { error: publicationFailure, logKind: dependencies.codexReviewFailure(publicationFailure).logKind };
+          recordFailureDiagnostics(codexFailure.error, codexFailure.logKind);
+        }
+        const codexFailureDisposition = codexFailure
+          ? actionLedgerFailureDisposition(codexFailure.error)
+          : null;
+        if (codexFailure) codexFailures += 1;
         recordReviewLogPublication({
           ledger: reviewLedger,
           item,
