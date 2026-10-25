@@ -41,6 +41,7 @@ import {
   discoverWorkerRecordRepoSlugs,
   materializeWorkerRecords,
   visitWorkerRecords,
+  WorkerSnapshotUnavailableError,
   type RecordSection,
 } from "./worker-records.ts";
 
@@ -123,13 +124,14 @@ export async function refreshCorpusRecords(
     unchanged: 0,
     refreshed: 0,
     bootstrapped: 0,
+    deferred: 0,
     written: 0,
     deleted: 0,
     durationMs: 0,
   };
 
   if (options.mode === "full") {
-    // Hydrates beside the live tree and replaces it only when every repository hydrated.
+    // Hydrates beside the live tree and replaces it only when the rebuild completes.
     const parent = path.dirname(stateDir);
     mkdirSync(parent, { recursive: true });
     const staging = mkdtempSync(path.join(parent, ".corpus-full-"));
@@ -139,10 +141,11 @@ export async function refreshCorpusRecords(
       writeCursor(staging, { schemaVersion: 1, repositories });
       rmSync(stateDir, { force: true, recursive: true });
       renameSync(staging, stateDir);
+      summary.bootstrapped = Object.keys(repositories).length;
+      summary.deferred = repoSlugs.length - summary.bootstrapped;
     } finally {
       rmSync(staging, { force: true, recursive: true });
     }
-    summary.bootstrapped = discovered.length;
     summary.durationMs = Date.now() - startedAt;
     return summary;
   }
@@ -159,11 +162,10 @@ export async function refreshCorpusRecords(
     .map((entry) => entry.repoSlug)
     .filter((repoSlug) => cursor.repositories[repoSlug] === undefined);
   if (added.length) {
-    Object.assign(
-      cursor.repositories,
-      await hydrateRepositories(options, added, recordsPath(stateDir)),
-    );
-    summary.bootstrapped = added.length;
+    const hydrated = await hydrateRepositories(options, added, recordsPath(stateDir));
+    Object.assign(cursor.repositories, hydrated);
+    summary.bootstrapped = Object.keys(hydrated).length;
+    summary.deferred = added.length - summary.bootstrapped;
   }
   for (const { repoSlug, revision } of discovered) {
     if (added.includes(repoSlug)) continue;
@@ -224,7 +226,10 @@ async function applyRepositoryChanges(
 }
 
 // Hydrates repositories from their snapshots plus the journal into `recordsRoot/<slug>`, trimmed to
-// front matter, and returns each repository's cursor.
+// front matter, and returns each hydrated repository's cursor. A repository without a stored
+// snapshot whose journal is over the cold-hydration bound is left out (it has no cursor, so every
+// later refresh tries it again) instead of holding back every other repository until the
+// snapshot sweep reaches it. Store outages still fail the refresh.
 async function hydrateRepositories(
   options: WorkerOptions,
   repoSlugs: readonly string[],
@@ -232,20 +237,34 @@ async function hydrateRepositories(
 ) {
   mkdirSync(recordsRoot, { recursive: true });
   const worktree = mkdtempSync(path.join(path.dirname(recordsRoot), ".corpus-hydrate-"));
+  const revisions: Record<string, number> = {};
   try {
-    const result = await materializeWorkerRecords({
-      worktreeRoot: worktree,
-      baseUrl: options.baseUrl,
-      webhookSecret: options.webhookSecret,
-      repoSlugs,
-      sections: CORPUS_SECTIONS,
-      trackCoverage: false,
-      fetch: options.fetch,
-      log: options.log,
-    });
-    compactCorpusTree(result.recordsRoot);
-    const revisions: Record<string, number> = {};
     for (const repoSlug of repoSlugs) {
+      let result;
+      try {
+        result = await materializeWorkerRecords({
+          worktreeRoot: worktree,
+          baseUrl: options.baseUrl,
+          webhookSecret: options.webhookSecret,
+          repoSlugs: [repoSlug],
+          sections: CORPUS_SECTIONS,
+          trackCoverage: false,
+          fetch: options.fetch,
+          log: options.log,
+        });
+      } catch (error) {
+        if (
+          !(error instanceof WorkerSnapshotUnavailableError) ||
+          error.detail.code !== "cold_hydration_bound_exceeded"
+        ) {
+          throw error;
+        }
+        console.log(
+          `::warning::Corpus left out ${repoSlug} until it has a stored snapshot: ${error.message}`,
+        );
+        continue;
+      }
+      compactCorpusTree(result.recordsRoot);
       const source = path.join(result.recordsRoot, repoSlug);
       const destination = path.join(recordsRoot, repoSlug);
       rmSync(destination, { force: true, recursive: true });
@@ -310,6 +329,22 @@ export function unsealCorpusState(archive: string, stateDir: string, secret: str
   }
 }
 
+// Unseals the saved tree into `stateDir` and reports whether there is one. A tree sealed under a
+// rotated secret, or damaged, counts as missing, so the next quiet-hour run rebuilds it instead of
+// every hourly run failing until someone dispatches mode=full.
+export function restoreCorpusState(archive: string, stateDir: string, secret: string) {
+  if (!existsSync(archive)) return false;
+  try {
+    unsealCorpusState(archive, stateDir, secret);
+    return true;
+  } catch (error) {
+    console.log(
+      `::warning::Saved corpus tree cannot be opened (${error instanceof Error ? error.message : String(error)}); treating it as missing.`,
+    );
+    return false;
+  }
+}
+
 // A failed refresh is retried on the next hourly run: an incremental retry costs one slug listing
 // plus the changed records, and a scheduled full rebuild only runs weekly or, without a saved
 // tree, in the two quiet hours.
@@ -342,16 +377,15 @@ async function main(argv: string[]) {
     event: process.env.EVENT_NAME ?? "",
     schedule: process.env.SCHEDULE || undefined,
     requestedMode: process.env.REQUESTED_MODE || undefined,
-    hasState: existsSync(values.archive),
+    hasState: restoreCorpusState(values.archive, values.state, secret),
     now: new Date(),
   });
   if (mode === "skip") {
     console.log(
-      "::notice::No saved corpus tree: a scheduled run rebuilds it in the 00 or 12 UTC hour, or run this workflow with mode=full.",
+      "::notice::No usable corpus tree: a scheduled run rebuilds it in the 00 or 12 UTC hour, or run this workflow with mode=full.",
     );
     return;
   }
-  if (mode === "incremental") unsealCorpusState(values.archive, values.state, secret);
   const summary = await refreshCorpusRecords({
     stateDir: values.state,
     mode,

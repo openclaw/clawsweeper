@@ -206,12 +206,16 @@ Each build reads four sources:
   that lands mid-export is read again next time. A full rebuild (Sundays at 00:20
   UTC, by hand with `mode=full`, or by a scheduled run in the 00 or 12 UTC hour
   that finds no saved tree) hydrates the R2 snapshots plus the journal, as
-  `scripts/hydrate-state.ts` does, and replaces the tree only when every
-  repository hydrated. The tree includes private repositories and default-branch
-  Actions caches are readable from pull-request workflows, so it is cached only as
-  an AES-256-GCM archive keyed from `CLAWSWEEPER_WEBHOOK_SECRET`; rotating that
-  secret needs one `mode=full` run. A failed refresh saves nothing and the next
-  hourly run replays from the last saved tree.
+  `scripts/hydrate-state.ts` does, and replaces the tree only when the rebuild
+  completes. A repository without a stored snapshot whose journal is over the
+  cold-hydration bound is left out with a warning and tried again every hour
+  until the snapshot sweep reaches it; the other repositories keep refreshing.
+  The tree includes private repositories and default-branch Actions caches are
+  readable from pull-request workflows, so it is cached only as an AES-256-GCM
+  archive keyed from `CLAWSWEEPER_WEBHOOK_SECRET`. A tree that cannot be opened
+  (the secret was rotated) counts as missing: the next scheduled run in the 00 or
+  12 UTC hour rebuilds it, or dispatch `mode=full`. A failed refresh saves
+  nothing and the next hourly run replays from the last saved tree.
   The aggregate (`dashboard-site/scripts/build-corpus.ts`) reads front matter only and
   keeps repositories that GitHub reports as public. The cache keeps each
   repository's contribution apart, so every build checks visibility again,

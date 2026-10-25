@@ -21,10 +21,11 @@ import {
   planCorpusRefresh,
   readCorpusCursor,
   refreshCorpusRecords,
+  restoreCorpusState,
   sealCorpusState,
   unsealCorpusState,
 } from "../scripts/dashboard-corpus.ts";
-import { packWorkerRecordSnapshot } from "../scripts/worker-records.ts";
+import { COLD_HYDRATION_MAX_RECORDS, packWorkerRecordSnapshot } from "../scripts/worker-records.ts";
 
 type Row = {
   repoSlug: string;
@@ -456,6 +457,47 @@ test("the cached tree is sealed with the records secret", async (t) => {
     [],
   );
   assert.throws(() => sealCorpusState(state, archive, ""), /SECRET is required/);
+
+  // The planner sees a tree it cannot open (rotated secret) as missing, not as a failure.
+  assert.equal(restoreCorpusState(archive, path.join(root, "rotated"), "rotated-secret"), false);
+  assert.equal(existsSync(path.join(root, "rotated")), false);
+  assert.equal(
+    restoreCorpusState(path.join(root, "absent.sealed"), restored, "records-secret"),
+    false,
+  );
+  assert.equal(restoreCorpusState(archive, path.join(root, "reopened"), "records-secret"), true);
+  assert.deepEqual(files(path.join(root, "reopened")), files(state));
+});
+
+test("a new repository over the cold-hydration bound waits without holding back the rest", async (t) => {
+  const root = fixtureRoot(t);
+  const store = new FakeStore(1000);
+  store.write("openclaw-alpha", "items", 1, "one");
+  const state = path.join(root, "state");
+  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
+  for (let id = 1; id <= COLD_HYDRATION_MAX_RECORDS + 1; id++) {
+    store.write("openclaw-cold", "items", id, "cold");
+  }
+  store.write("openclaw-alpha", "items", 1, "one v2");
+  const summary = await refreshCorpusRecords({
+    ...worker(store),
+    stateDir: state,
+    mode: "incremental",
+  });
+  assert.equal(summary.deferred, 1);
+  assert.equal(summary.refreshed, 1);
+  assert.equal(
+    readFileSync(path.join(state, "records/openclaw-alpha/items/1.md"), "utf8"),
+    "one v2",
+  );
+  assert.equal(existsSync(path.join(state, "records/openclaw-cold")), false);
+  assert.equal(readCorpusCursor(state)!.repositories["openclaw-cold"], undefined);
+  // Store outages still fail the refresh.
+  store.failExportPage = store.exportPage + 1;
+  await assert.rejects(
+    refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" }),
+    /403/,
+  );
 });
 
 test("refresh planning", () => {
