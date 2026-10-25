@@ -8,7 +8,7 @@
 // a day. Both land in an Actions cache, so neither names a non-public repository: the aggregate
 // leaves those out, and only public answers are kept (non-public ones are checked again).
 // GITHUB_TOKEN raises the visibility-check rate limit.
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { aggregateRecords, type Visibility } from './records.ts';
@@ -17,11 +17,6 @@ const { values } = parseArgs({ options: { records: { type: 'string' }, out: { ty
 if (!values.records || !values.out) throw new Error('usage: build-corpus.ts --records <dir> --out <dir>');
 const out = values.out;
 await mkdir(out, { recursive: true });
-
-async function writeAtomic(path: string, content: string) {
-  await writeFile(`${path}.tmp`, content);
-  await rename(`${path}.tmp`, path);
-}
 
 const visibilityPath = join(out, 'visibility.json');
 let visibility: Visibility = {};
@@ -32,11 +27,11 @@ try {
 }
 const startedAt = Date.now();
 const cache = await aggregateRecords(values.records, visibility, process.env.GITHUB_TOKEN);
-await writeAtomic(
+await writeFile(
   visibilityPath,
   JSON.stringify(Object.fromEntries(Object.entries(visibility).filter(([, entry]) => entry.public === true))),
 );
-await writeAtomic(join(out, 'corpus.json'), JSON.stringify(cache));
+await writeFile(join(out, 'corpus.json'), JSON.stringify(cache));
 console.log(
   JSON.stringify({
     generatedAt: cache.generatedAt,

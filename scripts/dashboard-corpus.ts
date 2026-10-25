@@ -123,7 +123,6 @@ export async function refreshCorpusRecords(
     unchanged: 0,
     refreshed: 0,
     bootstrapped: 0,
-    removed: 0,
     written: 0,
     deleted: 0,
     durationMs: 0,
@@ -154,19 +153,8 @@ export async function refreshCorpusRecords(
       `No usable incremental corpus state in ${stateDir}; run a full rebuild (mode=full) first`,
     );
   }
-  const listed = new Set(discovered.map((entry) => entry.repoSlug));
-  // A slug the store no longer lists has no canonical records left to show, and a directory
-  // without a cursor cannot be trusted; it is bootstrapped again below if still listed.
-  for (const entry of readdirSync(recordsPath(stateDir), { withFileTypes: true })) {
-    if (listed.has(entry.name) && cursor.repositories[entry.name] !== undefined) continue;
-    rmSync(path.join(recordsPath(stateDir), entry.name), { force: true, recursive: true });
-  }
-  for (const repoSlug of Object.keys(cursor.repositories)) {
-    if (listed.has(repoSlug)) continue;
-    delete cursor.repositories[repoSlug];
-    summary.removed++;
-  }
-
+  // The export index never deletes rows (deletions are tombstones), so a listed slug stays
+  // listed; a slug without a cursor is new and is hydrated like a full rebuild.
   const added = discovered
     .map((entry) => entry.repoSlug)
     .filter((repoSlug) => cursor.repositories[repoSlug] === undefined);

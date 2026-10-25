@@ -308,24 +308,6 @@ test("an incremental refresh refuses to start without a saved cursor", async (t)
   assert.equal(readCorpusCursor(stale), null);
 });
 
-test("a repository the store no longer lists is dropped", async (t) => {
-  const root = fixtureRoot(t);
-  const store = new FakeStore();
-  store.write("openclaw-alpha", "items", 1, "one");
-  store.write("openclaw-gone", "items", 2, "two");
-  const state = path.join(root, "state");
-  await refreshCorpusRecords({ ...worker(store), stateDir: state, mode: "full" });
-  for (const key of store.rows.keys()) if (key.startsWith("openclaw-gone/")) store.rows.delete(key);
-  const summary = await refreshCorpusRecords({
-    ...worker(store),
-    stateDir: state,
-    mode: "incremental",
-  });
-  assert.equal(summary.removed, 1);
-  assert.equal(existsSync(path.join(state, "records", "openclaw-gone")), false);
-  assert.equal(readCorpusCursor(state)!.repositories["openclaw-gone"], undefined);
-});
-
 test("a full rebuild restores snapshots, keeps only corpus sections and swaps atomically", async (t) => {
   const root = fixtureRoot(t);
   const store = new FakeStore();
