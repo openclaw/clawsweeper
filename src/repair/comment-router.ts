@@ -648,8 +648,8 @@ function classifyCommand(command: LooseRecord): JsonValue {
       ...next,
       status: "ready",
       actions: [
-        ...removeRepairLoopLabelActions,
         { action: "label", label: HUMAN_REVIEW_LABEL, status: execute ? "pending" : "planned" },
+        ...removeRepairLoopLabelActions,
         { action: "comment", status: execute ? "pending" : "planned" },
       ],
     };
@@ -703,14 +703,23 @@ function executeCommand(command: LooseRecord) {
       return;
     }
     if (command.intent === "stop" && command.issue_number && shouldApplyHumanReviewLabel) {
-      if (command.intent === "stop") applyRemoveLabelActions(command);
-      ensureHumanReviewLabel(command);
-      editIssueLabel(command, HUMAN_REVIEW_LABEL, "add");
+      // Never exchange close protection until the replacement hold is live.
+      // A prior unknown write is reconciled by reading labels, not by assuming rejection.
+      if (!hasLabel(readIssueLabels(command), HUMAN_REVIEW_LABEL)) {
+        ensureHumanReviewLabel(command);
+        editIssueLabel(command, HUMAN_REVIEW_LABEL, "add");
+      }
+      if (!hasLabel(readIssueLabels(command), HUMAN_REVIEW_LABEL)) {
+        throw new Error(
+          `stop could not confirm ${HUMAN_REVIEW_LABEL}; preserving prior protection`,
+        );
+      }
       command.actions = command.actions.map((action: JsonValue) =>
         action.action === "label"
           ? { ...action, status: "executed", label: HUMAN_REVIEW_LABEL }
           : action,
       );
+      applyRemoveLabelActions(command);
     }
 
     const commentResult = postComment(command, renderResponse(command, dispatched));
@@ -832,8 +841,18 @@ function githubNotFoundNoMutation(error: unknown) {
   return isGitHubNotFoundError(error);
 }
 
+function readIssueLabels(command: LooseRecord): LooseRecord {
+  const issue = ghJson<LooseRecord>([
+    "api",
+    `repos/${command.repo}/issues/${command.issue_number}`,
+  ]);
+  if (!Array.isArray(issue.labels)) throw new Error("stop could not read current issue labels");
+  return { labels: issue.labels.map((label: JsonValue) => String(label.name ?? label)) };
+}
+
+// Stop is the only caller: these writes are required, unlike cosmetic reactions/label creation.
 function editIssueLabel(command: LooseRecord, label: string, operation: "add" | "remove") {
-  runGitHubBestEffortMutation(
+  runGitHubTextMutationOnce(
     command,
     operation === "add" ? "label_add" : "label_remove",
     { repository: command.repo, number: command.issue_number, label },
@@ -846,6 +865,7 @@ function editIssueLabel(command: LooseRecord, label: string, operation: "add" | 
       `--${operation}-label`,
       label,
     ],
+    {},
     operation === "add" ? githubAlreadyExistsNoMutation : githubNotFoundNoMutation,
   );
 }
@@ -858,6 +878,14 @@ function applyRemoveLabelActions(command: LooseRecord) {
   if (labelsToRemove.length === 0) return;
   for (const label of labelsToRemove) {
     editIssueLabel(command, label, "remove");
+    if (hasLabel(readIssueLabels(command), label)) {
+      throw new Error(`stop could not confirm removal of ${label}`);
+    }
+    command.actions = command.actions.map((action: JsonValue) =>
+      action.action === "remove_label" && action.label === label
+        ? { ...action, status: "executed" }
+        : action,
+    );
   }
   command.target = {
     ...command.target,
@@ -865,11 +893,6 @@ function applyRemoveLabelActions(command: LooseRecord) {
       (label: JsonValue) => !labelsToRemove.includes(String(label)),
     ),
   };
-  command.actions = command.actions.map((action: JsonValue) =>
-    action.action === "remove_label"
-      ? { ...action, status: "executed", label: action.label }
-      : action,
-  );
 }
 
 function acknowledgeTerminalNoopMaintainerCommand(command: LooseRecord) {

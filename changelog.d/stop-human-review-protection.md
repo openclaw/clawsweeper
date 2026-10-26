@@ -1,0 +1,1 @@
+- Confirm the human-review hold before removing existing stop-command protection, and fail safely instead of acknowledging failed or unverified label changes.

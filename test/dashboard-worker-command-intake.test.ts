@@ -1315,9 +1315,9 @@ test("keyless OIDC comment intake uses live authority and coalesces with the App
   assert.equal(allowed.commands[0].author_repository_permission, "write");
   assert.deepEqual(fixture.labels, ["clawsweeper:human-review"]);
   assert.deepEqual(fixture.labelWrites, [
+    "add:clawsweeper:human-review",
     "remove:clawsweeper:automerge",
     "remove:clawsweeper:autofix",
-    "add:clawsweeper:human-review",
   ]);
   const writesAfterAllowed = fixture.labelWrites.length;
   const appStopBody = JSON.stringify({

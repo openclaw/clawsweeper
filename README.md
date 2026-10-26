@@ -211,6 +211,10 @@ The canonical comment commands are:
 
 `review` and `re-review` request a fresh read-only issue/PR review; `explain`
 summarizes the current result, and `stop` prevents further automatic handling.
+The stop router confirms `clawsweeper:human-review` on the item before removing
+prior repair-loop protection labels. Failed or unverified required label changes
+fail the command without a success reply or processed-command entry; a later
+retry reconciles the current labels before continuing.
 The router checks repository permissions and the command's current source
 comment before accepting work. Contributors may request a review of their own
 items under the configured authorization policy.
