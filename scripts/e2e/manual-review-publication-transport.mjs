@@ -15,9 +15,15 @@ globalThis.fetch = async (input, init) => {
 if (process.argv[2] === "curl") {
   const args = process.argv.slice(3);
   const url = new URL(args.at(-1));
-  if (url.origin !== "https://manual-queue.invalid")
+  // The lossless GitHub reader uses curl against the fixture's Unix socket.
+  const socketIndex = args.indexOf("--unix-socket");
+  const githubSocket =
+    url.origin === "http://proof.invalid" &&
+    socketIndex !== -1 &&
+    args[socketIndex + 1] === process.env.MANUAL_PUBLICATION_GITHUB_SOCKET;
+  if (url.origin !== "https://manual-queue.invalid" && !githubSocket)
     throw new Error(`proof refused outbound URL: ${url.origin}`);
-  args[args.length - 1] = `${base}/queue${url.pathname}${url.search}`;
+  if (!githubSocket) args[args.length - 1] = `${base}/queue${url.pathname}${url.search}`;
   // Preserve actual curl body files, headers, write-out and HTTP exit semantics.
   const result = spawnSync("/usr/bin/curl", args, { stdio: "inherit" });
   if (result.error) throw result.error;

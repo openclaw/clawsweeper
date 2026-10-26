@@ -14,7 +14,7 @@ import {
   MemoryDurableStorage,
   leasedExactReviewPublicationItem,
 } from "./dashboard-worker-harness.ts";
-import { runCopyProof } from "../scripts/e2e/exact-review-selected-tuple-copy.mjs";
+import { runHydrationProof } from "../scripts/e2e/exact-review-selected-tuple-hydration.mjs";
 
 const originalCoverageDirectory = process.env.NODE_V8_COVERAGE;
 beforeEach(() => {
@@ -273,14 +273,14 @@ test(
   "backlog batch concurrency preserves serial effects and fences",
   { skip: process.platform === "win32" },
   () => {
-    const serial = runCopyProof({ concurrency: 1 });
-    const parallel = runCopyProof({ concurrency: 2 });
+    const serial = runHydrationProof({ concurrency: 1 });
+    const parallel = runHydrationProof({ concurrency: 2 });
     assert.deepEqual(parallel.plans, serial.plans);
     assert.deepEqual(parallel.outcomes, serial.outcomes);
     assert.deepEqual(parallel.actions, serial.actions);
     assert.equal(parallel.telemetry.observedPeakWorkers, 2);
-    runCopyProof({ concurrency: 2, mode: "circuit" });
-    runCopyProof({ concurrency: 2, mode: "mixed-circuit" });
-    runCopyProof({ concurrency: 2, mode: "heartbeat" });
+    runHydrationProof({ concurrency: 2, mode: "circuit" });
+    runHydrationProof({ concurrency: 2, mode: "mixed-circuit" });
+    runHydrationProof({ concurrency: 2, mode: "heartbeat" });
   },
 );

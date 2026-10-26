@@ -21,7 +21,7 @@ import { ghObservedMutationCommand, ghWithRetry } from "../../dist/clawsweeper-g
 import * as gitHubRuntime from "../../dist/clawsweeper-github-runtime.js";
 import { repositoryProfileFor, withTargetProfile } from "../../dist/repository-profiles.js";
 import { githubTest, installGhFixture } from "../github-runtime-fixture.ts";
-import { runCopyProof } from "../../scripts/e2e/exact-review-selected-tuple-copy.mjs";
+import { runHydrationProof } from "../../scripts/e2e/exact-review-selected-tuple-hydration.mjs";
 import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../../dist/media-proof-budget.js";
 
 const { gh, ghOnce, ghWithPreparedTimeout, withGitHubRun } = gitHubRuntime;
@@ -933,21 +933,29 @@ test("batch workflow uses owner-scoped mutation credentials and canonical Worker
   assert.match(source, /repositories: \$\{\{ steps\.batch\.outputs\.target_repositories \}\}/);
   assert.doesNotMatch(source, /uses: \.\/\.github\/actions\/create-state-token/);
   assert.match(source, /uses: \.\/\.github\/actions\/setup-state/);
-  assert.match(source, /records-repo-slugs: \$\{\{ steps\.batch\.outputs\.records_repo_slugs \}\}/);
+  assert.doesNotMatch(source, /records-(url|secret|repo-slugs):/);
+  assert.match(source, /hydrate-records: "false"/);
   assert.match(source, /hydrate-git-state: "false"/);
   assert.match(source, /hydrate-state-blobs: "false"/);
   assert.doesNotMatch(source, /permissions:\n(?:.*\n)*?\s+issues: write/);
 });
 
-test("batch preparation copies only canonical selected tuples and preserves publisher bases", () => {
-  const proof = runCopyProof();
-  assert.equal(proof.copiedFiles, 12);
+test("batch preparation hydrates only canonical selected tuples and preserves publisher bases", () => {
+  const proof = runHydrationProof();
+  assert.equal(proof.hydratedFiles, 12);
   assert.equal(proof.publisherCount, 8);
 });
 
-for (const mode of ["missing-source", "file-source", "heartbeat", "circuit"]) {
+for (const mode of [
+  "file-source",
+  "heartbeat",
+  "circuit",
+  "forbidden",
+  "corrupt",
+  "read-timeout",
+]) {
   test(`batch preparation retains ${mode} no-mutation outcomes`, () => {
-    runCopyProof({ mode, unrelatedRecords: 0 });
+    runHydrationProof({ mode, unrelatedRecords: 0 });
   });
 }
 
@@ -961,7 +969,7 @@ for (const invalidDecision of [
   { itemNumber: Number.MAX_SAFE_INTEGER + 1 },
 ]) {
   test(`batch preparation rejects ${JSON.stringify(invalidDecision)} before canonical reads`, () => {
-    runCopyProof({ mode: "copy", unrelatedRecords: 0, invalidDecision });
+    runHydrationProof({ mode: "artifact-unavailable", unrelatedRecords: 0, invalidDecision });
   });
 }
 

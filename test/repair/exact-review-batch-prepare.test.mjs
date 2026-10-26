@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createServer } from "node:http";
+import { createHmac } from "node:crypto";
 
 import { runBoundedPool } from "../../scripts/prepare-exact-review-batch.mjs";
 import {
@@ -68,13 +70,40 @@ test("artifact cache archive rejects corrupted bytes before writing a bundle", (
   }
 });
 
-test("batch preparation publishes without invoking the retired live-proof CLI", () => {
+test("batch preparation publishes without invoking the retired live-proof CLI", async () => {
   const root = mkdtempSync(join(tmpdir(), "exact-review-invalid-live-proof-"));
   const workspace = join(root, "workspace");
   const workerRoot = join(root, "worker");
   const bin = join(root, "bin");
   const outcomePath = join(workspace, ".artifacts", "exact-review-batch", "outcomes", "item.json");
   const itemPath = join(root, "item.json");
+  const secret = "synthetic-test-secret";
+  const requests = [];
+  const server = createServer((req, res) => {
+    if (req.url === "/internal/exact-review/artifact-cache/receipt/lookup") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ hit: false }));
+      return;
+    }
+    if (req.url.startsWith("/internal/state/blobs/")) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "fixture_cache_unavailable" }));
+      return;
+    }
+    assert.equal(req.method, "GET");
+    assert.match(
+      req.url,
+      /^\/internal\/state\/records\/openclaw-openclaw\/(items|closed|plans|decision-packets)\/42$/,
+    );
+    assert.equal(
+      req.headers["x-clawsweeper-exact-review-signature"],
+      `sha256=${createHmac("sha256", secret).update("").digest("hex")}`,
+    );
+    requests.push(req.url);
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "record_not_found" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     mkdirSync(join(workspace, "dist", "repair"), { recursive: true });
     mkdirSync(bin, { recursive: true });
@@ -144,7 +173,7 @@ writeFileSync(join(output, "bundle.json"), "{}");
       "utf8",
     );
 
-    const result = spawnSync(
+    const child = spawn(
       process.execPath,
       ["scripts/prepare-exact-review-batch.mjs", "worker", itemPath, workerRoot, workspace],
       {
@@ -155,14 +184,25 @@ writeFileSync(join(output, "bundle.json"), "{}");
           PATH: `${bin}:${process.env.PATH || ""}`,
           GITHUB_REPOSITORY: "openclaw/clawsweeper",
           REPO_TOKEN: "test-token",
+          EXACT_REVIEW_QUEUE_URL: `http://127.0.0.1:${server.address().port}`,
+          CLAWSWEEPER_WEBHOOK_SECRET: secret,
         },
       },
     );
-    assert.equal(result.status, 0, result.stderr);
+    let stderr = "";
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    const status = await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    assert.equal(status, 0, stderr);
+    assert.equal(requests.length, 4);
     assert.deepEqual(JSON.parse(readFileSync(outcomePath, "utf8")), {
       kind: "fixture_published",
     });
   } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
     rmSync(root, { recursive: true, force: true });
   }
 });
