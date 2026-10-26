@@ -814,6 +814,14 @@ test("event apply emits proof only while a captured protected-label guard remain
         implementedCloseReport({
           action_taken: "skipped_protected_label",
           labels: JSON.stringify(["security"]),
+          ...(labels.length === 0
+            ? {
+                item_source_revision: itemSourceRevisionSha256(
+                  { title: "Protected issue", body: "", labels: [] },
+                  [],
+                ),
+              }
+            : {}),
         }),
         "utf8",
       );
@@ -911,7 +919,17 @@ test("event apply retries a captured locked-conversation guard after unlock", ()
       mkdirSync(plansDir, { recursive: true });
       writeFileSync(
         join(itemsDir, "321.md"),
-        implementedCloseReport({ action_taken: "skipped_locked_conversation" }),
+        implementedCloseReport({
+          action_taken: "skipped_locked_conversation",
+          ...(!locked
+            ? {
+                item_source_revision: itemSourceRevisionSha256(
+                  { title: "Locked issue", body: "", labels: [] },
+                  [],
+                ),
+              }
+            : {}),
+        }),
         "utf8",
       );
 

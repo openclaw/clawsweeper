@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 import { createApplyRecordOperations } from "../dist/clawsweeper-apply-records.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 
@@ -288,7 +289,14 @@ test("apply-decisions keeps close-limit candidates out of the cursor trace", () 
     const comments: Record<number, string> = {};
     for (const number of [10, 20]) {
       const synced = reportWithSyncedReviewComment(
-        implementedCloseReport({ number }),
+        implementedCloseReport({
+          number,
+          title: `Close limit trace ${number}`,
+          item_source_revision: itemSourceRevisionSha256(
+            { title: `Close limit trace ${number}`, labels: [] },
+            [],
+          ),
+        }),
         number,
         "implemented_on_main",
       );
@@ -310,7 +318,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(10|20)\\/timeline(?:\
       id: 9000 + number,
       html_url: "https://github.com/openclaw/clawsweeper/issues/" + number + "#issuecomment-" + (9000 + number),
       body: comments[number],
-      user: { login: "github-actions[bot]" },
+      user: { login: "clawsweeper[bot]" },
       created_at: "2026-05-01T01:00:00Z",
       updated_at: "2026-05-01T01:00:00Z"
     }

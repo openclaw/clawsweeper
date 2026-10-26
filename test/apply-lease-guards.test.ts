@@ -122,6 +122,10 @@ test("apply does not close an item after it loses its mutation lease during clos
     const closed: number[] = [];
     const leaseSkips: string[] = [];
     let leaseChecks = 0;
+    let lateIssueDrift = false;
+    let terminalGuard:
+      | ((number: number) => { actionTaken: string; reason: string } | null)
+      | undefined;
     let markdown = withReviewRecord(
       reviewReportFrontMatter({
         number: 42,
@@ -174,12 +178,15 @@ test("apply does not close an item after it loses its mutation lease during clos
         reviewComment: "Closing.",
         emitEventApplyProof: false,
         postProofCoveringPrFreshnessBlock: () => null,
-        postProofFreshnessBlock: () => null,
+        postProofFreshnessBlock: (options: { force?: boolean } = {}) =>
+          lateIssueDrift && options.force ? { reason: "late issue activity" } : null,
         currentSameAuthorPairBlockReason: () => null,
         currentObsoleteFixPrBlock: () => null,
         currentStaleVersionBugBlock: () => null,
         currentAuthorPrBudgetApplyGate: () => ({ block: null }),
-        setCloseMutationPolicyGuard: () => undefined,
+        setCloseMutationPolicyGuard: (guard: typeof terminalGuard) => {
+          terminalGuard = guard;
+        },
         currentApplyMutationLeaseBlockReason: () =>
           ++leaseChecks > lostAfterChecks ? "apply mutation lease is not held" : null,
         recordReviewLeaseSkip: (reason: string) => (leaseSkips.push(reason), false),
@@ -189,6 +196,18 @@ test("apply does not close an item after it loses its mutation lease during clos
       }) as never,
     );
     assert.deepEqual(closed, expectedClosed, name);
+    if (expectedClosed.length) {
+      assert.ok(terminalGuard);
+      lateIssueDrift = true;
+      assert.deepEqual(
+        terminalGuard(42),
+        {
+          actionTaken: "skipped_changed_since_review",
+          reason: "late issue activity",
+        },
+        "the installed writer guard must not reuse an earlier issue freshness result",
+      );
+    }
     assert.deepEqual(
       leaseSkips,
       expectedClosed.length ? [] : ["apply mutation lease is not held"],

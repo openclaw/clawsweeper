@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
+import { replaceFrontMatterValue } from "../dist/report-front-matter.js";
 
 import {
   reportWithSyncedReviewComment,
@@ -205,7 +207,21 @@ test("stale-version bug apply is default-off", () => {
 });
 
 test("stale-version bug apply closes an old inactive report", () => {
-  const result = runStaleVersionApply();
+  const result = runStaleVersionApply({
+    report: (report) =>
+      replaceFrontMatterValue(
+        report,
+        "item_source_revision",
+        itemSourceRevisionSha256(
+          {
+            title: "Old runtime crash",
+            body: "OpenClaw 1.2 crashes in the old runtime path.",
+            labels: [],
+          },
+          [],
+        ),
+      ),
+  });
   assert.equal(result.entries[0]?.action, "closed");
   assert.match(result.entries[0]?.reason ?? "", /bug report against a stale version/);
   assert.match(result.comment, /OpenClaw 1\.2/);

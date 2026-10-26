@@ -462,7 +462,7 @@ export function executeApplyClose(
   // comment changes the item's timestamp, so a later receipt must still reject
   // contributor activity that lands between this read and comment publication.
   const closeoutActivityBaselineMs = Date.now();
-  const freshnessBlock = postProofFreshnessBlock();
+  const freshnessBlock = postProofFreshnessBlock({ force: item.kind === "issue" });
   if (freshnessBlock) return markChangedSinceReview(freshnessBlock) ? "stop" : "next";
   if (requiresPrCloseCoverageProof(closeReason)) {
     setMarkdown(applyPrCloseCoverageProofReportSection(getMarkdown(), proofResult()));
@@ -508,7 +508,16 @@ export function executeApplyClose(
       if (reason) return { actionTaken: "skipped_low_signal_live_guard", reason };
     }
     const pairReason = checkPair ? currentSameAuthorPairBlockReason() : null;
-    return pairReason ? { actionTaken: "skipped_same_author_pair", reason: pairReason } : null;
+    if (pairReason) return { actionTaken: "skipped_same_author_pair", reason: pairReason };
+    if (mutationNumber === number && item.kind === "issue") {
+      // Issue source revisions deliberately omit state/lock and have no PR activity cursor.
+      // Recheck the complete live issue receipt at the close writer itself, even without
+      // coverage proof or a successfully bound owned-comment write receipt.
+      const freshness = postProofFreshnessBlock({ force: true });
+      if (freshness)
+        return { actionTaken: "skipped_changed_since_review", reason: freshness.reason };
+    }
+    return null;
   };
   // Paired implementation closes already have dedicated issue source/lease guards.
   // Recheck parent policy for both mutations; pair admission is needed for the parent.
