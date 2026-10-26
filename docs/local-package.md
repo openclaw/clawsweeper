@@ -125,7 +125,7 @@ macOS must all consume the producer's exact artifact ID successfully before the
 workflow exposes that ID. A failed or skipped consumer prevents the release job.
 
 The caller pins `openclaw/release-workflows` at
-`50a56f81429b1590bad6470e4d8ee9565c18f1b6`. That shared workflow downloads the
+`9d81ab3d2877f9900ef787e6dbcf4d9af96eb013`. That shared workflow downloads the
 same-run ID into `RELEASE_ASSET_INPUT_DIR`. The dependency-free
 `scripts/release-local-package-envelope.mjs` validates the original four files,
 their hashes and locked resolution, and their source commit, tree, and clean
