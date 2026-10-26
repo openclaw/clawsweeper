@@ -522,6 +522,10 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     return this.postUrl("/internal/exact-review/canonical-bodies/maintenance", input);
   }
 
+  async compressReadModels(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.postUrl("/internal/exact-review/read-model/compression", input);
+  }
+
   private async post(
     path: string,
     payload: Record<string, unknown>,

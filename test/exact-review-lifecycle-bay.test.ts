@@ -1,3 +1,4 @@
+import { decodeStoredJson, encodeStoredJson } from "../dashboard/stored-json.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -363,8 +364,17 @@ test("unlinked higher publication counter cannot mask the canonical producer cur
   );
   assert.equal(cards.find((card) => card.revision === 50)!.state, "completed");
 
+  const row = [
+    ...f.storage.sql.exec(
+      "SELECT projection_json FROM exact_review_lifecycle_projection_v1 WHERE fence_key = ?",
+      legacy.fenceKey,
+    ),
+  ][0]!;
+  const malformed = JSON.parse(decodeStoredJson(String(row.projection_json)));
+  malformed.producerLineage = null;
   f.storage.run(
-    "UPDATE exact_review_lifecycle_projection_v1 SET projection_json = json_set(projection_json, '$.producerLineage', json('null')) WHERE fence_key = ?",
+    "UPDATE exact_review_lifecycle_projection_v1 SET projection_json = ? WHERE fence_key = ?",
+    encodeStoredJson(JSON.stringify(malformed)),
     legacy.fenceKey,
   );
   assert.equal(f.lifecycle.createAuditInventorySnapshot(100).collection.state, "unknown");
@@ -394,39 +404,35 @@ test("standalone legacy fence remains observable but competing fence families ha
   );
 });
 
-test("competing-child lookup uses its full lineage index and tolerates malformed legacy JSON", () => {
+test("retired JSON indexes are removed while current identity lookups stay indexed", () => {
   const storage = new MemoryDurableStorage();
   new ExactReviewLifecycleProjectionStore(storage).ensureSchemaSync();
-  storage.sql.exec(
-    "INSERT INTO exact_review_lifecycle_projection_v1 (canonical_target_key, revision, fence_key, projection_json, updated_at) VALUES (?, ?, ?, ?, ?)",
-    "openclaw/openclaw#1",
-    1,
-    "invalid",
-    "not json",
-    Date.now(),
+  for (const name of [
+    "exact_review_lifecycle_projection_producer_lineage_v1",
+    "exact_review_lifecycle_projection_malformed_target_v1",
+  ]) {
+    storage.sql.exec(
+      `CREATE INDEX ${name} ON exact_review_lifecycle_projection_v1(canonical_target_key)`,
+    );
+  }
+  new ExactReviewLifecycleProjectionStore(storage).ensureSchemaSync();
+  const indexes = Array.from(
+    storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'index'"),
+  );
+  assert.ok(
+    !indexes.some(
+      (row) =>
+        String(row.name).includes("producer_lineage_v1") ||
+        String(row.name).includes("malformed_target_v1"),
+    ),
   );
   const plan = Array.from(
     storage.sql.exec(
-      "EXPLAIN QUERY PLAN SELECT 1 FROM exact_review_lifecycle_projection_v1 AS sibling WHERE json_valid(sibling.projection_json) AND sibling.canonical_target_key = ? AND json_extract(sibling.projection_json, '$.producerLineage.fenceKey') = ? AND json_extract(sibling.projection_json, '$.producerLineage.revision') = ? AND json_extract(sibling.projection_json, '$.producerLineage.claimGeneration') = ? AND (sibling.fence_key != ? OR sibling.revision != ?)",
+      "EXPLAIN QUERY PLAN SELECT projection_json FROM exact_review_lifecycle_projection_v1 WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?",
       "openclaw/openclaw#1",
-      "openclaw/openclaw#1",
-      2,
-      4,
-      "publication",
+      "fence",
       1,
     ),
   );
-  const details = plan.map((row) => String(row.detail)).join(" ");
-  assert.match(details, /exact_review_lifecycle_projection_producer_lineage_v1/);
-  const malformedPlan = Array.from(
-    storage.sql.exec(
-      "EXPLAIN QUERY PLAN SELECT 1 FROM exact_review_lifecycle_projection_v1 AS malformed WHERE NOT json_valid(malformed.projection_json) AND malformed.canonical_target_key = ?",
-      "openclaw/openclaw#1",
-    ),
-  );
-  assert.match(
-    malformedPlan.map((row) => String(row.detail)).join(" "),
-    /exact_review_lifecycle_projection_malformed_target_v1/,
-  );
-  assert.equal((details.match(/<expr>=\?/g) || []).length, 3);
+  assert.match(plan.map((row) => row.detail).join(" "), /SEARCH.*INDEX/);
 });

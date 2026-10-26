@@ -117,6 +117,18 @@ test("canonical verification is isolated to explicit main-branch dispatch withou
   assert.ok(job.steps.every((entry) => !entry.run?.includes("${{")));
 });
 
+test("read-model compression requires explicit main dispatch and only its HMAC credential", () => {
+  const job = workflow.jobs["read-model-compression"]!;
+  assert.match(job.if!, /inputs.mode == 'read-model-compression'/);
+  assert.match(job.if!, /github.ref == 'refs\/heads\/main'/);
+  assert.equal(job.steps[0]?.with?.["persist-credentials"], false);
+  assert.equal(job.env, undefined);
+  const step = job.steps.at(-1)!;
+  assert.equal(step.env?.CLOUDFLARE_API_TOKEN, undefined);
+  assert.match(step.run!, /--reviewed-plan-sha256 "\$REVIEWED_PLAN_SHA256"/);
+  assert.ok(job.steps.every((entry) => !entry.run?.includes("${{")));
+});
+
 test("storage stats workflow accepts current payloads and rejects failures", async (t) => {
   const job = workflow.jobs["storage-stats"]!;
   assert.equal(job.if, "${{ inputs.mode == 'storage-stats' }}");
@@ -364,9 +376,49 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
   let retirementMode = "success";
   let canonicalCalls = 0;
   let canonicalMode = "success";
+  let compressionCalls = 0;
+  let compressionFailure = false;
   const server = createServer(
     { key: readFileSync(key), cert: readFileSync(cert) },
     async (request, response) => {
+      if (request.url === "/internal/exact-review/read-model/compression") {
+        let body = "";
+        for await (const chunk of request) body += chunk;
+        compressionCalls++;
+        assert.equal(
+          request.headers["x-clawsweeper-exact-review-signature"],
+          `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+        );
+        assert.deepEqual(JSON.parse(body), {
+          action: "migrate",
+          execute: true,
+          expectedDeploymentSha: "e".repeat(40),
+          reviewedPreviewSha256: "f".repeat(64),
+        });
+        response.setHeader("content-type", "application/json");
+        if (compressionFailure && compressionCalls === 2) {
+          response
+            .writeHead(500)
+            .end(JSON.stringify({ error: "private_marker", message: "private-response-sentinel" }));
+        } else
+          response.end(
+            JSON.stringify({
+              ok: true,
+              checkpoint: {
+                table: 0,
+                afterRowid: compressionCalls * 64,
+                scanned: compressionCalls * 64,
+                converted: compressionCalls * 64,
+                sourceBytes: compressionCalls * 4096,
+                savedBytes: compressionCalls * 3000,
+                oversized: 0,
+                conflicts: 0,
+                completedAt: compressionCalls === 2 ? 1 : null,
+              },
+            }),
+          );
+        return;
+      }
       if (request.url === "/internal/exact-review/canonical-bodies/maintenance") {
         let body = "";
         for await (const chunk of request) body += chunk;
@@ -572,6 +624,46 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
   });
   assert.equal(calls, 3);
   assert.equal(redirectedCalls, 0);
+
+  const compress = () =>
+    promisify(execFile)(
+      process.execPath,
+      [
+        "dist/repair/exact-review-queue-maintenance.js",
+        "read-model-compression",
+        "--apply",
+        "--expected-deployment-sha",
+        "e".repeat(40),
+        "--reviewed-plan-sha256",
+        "f".repeat(64),
+      ],
+      {
+        timeout: 10_000,
+        env: {
+          PATH: process.env.PATH,
+          NODE_EXTRA_CA_CERTS: cert,
+          EXACT_REVIEW_QUEUE_URL: endpoint,
+          CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        },
+      },
+    );
+  const compressed = await compress();
+  assert.equal(compressionCalls, 2);
+  assert.equal(JSON.parse(compressed.stdout).stop, "complete");
+  compressionCalls = 0;
+  compressionFailure = true;
+  await assert.rejects(compress(), (error: Error & { stdout: string; stderr: string }) => {
+    assert.equal(compressionCalls, 2, "failed mutation is never automatically retried");
+    const failure = JSON.parse(error.stderr.split("\n")[0]!);
+    assert.equal(failure.status, "read_model_compression_failed");
+    assert.equal(failure.last_observed_checkpoint.scanned, 64);
+    assert.equal(failure.completed_passes, 1);
+    assert.doesNotMatch(
+      error.stderr,
+      /private_marker|private-response-sentinel|synthetic-maintenance-secret/,
+    );
+    return true;
+  });
 
   const hash = (value: string) => createHash("sha256").update(value).digest("hex");
   const plan = {
@@ -879,6 +971,7 @@ test("usage workflow keeps read credentials separate from one authorized canary 
     "retire-closed-publication",
     "storage-stats",
     "canonical-bodies",
+    "read-model-compression",
     "canonical-records-verify",
     "operator-read",
     "canary",

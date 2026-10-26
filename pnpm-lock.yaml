@@ -169,6 +169,9 @@ importers:
       markdown-it:
         specifier: ^15.0.2
         version: 15.0.2
+      pako:
+        specifier: 3.0.2
+        version: 3.0.2
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -653,6 +656,9 @@ packages:
       vite-plus:
         optional: true
 
+  pako@3.0.2:
+    resolution: {integrity: sha512-uBv6IT2aT1A78iU6dpNEbf6+CyhlV/6g9JlJs9kpgjFGFhruIICVRysF/W0SLzXg5+hCl+KroH7e4YUyfEmgLg==}
+
   pend@1.2.0:
     resolution: {integrity: sha512-F3asv42UuXchdzt+xXqfW1OGlVBe+mxa2mqI0pg5yAHZPvFmY3Y6drSf/GQ1A86WgWEN9Kzh/WrgKa6iGcHXLg==}
 
@@ -967,6 +973,8 @@ snapshots:
       '@oxlint/binding-win32-ia32-msvc': 1.82.0
       '@oxlint/binding-win32-x64-msvc': 1.82.0
       oxlint-tsgolint: 7.0.2001
+
+  pako@3.0.2: {}
 
   pend@1.2.0: {}
 

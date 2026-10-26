@@ -1,3 +1,4 @@
+import { decodeStoredJson } from "../dashboard/stored-json.ts";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
@@ -118,9 +119,14 @@ for (const kind of ["pull_request", "stored_pull_request", "issue"] as const) {
       );
       if (kind === "stored_pull_request") {
         // Existing rows have the authoritative kind but lack the JSON marker.
+        const row = [
+          ...storage.sql.exec("SELECT snapshot_json FROM github_webhook_read_model_items_v1"),
+        ][0]!;
+        const legacy = JSON.parse(decodeStoredJson(String(row.snapshot_json)));
+        delete legacy.pull_request;
         storage.sql.exec(
-          `UPDATE github_webhook_read_model_items_v1
-            SET snapshot_json = json_remove(snapshot_json, '$.pull_request')`,
+          "UPDATE github_webhook_read_model_items_v1 SET snapshot_json = ?",
+          JSON.stringify(legacy),
         );
       }
       const before = [...storage.sql.exec(`SELECT * FROM github_webhook_read_model_items_v1`)];

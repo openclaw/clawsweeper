@@ -85,6 +85,7 @@ const EXACT_REVIEW_QUEUE_ENDPOINTS = new Map<string, string>([
   ["/branch-authority", "branch_authority"],
   ["/claim", "claim"],
   ["/canonical-bodies/maintenance", "canonical_bodies_maintenance"],
+  ["/read-model/compression", "read_model_compression"],
   ["/claimed-runs", "claimed_runs"],
   ["/command-intake", "command_intake"],
   ["/complete", "complete"],

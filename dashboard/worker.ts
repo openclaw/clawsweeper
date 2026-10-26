@@ -1076,6 +1076,11 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewQueueRequest(request, env, "/canonical-bodies/maintenance");
+    if (
+      url.pathname === "/internal/exact-review/read-model/compression" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/read-model/compression");
     if (url.pathname === "/internal/exact-review/storage-stats" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/storage/stats");
     if (url.pathname === "/internal/state/records/slugs" && request.method === "POST")
@@ -4749,7 +4754,8 @@ function queuePlatformFailure(error: unknown) {
 }
 
 async function exactReviewQueueRequest(env, path, request?: Request) {
-  const maintenance = path === "/canonical-bodies/maintenance";
+  const maintenance =
+    path === "/canonical-bodies/maintenance" || path === "/read-model/compression";
   const traceId = newExactReviewQueueTraceId();
   const respond = (response: Response) => {
     if (!maintenance) return response;

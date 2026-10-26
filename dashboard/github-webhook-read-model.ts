@@ -1,3 +1,4 @@
+import { decodeStoredJson, STORED_JSON_PLACEHOLDER } from "./stored-json.ts";
 import { stableJson } from "../src/stable-json.ts";
 import { sqlColumnNames } from "./durable-storage.ts";
 
@@ -22,7 +23,7 @@ const PAYLOAD_TABLES = [
   "github_webhook_read_model_comments_v1",
   "github_webhook_read_model_activity_v1",
 ] as const;
-const REVIEW_PLACEHOLDER_MARKER = "ClawSweeper status: review started.";
+const REVIEW_PLACEHOLDER_MARKER = STORED_JSON_PLACEHOLDER;
 
 type JsonRecord = Record<string, unknown>;
 type SqlRow = Record<string, unknown>;
@@ -256,9 +257,11 @@ export type GithubWebhookReadModelClassState = {
 
 export class GithubWebhookReadModelStore {
   private readonly storage: ReadModelStorage;
+  private readonly encodeText: (text: string) => string;
 
-  constructor(storage: ReadModelStorage) {
+  constructor(storage: ReadModelStorage, encodeText: (text: string) => string = (text) => text) {
     this.storage = storage;
+    this.encodeText = encodeText;
   }
 
   ensureSchemaSync(): void {
@@ -1098,7 +1101,6 @@ export class GithubWebhookReadModelStore {
   ): void {
     const sourceUpdatedAt = timestampMs(object.sourceUpdatedAt);
     if (sourceUpdatedAt === null) return;
-    const snapshotJson = JSON.stringify(object.snapshot);
     if (object.kind === "item") {
       const previous = firstRow(
         this.storage.sql.exec(
@@ -1136,7 +1138,7 @@ export class GithubWebhookReadModelStore {
         sourceUpdatedAt,
         remainsPruned
           ? "{}"
-          : JSON.stringify(itemSnapshotWithKind(mergedSnapshot, object.itemKind)),
+          : this.encodeText(JSON.stringify(itemSnapshotWithKind(mergedSnapshot, object.itemKind))),
         deliveryId,
         watermark,
         receivedAt,
@@ -1145,6 +1147,7 @@ export class GithubWebhookReadModelStore {
       );
       return;
     }
+    const snapshotJson = this.encodeText(JSON.stringify(object.snapshot));
     if (object.kind === "comment") {
       const accepted = firstRow(
         this.storage.sql.exec(
@@ -1803,8 +1806,9 @@ function record(value: unknown): JsonRecord {
 }
 
 function parseJsonRecord(value: string): JsonRecord {
+  const decoded = decodeStoredJson(value);
   try {
-    return record(JSON.parse(value) as unknown);
+    return record(JSON.parse(decoded) as unknown);
   } catch {
     return {};
   }

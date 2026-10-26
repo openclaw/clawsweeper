@@ -13,9 +13,10 @@ const canonicalProgress: {
   last_observed_checkpoint: Record<string, number | null> | null;
 } = { stage: "arguments", completed_passes: 0, last_observed_checkpoint: null };
 
-if (process.argv[2] === "canonical-bodies") {
+if (process.argv[2] === "canonical-bodies" || process.argv[2] === "read-model-compression") {
   try {
-    await maintainCanonicalBodies();
+    if (process.argv[2] === "canonical-bodies") await maintainCanonicalBodies();
+    else await compressReadModels();
   } catch (error) {
     const failure = error instanceof ExactReviewBatchQueueRequestError ? error : null;
     // A shaped server string may still contain a private identifier. Only these
@@ -24,7 +25,10 @@ if (process.argv[2] === "canonical-bodies") {
     console.error(
       JSON.stringify({
         ok: false,
-        status: "canonical_tiering_failed",
+        status:
+          process.argv[2] === "canonical-bodies"
+            ? "canonical_tiering_failed"
+            : "read_model_compression_failed",
         ...canonicalProgress,
         reason: failure?.reason.startsWith("HTTP_") ? "http_error" : (failure?.reason ?? "unknown"),
         http_status: failure?.details.status ?? null,
@@ -33,6 +37,10 @@ if (process.argv[2] === "canonical-bodies") {
           [
             "canonical_tiering_deployment_mismatch",
             "canonical_tiering_reviewed_preview_required",
+            "read_model_compression_deployment_mismatch",
+            "read_model_compression_reviewed_preview_required",
+            "read_model_compression_checkpoint_changed",
+            "invalid_read_model_compression_action",
             "invalid_canonical_tiering_action",
             "exact_review_queue_unavailable",
             "exact_review_queue_not_configured",
@@ -64,6 +72,84 @@ if (process.argv[2] === "canonical-bodies") {
   console.error("[exact-review-queue-maintenance] invalid arguments");
   console.error("[exact-review-queue-maintenance] FAILED (exit 1)");
   process.exitCode = 1;
+}
+
+async function compressReadModels() {
+  const { values } = parseArgs({
+    args: process.argv.slice(3),
+    options: {
+      apply: { type: "boolean", default: false },
+      "expected-deployment-sha": { type: "string" },
+      "reviewed-plan-sha256": { type: "string" },
+    },
+  });
+  if (
+    !/^[a-f0-9]{40}$/.test(values["expected-deployment-sha"] ?? "") ||
+    (values.apply && !/^[a-f0-9]{64}$/.test(values["reviewed-plan-sha256"] ?? ""))
+  )
+    throw new Error("expected deployment and reviewed compression plan required");
+  const client = new ExactReviewBatchQueueClient({
+    baseUrl: env("EXACT_REVIEW_QUEUE_URL"),
+    webhookSecret: env("CLAWSWEEPER_WEBHOOK_SECRET"),
+  });
+  const started = Date.now();
+  for (let passes = 0; passes < 100_000 && Date.now() - started < 50 * 60_000; passes++) {
+    canonicalProgress.stage = "queue_request";
+    const result = await client.compressReadModels({
+      action: values.apply ? "migrate" : "preview",
+      execute: values.apply,
+      expectedDeploymentSha: values["expected-deployment-sha"],
+      reviewedPreviewSha256: values["reviewed-plan-sha256"],
+    });
+    canonicalProgress.stage = "queue_response";
+    if (result.ok !== true)
+      throw new ExactReviewBatchQueueRequestError(
+        "invalid_response",
+        "Invalid compression response",
+      );
+    if (!values.apply) {
+      console.log(JSON.stringify(result));
+      return;
+    }
+    const checkpoint = result.checkpoint as Record<string, unknown> | undefined;
+    const progress: Record<string, number | null> = {};
+    for (const field of [
+      "table",
+      "afterRowid",
+      "scanned",
+      "converted",
+      "sourceBytes",
+      "savedBytes",
+      "oversized",
+      "conflicts",
+      "completedAt",
+    ]) {
+      const value = checkpoint?.[field];
+      if (
+        (field === "completedAt" && value === null) ||
+        (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+      )
+        progress[field] = value;
+      else
+        throw new ExactReviewBatchQueueRequestError(
+          "invalid_response",
+          "Invalid compression checkpoint",
+        );
+    }
+    const previous = canonicalProgress.last_observed_checkpoint;
+    canonicalProgress.last_observed_checkpoint = progress;
+    canonicalProgress.completed_passes = passes + 1;
+    if (progress.completedAt !== null) {
+      console.log(JSON.stringify({ ok: true, stop: "complete", ...canonicalProgress }));
+      return;
+    }
+    if (previous && progress.scanned === previous.scanned) {
+      console.log(JSON.stringify({ ok: true, stop: "unresolved_source", ...canonicalProgress }));
+      return;
+    }
+    if ((passes + 1) % 100 === 0) console.log(JSON.stringify({ ok: true, ...canonicalProgress }));
+  }
+  console.log(JSON.stringify({ ok: true, stop: "invocation_limit", ...canonicalProgress }));
 }
 
 function validReconciliationArguments(): boolean {

@@ -85,6 +85,7 @@
   },
   "dependencies": {
     "markdown-it": "^15.0.2",
+    "pako": "3.0.2",
     "yaml": "^2.9.0",
     "yauzl": "3.4.0"
   },

@@ -1,3 +1,9 @@
+import { StoredJsonCorruptionError, encodeStoredJson } from "./stored-json.ts";
+import {
+  ReadModelCompressionStore,
+  ReadModelCompressionConflictError,
+  READ_MODEL_COMPRESSION_KEY,
+} from "./read-model-compression.ts";
 import { CanonicalBodyUnavailableError } from "./canonical-bodies.ts";
 import {
   EXACT_REVIEW_PUBLICATION_REASONS,
@@ -977,6 +983,7 @@ type CanonicalMaintenanceContext = {
 };
 
 export class ExactReviewQueue {
+  private readModelCompressionEnabled = false;
   private state;
   private storage;
   private env;
@@ -1087,7 +1094,15 @@ export class ExactReviewQueue {
       env.STATE_SNAPSHOTS,
     );
     this.stateWriterCoordinator = new StateWriterCoordinator(this.storage);
-    this.lifecycleProjectionStore = new ExactReviewLifecycleProjectionStore(this.storage);
+    this.readModelCompressionEnabled = Boolean(this.storage.kv.get(READ_MODEL_COMPRESSION_KEY));
+    // The first reviewed migration commit is also the write cutover. Reading
+    // both formats works before cutover; no per-row KV polling or config switch.
+    const encodeReadModel = (text: string) =>
+      this.readModelCompressionEnabled ? encodeStoredJson(text) : text;
+    this.lifecycleProjectionStore = new ExactReviewLifecycleProjectionStore(
+      this.storage,
+      encodeReadModel,
+    );
     this.lifecycleTelemetryStore = new ExactReviewLifecycleTelemetryStore(this.storage);
     this.reviewFailureTelemetryStore = new ExactReviewFailureTelemetryStore(this.storage);
     this.reviewLoopStore = new ExactReviewReviewLoopStore(this.storage);
@@ -1097,7 +1112,10 @@ export class ExactReviewQueue {
       this.storage,
       env.STATE_SNAPSHOTS,
     );
-    this.githubWebhookReadModelStore = new GithubWebhookReadModelStore(this.storage);
+    this.githubWebhookReadModelStore = new GithubWebhookReadModelStore(
+      this.storage,
+      encodeReadModel,
+    );
     // Establish lifecycle schemas before requests run; full queue initialization
     // and migration remain deferred.
     if (typeof state.blockConcurrencyWhile === "function") {
@@ -1192,6 +1210,32 @@ export class ExactReviewQueue {
 
     await this.ensureReady();
     this.cleanupLegacyCompatibilitySync();
+    if (request.method === "POST" && url.pathname === "/read-model/compression") {
+      const body = objectValue(await request.json().catch(() => null));
+      const deploymentSha = String(this.env.CLAWSWEEPER_DEPLOY_SHA || "");
+      if (!/^[a-f0-9]{40}$/.test(deploymentSha) || body.expectedDeploymentSha !== deploymentSha)
+        return json({ error: "read_model_compression_deployment_mismatch" }, 409);
+      if (body.action !== "preview" && body.action !== "migrate")
+        return json({ error: "invalid_read_model_compression_action" }, 400);
+      const store = new ReadModelCompressionStore(this.storage);
+      const preview = await store.preview(deploymentSha);
+      if (body.action === "preview") return json({ ok: true, ...preview });
+      if (body.execute !== true || body.reviewedPreviewSha256 !== preview.sha256)
+        return json({ error: "read_model_compression_reviewed_preview_required" }, 409);
+      // The only await precedes preparation. Current code owns both formats;
+      // preparation and the final exact-text CAS have no external side effects.
+      if (String(this.env.CLAWSWEEPER_DEPLOY_SHA || "") !== deploymentSha)
+        return json({ error: "read_model_compression_deployment_mismatch" }, 409);
+      try {
+        const checkpoint = store.commit(store.prepare(), Date.now());
+        this.readModelCompressionEnabled = true;
+        return json({ ok: true, checkpoint });
+      } catch (error) {
+        if (error instanceof ReadModelCompressionConflictError)
+          return json({ error: "read_model_compression_checkpoint_changed" }, 409);
+        throw error;
+      }
+    }
     if (request.method === "POST" && url.pathname === "/canonical-bodies/maintenance") {
       if (maintenance) maintenance.phase = "plan";
       const body = objectValue(await request.json().catch(() => null));
@@ -4675,7 +4719,8 @@ export class ExactReviewQueue {
       let result;
       try {
         result = this.githubWebhookReadModelStore.ingest(await request.json().catch(() => null));
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_delivery" }, 400);
       }
       await this.scheduleStorageMaintenance();
@@ -4746,7 +4791,8 @@ export class ExactReviewQueue {
       let result;
       try {
         result = this.githubWebhookReadModelStore.repair(await request.json().catch(() => null));
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_repair" }, 400);
       }
       await this.scheduleStorageMaintenance();
@@ -4758,7 +4804,8 @@ export class ExactReviewQueue {
         return json(
           await this.githubWebhookReadModelStore.readItem(await request.json().catch(() => null)),
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_item_request" }, 400);
       }
     }
@@ -4770,7 +4817,8 @@ export class ExactReviewQueue {
             await request.json().catch(() => null),
           ),
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_comments_request" }, 400);
       }
     }
@@ -4782,7 +4830,8 @@ export class ExactReviewQueue {
             await request.json().catch(() => null),
           ),
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_activity_request" }, 400);
       }
     }
@@ -4794,7 +4843,8 @@ export class ExactReviewQueue {
             await request.json().catch(() => null),
           ),
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_workflows_request" }, 400);
       }
     }
@@ -4806,7 +4856,8 @@ export class ExactReviewQueue {
             await request.json().catch(() => null),
           ),
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_placeholders_request" }, 400);
       }
     }
