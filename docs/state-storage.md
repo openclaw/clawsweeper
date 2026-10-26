@@ -131,6 +131,14 @@ from R2. Exact and batch review publishers pass the reviewed item numbers to
 read only their open/closed reports, plans, and decision packets. Those focused
 reads do not depend on repository-wide snapshots or journal exports.
 
+Bulk journal exports capture the bounded SQL page before any external-body await,
+then resolve ordered windows of at most four bodies. Each window drains before
+returning or throwing, and no later window starts after a failure or response
+cutoff. Existing source-byte, reconstruction-work and serialized-response caps
+still control each page, including oversized-first-record progress. Metadata-only
+canonical listing never opens R2 bodies. The [native export proof](proof/record-export-concurrency/README.md)
+compares the frozen serial owner and candidate without claiming deployed recovery.
+
 PR hydration uses current GitHub inputs; only the bounded raw file window is
 retained in memory for the current review preflight. Review records do not persist
 `pr_hydration_snapshot`; later review and apply runs fetch current GitHub inputs.

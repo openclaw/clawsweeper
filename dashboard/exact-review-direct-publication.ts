@@ -43,6 +43,7 @@ export const REVIEW_COVERAGE_SCAN_MAX_AGE_MS = 15 * 60 * 1000;
 
 const DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT = 256;
 const BACKFILL_SHADOW_PRUNE_LIMIT = 64;
+const RECORD_EXPORT_BODY_CONCURRENCY = 4;
 const HYDRATION_CLEANUP_MAX_TUPLES = 4;
 const HYDRATION_CLEANUP_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_PATH_BYTES = 1024;
@@ -1715,16 +1716,33 @@ export class ExactReviewDirectPublicationStore {
     );
     const records: RecordExportEntry[] = [];
     let responseBytes = 0;
-    for (const [index, row] of selectedRows.entries()) {
+    for (const row of selectedRows) {
       const sourceRow = sourceRows.get(`${String(row.section)}/${String(row.record_id)}`);
       if (Number(row.deleted) !== 1 && !sourceRow) {
         throw new RecordExportConsistencyError("record export source missing");
       }
-      const entry = await this.resolveExportCapture(captures[index]!);
-      const entryBytes = new TextEncoder().encode(JSON.stringify(entry)).byteLength;
-      if (records.length && responseBytes + entryBytes > options.maxBytes) break;
-      records.push(entry);
-      responseBytes += entryBytes;
+    }
+    // All SQL sources are captured before the first await. Resolve only a small
+    // ordered window at a time; allSettled drains every started body stream on
+    // both failure and response truncation, without starting another window.
+    windows: for (
+      let offset = 0;
+      offset < captures.length;
+      offset += RECORD_EXPORT_BODY_CONCURRENCY
+    ) {
+      const settled = await Promise.allSettled(
+        captures
+          .slice(offset, offset + RECORD_EXPORT_BODY_CONCURRENCY)
+          .map((capture) => this.resolveExportCapture(capture)),
+      );
+      for (const result of settled) {
+        if (result.status === "rejected") throw result.reason;
+        const entry = result.value;
+        const entryBytes = new TextEncoder().encode(JSON.stringify(entry)).byteLength;
+        if (records.length && responseBytes + entryBytes > options.maxBytes) break windows;
+        records.push(entry);
+        responseBytes += entryBytes;
+      }
     }
     const lastRevision = records.at(-1)?.storeRevision ?? null;
     const hasMore = capturedHasMore || records.length < selectedRows.length;

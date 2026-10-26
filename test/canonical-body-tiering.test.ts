@@ -1113,3 +1113,168 @@ test("migration preserves backfill-only siblings and refuses changed or invalid 
     assert.deepEqual(await store.exportRecords(exportOptions), before);
   }
 });
+
+const externalExportOptions = { ...exportOptions, sections: ["items"] as const };
+async function seededExternalExports(count = 12) {
+  const fixture = setup();
+  for (let id = 1; id <= count; id++)
+    fixture.store.accept(await plan(id, "export " + id + " 雪🦊\0"), 1000);
+  await activate(fixture.store);
+  for (let i = 0; i < count; i++) {
+    const checkpoint = await migrate(fixture.store);
+    if (checkpoint.completed_at) break;
+  }
+  fixture.bucket.gets = 0;
+  return fixture;
+}
+test(
+  "export overlaps at most four reads and retains revision order",
+  { timeout: 5000 },
+  async () => {
+    const { store, bucket } = await seededExternalExports();
+    const expected = await store.exportRecords(externalExportOptions),
+      entered = barrier(),
+      resume = barrier();
+    let active = 0,
+      peak = 0,
+      calls = 0;
+    const get = bucket.get.bind(bucket);
+    bucket.get = async (key) => {
+      const index = ++calls;
+      active++;
+      peak = Math.max(peak, active);
+      if (calls === 4) entered.release();
+      await resume.promise;
+      await new Promise((resolve) => setTimeout(resolve, (4 - (index % 4)) * 2));
+      const object = await get(key);
+      active--;
+      return object;
+    };
+    const reading = store.exportRecords(externalExportOptions);
+    await entered.promise;
+    assert.equal(calls, 4);
+    resume.release();
+    assert.deepEqual(await reading, expected);
+    assert.equal(peak, 4);
+    assert.equal(active, 0);
+    assert.equal(calls, 12);
+  },
+);
+test(
+  "export failure drains sibling streams without starting another window",
+  { timeout: 5000 },
+  async () => {
+    const { store, bucket, storage } = await seededExternalExports();
+    const original = [
+        ...storage.sql.exec(
+          "SELECT * FROM exact_review_record_export_index ORDER BY store_revision",
+        ),
+      ],
+      entered = barrier(),
+      resume = barrier();
+    let calls = 0,
+      active = 0,
+      finished = false;
+    bucket.get = async (key) => {
+      calls++;
+      if (calls === 2) throw Error("injected export failure");
+      const value = bucket.objects.get(key)!;
+      active++;
+      if (calls === 4) entered.release();
+      return {
+        size: value.byteLength,
+        body: new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            await resume.promise;
+            controller.enqueue(value);
+            controller.close();
+            active--;
+          },
+        }),
+      };
+    };
+    const checked = assert
+      .rejects(store.exportRecords(externalExportOptions), CanonicalBodyUnavailableError)
+      .then(() => {
+        finished = true;
+      });
+    await entered.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(finished, false);
+    assert.equal(active, 3);
+    resume.release();
+    await checked;
+    assert.equal(active, 0);
+    assert.equal(calls, 4);
+    assert.deepEqual(
+      [
+        ...storage.sql.exec(
+          "SELECT * FROM exact_review_record_export_index ORDER BY store_revision",
+        ),
+      ],
+      original,
+    );
+  },
+);
+test("export truncation drains the window and preserves the first excluded revision", async () => {
+  const { store, bucket } = await seededExternalExports();
+  const expected = await store.exportRecords(externalExportOptions);
+  bucket.gets = 0;
+  const page = await store.exportRecords({ ...externalExportOptions, maxBytes: 1 });
+  assert.deepEqual(page.records, expected.records.slice(0, 1));
+  assert.equal(page.nextCursor, expected.records[0]!.storeRevision);
+  assert.equal(bucket.gets, 4);
+  const rest = await store.exportRecords({ ...externalExportOptions, cursor: page.nextCursor! });
+  assert.deepEqual([...page.records, ...rest.records], expected.records);
+});
+test("export ignores speculative errors after cutoff but refuses the first excluded body", async () => {
+  const { store, bucket } = await seededExternalExports();
+  const get = bucket.get.bind(bucket);
+  let calls = 0;
+  bucket.get = async (key) => {
+    if (++calls === 4) throw Error("outside response");
+    return get(key);
+  };
+  assert.equal(
+    (await store.exportRecords({ ...externalExportOptions, maxBytes: 1 })).records.length,
+    1,
+  );
+  calls = 0;
+  bucket.get = async (key) => {
+    if (++calls === 2) throw Error("first excluded body");
+    return get(key);
+  };
+  await assert.rejects(
+    store.exportRecords({ ...externalExportOptions, maxBytes: 1 }),
+    CanonicalBodyUnavailableError,
+  );
+  assert.equal(calls, 4);
+});
+test("export retains source/work caps and listing never opens a body", async () => {
+  const { store, bucket } = await seededExternalExports();
+  store.listCanonical({ repoSlug: repo, section: "items", cursor: 0, limit: 500 });
+  assert.equal(bucket.gets, 0);
+  assert.equal(
+    (await store.exportRecords({ ...externalExportOptions, maxRecords: 2 })).records.length,
+    2,
+  );
+  assert.equal(bucket.gets, 2);
+  bucket.gets = 0;
+  const single = await store.exportRecords({ ...externalExportOptions, maxSourceBytes: 1 });
+  assert.equal(single.records.length, 1);
+  assert.equal(bucket.gets, 1);
+  assert.equal(single.nextCursor, single.records[0]!.storeRevision);
+});
+test("parallel export refuses missing and same-size corrupt bodies without changing sequence", async () => {
+  for (const corrupt of [false, true]) {
+    const { store, bucket } = await seededExternalExports();
+    const revision = store.currentExportRevision(),
+      key = CANONICAL_BODY_PREFIX + hash("export 2 雪🦊\0");
+    if (corrupt)
+      bucket.objects.set(key, new Uint8Array(bucket.objects.get(key)!.byteLength).fill(1));
+    else bucket.objects.delete(key);
+    await assert.rejects(store.exportRecords(externalExportOptions), CanonicalBodyUnavailableError);
+    assert.equal(bucket.gets, 4);
+    assert.equal(store.currentExportRevision(), revision);
+  }
+});

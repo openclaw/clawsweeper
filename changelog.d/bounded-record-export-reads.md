@@ -1,0 +1,1 @@
+- Reduce record hydration export latency by reading external bodies in bounded parallel windows while preserving ordered pages and integrity checks. Thanks @brokemac79.
