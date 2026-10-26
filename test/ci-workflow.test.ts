@@ -145,7 +145,7 @@ test("release caller stays manual dry-run-only with the pinned shared permission
   const release = caller.jobs.release;
   assert.equal(
     release.uses,
-    "openclaw/release-workflows/.github/workflows/release-source.yml@50a56f81429b1590bad6470e4d8ee9565c18f1b6",
+    "openclaw/release-workflows/.github/workflows/release-source.yml@9d81ab3d2877f9900ef787e6dbcf4d9af96eb013",
   );
   assert.equal(release.secrets, undefined);
   assert.deepEqual(release.permissions, {
