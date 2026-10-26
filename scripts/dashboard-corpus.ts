@@ -48,6 +48,11 @@ import {
 export const CORPUS_SECTIONS: readonly RecordSection[] = ["items", "closed"];
 // Weekly full rebuild in the quietest review hour; keep in sync with dashboard-corpus.yml.
 export const FULL_REBUILD_CRON = "20 0 * * 0";
+// A run stops starting repository hydrations after this long and saves what it has; the next
+// hourly run hydrates the rest. Stored snapshots can lag the journal by millions of revisions, so a
+// complete rebuild may need several runs; the workflow step timeout leaves room for the repository
+// still hydrating when the budget runs out.
+export const HYDRATION_BUDGET_MS = 25 * 60_000;
 // Hours (UTC) in which a scheduled run without a saved tree may rebuild in full.
 const QUIET_HOURS_UTC: readonly number[] = [0, 12];
 
@@ -112,9 +117,10 @@ const writeCursor = (stateDir: string, cursor: CorpusCursor) =>
   writeFileSync(cursorPath(stateDir), `${JSON.stringify(cursor, null, 2)}\n`, "utf8");
 
 export async function refreshCorpusRecords(
-  options: WorkerOptions & { stateDir: string; mode: CorpusMode },
+  options: WorkerOptions & { stateDir: string; mode: CorpusMode; hydrationBudgetMs?: number },
 ) {
   const startedAt = Date.now();
+  const hydrateUntil = startedAt + (options.hydrationBudgetMs ?? HYDRATION_BUDGET_MS);
   const stateDir = path.resolve(options.stateDir);
   const discovered = await discoverWorkerRecordRepoSlugs(options);
   if (!discovered.length) throw new Error("canonical record store returned no repository slugs");
@@ -125,24 +131,32 @@ export async function refreshCorpusRecords(
     refreshed: 0,
     bootstrapped: 0,
     deferred: 0,
+    pending: 0,
     written: 0,
     deleted: 0,
     durationMs: 0,
   };
 
   if (options.mode === "full") {
-    // Hydrates beside the live tree and replaces it only when the rebuild completes.
+    // Hydrates beside the live tree and replaces it only when the run succeeds. Repositories the
+    // budget left for later have no cursor, so the following incremental runs hydrate them.
     const parent = path.dirname(stateDir);
     mkdirSync(parent, { recursive: true });
     const staging = mkdtempSync(path.join(parent, ".corpus-full-"));
     try {
       const repoSlugs = discovered.map((entry) => entry.repoSlug);
-      const repositories = await hydrateRepositories(options, repoSlugs, recordsPath(staging));
-      writeCursor(staging, { schemaVersion: 1, repositories });
+      const hydrated = await hydrateRepositories(
+        options,
+        repoSlugs,
+        recordsPath(staging),
+        hydrateUntil,
+      );
+      writeCursor(staging, { schemaVersion: 1, repositories: hydrated.revisions });
       rmSync(stateDir, { force: true, recursive: true });
       renameSync(staging, stateDir);
-      summary.bootstrapped = Object.keys(repositories).length;
-      summary.deferred = repoSlugs.length - summary.bootstrapped;
+      summary.bootstrapped = Object.keys(hydrated.revisions).length;
+      summary.deferred = hydrated.deferred;
+      summary.pending = hydrated.pending;
     } finally {
       rmSync(staging, { force: true, recursive: true });
     }
@@ -162,10 +176,11 @@ export async function refreshCorpusRecords(
     .map((entry) => entry.repoSlug)
     .filter((repoSlug) => cursor.repositories[repoSlug] === undefined);
   if (added.length) {
-    const hydrated = await hydrateRepositories(options, added, recordsPath(stateDir));
-    Object.assign(cursor.repositories, hydrated);
-    summary.bootstrapped = Object.keys(hydrated).length;
-    summary.deferred = added.length - summary.bootstrapped;
+    const hydrated = await hydrateRepositories(options, added, recordsPath(stateDir), hydrateUntil);
+    Object.assign(cursor.repositories, hydrated.revisions);
+    summary.bootstrapped = Object.keys(hydrated.revisions).length;
+    summary.deferred = hydrated.deferred;
+    summary.pending = hydrated.pending;
   }
   for (const { repoSlug, revision } of discovered) {
     if (added.includes(repoSlug)) continue;
@@ -226,7 +241,8 @@ async function applyRepositoryChanges(
 }
 
 // Hydrates repositories from their snapshots plus the journal into `recordsRoot/<slug>`, trimmed to
-// front matter, and returns each hydrated repository's cursor. A repository without a stored
+// front matter, and returns each hydrated repository's cursor. No repository starts after
+// `hydrateUntil` (except the first); those left are counted as pending. A repository without a stored
 // snapshot whose journal is over the cold-hydration bound is left out (it has no cursor, so every
 // later refresh tries it again) instead of holding back every other repository until the
 // snapshot sweep reaches it. Store outages still fail the refresh.
@@ -234,12 +250,20 @@ async function hydrateRepositories(
   options: WorkerOptions,
   repoSlugs: readonly string[],
   recordsRoot: string,
+  hydrateUntil: number,
 ) {
   mkdirSync(recordsRoot, { recursive: true });
   const worktree = mkdtempSync(path.join(path.dirname(recordsRoot), ".corpus-hydrate-"));
   const revisions: Record<string, number> = {};
+  let deferred = 0;
+  let pending = 0;
   try {
     for (const repoSlug of repoSlugs) {
+      // At least one repository per run, so a run that spent its budget elsewhere still progresses.
+      if (Date.now() >= hydrateUntil && (Object.keys(revisions).length || deferred)) {
+        pending++;
+        continue;
+      }
       let result;
       try {
         result = await materializeWorkerRecords({
@@ -262,6 +286,7 @@ async function hydrateRepositories(
         console.log(
           `::warning::Corpus left out ${repoSlug} until it has a stored snapshot: ${error.message}`,
         );
+        deferred++;
         continue;
       }
       compactCorpusTree(result.recordsRoot);
@@ -272,7 +297,12 @@ async function hydrateRepositories(
       else mkdirSync(destination, { recursive: true });
       revisions[repoSlug] = result.repositories[repoSlug]!.exportStartRevision;
     }
-    return revisions;
+    if (pending) {
+      console.log(
+        `::notice::Corpus hydration budget used; ${pending} repositories hydrate on the next runs.`,
+      );
+    }
+    return { revisions, deferred, pending };
   } finally {
     rmSync(worktree, { force: true, recursive: true });
   }
@@ -395,7 +425,13 @@ async function main(argv: string[]) {
   const { bytes } = sealCorpusState(values.state, values.archive, secret);
   console.log(JSON.stringify({ ...summary, sealedBytes: bytes }));
   if (process.env.GITHUB_OUTPUT) {
-    writeFileSync(process.env.GITHUB_OUTPUT, "refreshed=true\n", { flag: "a" });
+    // The aggregate is rebuilt only from a complete tree, so the site keeps the last complete
+    // corpus while a rebuild spans several runs.
+    writeFileSync(
+      process.env.GITHUB_OUTPUT,
+      `refreshed=true\ncomplete=${summary.pending === 0}\n`,
+      { flag: "a" },
+    );
   }
 }
 

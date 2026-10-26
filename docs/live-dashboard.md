@@ -206,8 +206,11 @@ Each build reads four sources:
   that lands mid-export is read again next time. A full rebuild (Sundays at 00:20
   UTC, by hand with `mode=full`, or by a scheduled run in the 00 or 12 UTC hour
   that finds no saved tree) hydrates the R2 snapshots plus the journal, as
-  `scripts/hydrate-state.ts` does, and replaces the tree only when the rebuild
-  completes. A repository without a stored snapshot whose journal is over the
+  `scripts/hydrate-state.ts` does. Stored snapshots can lag the journal far behind,
+  so a run stops starting repositories after 25 minutes and saves what it has;
+  the next hourly runs hydrate the rest, and the aggregate is rebuilt only once
+  every repository has a cursor (until then the site keeps the last complete
+  corpus). A repository without a stored snapshot whose journal is over the
   cold-hydration bound is left out with a warning and tried again every hour
   until the snapshot sweep reaches it; the other repositories keep refreshing.
   The tree includes private repositories and default-branch Actions caches are

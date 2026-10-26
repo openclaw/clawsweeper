@@ -500,6 +500,34 @@ test("a new repository over the cold-hydration bound waits without holding back 
   );
 });
 
+test("a rebuild over its time budget continues in the next runs and only then is complete", async (t) => {
+  const root = fixtureRoot(t);
+  const store = new FakeStore();
+  store.write("openclaw-alpha", "items", 1, "one");
+  store.write("openclaw-beta", "closed", 2, "two");
+  const state = path.join(root, "state");
+  const out = await refreshCorpusRecords({
+    ...worker(store),
+    stateDir: state,
+    mode: "full",
+    hydrationBudgetMs: 0,
+  });
+  // Every run hydrates at least one repository, however little budget is left.
+  assert.equal(out.pending, 1);
+  assert.deepEqual(Object.keys(readCorpusCursor(state)!.repositories), ["openclaw-alpha"]);
+  store.write("openclaw-alpha", "items", 3, "three");
+  const next = await refreshCorpusRecords({
+    ...worker(store),
+    stateDir: state,
+    mode: "incremental",
+    hydrationBudgetMs: 0,
+  });
+  assert.equal(next.pending, 0);
+  assert.equal(next.bootstrapped, 1);
+  assert.equal(next.refreshed, 1);
+  assert.deepEqual(files(path.join(state, "records")), await fullTree(store, root, "fresh"));
+});
+
 test("refresh planning", () => {
   const now = new Date("2026-10-20T15:37:00Z");
   const quiet = new Date("2026-10-20T12:37:00Z");

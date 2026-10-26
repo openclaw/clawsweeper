@@ -5,7 +5,8 @@ name: Dashboard corpus
 # closed records written or deleted since the cursor saved with a cached record tree, merges them
 # into that tree and rebuilds the aggregate (scripts/dashboard-corpus.ts). A full rebuild runs
 # weekly in the quietest review hour and on request; it hydrates the R2 snapshots plus the journal
-# read-only and replaces the tree only when every repository hydrated.
+# read-only, a time budget per run, so a rebuild can span several hourly runs. The aggregate is
+# rebuilt only from a complete tree; until then the site keeps the last complete one.
 #
 # The record tree includes private repositories' records and default-branch caches are readable
 # from pull-request workflows, so the tree is cached only as an archive sealed with a key derived
@@ -42,7 +43,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 100
     permissions:
       contents: read
       # Prunes superseded record-tree caches, which are large.
@@ -74,10 +75,11 @@ jobs:
           restore-keys: dashboard-corpus-tree-
 
       # Incremental from the restored tree; a full rebuild weekly, on request, or without a tree in
-      # the 00 or 12 UTC hour. Only a complete refresh rewrites the sealed archive.
+      # the 00 or 12 UTC hour. Hydration stops starting repositories after 25 minutes; the step
+      # timeout leaves room for the one still running. Only a successful run rewrites the archive.
       - name: Refresh records
         id: refresh
-        timeout-minutes: 60
+        timeout-minutes: 75
         env:
           CLAWSWEEPER_RECORDS_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_RECORDS_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
@@ -88,7 +90,7 @@ jobs:
 
       - name: Build corpus aggregate
         id: aggregate
-        if: ${{ steps.refresh.outputs.refreshed == 'true' }}
+        if: ${{ steps.refresh.outputs.complete == 'true' }}
         timeout-minutes: 15
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -96,7 +98,7 @@ jobs:
 
       - name: Save record tree
         id: save-tree
-        if: ${{ steps.aggregate.outcome == 'success' }}
+        if: ${{ steps.refresh.outputs.refreshed == 'true' && steps.aggregate.outcome != 'failure' }}
         uses: actions/cache/save@v6
         with:
           path: .corpus-cache
