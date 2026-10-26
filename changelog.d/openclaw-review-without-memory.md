@@ -1,0 +1,1 @@
+- Run OpenClaw-runner reviews without memory plugins: each job uses a fresh, discarded state directory, so memory only indexed the untrusted checkout, called an embeddings API, and could fail the CLI after the review turn had already finished.
