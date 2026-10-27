@@ -1,0 +1,1 @@
+- Repair review decisions that use an issue-only or PR-only close reason on the wrong subject before publication, and classify older invalid artifacts as policy failures instead of unknown publication errors.
