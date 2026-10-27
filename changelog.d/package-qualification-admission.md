@@ -1,0 +1,1 @@
+- Skip three-platform local package qualification for explicitly classified operational-only pull requests while preserving full qualification for package inputs and unknown changes.

@@ -182,17 +182,37 @@ jobs:
       - name: Enforce coverage thresholds over every shard
         run: node scripts/run-node-tests.mjs all --coverage-from "$RUNNER_TEMP/coverage"
 
+  package-admission:
+    name: Classify local package qualification
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      package-required: ${{ steps.classify.outputs.package-required }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.22.1"
+      - id: classify
+        run: node scripts/local-package-admission.mjs
+
   local-package:
+    needs: package-admission
+    # Failed/missing admission keeps the full path; the producer emits lowercase booleans.
+    if: ${{ !cancelled() && !(needs.package-admission.result == 'success' && needs.package-admission.outputs.package-required == 'false') }}
     uses: ./.github/workflows/local-package-qualification.yml
     permissions:
       contents: read
 
-  # Single required status: passes only when every gate above passed. `always()`
+  # Single required status: every required gate must pass. `always()`
   # keeps it from being skipped (which would read as success) when a gate fails.
   check:
     name: pnpm check
     if: always()
-    needs: [check-fast, check-tests, check-coverage, local-package]
+    needs: [check-fast, check-tests, check-coverage, package-admission, local-package]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -201,7 +221,12 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
-          jq -e 'all(.[]; .result == "success")' <<<"$NEEDS" >/dev/null
+          jq -e '
+            .["package-admission"].outputs["package-required"] as $required
+            | ($required == "true" or $required == "false")
+            and (. as $jobs | all(["check-fast", "check-tests", "check-coverage", "package-admission"][]; $jobs[.].result == "success"))
+            and (.["local-package"].result == "success" or ($required == "false" and .["local-package"].result == "skipped"))
+          ' <<<"$NEEDS" >/dev/null
 
   sparse-repair-builds:
     name: sparse repair build smoke

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "yaml";
 
 type Step = {
+  id?: string;
   uses?: string;
   run?: string;
   with?: Record<string, unknown>;
@@ -14,6 +16,7 @@ type Job = {
   uses?: string;
   if?: string;
   needs?: string | string[];
+  outputs?: Record<string, string>;
   strategy?: { "fail-fast"?: boolean; matrix?: { shard?: number[] } };
   steps: Step[];
 };
@@ -30,10 +33,83 @@ test("CI keeps one pnpm check status that requires every check job", () => {
   const check = jobs.check!;
   // A skipped job reads as success to required-status checks, so it must always run.
   assert.equal(check.if, "always()");
-  assert.deepEqual(check.needs, ["check-fast", "check-tests", "check-coverage", "local-package"]);
+  assert.deepEqual(check.needs, [
+    "check-fast",
+    "check-tests",
+    "check-coverage",
+    "package-admission",
+    "local-package",
+  ]);
   const [gate] = check.steps;
   assert.equal(gate?.env?.NEEDS, "${{ toJSON(needs) }}");
-  assert.match(gate?.run ?? "", /jq -e 'all\(\.\[\]; \.result == "success"\)'/);
+  const runGate = (needs: Record<string, unknown>) =>
+    spawnSync("bash", ["-euo", "pipefail", "-c", gate!.run!], {
+      encoding: "utf8",
+      env: { ...process.env, NEEDS: JSON.stringify(needs) },
+    }).status;
+  const passed = {
+    "check-fast": { result: "success" },
+    "check-tests": { result: "success" },
+    "check-coverage": { result: "success" },
+    "package-admission": { result: "success", outputs: { "package-required": "true" } },
+    "local-package": { result: "success" },
+  };
+  assert.equal(runGate(passed), 0);
+  const skipped = {
+    ...passed,
+    "package-admission": { result: "success", outputs: { "package-required": "false" } },
+    "local-package": { result: "skipped" },
+  };
+  assert.equal(runGate(skipped), 0);
+  assert.notEqual(runGate({ ...passed, "local-package": { result: "skipped" } }), 0);
+  for (const result of ["failure", "cancelled", "skipped", ""]) {
+    for (const key of ["check-fast", "check-tests", "check-coverage", "package-admission"]) {
+      assert.notEqual(
+        runGate({ ...skipped, [key]: { ...skipped[key as keyof typeof skipped], result } }),
+        0,
+      );
+    }
+  }
+  for (const value of [undefined, "", "False", "false\n", false, null, "true "]) {
+    assert.notEqual(
+      runGate({
+        ...passed,
+        "package-admission": { result: "success", outputs: { "package-required": value } },
+      }),
+      0,
+    );
+  }
+  for (const result of ["failure", "cancelled", ""]) {
+    assert.notEqual(runGate({ ...skipped, "local-package": { result } }), 0);
+  }
+  for (const key of Object.keys(passed)) {
+    const missing = { ...passed } as Record<string, unknown>;
+    delete missing[key];
+    assert.notEqual(runGate(missing), 0);
+  }
+});
+
+test("package admission is dependency-free, bounded and skips only a successful literal false", () => {
+  const admission = jobs["package-admission"]!;
+  assert.deepEqual(admission.steps[0], {
+    uses: "actions/checkout@v7",
+    with: { "fetch-depth": 2, "persist-credentials": false },
+  });
+  assert.deepEqual(admission.steps[1], {
+    uses: "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    with: { "node-version": "24.22.1" },
+  });
+  assert.equal(admission.steps.length, 3);
+  assert.equal(admission.steps[2]!.id, "classify");
+  assert.equal(admission.steps[2]!.run, "node scripts/local-package-admission.mjs");
+  assert.deepEqual(admission.outputs, {
+    "package-required": "${{ steps.classify.outputs.package-required }}",
+  });
+  assert.equal(jobs["local-package"]!.needs, "package-admission");
+  assert.equal(
+    jobs["local-package"]!.if,
+    "${{ !cancelled() && !(needs.package-admission.result == 'success' && needs.package-admission.outputs.package-required == 'false') }}",
+  );
 });
 
 test("CI runs the fast gates once and the full suite as coverage shards", () => {
