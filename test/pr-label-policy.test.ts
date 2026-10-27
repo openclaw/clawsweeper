@@ -49,7 +49,7 @@ const noActivity = { comments: [], timeline: [] };
 function recordingLabelSync(commands: string[][]) {
   return createLabelSyncOperations(
     createLabelMutationOperations({
-      ghJson: <T>(): T => [] as T,
+      readLabelCatalogPages: () => [[]],
       ghObservedMutationCommand: ({ args }) => {
         commands.push(args);
         return "";

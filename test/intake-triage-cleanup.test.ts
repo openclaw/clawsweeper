@@ -10,7 +10,7 @@ for (const kind of ["issue", "pull_request"] as const) {
     test(`normal ${kind} publisher removes finite intake labels only for ${scenario}`, () => {
       const writes: string[][] = [];
       const labels = createLabelMutationOperations({
-        ghJson: <T>() => [] as T,
+        readLabelCatalogPages: () => [[]],
         ghObservedMutationCommand: (options) => {
           writes.push(options.args);
           options.onMutation?.();
@@ -106,7 +106,7 @@ for (const kind of ["issue", "pull_request"] as const) {
 test("intake cleanup joins a batch that can still be discarded before publication", () => {
   let writes = 0;
   const labels = createLabelMutationOperations({
-    ghJson: <T>() => [] as T,
+    readLabelCatalogPages: () => [[]],
     ghObservedMutationCommand: () => {
       writes++;
       return "";

@@ -1064,11 +1064,11 @@ if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && ar
   console.log(JSON.stringify({ items: [] }));
 } else if (args[0] === "issue" && args[1] === "view") {
   console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
-} else if (args[0] === "label" && args[1] === "list") {
-  console.log(JSON.stringify([
+} else if (args[0] === "api" && path === "repos/openclaw/openclaw/labels?per_page=100") {
+  console.log(JSON.stringify([[
     { name: "P2", color: "FBCA04", description: "Important but bounded work with a practical workaround or moderate scope." },
     { name: "impact:message-loss", color: "D93F0B", description: "This issue is about lost, duplicated, misrouted, or suppressed channel messages." }
-  ]));
+  ]]));
 } else if (args[0] === "label" && args[1] === "create") {
   console.log("");
 } else if (args[0] === "issue" && args[1] === "edit") {
@@ -1294,10 +1294,10 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
   console.log("");
 } else if (args[0] === "issue" && args[1] === "view") {
   console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
-} else if (args[0] === "label" && args[1] === "list") {
-  console.log(JSON.stringify([
+} else if (args[0] === "api" && path === "repos/openclaw/openclaw/labels?per_page=100") {
+  console.log(JSON.stringify([[
     { name: "P2", color: "FBCA04", description: "Important but bounded work with a practical workaround or moderate scope." }
-  ]));
+  ]]));
 } else if (args[0] === "label" && args[1] === "create") {
   console.log("");
 } else if (args[0] === "issue" && args[1] === "edit") {
@@ -2726,8 +2726,8 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
   }));
 } else if (args[0] === "issue" && args[1] === "edit") {
   console.log("");
-} else if (args[0] === "label" && args[1] === "list") {
-  console.log("[]");
+} else if (args[0] === "api" && path === "repos/openclaw/openclaw/labels?per_page=100") {
+  console.log("[[]]");
 } else if (args[0] === "label" && args[1] === "create") {
   console.log(JSON.stringify({ name: args[2] }));
 } else {

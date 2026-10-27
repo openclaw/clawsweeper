@@ -709,8 +709,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/comments\\/${leaseCommentId}$/.test(path) && args.includes("DELETE")) {
   console.log("");
-} else if (args[0] === "label" && args[1] === "list") {
-  console.log(JSON.stringify([]));
+} else if (args[0] === "api" && path === "repos/openclaw/openclaw/labels?per_page=100") {
+  console.log(JSON.stringify([[]]));
 } else if (args[0] === "label" || args[0] === "issue") {
   console.log("");
 } else {
