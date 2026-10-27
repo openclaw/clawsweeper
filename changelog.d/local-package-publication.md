@@ -1,0 +1,1 @@
+- Keep local package release rehearsals as the default and permit explicit publication only from the matching signed version tag, verified against the protected release signer policy.

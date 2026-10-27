@@ -1,4 +1,4 @@
-name: Local package release rehearsal
+name: Local package release
 
 on:
   workflow_dispatch:
@@ -7,11 +7,36 @@ on:
         description: Version already recorded in dated release notes and package metadata
         required: true
         type: string
+      publish:
+        description: Publish from an existing signed version tag; otherwise rehearse
+        type: boolean
+        default: false
 
 permissions: {}
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require the version tag for publication
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          node <<'NODE'
+          if (process.env.PUBLISH === "true") {
+            const version = process.env.VERSION.replace(/^v/, "");
+            if (process.env.RELEASE_REF !== `refs/tags/v${version}`) {
+              console.error("Publication requires the existing signed version tag ref.");
+              process.exit(1);
+            }
+          }
+          NODE
+
   qualification:
+    needs: preflight
     uses: ./.github/workflows/local-package-qualification.yml
     permissions:
       contents: read
@@ -19,7 +44,7 @@ jobs:
   release:
     needs: qualification
     # The pinned callee declares write access for its tag/publish jobs, even
-    # though this caller always rehearses and those paths perform no writes.
+    # though the default dry run performs no writes through those paths.
     permissions:
       actions: read
       checks: read
@@ -28,7 +53,7 @@ jobs:
     uses: openclaw/release-workflows/.github/workflows/release-source.yml@50a56f81429b1590bad6470e4d8ee9565c18f1b6
     with:
       version: ${{ inputs.version }}
-      dry_run: true
+      dry_run: ${{ !inputs.publish }}
       require-signed-tag: true
       strict-checks: true
       ci-check-events: '["push"]'

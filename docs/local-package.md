@@ -113,11 +113,19 @@ provider access, native scanner coverage, a published release, or global install
 Keep the original target, reports, and operator authentication separate from the
 disposable install.
 
-## Proposed release rehearsal
+## Release rehearsal and publication
 
-The manual `.github/workflows/release.yml` caller is preparation only. It has
-no publishing mode and cannot create a version tag, npm package, or tap change.
-The existing package and command names remain private and provisional.
+The manual `.github/workflows/release.yml` caller rehearses by default.
+Leave `publish` false to verify release assets without publishing them. It
+does not publish an npm package or change the Homebrew tap.
+
+Publication is a separate maintainer action after the final source, release
+notes, and assets are approved. Create and verify an SSH-signed annotated
+`v<version>` tag at that source using a key in `.github/release-allowed-signers`,
+then push that tag. Select that exact tag when dispatching the workflow and
+set `publish` true. Publication from a branch or a different version tag
+fails before package qualification. The pinned shared workflow verifies the
+existing tag signature and protected-main source before publishing assets.
 
 Both CI and the caller reuse `.github/workflows/local-package-qualification.yml`.
 Its Linux producer emits one canonical four-file envelope. Linux, Windows, and
@@ -142,15 +150,14 @@ integrity; the three consumers provide the package behavior proof.
 
 The caller grants `actions: read`, `checks: read`, `contents: write`, and
 `statuses: read` only to the pinned shared call. Its tag and publication jobs
-declare write capability even in dry-run mode. `dry_run: true`, signed-tag and
-strict-CI options are fixed, and Homebrew handoff is disabled. Qualification
+declare write capability even in dry-run mode. The boolean `publish` input
+defaults to false and controls `dry_run`; signed-tag and strict-CI options
+remain fixed, and Homebrew handoff is disabled. Qualification
 has only `contents: read`; no secrets are inherited or supplied, and the shared
 build strips token environment variables before running the wrapper.
 
-A protected-main rehearsal is still blocked until the release maintainer
-approves dated release notes matching package version `0.3.1`. The current
-`0.3.1 - Unreleased` heading does not satisfy the shared metadata contract.
-Do not dispatch an expected failure or invent release metadata. Public naming,
-signer policy for a future real release, dependency delivery for Homebrew, and
-publication require separate decisions. This caller does not establish those
-outcomes or a full shared-workflow rehearsal.
+Every selected source must contain maintainer-approved dated release notes
+matching its package version. A successful rehearsal qualifies only that
+source and its actual assets; later source changes need fresh qualification.
+Rehearsal does not establish publication or Homebrew installation, and does
+not exercise the real signed-tag or publisher paths.
