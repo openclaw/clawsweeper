@@ -108,6 +108,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
 
       - name: Validate workflow semantics
         env:
@@ -130,6 +132,72 @@ jobs:
       # Everything in `pnpm run check` except the full suite, which the shards run.
       - name: Run static checks, build, lint, and changed-surface coverage
         run: pnpm run check:fast
+
+      - name: Admit changed scanner archive proof
+        id: scanner-proof
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          # The PR merge's first parent is the base; depth two supplies both trees.
+          if git diff --quiet HEAD^1 HEAD -- \
+            .github/actions/setup-review-tools \
+            .github/actions/setup-codex/action.yml .github/actions/setup-openclaw/action.yml \
+            .github/workflows/ci.yml src/review-tool-bootstrap.ts \
+            test/setup-review-tools-action.test.ts test/setup-codex-action.test.ts \
+            test/backlog-reliability-proof.test.ts; then
+            exit 0
+          else
+            status=$?
+          fi
+          test "$status" -eq 1
+          echo 'run=true' >> "$GITHUB_OUTPUT"
+
+      - name: Install first real scanner and save its verified archive
+        id: scanner-first
+        if: steps.scanner-proof.outputs.run == 'true'
+        uses: ./.github/actions/setup-review-tools
+
+      - name: Record first scanner and remove only archive transport
+        id: scanner-reset
+        if: steps.scanner-proof.outputs.run == 'true'
+        shell: bash
+        env:
+          ARCHIVE: ${{ steps.scanner-first.outputs.archive-path }}
+        run: |
+          node .github/actions/setup-review-tools/archive-cache.mjs --validate "$ARCHIVE"
+          scanner="$(command -v trufflehog)"
+          {
+            echo "bin=$scanner"
+            echo "sha256=$(sha256sum "$ARCHIVE" | cut -d ' ' -f 1)"
+            echo "version=$(env -i HOME="${scanner%/bin/trufflehog}" "$scanner" --version)"
+          } >> "$GITHUB_OUTPUT"
+          rm -- "$ARCHIVE"
+          test ! -e "$ARCHIVE"
+
+      - name: Restore archive through Actions and install another fresh scanner
+        id: scanner-second
+        if: steps.scanner-proof.outputs.run == 'true'
+        uses: ./.github/actions/setup-review-tools
+
+      - name: Require real archive round-trip and fresh scanner
+        if: steps.scanner-proof.outputs.run == 'true'
+        shell: bash
+        env:
+          FIRST_HIT: ${{ steps.scanner-first.outputs.cache-hit }}
+          SECOND_HIT: ${{ steps.scanner-second.outputs.cache-hit }}
+          ARCHIVE: ${{ steps.scanner-second.outputs.archive-path }}
+          FIRST_BIN: ${{ steps.scanner-reset.outputs.bin }}
+          FIRST_SHA256: ${{ steps.scanner-reset.outputs.sha256 }}
+          FIRST_VERSION: ${{ steps.scanner-reset.outputs.version }}
+        run: |
+          test "$SECOND_HIT" = true
+          node .github/actions/setup-review-tools/archive-cache.mjs --validate "$ARCHIVE"
+          scanner="$(command -v trufflehog)"
+          test "$scanner" != "$FIRST_BIN"
+          printf '%s  %s\n' "$FIRST_SHA256" "$ARCHIVE" | sha256sum --check -
+          test "$(env -i HOME="${scanner%/bin/trufflehog}" "$scanner" --version)" = "$FIRST_VERSION"
+          printf 'review archive round-trip: first-hit=%s second-hit=%s sha256=%s version=%s distinct-binaries=true\n' \
+            "${FIRST_HIT:-false}" "$SECOND_HIT" "$FIRST_SHA256" "$FIRST_VERSION"
 
   check-tests:
     name: check tests (${{ matrix.shard }}/${{ strategy.job-total }})

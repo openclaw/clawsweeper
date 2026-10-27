@@ -26,10 +26,7 @@ runs:
   using: composite
   steps:
     - name: Install trusted review scanner
-      shell: bash
-      env:
-        WORKFLOW_ACTION_PATH: ${{ github.action_path }}
-      run: bash "${WORKFLOW_ACTION_PATH}/../setup-review-tools/install.sh"
+      uses: ./.github/actions/setup-review-tools
 
     - name: Cache Codex CLI and npm downloads
       uses: actions/cache@v6
