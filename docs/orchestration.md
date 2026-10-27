@@ -35,10 +35,12 @@ this one fetch owner, which stops Git's process group before returning and leave
 Git low-speed settings untouched. Existing cache, pin validation, and retry
 classification remain unchanged.
 
-A batch publisher hydrates only the complete record tuples named by its review
-artifacts, reconciles those selected tuples against current GitHub state, then
-publishes the records and synchronizes their comments in the same job. It does not download the repository-wide snapshot, pull source Git
-history, reconcile unrelated records, or dispatch another comment-sync run.
+A batch publisher hydrates only the complete canonical record tuple for each
+claimed item, inside its isolated preparation worker. The batch heartbeat and
+preparation deadline cover those reads. It reconciles each selected tuple against
+current GitHub state, then publishes the records and synchronizes their comments
+in the same job. It does not download the repository-wide snapshot, pull source
+Git history, reconcile unrelated records, or dispatch another comment-sync run.
 Scheduled comment synchronization remains a recovery path.
 Explicit-item planning uses the same requested item set for focused hydration
 and selection. Repository-wide planning still loads the repository snapshot.

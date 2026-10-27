@@ -39,7 +39,7 @@ docs/proof/github-egress-telemetry/run-proof.sh
 ```
 
 The script uses pinned Wrangler 4.107.0 and a disposable self-signed loopback
-certificate. If `gh` is unavailable, it downloads GitHub CLI 2.88.1 into the
+certificate. If `gh` is unavailable, it downloads GitHub CLI 2.102.1 into the
 disposable proof directory and verifies the Linux AMD64 archive against the
 committed SHA-256 from the official release checksum manifest before
 extraction. It uses only synthetic credentials and loopback application

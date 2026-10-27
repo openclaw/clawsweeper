@@ -29,6 +29,7 @@ import {
   publishExactReviewArtifact,
   restoreExactReviewArtifact,
 } from "./exact-review-artifact-cache.mjs";
+import { materializeWorkerItems } from "./worker-records.ts";
 
 const DEFAULT_CONCURRENCY = 4;
 const MAX_CONCURRENCY = 4;
@@ -141,40 +142,7 @@ async function controller() {
     writeFileSync(itemPath, `${JSON.stringify(item)}\n`, "utf8");
     const workerStartedAt = Date.now();
     let timedOut = false;
-    let failureStage = "canonical record copy";
     try {
-      const targetRepo = String(item.decision?.targetRepo || "");
-      assertRepo(targetRepo, "targetRepo");
-      const itemNumber = String(requirePositiveInteger(item.decision?.itemNumber, "itemNumber"));
-      if (targetRepo.split("/").some((part) => part === "." || part === "..")) {
-        throw new Error("invalid canonical record identity");
-      }
-      const paths = eventRecordPaths({
-        targetRepo,
-        itemNumber,
-        snapshotDir: join(root, ".artifacts/event-record-snapshot"),
-      });
-      const recordsSource = join(workspace, "records");
-      if (!existsSync(recordsSource)) throw new Error("canonical records are not hydrated");
-      if (!statSync(recordsSource).isDirectory()) {
-        // Preserve the publisher's non-retryable failure for an invalid records root.
-        writeFailure(outcomePath, "permanent_failure", "unknown_failure");
-        throw new Error("canonical records are not a directory");
-      }
-      // Exact-event apply is selected-only, including paired-record lookups.
-      for (const path of [
-        paths.itemRecord,
-        paths.closedRecord,
-        paths.planRecord,
-        paths.decisionPacket,
-      ]) {
-        const source = join(workspace, path);
-        if (!existsSync(source)) continue;
-        const destination = join(root, path);
-        mkdirSync(dirname(destination), { recursive: true });
-        cpSync(source, destination);
-      }
-      failureStage = "worker execution";
       const status = await run(
         process.execPath,
         [process.argv[1], "worker", itemPath, root, workspace],
@@ -202,7 +170,7 @@ async function controller() {
       if (!existsSync(outcomePath)) {
         writeFailure(outcomePath, "retryable_failure", "unknown_failure");
       }
-      console.error(`Failed to prepare batch member ${item.itemKey} during ${failureStage}`);
+      console.error(`Failed to prepare batch member ${item.itemKey}`);
     } finally {
       durations.push(Date.now() - workerStartedAt);
       try {
@@ -255,9 +223,27 @@ async function worker(itemPath, root, workspace) {
   const decision = item.decision;
   const publication = decision.publication;
   const producer = publication.producerDecision;
-  const itemNumber = String(decision.itemNumber);
+  const itemNumber = String(requirePositiveInteger(decision.itemNumber, "itemNumber"));
   const targetRepo = String(decision.targetRepo);
+  assertRepo(targetRepo, "targetRepo");
+  if (targetRepo.split("/").some((part) => part === "." || part === "..")) {
+    throw new Error("invalid canonical record identity");
+  }
   const outcomePath = checkedOutcomePath(workspace, item.outcomePath);
+  const paths = eventRecordPaths({
+    targetRepo,
+    itemNumber,
+    snapshotDir: join(root, ".artifacts/event-record-snapshot"),
+  });
+  // Hydration belongs inside the timed, heartbeating preparation phase. Each
+  // isolated worker needs only its leased tuple, never a repository snapshot.
+  await materializeWorkerItems({
+    worktreeRoot: root,
+    baseUrl: env("EXACT_REVIEW_QUEUE_URL"),
+    webhookSecret: env("CLAWSWEEPER_WEBHOOK_SECRET"),
+    repoSlug: paths.targetSlug,
+    itemNumbers: [Number(itemNumber)],
+  });
   const bundleDir = join(root, "bundles", itemNumber);
   const eventArtifacts = join(root, "artifacts/event");
   mkdirSync(bundleDir, { recursive: true });

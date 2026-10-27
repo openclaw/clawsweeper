@@ -1,0 +1,1 @@
+- Hydrate only claimed publication records under the batch heartbeat and preparation deadline, avoiding whole-repository setup stalls.

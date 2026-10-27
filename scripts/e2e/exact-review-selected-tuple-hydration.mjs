@@ -1,10 +1,7 @@
 #!/usr/bin/env node
-// --compare <base-sha> checks publication parity; --benchmark <base-sha> [rounds] [files]
-// defaults to 67,000 synthetic unrelated files. Copy timings exclude observation,
-// while controller wall time includes inventory observation, worker startup, and cleanup.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -138,10 +135,10 @@ function report(repo, number, reviewedAt, packet = null) {
   ].join("\n");
 }
 
-// This preload observes real copies and worker files before controller cleanup.
-// It never replaces a copy, publisher, validator, or apply operation.
+// Only canonical HTTP transport is simulated; hydration, validation and publication
+// run through their real owners. Worker state is observed before controller cleanup.
 function observeChildren() {
-  const config = json(process.env.CSW_COPY_PROOF_CONFIG);
+  const config = json(process.env.CSW_HYDRATION_PROOF_CONFIG);
   const entry = basename(process.argv[1] || "");
   const log = (value) => fs.appendFileSync(config.trace, `${JSON.stringify(value)}\n`, "utf8");
   if (entry === "clawsweeper.js" || entry === "publish-event-result.js") {
@@ -155,37 +152,73 @@ function observeChildren() {
       }
     };
   }
-  if (entry === "prepare-exact-review-batch.mjs" && process.argv[2] !== "worker") {
-    const cp = fs.cpSync;
-    const exists = fs.existsSync;
-    fs.existsSync = (path) => {
-      if (String(path).startsWith(join(config.workspace, "records"))) {
-        log({ kind: "source-read", path: relative(config.workspace, path) });
-      }
-      return exists(path);
-    };
-    fs.cpSync = (source, destination, options) => {
-      const start = performance.now();
-      try {
-        return cp(source, destination, options);
-      } finally {
-        log({
-          kind: "copy",
-          path: relative(config.workspace, source),
-          ms: performance.now() - start,
-        });
-      }
-    };
-    syncBuiltinESMExports();
-  } else if (entry === "prepare-exact-review-batch.mjs") {
+  if (entry === "prepare-exact-review-batch.mjs" && process.argv[2] === "worker") {
     const item = json(process.argv[3]);
     const root = process.argv[4];
-    log({
-      kind: "worker",
-      itemKey: item.itemKey,
-      files: inventory(join(root, "records"), !config.benchmark),
-      gitPresent: fs.existsSync(join(root, ".git")),
-    });
+    const selected = new Set(tuplePaths(item.decision.targetRepo, item.decision.itemNumber));
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      assert.equal(url.origin, "https://canonical.invalid");
+      if (url.pathname === "/internal/exact-review/artifact-cache/receipt/lookup") {
+        return Response.json({ hit: false });
+      }
+      if (url.pathname.startsWith("/internal/state/blobs/")) {
+        return Response.json({ error: "fixture_cache_unavailable" }, { status: 403 });
+      }
+      assert.equal(request.method, "GET");
+      assert.equal(
+        request.headers.get("x-clawsweeper-exact-review-signature"),
+        `sha256=${createHmac("sha256", "synthetic-hydration-secret").update("").digest("hex")}`,
+      );
+      const match =
+        /^\/internal\/state\/records\/([^/]+)\/(items|closed|plans|decision-packets)\/(\d+)$/.exec(
+          url.pathname,
+        );
+      assert.ok(match, `broad canonical read: ${url.pathname}`);
+      const [, slug, section, number] = match;
+      const path = `records/${slug}/${section}/${number}.${section === "decision-packets" ? "json" : "md"}`;
+      assert.ok(selected.has(path), `unselected canonical read: ${path}`);
+      log({ kind: "canonical-read", itemKey: item.itemKey, path });
+      if (config.mode === "read-timeout" && item.decision.itemNumber === 42) {
+        await new Promise(() => setInterval(() => {}, 1000));
+      }
+      if (config.mode === "forbidden" && item.decision.itemNumber === 42) {
+        return Response.json({ error: "forbidden" }, { status: 403 });
+      }
+      const record = join(config.canonical, path);
+      if (!fs.existsSync(record))
+        return Response.json({ error: "record_not_found" }, { status: 404 });
+      const content = fs.readFileSync(record, "utf8");
+      return Response.json({
+        content,
+        digest:
+          config.mode === "corrupt" && item.decision.itemNumber === 42
+            ? "0".repeat(64)
+            : digest(content),
+        revision: 1,
+      });
+    };
+    let observed = false;
+    const observe = () => {
+      if (observed) return;
+      observed = true;
+      log({
+        kind: "worker",
+        itemKey: item.itemKey,
+        files: inventory(join(root, "records")),
+        gitPresent: fs.existsSync(join(root, ".git")),
+      });
+    };
+    const mkdir = fs.mkdirSync;
+    fs.mkdirSync = (path, ...args) => {
+      // Bundle acquisition starts immediately after canonical hydration, before
+      // the real publisher mutates the isolated tuple.
+      if (path === join(root, "bundles", String(item.decision.itemNumber))) observe();
+      return mkdir(path, ...args);
+    };
+    syncBuiltinESMExports();
+    process.on("exit", observe);
   } else if (entry === "publish-event-result.js") {
     const exists = fs.existsSync;
     let advanced = false;
@@ -204,8 +237,8 @@ function observeChildren() {
         advanced = true;
         for (const record of selected) {
           fs.rmSync(join(workRoot, record), { force: true });
-          if (exists(join(config.workspace, record))) {
-            write(join(workRoot, record), fs.readFileSync(join(config.workspace, record)));
+          if (exists(join(config.canonical, record))) {
+            write(join(workRoot, record), fs.readFileSync(join(config.canonical, record)));
           }
         }
         log({ kind: "remote-winner", itemKey: process.env.EXACT_REVIEW_BATCH_ITEM_KEY });
@@ -227,7 +260,7 @@ function observeChildren() {
 }
 
 export function fixtureGh() {
-  const config = json(process.env.CSW_COPY_PROOF_CONFIG);
+  const config = json(process.env.CSW_HYDRATION_PROOF_CONFIG);
   const raw = process.argv.slice(2);
   const args = raw[0] === "--repo" ? raw.slice(2) : raw;
   const log = (value) => fs.appendFileSync(config.trace, `${JSON.stringify(value)}\n`, "utf8");
@@ -253,7 +286,7 @@ export function fixtureGh() {
     } else if (config.mode === "circuit") {
       console.error("API rate limit exceeded");
       process.exitCode = 1;
-    } else if (config.benchmark || config.mode === "copy") {
+    } else if (config.mode === "artifact-unavailable") {
       console.error("synthetic artifact unavailable");
       process.exitCode = 1;
     } else {
@@ -300,32 +333,29 @@ export function fixtureGh() {
   throw new Error(`unexpected synthetic GitHub operation: ${JSON.stringify(args)}`);
 }
 
-export function runCopyProof({
-  controller = controllerPath,
+export function runHydrationProof({
   unrelatedRecords = 128,
   bytesPerRecord = 3582,
   mode = "publication",
-  assertSelected = true,
   invalidDecision,
-  benchmark = false,
   concurrency = 1,
 } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "selected-tuple-proof-")));
   try {
     const workspace = join(root, "workspace");
+    const canonical = join(root, "canonical");
     const trace = join(root, "trace.jsonl");
     const bundles = join(root, "bundles");
     const configPath = join(root, "config.json");
     const items = repos.flatMap((repo) =>
       [42, 43, 44, 45].map((number) => member(repo, number, repos.indexOf(repo) * 4 + number - 42)),
     );
-    if (mode === "file-source") items.splice(1);
     if (invalidDecision) {
       items.splice(1);
       Object.assign(items[0].decision, invalidDecision);
     }
     write(trace, "");
-    write(configPath, JSON.stringify({ workspace, trace, bundles, mode, benchmark }));
+    write(configPath, JSON.stringify({ workspace, canonical, trace, bundles, mode }));
     fs.mkdirSync(workspace, { recursive: true });
     fs.cpSync(join(codeRoot, "dist"), join(workspace, "dist"), { recursive: true });
     for (const path of ["node_modules", "config", "prompts", "schema"]) {
@@ -340,8 +370,9 @@ export function runCopyProof({
     fs.chmodSync(join(root, "bin/gh"), 0o755);
     if (mode === "file-source") {
       write(join(workspace, "records"), "not a hydrated records directory\n");
-    } else if (mode !== "missing-source") {
-      fs.mkdirSync(join(workspace, "records"), { recursive: true });
+    }
+    {
+      fs.mkdirSync(join(canonical, "records"), { recursive: true });
       for (const repo of repos) {
         for (const number of [42, 43, 44]) {
           const paths = tuplePaths(repo, number);
@@ -355,14 +386,14 @@ export function runCopyProof({
                   source: { reportPath: paths[0], reviewedAt },
                 })}\n`
               : null;
-          write(join(workspace, paths[0]), report(repo, number, reviewedAt, packet));
+          write(join(canonical, paths[0]), report(repo, number, reviewedAt, packet));
           if (packet) {
-            write(join(workspace, paths[2]), `---\nreviewed_at: ${reviewedAt}\n---\nPlan\n`);
-            write(join(workspace, paths[3]), packet);
+            write(join(canonical, paths[2]), `---\nreviewed_at: ${reviewedAt}\n---\nPlan\n`);
+            write(join(canonical, paths[3]), packet);
           }
         }
         write(
-          join(workspace, tuplePaths(repo, 45)[1]),
+          join(canonical, tuplePaths(repo, 45)[1]),
           report(repo, 45, newerTimestamp).replace(
             "action_taken: proposed_close",
             `action_taken: closed\nreconciled_at: ${newerTimestamp}`,
@@ -371,16 +402,17 @@ export function runCopyProof({
       }
       for (let index = 0; index < unrelatedRecords; index++) {
         write(
-          join(workspace, tuplePaths(repos[index % 2], 100000 + index)[1]),
+          join(canonical, tuplePaths(repos[index % 2], 100000 + index)[1]),
           Buffer.alloc(bytesPerRecord, 65 + (index % 26)),
         );
       }
     }
-    const before = inventory(join(workspace, "records"), !benchmark);
+    const before = inventory(join(canonical, "records"));
+    const localBefore = inventory(join(workspace, "records"));
     if (mode === "heartbeat") {
       write(join(workspace, ".artifacts/exact-review-batch/heartbeat-failed"), "expired\n");
     }
-    if (mode === "publication" || mode === "file-source" || mode === "mixed-circuit") {
+    if (!["artifact-unavailable", "heartbeat", "circuit"].includes(mode) && !invalidDecision) {
       const bundleModule = join(codeRoot, "dist/repair/exact-review-bundle.js");
       // Bundle creation uses the compiled owner, just like the producer.
       const create = `
@@ -419,7 +451,7 @@ export function runCopyProof({
       });
     }
     const start = performance.now();
-    const result = spawnSync(process.execPath, [controller], {
+    const result = spawnSync(process.execPath, [controllerPath], {
       cwd: workspace,
       encoding: "utf8",
       maxBuffer: 8 * 1024 * 1024,
@@ -428,7 +460,10 @@ export function runCopyProof({
         HOME: root,
         TMPDIR: root,
         NODE_OPTIONS: `--import=${pathToFileURL(self).href}`,
-        CSW_COPY_PROOF_CONFIG: configPath,
+        CSW_HYDRATION_PROOF_CONFIG: configPath,
+        EXACT_REVIEW_QUEUE_URL: "https://canonical.invalid",
+        CLAWSWEEPER_WEBHOOK_SECRET: "synthetic-hydration-secret",
+        ...(mode === "read-timeout" ? { EXACT_REVIEW_BATCH_ITEM_TIMEOUT_MS: "2000" } : {}),
         GITHUB_WORKSPACE: workspace,
         GITHUB_REPOSITORY: "openclaw/clawsweeper",
         REPO_TOKEN: "synthetic-fixture-token",
@@ -464,46 +499,40 @@ export function runCopyProof({
     const publishers = events.filter((event) => event.kind === "publisher").sort(byMember);
     const outcomes = items.map((item) => json(join(workspace, item.outcomePath)));
     const telemetry = json(join(workspace, ".artifacts/exact-review-batch/prepare-telemetry.json"));
-    assert.deepEqual(inventory(join(workspace, "records"), !benchmark), before);
+    assert.deepEqual(inventory(join(workspace, "records")), localBefore);
+    assert.deepEqual(inventory(join(canonical, "records")), before);
     assert.deepEqual(fs.readdirSync(join(workspace, ".artifacts/exact-review-batch/workers")), []);
-    if (mode === "file-source") {
-      assert.equal(outcomes[0].kind, "permanent_failure", diagnostics);
-      assert.equal(outcomes[0].reasonCode, "unknown_failure");
-      assert.equal(outcomes[0].plan, undefined);
-      if (assertSelected) {
-        assert.equal(workers.length, 0, "non-directory records must fail before worker execution");
-        assert.equal(events.filter((event) => event.kind === "copy").length, 0);
-      }
-    } else if (mode === "heartbeat" || mode === "missing-source" || invalidDecision) {
-      assert.equal(workers.length, 0, "rejected members must not start a worker");
-      assert.equal(events.filter((event) => event.kind === "copy").length, 0);
-      if (invalidDecision) {
-        assert.equal(events.filter((event) => event.kind === "source-read").length, 0);
-      }
+    const reads = events.filter((event) => event.kind === "canonical-read");
+    if (mode === "heartbeat" || invalidDecision) {
+      assert.equal(reads.length, 0, "rejected members must not read canonical records");
+      assert.equal(events.filter((event) => event.kind === "download").length, 0);
       for (const outcome of outcomes) {
         assert.deepEqual(outcome, { kind: "retryable_failure", reasonCode: "unknown_failure" });
       }
     } else {
-      assert.equal(workers.length, items.length, diagnostics);
-      for (const [index, worker] of workers.entries()) {
-        const item = items[index];
+      const failedRead = ["forbidden", "corrupt", "read-timeout"].includes(mode);
+      assert.equal(workers.length, items.length - (mode === "read-timeout" ? 2 : 0), diagnostics);
+      for (const worker of workers) {
+        const item = items.find((item) => item.itemKey === worker.itemKey);
         const selected = new Set(tuplePaths(item.decision.targetRepo, item.decision.itemNumber));
-        const expected = before.filter((file) => selected.has(`records/${file.path}`));
-        assert.deepEqual(
-          worker.files.filter((file) => selected.has(`records/${file.path}`)),
-          expected,
-          "selected bytes and missing sidecars must survive the copy",
-        );
-        if (assertSelected) {
-          assert.equal(
-            worker.files.length,
-            expected.length,
-            "unrelated records copied into selected worker",
-          );
-        }
+        const expected =
+          failedRead && item.decision.itemNumber === 42
+            ? []
+            : before.filter((file) => selected.has(`records/${file.path}`));
+        assert.deepEqual(worker.files, expected, "only selected bytes may enter the worker");
         assert.equal(worker.gitPresent, false);
       }
-      if (mode === "publication") {
+      for (const [index, item] of items.entries()) {
+        const selectedReads = reads.filter((event) => event.itemKey === item.itemKey);
+        assert.equal(selectedReads.length, failedRead && item.decision.itemNumber === 42 ? 1 : 4);
+        if (failedRead && item.decision.itemNumber === 42) {
+          assert.equal(outcomes[index].kind, "retryable_failure");
+          assert.equal(outcomes[index].reasonCode, "unknown_failure");
+          assert.ok(!publishers.some((entry) => entry.itemKey === item.itemKey));
+        }
+      }
+      if (mode === "read-timeout") assert.equal(telemetry.timeouts, 2);
+      if (mode === "publication" || mode === "file-source") {
         assert.equal(publishers.length, items.length, diagnostics);
         for (const [index, publisher] of publishers.entries()) {
           const item = items[index];
@@ -533,7 +562,7 @@ export function runCopyProof({
           }
         }
       }
-      if (mode === "copy") {
+      if (mode === "artifact-unavailable") {
         assert.ok(
           outcomes.every(
             (outcome) =>
@@ -577,14 +606,11 @@ export function runCopyProof({
       unrelatedRecords,
       sourceFiles: before.length,
       sourceBytes: before.reduce((sum, file) => sum + file.bytes, 0),
-      copiedFiles: workers.reduce((sum, worker) => sum + worker.files.length, 0),
-      copiedBytes: workers.reduce(
+      hydratedFiles: workers.reduce((sum, worker) => sum + worker.files.length, 0),
+      hydratedBytes: workers.reduce(
         (sum, worker) => sum + worker.files.reduce((bytes, file) => bytes + file.bytes, 0),
         0,
       ),
-      copyMs: events
-        .filter((event) => event.kind === "copy")
-        .reduce((sum, event) => sum + event.ms, 0),
       wallMs,
       telemetry,
       outcomes: outcomes.map(({ kind, reasonCode, disposition }) => ({
@@ -595,8 +621,8 @@ export function runCopyProof({
       plans: outcomes.map((outcome) => outcome.plan ?? null),
       actions: publishers.map((publisher) => publisher.actions),
       publisherCount: publishers.length,
-      selectedHashesVerified: !benchmark,
-      sourceHashesVerified: !benchmark,
+      selectedHashesVerified: true,
+      sourceHashesVerified: true,
       sourceInventoryUnchanged: true,
       externalPublication: false,
     };
@@ -606,97 +632,11 @@ export function runCopyProof({
 }
 
 async function main() {
-  const args = process.argv.slice(2);
-  if (args.length === 0) {
-    console.log(JSON.stringify(runCopyProof(), null, 2));
-    return;
-  }
-  assert.ok(["--benchmark", "--compare"].includes(args[0]));
-  assert.match(args[1] || "", /^[0-9a-f]{40}$/, "comparison needs a pinned baseline commit");
-  const rounds = Number(args[2] || 3);
-  assert.ok(Number.isSafeInteger(rounds) && rounds >= 2 && rounds <= 5);
-  const unrelatedRecords = Number(args[3] || 67_000);
-  assert.ok(
-    Number.isSafeInteger(unrelatedRecords) && unrelatedRecords > 0 && unrelatedRecords <= 100_000,
-  );
-  const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "selected-tuple-baseline-")));
-  try {
-    const baseline = join(root, "scripts/prepare-exact-review-batch.mjs");
-    write(
-      baseline,
-      execFileSync("git", ["show", `${args[1]}:scripts/prepare-exact-review-batch.mjs`], {
-        cwd: codeRoot,
-      }),
-    );
-    fs.symlinkSync(join(codeRoot, "dist"), join(root, "dist"), "dir");
-    fs.symlinkSync(
-      join(codeRoot, "scripts/exact-review-artifact-cache.mjs"),
-      join(root, "scripts/exact-review-artifact-cache.mjs"),
-    );
-    const provenance = {
-      baseline: args[1],
-      environment: { node: process.version, platform: process.platform, arch: process.arch },
-      sourceHashes: Object.fromEntries(
-        [
-          "scripts/prepare-exact-review-batch.mjs",
-          "test/repair/exact-review-batch-prepare.test.mjs",
-          "scripts/e2e/exact-review-selected-tuple-copy.mjs",
-        ].map((path) => [path, digest(fs.readFileSync(join(codeRoot, path)))]),
-      ),
-    };
-    if (args[0] === "--compare") {
-      assert.throws(
-        () => runCopyProof({ controller: baseline, mode: "copy" }),
-        /unrelated records copied into selected worker/,
-      );
-      const before = runCopyProof({ controller: baseline, assertSelected: false });
-      const after = runCopyProof();
-      const fileSource = {
-        before: runCopyProof({ controller: baseline, mode: "file-source", assertSelected: false }),
-        after: runCopyProof({ mode: "file-source" }),
-      };
-      assert.deepEqual(fileSource.after.outcomes, fileSource.before.outcomes);
-      assert.deepEqual(after.plans, before.plans, "prepared tuple bytes must match the baseline");
-      assert.deepEqual(after.actions, before.actions);
-      assert.deepEqual(after.outcomes, before.outcomes);
-      const counters = ({
-        prepareDurationMs: _prepareDurationMs,
-        workerMaximumMs: _workerMaximumMs,
-        workerP95Ms: _workerP95Ms,
-        ...rest
-      }) => rest;
-      assert.deepEqual(counters(after.telemetry), counters(before.telemetry));
-      console.log(
-        JSON.stringify(
-          { ...provenance, regressionDetected: true, before, after, fileSource },
-          null,
-          2,
-        ),
-      );
-      return;
-    }
-    const measurements = [];
-    for (let round = 0; round < rounds; round++) {
-      for (const version of round % 2 === 0 ? ["before", "after"] : ["after", "before"]) {
-        const measurement = runCopyProof({
-          controller: version === "before" ? baseline : controllerPath,
-          unrelatedRecords,
-          bytesPerRecord: 3582,
-          mode: "copy",
-          benchmark: true,
-          assertSelected: version === "after",
-        });
-        measurements.push({ round: round + 1, version, ...measurement });
-        console.error(`${version} round ${round + 1}: ${Math.round(measurement.copyMs)} ms copy`);
-      }
-    }
-    console.log(JSON.stringify({ ...provenance, measurements }, null, 2));
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
+  assert.equal(process.argv.length, 2, "this fixture takes no arguments");
+  console.log(JSON.stringify(runHydrationProof(), null, 2));
 }
 
-if (process.env.CSW_COPY_PROOF_CONFIG && resolve(process.argv[1] || "") !== self) {
+if (process.env.CSW_HYDRATION_PROOF_CONFIG && resolve(process.argv[1] || "") !== self) {
   observeChildren();
 } else if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await main();

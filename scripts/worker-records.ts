@@ -188,6 +188,10 @@ type ExportWorkerRecordsOptions = {
   sinceRevision?: number;
   limit?: number;
   maxRecords?: number;
+  // Snapshot producers only: stop between pages once this time (epoch ms, read
+  // from `now`) has passed. Readers never set it and always replay to the end.
+  replayDeadline?: number;
+  now?: () => number;
   fetch?: typeof globalThis.fetch;
 };
 
@@ -293,12 +297,26 @@ export async function visitWorkerRecords(
       throw new Error("Worker record export cursor did not advance");
     }
     cursor = page.nextCursor;
+    // The export returns one row per identity ordered by its unique, monotonic
+    // store revision, and `nextCursor` is the last row returned. Every identity
+    // whose current revision is at or below it has therefore been applied at
+    // that revision, so stopping here leaves a consistent tree that a later
+    // replay can resume from `cursor`. At least one page is always applied.
+    if (
+      cursor !== null &&
+      options.replayDeadline !== undefined &&
+      (options.now ?? Date.now)() >= options.replayDeadline
+    ) {
+      break;
+    }
   } while (cursor !== null);
   return {
     repoSlug: options.repoSlug,
     revision,
     exportStartRevision: exportStartRevision!,
     recordCount: revisions.size,
+    // null when the export was replayed to the end.
+    resumeRevision: cursor,
   };
 }
 
@@ -324,7 +342,10 @@ export async function materializeWorkerRecords(options: MaterializeWorkerRecords
 async function materializeRecords(
   options: MaterializeWorkerRecordsOptions,
   purpose: "hydration" | "snapshot",
+  producer: { replayDeadline?: number; now?: () => number } = {},
 ) {
+  if (purpose === "hydration" && producer.replayDeadline !== undefined)
+    throw new Error("Only snapshot producers may stop a record replay early");
   // The snapshot producer must bootstrap repositories that readers refuse.
   // Both paths retain the same staging, watermark and snapshot/delta lifecycle.
   const coldRecordLimit =
@@ -352,6 +373,8 @@ async function materializeRecords(
       coverageTrackedItemIds: number[];
     }
   > = {};
+  // Producer-only: where a replay stopped early. Kept out of the reader manifest.
+  const resumeRevisions: Record<string, number | null> = {};
   try {
     for (const repoSlug of options.repoSlugs) {
       try {
@@ -404,6 +427,10 @@ async function materializeRecords(
             sinceRevision: storedSnapshot?.revisionWatermark ?? 0,
             ...(options.sections ? { sections: options.sections } : {}),
             ...(storedSnapshot ? {} : { maxRecords: coldRecordLimit }),
+            ...(producer.replayDeadline === undefined
+              ? {}
+              : { replayDeadline: producer.replayDeadline }),
+            ...(producer.now ? { now: producer.now } : {}),
             fetch: options.fetch,
           },
           (record) => applyWorkerRecord(stagedRepoRoot, record),
@@ -442,7 +469,12 @@ async function materializeRecords(
           recordCount: countMaterializedRecords(stagingRoot, repoSlug),
           coverageTrackedItemIds,
         };
+        resumeRevisions[repoSlug] = journal.resumeRevision;
         const entry = repositories[repoSlug];
+        if (journal.resumeRevision !== null)
+          log(
+            `[worker-records] snapshot replay reached its time budget repo=${repoSlug} resumeRevision=${journal.resumeRevision} replayedRecords=${entry.deltaRecords} revision=${entry.revision}; the next snapshot run resumes from resumeRevision`,
+          );
         log(
           storedSnapshot
             ? `[worker-records] snapshot hydrated repo=${repoSlug} revision=${entry.revision} snapshotRevision=${entry.snapshotRevision} snapshotBytes=${entry.snapshotBytes} cache=${entry.snapshotCache} deltaRecords=${entry.deltaRecords} records=${entry.recordCount} coverageTrackedItems=${entry.coverageTrackedItemIds.length}`
@@ -467,7 +499,7 @@ async function materializeRecords(
     rmSync(stagingRoot, { force: true, recursive: true });
   }
   const manifestPath = writeWorkerRecordsManifest(options.worktreeRoot, repositories);
-  return { recordsRoot, manifestPath, repositories };
+  return { recordsRoot, manifestPath, repositories, resumeRevisions };
 }
 
 export async function materializeWorkerItems(options: {
@@ -1504,14 +1536,35 @@ function sha256(content: string) {
   return createHash("sha256").update(content).digest("hex");
 }
 
+export type WorkerSnapshotReplay = {
+  // false when the replay stopped at its time budget; the uploaded snapshot then
+  // covers changes through `resumeRevision` and the next run continues there.
+  complete: boolean;
+  previousRevision: number;
+  resumeRevision: number | null;
+  replayedRecords: number;
+  durationsMs: { hydrate: number; pack: number; upload: number };
+};
+
 export async function uploadWorkerRecordSnapshot(options: {
   baseUrl: string;
   webhookSecret: string;
   repoSlug: string;
+  // Bounds download plus replay, measured from the call. Packing and upload run
+  // afterwards, so callers leave room for them inside any job timeout.
+  replayBudgetMs?: number;
+  now?: () => number;
   fetch?: typeof globalThis.fetch;
   log?: (line: string) => void;
-}) {
+}): Promise<WorkerStoredSnapshot & { replay: WorkerSnapshotReplay }> {
   validateRepoSlug(options.repoSlug);
+  const now = options.now ?? Date.now;
+  const startedAt = now();
+  if (
+    options.replayBudgetMs !== undefined &&
+    (!Number.isSafeInteger(options.replayBudgetMs) || options.replayBudgetMs < 1)
+  )
+    throw new Error("Snapshot replay budget must be a positive integer of milliseconds");
   const root = mkdtempSync(path.join(tmpdir(), "clawsweeper-snapshot-upload-"));
   let uploadId: string | undefined;
   const operationId =
@@ -1526,9 +1579,27 @@ export async function uploadWorkerRecordSnapshot(options: {
     });
   try {
     const hydrated = await materializeRecords(
-      { ...options, worktreeRoot: root, repoSlugs: [options.repoSlug] },
+      // The producer only packs the tree; the coverage listing is a reader concern.
+      { ...options, worktreeRoot: root, repoSlugs: [options.repoSlug], trackCoverage: false },
       "snapshot",
+      {
+        ...(options.replayBudgetMs === undefined
+          ? {}
+          : { replayDeadline: startedAt + options.replayBudgetMs }),
+        now,
+      },
     );
+    const repository = hydrated.repositories[options.repoSlug]!;
+    const resumeRevision = hydrated.resumeRevisions[options.repoSlug] ?? null;
+    // A complete replay keeps the conservative first-page watermark. A stopped
+    // replay has applied every identity at or below its cursor, which is always
+    // past the previous snapshot because at least one page was applied.
+    const revisionWatermark = resumeRevision ?? repository.exportStartRevision;
+    if (resumeRevision !== null && resumeRevision <= repository.snapshotRevision)
+      throw new Error(
+        `Snapshot replay for ${options.repoSlug} stopped without passing the stored watermark ${repository.snapshotRevision}`,
+      );
+    const hydratedAt = now();
     const packed = await packWorkerRecordSnapshot({
       repoRoot: path.join(hydrated.recordsRoot, options.repoSlug),
       archivePath: path.join(root, "snapshot.tar.gz"),
@@ -1537,9 +1608,10 @@ export async function uploadWorkerRecordSnapshot(options: {
       throw new Error("Snapshot exceeds the 1 GiB upload limit");
     const hash = createHash("sha256");
     for await (const chunk of createReadStream(packed.archivePath)) hash.update(chunk);
+    const packedAt = now();
     const descriptor = {
       repoSlug: options.repoSlug,
-      revisionWatermark: hydrated.repositories[options.repoSlug]!.exportStartRevision,
+      revisionWatermark,
       bytes: packed.bytes,
       uncompressedBytes: packed.uncompressedBytes,
       fileCount: packed.fileCount,
@@ -1634,7 +1706,21 @@ export async function uploadWorkerRecordSnapshot(options: {
       result.snapshot.bytes !== packed.bytes
     )
       throw new Error("Worker returned an invalid registered snapshot");
-    return result.snapshot;
+    const finishedAt = now();
+    return {
+      ...result.snapshot,
+      replay: {
+        complete: resumeRevision === null,
+        previousRevision: repository.snapshotRevision,
+        resumeRevision,
+        replayedRecords: repository.deltaRecords,
+        durationsMs: {
+          hydrate: hydratedAt - startedAt,
+          pack: packedAt - hydratedAt,
+          upload: finishedAt - packedAt,
+        },
+      },
+    };
   } catch (error) {
     if (uploadId) await post("abort", { uploadId }).catch(() => undefined);
     throw error;
@@ -1690,20 +1776,29 @@ export async function workerRecordsMain(argv: string[], env: NodeJS.ProcessEnv =
   const [command, ...args] = argv;
   if (command !== "snapshot-upload" && command !== "snapshot-bootstrap-cold")
     throw new Error(
-      "Usage: worker-records.ts snapshot-upload --repo-slug <slug> [--records-url <url>]\n" +
+      "Usage: worker-records.ts snapshot-upload --repo-slug <slug> [--records-url <url>] [--replay-budget-seconds <n>]\n" +
         "       worker-records.ts snapshot-bootstrap-cold [--records-url <url>]",
     );
   const { values } = parseArgs({
     args,
-    options: { "repo-slug": { type: "string" }, "records-url": { type: "string" } },
+    options: {
+      "repo-slug": { type: "string" },
+      "records-url": { type: "string" },
+      "replay-budget-seconds": { type: "string" },
+    },
     strict: true,
   });
+  const replayBudget = values["replay-budget-seconds"];
+  if (replayBudget !== undefined && !/^[1-9]\d{0,5}$/.test(replayBudget))
+    throw new Error("--replay-budget-seconds must be a positive whole number of seconds");
   const webhookSecret = env.CLAWSWEEPER_RECORDS_SECRET ?? env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
   if (!webhookSecret) throw new Error("CLAWSWEEPER_WEBHOOK_SECRET is required");
   const baseUrl =
     values["records-url"] ?? env.CLAWSWEEPER_RECORDS_URL ?? "https://clawsweeper.openclaw.ai";
   if (command === "snapshot-bootstrap-cold") {
     if (values["repo-slug"]) throw new Error("snapshot-bootstrap-cold takes no --repo-slug");
+    if (replayBudget !== undefined)
+      throw new Error("snapshot-bootstrap-cold takes no --replay-budget-seconds");
     const result = await bootstrapColdWorkerRecordSnapshots({ baseUrl, webhookSecret });
     console.log(JSON.stringify(result));
     if (result.failures.length > 0)
@@ -1717,6 +1812,7 @@ export async function workerRecordsMain(argv: string[], env: NodeJS.ProcessEnv =
     repoSlug: values["repo-slug"],
     baseUrl,
     webhookSecret,
+    ...(replayBudget === undefined ? {} : { replayBudgetMs: Number(replayBudget) * 1000 }),
   });
   console.log(JSON.stringify(snapshot));
   return snapshot;

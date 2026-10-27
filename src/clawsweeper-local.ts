@@ -8,7 +8,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
   if (boolArg(args.help)) {
     console.log(
-      "Local ClawSweeper: [review] [--base <ref>] [--target-repo <owner/repo>] [--target-dir <path>] [--result-format json] [--preflight]",
+      "clawsweeper [review] [--base <ref>] [--target-repo <owner/repo>] [--target-dir <path>] [--result-format json] [--preflight]",
     );
     console.log(
       "Review a clean committed range with the full ClawSweeper review engine. Diagnostics integration is deferred.",

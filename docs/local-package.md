@@ -4,12 +4,13 @@
 - Owner: ClawSweeper local-runtime maintainers
 - Source of truth: `scripts/stage-local-package.mjs`, `src/clawsweeper-local.ts`,
   and `.github/workflows/local-package-qualification.yml`
-- Verified source baseline: `a8ed845bfdad2467c4d73d8b470f4284dce625f0`; CI artifacts identify the tested source and diff
+- Verified source baseline: `118a07468663a22e9cc0e3fd76dfe2f17532eec0`; CI artifacts identify the tested source and diff
 - Update when: the local entrypoint, imports, workers, assets, package format, or qualification matrix changes
 
 The private package candidate contains the full committed-range reviewer. It
-does not contain hosted admission, publication, or service state. Its package
-name and `clawsweeper-review` bin are provisional; nothing is published to npm.
+does not contain hosted admission, publication, or service state. The scoped
+package stays private as `@openclaw/clawsweeper` and exposes the `clawsweeper`
+command. It does not require npm registry publication.
 
 From a development checkout with dependencies installed, build and stage into
 a new directory outside the checkout:
@@ -31,8 +32,8 @@ Install the resulting tarball into a disposable directory to qualify it:
 
 ```sh
 npm install --prefix /tmp/clawsweeper-local-install --ignore-scripts --omit=dev --no-audit --no-fund ./openclaw-clawsweeper-0.3.1.tgz
-/tmp/clawsweeper-local-install/node_modules/.bin/clawsweeper-review --help
-/tmp/clawsweeper-local-install/node_modules/.bin/clawsweeper-review --version
+/tmp/clawsweeper-local-install/node_modules/.bin/clawsweeper --help
+/tmp/clawsweeper-local-install/node_modules/.bin/clawsweeper --version
 ```
 
 Node 24 or newer and Git are required. A real review also needs the configured
@@ -44,7 +45,7 @@ scanner, install target dependencies, or call a review model.
 Run from a clean target repository or pass its path explicitly:
 
 ```sh
-clawsweeper-review review --base origin/main --target-repo owner/repo --target-dir /path/to/target
+clawsweeper review --base origin/main --target-repo owner/repo --target-dir /path/to/target
 ```
 
 That command runs a real model review. `--help` and `--version` do not.
@@ -117,7 +118,8 @@ disposable install.
 
 The manual `.github/workflows/release.yml` caller rehearses by default.
 Leave `publish` false to verify release assets without publishing them. It
-does not publish an npm package or change the Homebrew tap.
+does not publish an npm package or change the Homebrew tap. The generated
+package remains private and exposes the same `clawsweeper` command.
 
 Publication is a separate maintainer action after the final source, release
 notes, and assets are approved. Create and verify an SSH-signed annotated
@@ -157,7 +159,9 @@ has only `contents: read`; no secrets are inherited or supplied, and the shared
 build strips token environment variables before running the wrapper.
 
 Every selected source must contain maintainer-approved dated release notes
-matching its package version. A successful rehearsal qualifies only that
-source and its actual assets; later source changes need fresh qualification.
-Rehearsal does not establish publication or Homebrew installation, and does
-not exercise the real signed-tag or publisher paths.
+matching its package version; an Unreleased heading does not satisfy the
+shared contract. A successful rehearsal qualifies only that source and its
+actual assets; later source changes need fresh qualification. Rehearsal does
+not establish publication, signer policy, Homebrew dependency delivery, or
+installed provider access, and does not exercise the real signed-tag or
+publisher paths. Those outcomes require their own validation and authorization.
