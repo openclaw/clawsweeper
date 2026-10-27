@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
 
 type Step = {
+  if?: string;
   uses?: string;
   run?: string;
   with?: Record<string, unknown>;
@@ -19,6 +23,118 @@ type Job = {
 };
 
 const jobs = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs as Record<string, Job>;
+
+test("review network smoke caches downloads without admitting cached installations", () => {
+  const steps = jobs["review-network-smoke"]!.steps;
+  const setup = steps.find((step) => step.uses?.startsWith("actions/setup-node@"));
+  assert.deepEqual(setup?.with, {
+    "node-version": "24.22.1",
+    cache: "npm",
+    "cache-dependency-path": ".github/actions/setup-codex/action.yml",
+  });
+  assert.equal(steps.filter((step) => step.run).length, 1);
+  assert.equal(steps.find((step) => step.run)?.if, undefined);
+});
+
+test(
+  "review network smoke installs the exact pin into fresh isolated locations on every run",
+  { skip: process.platform === "win32" },
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "review-network-install-"));
+    const tools = join(root, "tools");
+    const checkout = join(root, "checkout");
+    const temporary = join(root, "temporary");
+    const trace = join(root, "calls.jsonl");
+    for (const path of [tools, checkout, temporary]) mkdirSync(path);
+    symlinkSync(resolve(".github"), join(checkout, ".github"), "dir");
+    const action = parse(readFileSync(".github/actions/setup-codex/action.yml", "utf8"));
+    const version = action.inputs["codex-version"].default;
+    const sandbox = `#!${process.execPath}
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+assert.deepEqual(args.slice(0, 8), ["sandbox", "--permission-profile", "clawsweeper-review", "-C", ${JSON.stringify(checkout)}, "--", "/bin/sh", "-eu"]);
+assert.equal(args[8], "-c");
+assert.equal(args.length, 10);
+assert.equal(process.env.GITHUB_TOKEN, undefined);
+assert.equal(process.env.OPENAI_API_KEY, undefined);
+const config = fs.readFileSync(process.env.CODEX_HOME + "/config.toml", "utf8");
+assert.ok(config.includes('default_permissions = "clawsweeper-review"'));
+assert.ok(config.includes('model = "gpt-5.4"'));
+fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify({ kind: "sandbox", args, home: process.env.CODEX_HOME }) + "\\n");
+`;
+    writeFileSync(
+      join(tools, "npm"),
+      `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const prefix = args[args.indexOf("--prefix") + 1];
+fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify({ kind: "install", args, prefix }) + "\\n");
+fs.mkdirSync(path.join(prefix, "bin"));
+fs.writeFileSync(path.join(prefix, "bin/codex"), ${JSON.stringify(sandbox)}, { mode: 0o755 });
+`,
+      { mode: 0o755 },
+    );
+    writeFileSync(
+      join(tools, "sysctl"),
+      '#!/bin/sh\ncase "$*" in "-n kernel.unprivileged_userns_clone") echo 1;; "-n kernel.apparmor_restrict_unprivileged_userns") echo 0;; *) exit 97;; esac\n',
+      { mode: 0o755 },
+    );
+    try {
+      const run = jobs["review-network-smoke"]!.steps.find((step) => step.run)!.run!;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = spawnSync("/bin/bash", ["-c", run], {
+          cwd: checkout,
+          encoding: "utf8",
+          timeout: 20_000,
+          env: {
+            PATH: `${tools}:${dirname(process.execPath)}:/usr/bin:/bin`,
+            HOME: root,
+            RUNNER_TEMP: temporary,
+            GITHUB_TOKEN: "fixture-only",
+            OPENAI_API_KEY: "fixture-only",
+          },
+        });
+        assert.equal(result.status, 0, result.stderr);
+      }
+      const calls = readFileSync(trace, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.deepEqual(
+        calls.map((call) => call.kind),
+        ["install", "sandbox", "install", "sandbox"],
+      );
+      assert.notEqual(calls[0].prefix, calls[2].prefix);
+      assert.notEqual(calls[1].home, calls[3].home);
+      const smoke = readFileSync(".github/actions/setup-codex/smoke-review-network.sh", "utf8");
+      const command = smoke.match(/-c '\n([\s\S]+)\n  '\n$/)![1];
+      for (const [install, sandboxCall] of [
+        [calls[0], calls[1]],
+        [calls[2], calls[3]],
+      ]) {
+        assert.ok(install.prefix.startsWith(join(temporary, "review-codex.")));
+        assert.ok(sandboxCall.home.startsWith(join(temporary, "review-codex-home.")));
+        assert.notEqual(install.prefix, sandboxCall.home);
+        assert.deepEqual(install.args, [
+          "install",
+          "--global",
+          "--prefix",
+          install.prefix,
+          `@openai/codex@${version}`,
+          "--no-audit",
+          "--no-fund",
+          "--ignore-scripts",
+        ]);
+        // The real smoke script reaches the fixture CLI; hosted CI proves enforcement.
+        assert.equal(sandboxCall.args[9], `\n${command}\n  `);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("CI keeps one pnpm check status that requires every check job", () => {
   assert.deepEqual(
