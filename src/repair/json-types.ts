@@ -1,4 +1,4 @@
-import { isRecord } from "../value-coerce.js";
+import { isRecord } from "../value-coerce.ts";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type StrictJsonObject = { [key: string]: StrictJsonValue | undefined };

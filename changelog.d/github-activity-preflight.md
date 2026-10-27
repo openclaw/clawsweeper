@@ -1,0 +1,1 @@
+- Skip package installation for routine GitHub activity by applying the shared event admission policy before workflow setup, while preserving delivery reports and maintainer command routing.
