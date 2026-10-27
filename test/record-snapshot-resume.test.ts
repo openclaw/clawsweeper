@@ -23,6 +23,19 @@ const secret = "synthetic-snapshot-resume-secret";
 const baseUrl = "http://127.0.0.1:8787";
 const digest = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 
+// Under Actions the producer derives its upload operation id from the run, and
+// the Worker deduplicates by it. Each scheduled run uploads once; these tests
+// upload several times, so they use per-call random ids as outside Actions.
+const actionsRun = { id: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT };
+test.before(() => {
+  delete process.env.GITHUB_RUN_ID;
+  delete process.env.GITHUB_RUN_ATTEMPT;
+});
+test.after(() => {
+  if (actionsRun.id !== undefined) process.env.GITHUB_RUN_ID = actionsRun.id;
+  if (actionsRun.attempt !== undefined) process.env.GITHUB_RUN_ATTEMPT = actionsRun.attempt;
+});
+
 // R2 with the multipart resume API the signed upload route uses.
 class ResumableBucket {
   objects = new Map<string, Uint8Array>();
