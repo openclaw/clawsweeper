@@ -60,6 +60,7 @@ import { reviewContentCacheHit } from "./scheduler-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
 import { reportWithoutHydrationCache } from "./report-hydration-cache.js";
+import { withLocalPreflightSource } from "./review-preflight-display.js";
 import { createCommitPullResolver } from "./pr-review-provenance.js";
 
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
@@ -228,7 +229,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     const publicationPolicy = process.env.EXACT_REVIEW_DECISION
       ? decisionPublicationPolicy(JSON.parse(process.env.EXACT_REVIEW_DECISION))
       : undefined;
-    const hostReport = (markdown: string): string =>
+    const publicationReport = (markdown: string): string =>
       publicationPolicy
         ? replaceFrontMatterValue(
             reportWithoutHydrationCache(markdown),
@@ -571,6 +572,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const pullRequestPayload = item.kind === "pull_request"
           ? prAdmissionInput?.pull ?? asRecord(dependencies.ghJson(["api", `repos/${item.repo}/pulls/${item.number}`]))
           : undefined;
+        // Local-only disables structural probes and hydrates this same raw pull.
+        // Hosted carries strip the advisory rather than project a later snapshot.
+        const hostReport = (markdown: string): string => withLocalPreflightSource(
+          publicationReport(markdown),
+          localOnly && item.kind === "pull_request"
+            ? { repo: item.repo, number: item.number, pull: pullRequestPayload,
+                targetDir: openclawDir }
+            : undefined,
+        );
         if (pullRequestPayload) {
           const admission = oversizedPullRequestAdmission(pullRequestPayload);
           if (!admission.admitted) {

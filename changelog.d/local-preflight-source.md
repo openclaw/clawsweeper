@@ -1,0 +1,1 @@
+- Local PR review reports compare advisory preflight source with the observed target, merge base, and head, without treating self-reported completion as review proof.
