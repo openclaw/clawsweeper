@@ -418,8 +418,12 @@ Clean text-converted checkouts retain both canonical Git and raw working bytes
 in scan coverage. The host never starts a target-bundled autoreview helper or
 second reviewer.
 
-Hosted Codex and OpenClaw setup share the checksum-pinned TruffleHog 3.97.4
-installer in `.github/actions/setup-review-tools/install.sh`. For local review,
+Hosted Codex and OpenClaw setup share `.github/actions/setup-review-tools`, which
+caches only the checksum-pinned release archive. Every setup verifies its bytes,
+extracts a fresh private binary, checks the exact version, and runs the benign
+scan before advertising its path. Cache misses and corrupt archives use the
+pinned download; installed binaries and review data never enter the Actions
+cache. For local review,
 ClawSweeper first qualifies a trusted host executable outside both checkouts; when it
 is absent or reports a different TruffleHog release, it bootstraps the exact checksum-pinned release asset into a
 user-owned cache outside both checkouts. The local bootstrap accepts no URL or

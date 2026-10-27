@@ -214,7 +214,7 @@ jobs:
       - uses: ./clawsweeper/.github/actions/setup-pnpm
         with:
           working-directory: clawsweeper
-          build-script: build:all
+          build-script: build:node
 
       - name: Resolve requested review items
         id: requested-items

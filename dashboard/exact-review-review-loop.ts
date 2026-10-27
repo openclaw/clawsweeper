@@ -37,6 +37,7 @@ export const EXACT_REVIEW_ORGANIC_SOURCE_ACTIONS: ReadonlySet<string> = new Set(
 export type ExactReviewSourceDriftLoop = { consecutive: number; updatedAt: number };
 
 export type ExactReviewRunawayHealth = {
+  counting_basis: "claimed_review_runs";
   status: "healthy" | "degraded" | "unknown";
   reason: "review_runaway" | "telemetry_unavailable" | null;
   window_hours: number;
@@ -331,6 +332,7 @@ export class ExactReviewReviewLoopStore {
         ) as Array<{ item_key?: string }>)
       : [];
     return {
+      counting_basis: "claimed_review_runs",
       status: runawayItems > 0 ? "degraded" : "healthy",
       reason: runawayItems > 0 ? "review_runaway" : null,
       window_hours: EXACT_REVIEW_RUNAWAY_WINDOW_MS / (60 * 60 * 1000),

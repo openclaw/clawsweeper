@@ -152,7 +152,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         with:
-          build-script: build:all
+          build-script: build:node
 
       - name: Refresh Audit Health
         env:
@@ -163,7 +163,6 @@ jobs:
           WORKFLOW_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          git pull --rebase --autostash
           reconcile_json="$(pnpm run --silent reconcile -- \
             --target-repo "$TARGET_REPO" \
             --max-pages 250 \

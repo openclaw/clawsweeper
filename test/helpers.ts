@@ -1200,6 +1200,8 @@ export function promotionGhMock(options: {
   console.log(JSON.stringify(slurp ? [pullReviewComments] : pullReviewComments));
 } else if (args[0] === "api" && new RegExp("/pulls/" + number + "/(files|commits)(?:\\\\?|$)").test(path)) {
   console.log(JSON.stringify([[]]));
+} else if (args[0] === "api" && path === "repos/openclaw/openclaw/labels?per_page=100") {
+  console.log("[[]]");
 } else if (args[0] === "pr" && args[1] === "close" && args[2] === String(number)) {
   if (closeCommandLogPath) appendFileSync(closeCommandLogPath, args.join(" ") + "\\n");
   if (${JSON.stringify(options.closeCommandError ?? "")}) { console.error(${JSON.stringify(options.closeCommandError ?? "")}); process.exit(1); }

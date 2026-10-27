@@ -17,6 +17,7 @@ import {
   startWorkflowMutationAttempt,
 } from "../dist/action-ledger-runtime.js";
 import { INTAKE_POLICY, intakeRequest } from "../dist/intake-triage-contract.js";
+import { githubTest, installGhFixture } from "./github-runtime-fixture.ts";
 
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "intake-workflow-"));
@@ -88,7 +89,7 @@ function fixture(t: TestContext) {
       };
     },
     gh: {
-      ghJson: <T>() => [] as T,
+      readLabelCatalogPages: () => [[]],
       ghObservedMutationCommand: (mutation) => {
         const runner = getMutationReceiptRunner();
         assert.ok(runner, "every dispatch must have the canonical receipt runner");
@@ -177,6 +178,29 @@ test("preliminary publication records intent and usage without completing a revi
   assert.ok(events.some((event) => event.attributes?.input_tokens === 100));
   assert.ok(events.some((event) => event.attributes?.completion_reason === "mutation_accepted"));
   assert.ok(!JSON.stringify(events).includes(f.live.body));
+});
+
+githubTest("intake reads REST catalog pages from its explicit target repository", async (t) => {
+  const f = fixture(t);
+  f.options.repository = "example/other";
+  f.live = { ...f.live, repository: "example/other" };
+  process.env.EXACT_REVIEW_ITEM_KEY = "example/other#42";
+  const gh = installGhFixture(
+    t,
+    `
+if (args[0] === "api") {
+  require("node:assert/strict").deepEqual(args, ["api", "repos/example/other/labels?per_page=100", "--paginate", "--slurp"]);
+  console.log("[[]]");
+} else {
+  require("node:assert/strict").deepEqual(args.slice(-2), ["--repo", "example/other"]);
+}
+`,
+  );
+  const result = await runIntakeWorkflow({ ...f.options, gh: undefined });
+  assert.equal(result.outcome, "published");
+  const requests = gh.requests();
+  assert.equal(requests.filter(({ args }) => args[0] === "api").length, 1);
+  assert.equal(requests.length, 3);
 });
 
 for (const backend of ["decisions", "responses"] as const) {

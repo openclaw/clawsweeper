@@ -64,7 +64,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         with:
-          build-script: build:all
+          build-script: build:node
 
       - uses: ./.github/actions/setup-github-egress-observer
         id: github-egress-observer

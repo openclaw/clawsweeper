@@ -1082,6 +1082,8 @@ for (const scenario of [
   "valid-first",
   "inactive-decision-repaired",
   "inactive-decision-invalid-twice",
+  "wrong-item-kind-repaired",
+  "wrong-item-kind-invalid-twice",
 ] as const) {
   test(`runCodex decision repair turn: ${scenario}`, () => {
     const root = mkdtempSync(tmpPrefix);
@@ -1103,10 +1105,16 @@ for (const scenario of [
     );
     const inactiveDecision = JSON.parse(validDecision);
     inactiveDecision.maintainerDecision.likelyOwner = { person: "@alice" };
-    const invalidDecision = JSON.stringify(inactiveDecision);
-    const validationError = scenario.startsWith("inactive-decision-")
-      ? "decision.maintainerDecision must be empty when no decision is required"
-      : "decision.evidence must be an array";
+    const invalidDecision = JSON.stringify(
+      scenario.startsWith("wrong-item-kind-")
+        ? closeDecision({ closeReason: "unconfirmed_product_direction" })
+        : inactiveDecision,
+    );
+    const validationError = scenario.startsWith("wrong-item-kind-")
+      ? "decision.closeReason: unconfirmed_product_direction is allowed only for pull requests"
+      : scenario.startsWith("inactive-decision-")
+        ? "decision.maintainerDecision must be empty when no decision is required"
+        : "decision.evidence must be an array";
     mkdirSync(openclawDir, { recursive: true });
     mkdirSync(binDir, { recursive: true });
     initTrackedRepo(openclawDir);
@@ -1130,9 +1138,9 @@ if (resumed && scenario === "repair-rate-limited") {
   process.exit(1);
 }
 const output = resumed
-  ? scenario === "inactive-decision-invalid-twice" ? ${JSON.stringify(invalidDecision)}
+  ? scenario === "inactive-decision-invalid-twice" || scenario === "wrong-item-kind-invalid-twice" ? ${JSON.stringify(invalidDecision)}
     : scenario === "invalid-twice" ? "not json" : ${JSON.stringify(validDecision)}
-  : scenario.startsWith("inactive-decision-") ? ${JSON.stringify(invalidDecision)}
+  : scenario.startsWith("inactive-decision-") || scenario.startsWith("wrong-item-kind-") ? ${JSON.stringify(invalidDecision)}
     : scenario === "valid-first" ? ${JSON.stringify(validDecision)} : '{"decision":"keep_open"}';
 process.stdout.write(output + "\\n");
 `,

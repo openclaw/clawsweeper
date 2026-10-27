@@ -132,7 +132,7 @@ function syncedPullRequestLabels(report: string): string[] {
   const commands: string[][] = [];
   const labelSync = createLabelSyncOperations(
     createLabelMutationOperations({
-      ghJson: <T>(): T => [] as T,
+      readLabelCatalogPages: () => [[]],
       ghObservedMutationCommand: ({ args }) => {
         commands.push(args);
         return "";

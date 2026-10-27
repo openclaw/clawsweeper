@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -188,19 +189,32 @@ function valueFor(name: string): string {
 
 // Keep production parsers and Bash bodies intact. Only network/process boundaries
 // are fixtures; an unknown external invocation fails instead of reaching live APIs.
-function fixture(root: string) {
+function fixture(root: string, temporary: string) {
   for (const dir of [
     "bin",
     "scripts",
     "target/extensions/codex",
     "action",
-    "runner",
+    "first/bin",
+    ".github/actions/setup-review-tools",
     ".artifacts",
     "results",
     ".artifacts/exact-review-batch",
     "artifacts/event",
   ])
     mkdirSync(join(root, dir), { recursive: true });
+  // Exercise the real transport validator outside the fixture checkout. Only
+  // the scanner process is a fixture; unsafe paths must still fail normally.
+  mkdirSync(temporary, { mode: 0o700 });
+  const archiveRoot = join(temporary, "clawsweeper-review-archive");
+  mkdirSync(archiveRoot, { mode: 0o700 });
+  const archivePath = join(archiveRoot, "archive.tar.gz");
+  const archiveBytes = Buffer.from("fixture archive transport\n");
+  const scannerVersion = "trufflehog fixture";
+  copyFileSync(
+    ".github/actions/setup-review-tools/archive-cache.mjs",
+    join(root, ".github/actions/setup-review-tools/archive-cache.mjs"),
+  );
   symlinkSync(join(repository, "src"), join(root, "src"), "dir");
   symlinkSync(join(repository, "dist"), join(root, "dist"), "dir");
   const write = (path: string, content: string) =>
@@ -210,7 +224,7 @@ function fixture(root: string) {
   write(`${sourceRoot}/ref`, "a".repeat(40) + "\n");
   write(`${sourceRoot}/checkout/dist/index.js`, "process.stdout.write('fixture OpenClaw\\n');\n");
   for (const name of ["exact-review-queue-request", "exact-review-queue-response"])
-    copyFileSync(`src/repair/${name}.ts`, join(root, `runner/${name}.mts`));
+    copyFileSync(`src/repair/${name}.ts`, join(temporary, `${name}.mts`));
   copyFileSync(
     "scripts/github-egress-observer.sh",
     join(root, "scripts/github-egress-observer.sh"),
@@ -239,6 +253,11 @@ function fixture(root: string) {
   // `printenv KEY | codex login --with-api-key` runs under pipefail: the stub must drain
   // its pipe, or the writer can die with SIGPIPE (141) depending on scheduling.
   write("bin/codex", '#!/bin/bash\nif [ "$1" = login ]; then cat >/dev/null; fi\nexit 0\n');
+  for (const path of ["bin/trufflehog", "first/bin/trufflehog"])
+    write(
+      path,
+      `#!/bin/bash\n[ "$1" = --version ] || exit 97\nprintf '%s\\n' '${scannerVersion}'\n`,
+    );
   write("action/install.sh", "#!/bin/bash\nexit 0\n");
   write("scripts/dispatch-receipt-owner.sh", "#!/bin/bash\nprintf 'none\\n'\n");
   const decision = {
@@ -318,7 +337,7 @@ function fixture(root: string) {
 control_plane_signed_post() { control_plane_curl "$@"; }
 `;
   write("scripts/control-plane-curl.sh", curl);
-  write("runner/control-plane-curl.sh", curl);
+  writeFileSync(join(temporary, "control-plane-curl.sh"), curl, { mode: 0o755 });
   write(
     "scripts/apply-workflow-helpers.sh",
     readFileSync("scripts/apply-workflow-helpers.sh", "utf8") +
@@ -392,9 +411,10 @@ case "$1" in
   dist/clawsweeper.js)
     if [ "$2" = assist-target ]; then exec "$REAL_NODE" "$SOURCE_ROOT/$1" "\${@:2}"; fi
     case "$2" in assist-generate|assist-validate|assist-publish|expire-review-lease) exit 0 ;; *) echo "Unexpected CLI invocation: $*" >&2; exit 97 ;; esac ;;
-  dist/repair/exact-review-queue-request.js) shift; exec "$REAL_NODE" "$FIXTURE_ROOT/runner/exact-review-queue-request.mts" "$@" ;;
-  "$FIXTURE_ROOT/runner/"*.mts|"$FIXTURE_ROOT/action/validate-pin.mjs"|src/repair/exact-review-queue-response.ts|src/repair/exact-review-queue-context.ts|src/workflow-bot-comments.ts) exec "$REAL_NODE" "$@" ;;
+  dist/repair/exact-review-queue-request.js) shift; exec "$REAL_NODE" "$RUNNER_TEMP/exact-review-queue-request.mts" "$@" ;;
+  "$RUNNER_TEMP/"*.mts|"$FIXTURE_ROOT/action/validate-pin.mjs"|src/repair/exact-review-queue-response.ts|src/repair/exact-review-queue-context.ts|src/workflow-bot-comments.ts) exec "$REAL_NODE" "$@" ;;
   "$FIXTURE_ROOT/action/validate-install.mjs"|"$FIXTURE_ROOT/action/configure-api-context.mjs"|dist/intake-triage-workflow.js|dist/github-egress-observer-cli.js|dist/review-placeholder-recovery.js|dist/repair/state-repo-size.js|dist/repair/manual-review-enqueue.js) exit 0 ;;
+  .github/actions/setup-review-tools/archive-cache.mjs) exec "$REAL_NODE" "$@" ;;
   scripts/build-data.ts|scripts/dashboard-corpus.ts|scripts/prepare-exact-review-batch.mjs|scripts/exact-review-dead-letter-operator.mjs|scripts/stuck-queued-run-remediation.mjs|scripts/queue-storage-census.mjs|scripts/canonical-record-verification.ts|scripts/review-usage-operator.mjs|scripts/publish-apply-observability.mjs|./scripts/prepare-worker-record-cache.ts|--max-old-space-size=12288) exit 0 ;;
   scripts/worker-records.ts) echo '{"ok":true}' ;;
   scripts/dashboard-smoke.mjs) exit 0 ;;
@@ -404,6 +424,18 @@ exit 0
 
 `,
   );
+  return {
+    path: archivePath,
+    bytes: archiveBytes,
+    outputs: {
+      ARCHIVE: archivePath,
+      FIRST_HIT: "false",
+      SECOND_HIT: "true",
+      FIRST_BIN: join(root, "first/bin/trufflehog"),
+      FIRST_SHA256: createHash("sha256").update(archiveBytes).digest("hex"),
+      FIRST_VERSION: scannerVersion,
+    },
+  };
 }
 
 // No exemptions: every matching workflow/action step is executed. A clean baseline
@@ -461,7 +493,8 @@ test("workflow shell boundaries", { concurrency: 4 }, async (t) => {
       const root = join(scratch, "workspace");
       try {
         mkdirSync(root);
-        fixture(root);
+        const temporary = join(scratch, "runner");
+        const scannerArchive = fixture(root, temporary);
         const base: Record<string, string> = {
           // With nounset, an undeclared x would stop before its subscript runs.
           x: "0",
@@ -482,7 +515,7 @@ test("workflow shell boundaries", { concurrency: 4 }, async (t) => {
           GITHUB_PATH: join(root, "path"),
           GITHUB_WORKSPACE: root,
           GITHUB_ACTION_PATH: join(root, "action"),
-          RUNNER_TEMP: join(root, "runner"),
+          RUNNER_TEMP: temporary,
           RUNNER_OS: "Linux",
           GITHUB_RUN_ID: "123",
           GITHUB_RUN_ATTEMPT: "1",
@@ -501,12 +534,17 @@ test("workflow shell boundaries", { concurrency: 4 }, async (t) => {
             : !String(value).includes("${{")
               ? String(value ?? "")
               : valueFor(name);
+        for (const [name, value] of Object.entries(scannerArchive.outputs))
+          if (Object.hasOwn(base, name)) base[name] = value;
         if (
           file === ".github/workflows/clawsweeper-dispatch.yml" ||
           file === "docs/target-dispatcher.md"
         )
           base.TARGET_DISPATCH_URL = "https://queue.invalid/github/target-dispatch";
         const run = (env: Record<string, string>) => {
+          // The reset step removes transport bytes; each input probe needs the
+          // same valid baseline while the real helper enforces path ownership.
+          writeFileSync(scannerArchive.path, scannerArchive.bytes, { mode: 0o600 });
           writeFileSync(base.GITHUB_OUTPUT, "");
           writeFileSync(base.GITHUB_ENV, "");
           return new Promise<{

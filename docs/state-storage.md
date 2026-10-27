@@ -277,8 +277,11 @@ at most 64 raw candidates per pass. Its durable cursor advances past ineligible
 rows and stops at that fixed upper bound. Deletion requires an exact record ID
 and agreement between the canonical record and canonical export pointer on
 revision, deletion state, and digest. Commits, live backfill exports, and missing
-or mismatched owners remain. Progress counts logical payload bytes; SQLite's
-physical database size can stay unchanged while freed pages become reusable.
+or mismatched owners remain. Progress counts logical payload bytes, not reclaimed
+pages. Cloudflare's `sql.databaseSize` reports occupied SQLite bytes, excluding
+free pages. Deleting payloads can leave space within occupied pages; indexes and
+other retained data also contribute to this total. It is not a file-size metric
+or a measure of disposable data.
 
 Git-backed reports, dashboard status, and post-dispatch cursors are best-effort
 after their productive side effect or canonical publication succeeds. Git

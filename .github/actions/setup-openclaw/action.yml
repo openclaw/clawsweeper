@@ -15,10 +15,7 @@ runs:
   steps:
     - name: Install trusted review scanner
       if: ${{ env.CLAWSWEEPER_RUNNER == 'openclaw' }}
-      shell: bash
-      env:
-        WORKFLOW_ACTION_PATH: ${{ github.action_path }}
-      run: bash "${WORKFLOW_ACTION_PATH}/../setup-review-tools/install.sh"
+      uses: ./.github/actions/setup-review-tools
 
     - name: Cache OpenClaw CLI and npm downloads
       if: ${{ env.CLAWSWEEPER_RUNNER == 'openclaw' }}

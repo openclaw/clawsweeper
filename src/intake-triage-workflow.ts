@@ -231,7 +231,13 @@ export async function runIntakeWorkflow(
       if (snapshotIdentity(read()) !== snapshotIdentity(snapshot)) throw new IntakeGuardError();
     };
     const gh = options.gh ?? {
-      ghJson: <T>(args: string[]) => ghJson<T>([...args, "--repo", options.repository]),
+      readLabelCatalogPages: () =>
+        ghJson<unknown>([
+          "api",
+          `repos/${options.repository}/labels?per_page=100`,
+          "--paginate",
+          "--slurp",
+        ]),
       ghObservedMutationCommand: (mutation: Parameters<LabelGh["ghObservedMutationCommand"]>[0]) =>
         ghObservedMutationCommand({
           ...mutation,

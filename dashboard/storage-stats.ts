@@ -1,9 +1,9 @@
 // Per-table size estimate for a Durable Object's SQLite store.
 //
-// Cloudflare reports only the total stored bytes. This reads, for each table, its row count and
+// Cloudflare reports occupied SQLite bytes, excluding free pages. This reads each table's row count and
 // the average size of a small sample of rows, so the estimate costs one COUNT(*) and two bounded
 // samples per table instead of reading every row's content. This estimates content bytes,
-// not physical allocation: record headers, index pages, and unused space are not counted.
+// not occupied pages: record headers, indexes, and unused space within pages are not counted.
 
 // Rows sampled from each end of a table (oldest and newest by rowid): old and new rows of a
 // growing table can differ in size.

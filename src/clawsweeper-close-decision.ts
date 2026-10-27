@@ -10,6 +10,7 @@ import {
   requiresMaintainerProductClose,
 } from "./clawsweeper-policy.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
+import { closeReasonItemKindError } from "./clawsweeper-close-reasons.js";
 import type { ActionTaken, CloseReason, Decision, Item } from "./clawsweeper-types.js";
 import { NEEDS_SECURITY_REVIEW_LABEL } from "./repair/exact-review-guard-labels.js";
 import { isIsoTimestamp } from "./iso-time.js";
@@ -77,9 +78,6 @@ function unconfirmedProductDirectionDecisionBlockReason(
   item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "authorAssociation">>,
   decision: Decision,
 ): string | null {
-  if (item.kind !== "pull_request") {
-    return "unconfirmed_product_direction is allowed only for pull requests";
-  }
   if (!item.authorAssociation) return "unconfirmed_product_direction requires author association";
   if (isMaintainerAuthorAssociation(item.authorAssociation)) {
     return "unconfirmed_product_direction cannot close maintainer-authored pull requests";
@@ -116,9 +114,8 @@ export function unsponsoredFeatureDecisionBlockReason(
   item: Pick<Item, "kind" | "labels">,
   decision: Pick<Decision, "itemCategory" | "maintainerDecision" | "requiresProductDecision">,
 ): string | null {
-  if (item.kind !== "issue") {
-    return "unsponsored_feature_request is allowed only for issues";
-  }
+  const kindError = closeReasonItemKindError("unsponsored_feature_request", item.kind);
+  if (kindError) return kindError;
   if (decision.itemCategory !== "feature") {
     return "unsponsored_feature_request requires feature item category";
   }
@@ -147,9 +144,6 @@ function externalPrCloseDecisionBlockReason(
   closeReason: CloseReason,
   exemptText: string,
 ): string | null {
-  if (item.kind !== "pull_request") {
-    return `${closeReason} is allowed only for pull requests`;
-  }
   if (!item.authorAssociation) return `${closeReason} requires author association`;
   if (isMaintainerAuthorAssociation(item.authorAssociation)) {
     return `${closeReason} cannot close maintainer-authored pull requests`;
@@ -226,7 +220,8 @@ export function staleVersionBugDecisionBlockReason(
   item: Pick<Item, "kind" | "labels">,
   decision: Pick<Decision, "itemCategory">,
 ): string | null {
-  if (item.kind !== "issue") return "stale_version_bug is allowed only for issues";
+  const kindError = closeReasonItemKindError("stale_version_bug", item.kind);
+  if (kindError) return kindError;
   if (decision.itemCategory !== "bug") return "stale_version_bug requires bug item category";
   const securityLabel = protectedLabels(item.labels)[0];
   if (securityLabel) return `${securityLabel} blocks stale-version bug auto-close`;
@@ -296,25 +291,16 @@ export function validateCloseDecision(
         "product-scope close proposal requires an outstanding product-direction maintainer decision",
     };
   }
-  if (item.kind !== "pull_request" && decision.closeReason === "mostly_implemented_on_main") {
+  const kindError = closeReasonItemKindError(decision.closeReason, item.kind);
+  if (kindError) {
     return {
       ok: false,
       actionTaken: "skipped_invalid_decision",
-      reason: "mostly_implemented_on_main is allowed only for pull requests",
-    };
-  }
-  if (item.kind !== "pull_request" && decision.closeReason === "low_signal_unmergeable_pr") {
-    return {
-      ok: false,
-      actionTaken: "skipped_invalid_decision",
-      reason: "low_signal_unmergeable_pr is allowed only for pull requests",
+      reason: kindError,
     };
   }
   if (decision.closeReason === "oversized_pull_request") {
-    if (
-      item.kind !== "pull_request" ||
-      !parseOversizedPullRequestEvidence(decision.oversizedPullRequest)
-    ) {
+    if (!parseOversizedPullRequestEvidence(decision.oversizedPullRequest)) {
       return {
         ok: false,
         actionTaken: "skipped_invalid_decision",
@@ -406,13 +392,6 @@ export function validateCloseDecision(
         reason: obsoleteFixBlock,
       };
     }
-  }
-  if (item.kind === "pull_request" && decision.closeReason === "stale_insufficient_info") {
-    return {
-      ok: false,
-      actionTaken: "skipped_invalid_decision",
-      reason: "stale_insufficient_info is not allowed for pull requests",
-    };
   }
   if (!decision.summary.trim()) {
     return { ok: false, actionTaken: "skipped_invalid_decision", reason: "missing summary" };

@@ -201,7 +201,10 @@ test("the publisher applies a detected bulk-filer label only for non-exempt auth
     throw new Error("a dry run must not call gh");
   };
   const { syncBulkFilerLabel } = createLabelSyncOperations(
-    createLabelMutationOperations({ ghJson: offline, ghObservedMutationCommand: offline }),
+    createLabelMutationOperations({
+      readLabelCatalogPages: offline,
+      ghObservedMutationCommand: offline,
+    }),
   );
   assert.deepEqual(
     syncBulkFilerLabel({
@@ -273,7 +276,10 @@ test("a confirmed below-threshold count removes a retroactive label, a failed se
     throw new Error("a dry run must not call gh");
   };
   const { syncBulkFilerLabel } = createLabelSyncOperations(
-    createLabelMutationOperations({ ghJson: offline, ghObservedMutationCommand: offline }),
+    createLabelMutationOperations({
+      readLabelCatalogPages: offline,
+      ghObservedMutationCommand: offline,
+    }),
   );
   const retroactivelyLabeled = {
     number: 164972,

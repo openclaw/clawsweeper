@@ -1178,7 +1178,7 @@ export class ExactReviewQueue {
       return this.readLifecycleAuditInventory(await request.json().catch(() => null));
     }
     // The report handler performs no writes and bypasses ensureReady/legacy cleanup.
-    // Cloudflare reports only the total stored bytes; table content is measured separately.
+    // Cloudflare reports occupied SQLite bytes, excluding free pages; table content is separate.
     if (request.method === "POST" && url.pathname === "/storage/stats") {
       const body = objectValue(await request.json().catch(() => null));
       if (body.census !== undefined) {
@@ -3007,8 +3007,8 @@ export class ExactReviewQueue {
       item.reviewBudgetChargeGeneration = item.claimGeneration;
       await this.writeState(state);
       this.recordLifecycleClaim(item, now);
-      // Every newly claimed review run spends one full review; finalizer-only
-      // and publication claims do not.
+      // This alert measures claim pressure, including runs that exit before
+      // generation. Publication and finalizer-only claims are excluded.
       if (!exactReviewQueueIsPublication(item) && !item.terminalFinalization) {
         this.reviewLoopStore.recordReviewGenerationSafely(
           exactReviewLoopItemKey(item.decision),
@@ -7806,6 +7806,7 @@ export class ExactReviewQueue {
     } catch {
       console.warn("review_runaway_telemetry_unavailable");
       return {
+        counting_basis: "claimed_review_runs",
         status: "unknown",
         reason: "telemetry_unavailable",
         window_hours: 24,

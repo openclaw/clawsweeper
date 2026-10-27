@@ -6,8 +6,8 @@ import type { JsonObject } from "./json-types.js";
 import { asJsonObject } from "./json-types.js";
 import { writeJsonFile } from "./json-file.js";
 import { parseArgs, repoRoot } from "./lib.js";
+import { boolEnv, stringOrNull } from "../value-coerce.js";
 import {
-  boolEnv,
   describeHookDelivery,
   errorText,
   hookDeliveryFromError,
@@ -16,7 +16,6 @@ import {
   postOpenClawAgentHook,
   resolveOpenClawHookConfig,
   stringArg,
-  stringOrNull,
 } from "./openclaw-hook.js";
 import type { OpenClawHookDelivery } from "./openclaw-hook.js";
 

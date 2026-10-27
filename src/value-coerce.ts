@@ -75,3 +75,14 @@ export function numberOrUndefined(value: unknown): number | undefined {
   const number = typeof value === "number" ? value : Number(value);
   return Number.isFinite(number) ? number : undefined;
 }
+
+export function boolEnv(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  if (/^(1|true|yes|on)$/i.test(value)) return true;
+  if (/^(0|false|no|off)$/i.test(value)) return false;
+  return fallback;
+}
+
+export function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}

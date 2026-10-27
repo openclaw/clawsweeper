@@ -1,0 +1,1 @@
+- Publish reviews successfully when a repository has no labels, using paginated REST label catalogs.
