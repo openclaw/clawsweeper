@@ -376,7 +376,9 @@ publication and finalizer-only claims are excluded). An item with more than
 window is a runaway. `review_runaway_health` reports `degraded` with reason
 `review_runaway`, the runaway count, and up to five verified-public sample keys;
 the dashboard health summary raises it amber. This alert observes; it never
-changes admission.
+changes admission. Its `counting_basis: "claimed_review_runs"` includes cache
+hits, semantic no-ops, and failures before model execution; it is not a model-call
+counter.
 
 Exact-review result publication has a separate adaptive Actions lane. Source
 fallback minimum, base, and maximum are 4, 24, and 48; production overrides

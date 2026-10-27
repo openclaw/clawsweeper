@@ -944,7 +944,10 @@ newly claimed review run per item (publication and finalizer-only claims
 excluded) and reports `degraded` with reason `review_runaway` when any item
 claimed more than `EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY` (production: 24)
 reviews in the trailing 24 hours; otherwise it is `healthy`. A failed history
-read reports `unknown` with reason `telemetry_unavailable`. The object carries
+read reports `unknown` with reason `telemetry_unavailable`. New snapshots declare
+`counting_basis: "claimed_review_runs"`, including cache hits, semantic no-ops,
+and failures before model execution. The alert does not count model calls.
+The object carries
 `window_hours`, `threshold_reviews_per_day`, the `runaway_items` count across all
 repositories, and `sample_item_keys`: at most five `owner/repo#number` keys,
 highest review count first, limited to repositories in `PUBLIC_BAY_REPOS`.

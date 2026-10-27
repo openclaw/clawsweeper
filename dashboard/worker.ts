@@ -5134,6 +5134,7 @@ function publicExactReviewFailureHealth(value) {
 function publicExactReviewRunawayHealth(value, allowedRepositories: ReadonlySet<string>) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const source = objectValue(value);
+  const countingBasis = source.counting_basis;
   const status = String(source.status || "");
   const reason = source.reason ?? null;
   const windowHours = publicQueueCount(source.window_hours, 24 * 7);
@@ -5149,6 +5150,7 @@ function publicExactReviewRunawayHealth(value, allowedRepositories: ReadonlySet<
           ? null
           : undefined;
   if (
+    (countingBasis !== undefined && countingBasis !== "claimed_review_runs") ||
     expectedReason === undefined ||
     reason !== expectedReason ||
     windowHours === null ||
@@ -5174,6 +5176,7 @@ function publicExactReviewRunawayHealth(value, allowedRepositories: ReadonlySet<
     if (sample.length >= PUBLIC_RUNAWAY_SAMPLE_LIMIT) break;
   }
   return {
+    ...(countingBasis === undefined ? {} : { counting_basis: countingBasis }),
     status,
     reason,
     window_hours: windowHours,

@@ -1,4 +1,4 @@
-// Worker/workerd proof. Usage: node run-proof.mjs BASE_REF TOOL_PREFIX FRESH_OUTPUT_DIR [direct|direct-upgrade]
+// Worker/workerd proof. Usage: node run-proof.mjs BASE_REF TOOL_PREFIX FRESH_OUTPUT_DIR [direct|direct-upgrade|claim-counting]
 // Uses a loopback GitHub fixture, a fake clock, and disk-backed SQLite for upgrade/rollback.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -27,6 +27,7 @@ const RUNAWAY_REVIEWS = 25;
 
 const FILES = [
   "dashboard/exact-review-queue.ts",
+  "dashboard/exact-review-review-loop.ts",
   "dashboard/exact-review-read-model.ts",
   "dashboard/worker.ts",
   "dashboard/wrangler.toml",
@@ -233,7 +234,40 @@ export default {
       });
   }
 
-  if (mode === "source-drift") {
+  if (mode === "claim-counting") {
+    receipt.claim =
+      "The runaway alert explicitly counts queue claims, including runs completed without model execution; alarm severity and expiry are unchanged.";
+    receipt.variants = {};
+    for (const variant of ["baseline", "candidate"]) {
+      const mf = factories[variant]();
+      try {
+        await mf.ready;
+        dispatches.length = 0;
+        receipt.variants[variant] = await runawayAlert(createDriver(mf));
+      } finally {
+        await mf.dispose();
+      }
+    }
+    const baseline = receipt.variants.baseline;
+    const candidate = receipt.variants.candidate;
+    assert.equal(baseline.public_review_runaway_health.counting_basis, undefined);
+    assert.equal(candidate.public_review_runaway_health.counting_basis, "claimed_review_runs");
+    for (const result of [baseline, candidate]) {
+      assert.equal(result.claimed_reviews, RUNAWAY_REVIEWS);
+      assert.equal(result.public_status, 200);
+      assert.equal(result.public_collection.state, "complete");
+      assert.equal(result.public_review_runaway_health.status, "degraded");
+      assert.ok(result.dashboard_health.reasons.includes("review_runaway"));
+      assert.equal(result.after_25_hours.status, "healthy");
+    }
+    assert.deepEqual(unexpected, []);
+    receipt.assertions = {
+      explicit_claim_counting_without_model_execution: true,
+      alarm_and_expiry_preserved: true,
+    };
+    receipt.limits =
+      "Real workerd queue claims, completion, alarm and public GET route; synthetic GitHub fixture and controlled clock. No model, production state, GitHub Actions execution or GitHub mutation.";
+  } else if (mode === "source-drift") {
     await runSourceDriftScenarios(factories, configs, receipt);
   } else {
     assert.ok(["direct", "direct-upgrade"].includes(mode), "unknown proof mode");
@@ -674,11 +708,13 @@ export default {
       "Real Worker routes and real DO alarm dispatcher in workerd; synthetic loopback GitHub responses, RSA credential and review publications; no GitHub Actions execution, inference, production state or GitHub mutation. Clock and alarm scheduling are controlled by the harness. Proof-only routes tick the real alarm and read raw SQLite rows; they do not write queue state.";
   }
   const receiptName =
-    mode === "source-drift"
-      ? "result.json"
-      : mode === "direct"
-        ? "direct-requeue-result.json"
-        : "direct-requeue-upgrade-and-rollback.json";
+    mode === "claim-counting"
+      ? "claim-counting-result.json"
+      : mode === "source-drift"
+        ? "result.json"
+        : mode === "direct"
+          ? "direct-requeue-result.json"
+          : "direct-requeue-upgrade-and-rollback.json";
   writeFileSync(path.join(out, receiptName), JSON.stringify(receipt, null, 2) + "\n");
   console.log(JSON.stringify(receipt.assertions, null, 2));
 } finally {

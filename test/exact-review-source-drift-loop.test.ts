@@ -972,11 +972,12 @@ test("a zero limit disables the breaker", async () => {
   });
 });
 
-test("runaway review generations degrade queue health with public-only samples", async () => {
+test("claimed review runs degrade queue health with public-only samples", async () => {
   const h = harness({ EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY: "4" });
   await withExactReviewAdmissionHarness(h, async () => {
     const healthy = await stats(h);
     assert.deepEqual(healthy.review_runaway_health, {
+      counting_basis: "claimed_review_runs",
       status: "healthy",
       reason: null,
       window_hours: 24,
@@ -1004,6 +1005,7 @@ test("runaway review generations degrade queue health with public-only samples",
     }
     const snapshot = await stats(h);
     assert.deepEqual(snapshot.review_runaway_health, {
+      counting_basis: "claimed_review_runs",
       status: "degraded",
       reason: "review_runaway",
       window_hours: 24,
@@ -1014,6 +1016,7 @@ test("runaway review generations degrade queue health with public-only samples",
     const projected = publicExactReviewQueueProjection(snapshot, new Set([repo]));
     assert.equal(projected.collection.state, "complete");
     assert.deepEqual(projected.review_runaway_health, {
+      counting_basis: "claimed_review_runs",
       status: "degraded",
       reason: "review_runaway",
       window_hours: 24,
@@ -1036,6 +1039,34 @@ test("runaway review generations degrade queue health with public-only samples",
   });
 });
 
+test("unavailable runaway history retains its counting basis", async () => {
+  const h = harness();
+  await withExactReviewAdmissionHarness(h, async () => {
+    const exec = h.storage.sql.exec.bind(h.storage.sql);
+    h.storage.sql.exec = (query, ...bindings) => {
+      if (query.includes("SELECT COUNT(*) AS runaway_items")) {
+        throw new Error("storage unavailable");
+      }
+      return exec(query, ...bindings);
+    };
+    const health = (await stats(h)).review_runaway_health;
+    assert.deepEqual(health, {
+      counting_basis: "claimed_review_runs",
+      status: "unknown",
+      reason: "telemetry_unavailable",
+      window_hours: 24,
+      threshold_reviews_per_day: 24,
+      runaway_items: 0,
+      sample_item_keys: [],
+    });
+    assert.deepEqual(
+      publicExactReviewQueueProjection({ review_runaway_health: health }, new Set([repo]))
+        .review_runaway_health,
+      health,
+    );
+  });
+});
+
 test("public runaway projection fails closed on malformed or absent input", () => {
   const valid = {
     status: "degraded",
@@ -1049,8 +1080,14 @@ test("public runaway projection fails closed on malformed or absent input", () =
     publicExactReviewQueueProjection({ review_runaway_health }, new Set([repo]))
       .review_runaway_health;
   assert.deepEqual(project(valid), valid);
+  const current = { ...valid, counting_basis: "claimed_review_runs" };
+  assert.deepEqual(project(current), current);
+  assert.deepEqual(project(project(current)), current);
   assert.equal(project(undefined), null);
   for (const malformed of [
+    { ...valid, counting_basis: "model_calls" },
+    { ...valid, counting_basis: null },
+    { ...valid, counting_basis: { private_key: "secret" } },
     { ...valid, status: "critical" },
     { ...valid, reason: null },
     { ...valid, runaway_items: 0 },

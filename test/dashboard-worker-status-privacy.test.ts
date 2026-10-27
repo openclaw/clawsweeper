@@ -2100,6 +2100,7 @@ test("status reprojection keeps the closed runaway alert and only public sample 
   const queue = publicExactReviewQueueProjection(
     {
       review_runaway_health: {
+        counting_basis: "claimed_review_runs",
         status: "degraded",
         reason: "review_runaway",
         window_hours: 24,
@@ -2112,6 +2113,7 @@ test("status reprojection keeps the closed runaway alert and only public sample 
     new Set(["openclaw/openclaw"]),
   );
   assert.deepEqual(queue.review_runaway_health, {
+    counting_basis: "claimed_review_runs",
     status: "degraded",
     reason: "review_runaway",
     window_hours: 24,

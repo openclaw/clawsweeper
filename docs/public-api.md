@@ -117,7 +117,11 @@ identities for incident investigation without storing raw failure text.
 
 The optional `review_runaway_health` object is a closed trailing-24-hour alert:
 `status` (`healthy`, `degraded`, or `unknown`), `reason`, `window_hours`,
-`threshold_reviews_per_day`, `runaway_items`, and `sample_item_keys`. Samples are
+`threshold_reviews_per_day`, `runaway_items`, and `sample_item_keys`. New snapshots
+also carry `counting_basis: "claimed_review_runs"`; older snapshots may omit it.
+Claims include cache hits, semantic no-ops, and failures before model execution,
+so this alert does not count model calls. Any other counting basis projects as
+`null`. Samples are
 at most five canonical `owner/repo#number` keys for repositories in
 `PUBLIC_BAY_REPOS`; private-repository runaways are counted but not named, and
 run, revision, and per-item review counts are not projected. A missing or
