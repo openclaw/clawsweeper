@@ -21,7 +21,7 @@ const workerUrl =
   "${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}";
 const workerSecret = "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}";
 
-test("state hydration retains canonical defaults with an explicit operational-only publisher", () => {
+test("state hydration retains canonical defaults with explicit publisher modes", () => {
   const setups = setupStateSites();
   assert.ok(setups.length > 0, "no setup-state sites found");
   for (const { site, step } of setups) {
@@ -29,7 +29,11 @@ test("state hydration retains canonical defaults with an explicit operational-on
       assert.equal(step.with?.["records-url"], undefined, site);
       assert.equal(step.with?.["records-secret"], undefined, site);
       assert.equal(step.with?.["hydrate-state-blobs"], "false", site);
-      assert.notEqual(step.with?.["hydrate-git-state"], "false", site);
+      assert.equal(
+        step.with?.["hydrate-git-state"] === "false",
+        site === ".github/workflows/exact-review-batch-publish.yml:publish",
+        site,
+      );
       assert.equal(step.with?.["coordinator-url"], workerUrl, site);
     } else {
       assert.equal(step.with?.["records-url"], workerUrl, site);

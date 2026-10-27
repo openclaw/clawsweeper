@@ -173,6 +173,7 @@ test("manual publication proof preserves isolated toolchain settings without inh
     bin: "/fixture/bin",
     root: "/fixture/state",
     transport: "/fixture/transport.mjs",
+    socket: "/fixture/gh.sock",
     baseUrl: "http://127.0.0.1:1",
     secret: "synthetic-coordinator-secret",
     producerRepo: "example/source",
@@ -182,6 +183,7 @@ test("manual publication proof preserves isolated toolchain settings without inh
   for (const name of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"] as const)
     assert.equal(env[name], toolchain[name]);
   assert.equal(env.CI, "true");
+  assert.equal(env.MANUAL_PUBLICATION_GITHUB_SOCKET, "/fixture/gh.sock");
   assert.equal(Object.hasOwn(env, "OPENAI_API_KEY"), false);
   assert.equal(Object.hasOwn(env, "GITHUB_TOKEN"), false);
 });
