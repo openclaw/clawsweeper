@@ -50,8 +50,13 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           TARGET_SLUG: ${{ steps.target.outputs.slug }}
+        # The replay stops at 18 minutes, leaving the rest of the 30-minute job
+        # for packing, the ~530 MB upload and cold bootstrap. A stopped replay
+        # still uploads a snapshot through the last change it applied, so a
+        # backlog shrinks every run instead of timing out every run.
         run: |
-          node scripts/worker-records.ts snapshot-upload --repo-slug "$TARGET_SLUG" > snapshot-result.json
+          node scripts/worker-records.ts snapshot-upload --repo-slug "$TARGET_SLUG" \
+            --replay-budget-seconds 1080 > snapshot-result.json
           cat snapshot-result.json
           {
             echo '### Canonical records snapshot'
@@ -60,6 +65,9 @@ jobs:
             cat snapshot-result.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$(jq -r '.replay.complete' snapshot-result.json)" != "true" ]; then
+            echo "::warning title=Snapshot replay still catching up::$(jq -r '"Snapshot covers changes through revision \(.replay.resumeRevision) after replaying \(.replay.replayedRecords) records; the next run resumes there."' snapshot-result.json)"
+          fi
 
       # Every fleet-wide hydration reads every slug, and cold hydration refuses a
       # snapshot-less slug past 2,000 records, so each scheduled run also gives

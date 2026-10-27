@@ -1070,6 +1070,21 @@ the highest revision observed would risk claiming changes not present in the
 archive. As with object-side production, later record versions may be included;
 future hydration replays every change after the initial watermark.
 
+The scheduled producer passes `--replay-budget-seconds 1080`. Without a budget a
+backlog only grows: each timed-out run leaves more changes for the next, and
+every reader that hydrates from the stale snapshot inherits the whole delta.
+When the budget passes, the replay stops between
+export pages (always after at least one) and the snapshot's watermark becomes the
+last cursor applied instead of the first-page revision. Export pages hold one
+row per identity, ordered by its unique store revision, so every identity whose
+current revision is at or below that cursor is in the tree at that revision;
+anything rewritten during the run lands past it and is replayed by readers and
+by the next producer run. Registration independently refuses a cut that misses
+an identity (`snapshot_coverage_incomplete`). The result reports
+`replay.complete`, `resumeRevision`, `replayedRecords` and per-phase durations,
+and the workflow annotates a run whose replay is still catching up. Readers
+never accept a budget; they always replay to the end.
+
 The outer Worker's signed `POST /internal/state/records/snapshots/upload/`
 `start`, `part`, `manifest`, `complete`, and `abort` routes reuse the blob upload pattern:
 bounded JSON/base64 requests, each HMAC-signed over the exact body with
