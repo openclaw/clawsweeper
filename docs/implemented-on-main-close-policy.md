@@ -73,6 +73,11 @@ under the artifact directory, preserving earlier evidence. It records close PATC
 counts, source reads, report state,
 and HTTP traces. It does not contact GitHub or establish a historical production
 incident. The boundary is controlled, not a GitHub service integration test.
+The unit suite reports all 17 scenarios independently rather than wrapping the
+entire matrix in one subprocess timeout. Each scenario keeps the proof CLI
+execution limit of 60 seconds; scenario timings and failures are recorded, and
+cancellation shuts down the owned CLI process tree and boundary before cleanup.
+This changes proof ownership, not production timeout or coverage policy.
 
 OpenClaw Bay is unaffected. Bay remains an observer-only projection of durable
 workflow state: this policy changes neither Bay's public schema nor its ability

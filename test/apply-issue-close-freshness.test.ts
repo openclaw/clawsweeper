@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
+import {
+  issueCloseProofScenarios,
+  runIssueCloseProof,
+} from "../scripts/e2e/apply-issue-close-freshness.mjs";
 import { createApplyProofFreshnessGuards } from "../dist/clawsweeper-apply-proof-freshness.js";
 import { completeActivityContextSymbol } from "../dist/clawsweeper-types.js";
 import { stableJson } from "../dist/stable-json.js";
@@ -88,16 +95,77 @@ test("forced issue close freshness blocks a lock or closed state even at reviewe
   }
 });
 
+assert.equal(issueCloseProofScenarios.length, 17);
+for (const scenario of issueCloseProofScenarios)
+  test(
+    `actual apply CLI preserves issue close freshness: ${scenario}`,
+    { timeout: 75_000 },
+    async (t) => {
+      const results = await runIssueCloseProof({ scenario, signal: t.signal });
+      assert.equal(results.length, 1);
+      assert.equal(results[0].scenario, scenario);
+    },
+  );
+
 test(
-  "actual apply CLI preserves late issue locks, state and human activity",
-  { timeout: 180_000 },
-  () => {
-    const results = JSON.parse(
-      execFileSync(process.execPath, ["scripts/e2e/apply-issue-close-freshness.mjs"], {
-        encoding: "utf8",
-        timeout: 175_000,
-      }),
+  "cancellation during final boundary cleanup cannot report proof success",
+  { timeout: 15_000 },
+  async (t) => {
+    const controller = new AbortController();
+    const remove = controller.signal.removeEventListener.bind(controller.signal);
+    t.mock.method(controller.signal, "removeEventListener", (...args) => {
+      remove(...args);
+      controller.abort(new Error("late cleanup cancellation"));
+    });
+    await assert.rejects(
+      runIssueCloseProof({ scenario: "legacy_missing_source_synced", signal: controller.signal }),
+      /late cleanup cancellation/,
     );
-    assert.equal(results.length, 17);
   },
 );
+
+test("aborted issue proof reaps its CLI tree and boundary", { timeout: 15_000 }, async (t) => {
+  const artifactDir = mkdtempSync(join(tmpdir(), "issue-proof-interrupt-"));
+  const controller = new AbortController();
+  const result = runIssueCloseProof({
+    scenario: "no_drift",
+    artifactDir,
+    signal: AbortSignal.any([controller.signal, t.signal]),
+  });
+  const rejected = assert.rejects(result, /proof interrupted for cleanup test/);
+  let settled = false;
+  void result.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  try {
+    let dir;
+    while (!dir || !existsSync(join(dir, "http-trace.jsonl"))) {
+      assert.equal(settled, false, "proof must reach its real CLI boundary");
+      const generation = readdirSync(artifactDir).find((name) => name.startsWith("run-"));
+      if (generation) dir = join(artifactDir, generation, "no_drift");
+      await delay(10);
+    }
+    controller.abort(new Error("proof interrupted for cleanup test"));
+    await rejected;
+    assert.ok(existsSync(join(dir, "failure.json")));
+    // POSIX delivers the boundary handler; Windows terminates it directly.
+    // Every platform must reap both owned processes, without skipping a case.
+    if (process.platform !== "win32")
+      assert.ok(
+        existsSync(join(dir, "boundary-state.json")),
+        "boundary must finish its shutdown receipt",
+      );
+    const { boundaryPid, cliPid } = JSON.parse(readFileSync(join(dir, "processes.json"), "utf8"));
+    for (const pid of [boundaryPid, cliPid])
+      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  } finally {
+    controller.abort(new Error("proof interrupted for cleanup test"));
+    await rejected;
+    rmSync(artifactDir, { recursive: true, force: true });
+  }
+});
