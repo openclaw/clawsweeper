@@ -204,6 +204,26 @@ test("retired migration and Git recovery surfaces stay deleted", () => {
   }
 });
 
+test("state writers keep the hydrated, installed and built source generation", () => {
+  const documents = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
+  for (const [file, jobName] of [
+    [".github/workflows/audit.yml", "audit-dashboard"],
+    [".github/workflows/failed-review-retry.yml", "retry-failed-reviews"],
+  ] as const) {
+    const steps = documents.get(file)?.jobs?.[jobName]?.steps ?? [];
+    const hydration = steps.findIndex(isSetupState);
+    const build = steps.findIndex((step) => step.uses === "./.github/actions/setup-pnpm");
+    assert.ok(hydration >= 0 && build > hydration, `${file}:${jobName}`);
+    for (const step of steps.slice(build + 1)) {
+      assert.doesNotMatch(
+        String(step.run ?? ""),
+        /^\s*git\s+pull(?:\s|$)/m,
+        `${file}:${step.name}`,
+      );
+    }
+  }
+});
+
 function workflows(): Array<{ file: string; workflow: WorkflowDocument }> {
   return readdirSync(workflowDirectory)
     .filter((name) => /\.ya?ml$/.test(name))

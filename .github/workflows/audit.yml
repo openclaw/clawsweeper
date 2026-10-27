@@ -163,7 +163,6 @@ jobs:
           WORKFLOW_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          git pull --rebase --autostash
           reconcile_json="$(pnpm run --silent reconcile -- \
             --target-repo "$TARGET_REPO" \
             --max-pages 250 \

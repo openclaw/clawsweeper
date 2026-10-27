@@ -98,7 +98,6 @@ jobs:
           CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_CODEX_TIMEOUT_MS || vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}
         run: |
           set -euo pipefail
-          git pull --rebase --autostash
           dry_run_arg=()
           if [ "$DRY_RUN" = "true" ]; then
             dry_run_arg=(--dry-run)
