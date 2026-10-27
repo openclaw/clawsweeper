@@ -185,14 +185,17 @@ githubTest("intake reads REST catalog pages from its explicit target repository"
   f.options.repository = "example/other";
   f.live = { ...f.live, repository: "example/other" };
   process.env.EXACT_REVIEW_ITEM_KEY = "example/other#42";
-  const gh = installGhFixture(t, `
+  const gh = installGhFixture(
+    t,
+    `
 if (args[0] === "api") {
   require("node:assert/strict").deepEqual(args, ["api", "repos/example/other/labels?per_page=100", "--paginate", "--slurp"]);
   console.log("[[]]");
 } else {
   require("node:assert/strict").deepEqual(args.slice(-2), ["--repo", "example/other"]);
 }
-`);
+`,
+  );
   const result = await runIntakeWorkflow({ ...f.options, gh: undefined });
   assert.equal(result.outcome, "published");
   const requests = gh.requests();
