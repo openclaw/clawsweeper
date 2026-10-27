@@ -114,7 +114,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         with:
-          build-script: build:all
+          build-script: build:node
 
       # The workflow-scoped GITHUB_TOKEN cannot mutate the target repo; stuck
       # escalation labels need an app installation token for the target owner.
