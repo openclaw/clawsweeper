@@ -91,11 +91,13 @@ out after the window. Unit coverage separately checks legacy snapshots,
 malformed bases, unavailable history, reprojection, and private sample filtering.
 
 ```sh
-node docs/proof/source-drift-loop-breaker/run-proof.mjs <base-sha> /tmp/clawsweeper-proof-tools /tmp/claim-counting-proof claim-counting
+node docs/proof/source-drift-loop-breaker/run-proof.mjs <base-sha> /tmp/clawsweeper-proof-tools .artifacts/claim-counting-proof claim-counting
 ```
 
-The output directory must be fresh. This mode writes `claim-counting-result.json`
-there; it does not replace the historical receipts below.
+Keep the fresh output directory under the checkout so the archived baseline can
+resolve installed workspace dependencies. This mode writes
+`claim-counting-result.json` there; it does not replace the historical receipts
+below.
 
 ### Original loop-breaker run
 
