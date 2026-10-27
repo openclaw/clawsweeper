@@ -1,0 +1,1 @@
+- Reuse npm download caches in the secretless review-network smoke job while preserving fresh pinned Codex installations and isolated sandbox homes.

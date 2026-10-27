@@ -152,7 +152,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         with:
-          build-script: build:all
+          build-script: build:node
 
       - name: Refresh Audit Health
         env:

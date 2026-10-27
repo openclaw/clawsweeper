@@ -331,7 +331,7 @@ jobs:
         id: setup-pnpm
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.target_enabled == 'true' }}
         with:
-          build-script: build:all
+          build-script: build:node
 
       - name: Check live target item state
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.target_enabled == 'true' }}
@@ -2179,7 +2179,7 @@ jobs:
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' }}
         id: setup-publish-pnpm
         with:
-          build-script: build:all
+          build-script: build:node
 
       - uses: ./.github/actions/setup-github-egress-observer
         id: artifact-github-egress-observer
@@ -3256,7 +3256,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         with:
-          build-script: build:all
+          build-script: build:node
 
       - name: Reconcile read-only proof inputs
         if: ${{ !(github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *') && !(github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_sync_comments_only == 'true' || github.event.inputs.apply_item_numbers == '__cursor__')) }}
@@ -3526,7 +3526,7 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
         if: ${{ needs.apply-proof.outputs.action_ledger_artifact_name != '' }}
         with:
-          build-script: build:all
+          build-script: build:node
 
       - name: Publish apply proof action events
         if: ${{ needs.apply-proof.outputs.action_ledger_artifact_name != '' }}
@@ -3673,7 +3673,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         with:
-          build-script: build:all
+          build-script: build:node
 
       - uses: ./.github/actions/setup-openclaw
         continue-on-error: true

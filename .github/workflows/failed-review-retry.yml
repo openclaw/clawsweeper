@@ -82,7 +82,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         with:
-          build-script: build:all
+          build-script: build:node
 
       - name: Plan or dispatch failed-review retries
         id: retry-failed-reviews-run

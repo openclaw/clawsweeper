@@ -5,11 +5,31 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  normalizeGithubActivity,
   renderGithubActivityMessage,
-  routineGithubActivityReason,
   runGithubActivityNotifier,
 } from "../../dist/repair/notify-github-activity.js";
+import {
+  normalizeGithubActivity as normalizeCompiledActivity,
+  routineGithubActivityReason as compiledRoutineReason,
+} from "../../dist/repair/github-activity-admission.js";
+import {
+  normalizeGithubActivity as normalizeSourceActivity,
+  routineGithubActivityReason as sourceRoutineReason,
+} from "../../src/repair/github-activity-admission.ts";
+
+// The workflow runs source before installation; delivery runs the emitted owner.
+// Exercise the existing complete fixture corpus through both entry points.
+function normalizeGithubActivity(options: Parameters<typeof normalizeCompiledActivity>[0]) {
+  const activity = normalizeCompiledActivity(options);
+  assert.deepEqual(normalizeSourceActivity(options), activity);
+  return activity;
+}
+
+function routineGithubActivityReason(activity: Parameters<typeof compiledRoutineReason>[0]) {
+  const reason = compiledRoutineReason(activity);
+  assert.equal(sourceRoutineReason(activity), reason);
+  return reason;
+}
 
 test("normalizeGithubActivity extracts pull request activity with compact untrusted text", () => {
   const activity = normalizeGithubActivity({

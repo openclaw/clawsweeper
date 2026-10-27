@@ -219,17 +219,6 @@ export function positiveInt(value: string | undefined, fallback: number): number
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export function boolEnv(value: string | undefined, fallback: boolean): boolean {
-  if (value === undefined) return fallback;
-  if (/^(1|true|yes|on)$/i.test(value)) return true;
-  if (/^(0|false|no|off)$/i.test(value)) return false;
-  return fallback;
-}
-
-export function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
 export function stringArg(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
