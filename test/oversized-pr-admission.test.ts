@@ -273,7 +273,7 @@ for (const source of [
                   { item_number: candidate.number, artifact_path: null, report: observedReport },
                 ],
               });
-            } else assert.deepEqual(stdout, [observedReport]);
+            } else assert.deepEqual(stdout, [observedReport.trimEnd()]);
           }
         } else {
           assert.throws(
