@@ -19,6 +19,7 @@ const ENTRIES = [
   "dist/clawsweeper-local.js",
   "dist/codex-process-worker.js",
   "dist/openclaw-process-worker.js",
+  "dist/review-assessment-worker.js",
   "dist/git-acquisition-worker.js",
   "scripts/setup-review-tools.mjs",
 ];

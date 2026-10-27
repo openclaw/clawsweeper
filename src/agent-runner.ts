@@ -1,20 +1,31 @@
 import { randomInt } from "node:crypto";
+import { UserFacingCommandError } from "./command.js";
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { delimiter, isAbsolute, join, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { codexModelArgs, redactInternalCodexModel } from "./codex-env.js";
-import { runCodexProcess, type CodexProcessResult } from "./codex-process.js";
+import { codexProcessCommand, runCodexProcess, type CodexProcessResult } from "./codex-process.js";
 import { runOpenclawProcess } from "./openclaw-process.js";
 import { AgentInputScanError, scanAgentInput, type AgentScanSource } from "./agent-input-scan.js";
 import type { DecisionRepairOptions } from "./review-decision-repair.js";
+import type { RepositoryReviewConfig } from "./repository-review-config.js";
 
 export type AgentRunner = "codex" | "openclaw";
+
+export class ReviewPromptBudgetError extends UserFacingCommandError {
+  constructor(bytes: number) {
+    super(`Review prompt exceeded its ${bytes}-byte output budget.`);
+    this.name = "ReviewPromptBudgetError";
+  }
+}
 
 export interface RunAgentProcessOptions {
   label: string;
   prompt: string;
   // Generated diagnostic copy only; never an original input or requested export.
   diagnosticPromptPath?: string;
+  promptFileBytes?: number;
   scanSource: AgentScanSource;
   model: string;
   reasoningEffort?: string;
@@ -29,6 +40,10 @@ export interface RunAgentProcessOptions {
   codexExtraArgs?: readonly string[];
   // Codex only: one repair turn on the same thread when the final decision fails validation.
   decisionRepair?: DecisionRepairOptions;
+  repositoryReview?: RepositoryReviewConfig;
+  selection?: import("./repository-review-config.js").ReviewModelSelection;
+  reviewPhase?: "independent" | "consolidation";
+  nativeReadRoots?: string[];
 }
 
 export function agentRunner(env: NodeJS.ProcessEnv = process.env): AgentRunner {
@@ -59,6 +74,23 @@ export function reviewNetworkCapability(
 
 export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessResult {
   if (options.diagnosticPromptPath) rmSync(options.diagnosticPromptPath, { force: true });
+  if (options.selection) {
+    const selection = options.selection;
+    if (selection.contextTier === "long_context")
+      throw new Error("Explicit long_context is unsupported.");
+    options = {
+      ...options,
+      model: selection.model,
+      ...(selection.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: selection.reasoningEffort }),
+      env: {
+        ...options.env,
+        CLAWSWEEPER_RUNNER: selection.runner,
+        ...(selection.runner === "openclaw" ? { CLAWSWEEPER_OPENCLAW_MODEL: selection.model } : {}),
+      },
+    };
+  }
   const runner = agentRunner(options.env);
   if (runner === "openclaw") openclawModel(options.env);
   const startedAt = Date.now();
@@ -81,28 +113,61 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     source: options.scanSource,
     timeoutMs: options.timeoutMs,
     ...(schemaPath ? { schemaPath } : {}),
+    ...(options.repositoryReview
+      ? {
+          additionalBytes: [
+            Buffer.from(options.repositoryReview.configText),
+            Buffer.from(options.repositoryReview.additionalPrompt),
+          ],
+        }
+      : {}),
   });
+  if (options.repositoryReview?.additionalPrompt) {
+    options = {
+      ...options,
+      prompt:
+        options.prompt +
+        "\n\n## Repository additional instructions (subordinate to the review contract)\n" +
+        options.repositoryReview.additionalPrompt,
+    };
+  }
+  if (options.reviewPhase)
+    options = {
+      ...options,
+      prompt:
+        options.prompt +
+        "\n\n## Host review role\nPhase: " +
+        options.reviewPhase +
+        ". The host schedules all reviewers. Produce one full ordinary Decision for this phase. Do not start another model, pair, agent, or nested review. Configured role tools have no network access: use the admitted source; unavailable external verification is a limit, not evidence against the PR.",
+    };
+
   // OpenClaw has no structured-output option, so it reads the same schema file that Codex
   // receives through --output-schema as a prompt section.
   const prompt =
     runner === "openclaw" && schemaPath
       ? `${options.prompt.trimEnd()}\n\n## Output schema\n\nReturn one JSON object that matches this JSON Schema. The field descriptions are part of the review contract.\n\n\`\`\`json\n${readFileSync(schemaPath, "utf8").trim()}\n\`\`\`\n`
       : options.prompt;
-  if (options.diagnosticPromptPath) {
-    writeFileSync(options.diagnosticPromptPath, prompt, { mode: 0o600, flag: "wx" });
-  }
   options = { ...options, timeoutMs: options.timeoutMs - (Date.now() - startedAt) };
   if (options.timeoutMs <= 0) {
     if (options.diagnosticPromptPath) rmSync(options.diagnosticPromptPath, { force: true });
     throw new AgentInputScanError("deadline");
   }
   if (runner === "codex") {
-    const args = codexAgentArgs(options);
+    retainDiagnosticPrompt(options, options.prompt);
+    const ordinaryArgs = codexAgentArgs(options);
+    const args = options.reviewPhase
+      ? isolatedCodexRoleArgs(options, ordinaryArgs, [
+          options.cwd,
+          ...(options.nativeReadRoots ?? []),
+        ])
+      : ordinaryArgs;
     const managedOutput = options.outputLastMessageBytes !== undefined && outputPath !== undefined;
     return runCodexProcess({
       args: managedOutput ? managedCodexStdoutArgs(args) : args,
       cwd: options.cwd,
-      env: options.env,
+      env: options.reviewPhase
+        ? { ...options.env, GH_TOKEN: undefined, GITHUB_TOKEN: undefined }
+        : options.env,
       input: options.prompt,
       timeoutMs: options.timeoutMs,
       ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
@@ -121,6 +186,7 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     });
   }
 
+  retainDiagnosticPrompt(options, prompt);
   const model = openclawModel(options.env);
   const rawResult = runOpenclawProcess({
     label: options.label,
@@ -128,6 +194,16 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     model,
     ...(options.reasoningEffort?.trim() ? { reasoningEffort: options.reasoningEffort.trim() } : {}),
     cwd: options.cwd,
+    ...(options.reviewPhase
+      ? {
+          roleIsolation: {
+            readRoots: [options.cwd, ...(options.nativeReadRoots ?? [])],
+            ...(options.env.CLAWSWEEPER_PROOF_SCRATCH_DIR
+              ? { proofScratchDir: options.env.CLAWSWEEPER_PROOF_SCRATCH_DIR }
+              : {}),
+          },
+        }
+      : {}),
     env: options.env,
     timeoutMs: options.timeoutMs,
     ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
@@ -159,6 +235,106 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
   return result;
 }
 
+function isolatedCodexRoleArgs(
+  options: RunAgentProcessOptions,
+  args: readonly string[],
+  roots: readonly string[],
+): string[] {
+  const command = codexProcessCommand(options.env, process.platform, options.cwd);
+  const candidates = isAbsolute(command)
+    ? [command]
+    : command.includes("/") || command.includes("\\")
+      ? [resolve(options.cwd, command)]
+      : (options.env.PATH ?? "")
+          .split(delimiter)
+          .filter(isAbsolute)
+          .map((root) => join(root, command));
+  const executable = candidates.flatMap((candidate) => {
+    try {
+      const actual = realpathSync(candidate);
+      return lstatSync(actual).isFile() ? [actual] : [];
+    } catch {
+      return [];
+    }
+  })[0];
+  if (!executable || (!options.env.CODEX_BIN && /\.[cm]?js$/i.test(executable)))
+    throw new Error(
+      "Configured Codex roles require CODEX_BIN to name the trusted native CLI executable, not an npm launcher; restricted tool roots cannot expose a provider home to find it.",
+    );
+  const access = new Map([...roots, executable].map((root) => [realpathSync(root), "read"]));
+  const scratch = options.env.CLAWSWEEPER_PROOF_SCRATCH_DIR;
+  if (scratch) access.set(realpathSync(scratch), "write");
+  const providerHome =
+    options.env.CODEX_HOME ?? join(options.env.HOME ?? options.env.USERPROFILE ?? "", ".codex");
+  const privateParents = [
+    providerHome,
+    tmpdir(),
+    options.env.TMPDIR,
+    options.env.TMP,
+    options.env.TEMP,
+  ]
+    .filter((path): path is string => Boolean(path))
+    .map((path) => resolve(options.cwd, path));
+  if (
+    [...access.keys()].some((root) =>
+      privateParents.some((parent) => {
+        const path = relative(root, parent);
+        return (
+          !path ||
+          (path !== ".." &&
+            !path.startsWith("../") &&
+            !path.startsWith("..\\") &&
+            !isAbsolute(path))
+        );
+      }),
+    )
+  )
+    throw new Error("Codex provider state must remain outside every configured role tool root.");
+  const filesystem =
+    '":root"="deny",":minimal"="read",":workspace_roots"={"."="read"},' +
+    [...access].map(([root, mode]) => JSON.stringify(root) + "=" + JSON.stringify(mode)).join(",");
+  const profile = "clawsweeper-configured-review";
+  const config =
+    "permissions={" +
+    JSON.stringify(profile) +
+    '={extends=":read-only",filesystem={' +
+    filesystem +
+    "},network={enabled=false}}}";
+  const isolated: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (["--sandbox", "-s", "--permission-profile", "-P"].includes(args[i]!)) {
+      i++;
+      continue;
+    }
+    isolated.push(args[i]!);
+  }
+  // CLI profiles are host-owned. Repository model configuration cannot
+  // select another profile or widen tool roots. Ordinary single reviews retain
+  // their existing managed proxy and permissions unchanged.
+  const stdin = isolated.at(-1) === "-" ? isolated.pop() : undefined;
+  isolated.push(
+    "-c",
+    config,
+    "-c",
+    "default_permissions=" + JSON.stringify(profile),
+    "--permission-profile",
+    profile,
+  );
+  if (stdin) isolated.push(stdin);
+  return isolated;
+}
+
+function retainDiagnosticPrompt(options: RunAgentProcessOptions, prompt: string): void {
+  if (
+    options.promptFileBytes !== undefined &&
+    options.promptFileBytes > 0 &&
+    Buffer.byteLength(prompt) > options.promptFileBytes
+  )
+    throw new ReviewPromptBudgetError(options.promptFileBytes);
+  if (options.diagnosticPromptPath)
+    writeFileSync(options.diagnosticPromptPath, prompt, { mode: 0o600, flag: "wx" });
+}
+
 export function runAgentCheckoutInspection(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -166,6 +342,8 @@ export function runAgentCheckoutInspection(options: {
   scanSource: AgentScanSource;
   initialPrompt: string;
   schemaPath?: string;
+  reviewPhase?: "independent" | "consolidation";
+  nativeReadRoots?: string[];
 }): CodexProcessResult {
   const deadlineAt = Date.now() + options.timeoutMs;
   const remainingMs = () => {
@@ -200,9 +378,14 @@ export function runAgentCheckoutInspection(options: {
         new Error("Checkout inspection could not select a tracked text line."),
       );
     }
+    const challengePath = options.reviewPhase
+      ? resolve(options.cwd, challenge.path)
+      : challenge.path;
     const prompt = [
-      "Use the read tool to inspect the workspace-relative file below.",
-      `Path: ${JSON.stringify(challenge.path)}`,
+      options.reviewPhase
+        ? "Use the read tool to inspect the exact admitted read-only file below."
+        : "Use the read tool to inspect the workspace-relative file below.",
+      `Path: ${JSON.stringify(challengePath)}`,
       `Return exactly line ${challenge.lineNumber} with surrounding whitespace removed.`,
       "Do not add quotes, code fences, or commentary.",
     ].join("\n");
@@ -219,9 +402,19 @@ export function runAgentCheckoutInspection(options: {
       prompt,
       model: openclawModel(env),
       cwd: options.cwd,
+      ...(options.reviewPhase
+        ? {
+            roleIsolation: {
+              readRoots: [options.cwd, ...(options.nativeReadRoots ?? [])],
+            },
+          }
+        : {}),
       env,
-      timeoutMs: Math.min(remainingMs(), 30_000),
-      checkoutInspection: { expectedText: challenge.text, expectedPath: challenge.path },
+      // Configured roles already share one bounded review deadline. Native CLI
+      // startup, the challenged read, and its export consume that remainder.
+      // Preserve the ordinary single-review inspection cap.
+      timeoutMs: options.reviewPhase ? remainingMs() : Math.min(remainingMs(), 30_000),
+      checkoutInspection: { expectedText: challenge.text, expectedPath: challengePath },
     });
   }
   scanAgentInput({
@@ -383,7 +576,11 @@ export function codexAgentArgs(options: RunAgentProcessOptions): string[] {
   const reasoningEffort = options.reasoningEffort?.trim();
   return [
     "exec",
-    ...(hasOrderedModelArgs ? [] : codexModelArgs(options.model)),
+    ...(hasOrderedModelArgs
+      ? []
+      : options.selection
+        ? ["--model", options.selection.model]
+        : codexModelArgs(options.model)),
     ...(reasoningEffort && !hasOrderedReasoningConfig
       ? ["-c", `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`]
       : []),
@@ -396,7 +593,7 @@ function openclawModel(env: NodeJS.ProcessEnv): string {
   if (!model) {
     throw new Error("CLAWSWEEPER_OPENCLAW_MODEL is required when CLAWSWEEPER_RUNNER=openclaw.");
   }
-  if (!/^[^\s/]+\/[^\s/]+$/.test(model)) {
+  if (!/^[^\s/]+\/[^\s/]+(?:\/[^\s/]+)*$/.test(model)) {
     throw new Error(
       "CLAWSWEEPER_OPENCLAW_MODEL must use provider/model form when CLAWSWEEPER_RUNNER=openclaw.",
     );

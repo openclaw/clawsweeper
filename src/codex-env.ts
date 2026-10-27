@@ -2,7 +2,26 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+export const REVIEW_DIRECT_PROVIDER_ENV_KEYS = [
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "OPENROUTER_API_KEY",
+  "XAI_API_KEY",
+  "GROQ_API_KEY",
+  "MINIMAX_API_KEY",
+  "KIMI_API_KEY",
+  "KIMICODE_API_KEY",
+  "MOONSHOT_API_KEY",
+  "CEREBRAS_API_KEY",
+  "ZAI_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "MISTRAL_API_KEY",
+] as const;
+
 export type CodexEnvOptions = {
+  runner?: "codex" | "openclaw" | undefined;
   ghToken?: string | undefined;
   preserveCodexAuth?: boolean | undefined;
 };
@@ -72,6 +91,7 @@ export function redactInternalCodexModel(
 
 export function codexEnv(options: CodexEnvOptions = {}): NodeJS.ProcessEnv {
   const env = { ...process.env };
+  if (options.runner !== undefined) env.CLAWSWEEPER_RUNNER = options.runner;
   const ghToken = options.ghToken?.trim();
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
@@ -88,6 +108,12 @@ export function codexEnv(options: CodexEnvOptions = {}): NodeJS.ProcessEnv {
     // Keep trusted preparation's process-local Git overrides out of model subprocesses.
     if (/^GIT_CONFIG_(COUNT|PARAMETERS|(KEY|VALUE)_\d+)$/i.test(key)) delete env[key];
     if (/^CLAWSWEEPER_.*GH_TOKEN$/.test(key)) delete env[key];
+  }
+  if (options.runner === "codex") {
+    for (const key of REVIEW_DIRECT_PROVIDER_ENV_KEYS)
+      if (key !== "OPENAI_API_KEY" || !options.preserveCodexAuth) delete env[key];
+    for (const key of Object.keys(env))
+      if (key.startsWith("CLAWSWEEPER_OPENCLAW_")) delete env[key];
   }
   if (!options.preserveCodexAuth) {
     if (env.CLAWSWEEPER_RUNNER !== "openclaw") delete env.OPENAI_API_KEY;

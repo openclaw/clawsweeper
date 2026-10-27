@@ -4822,6 +4822,7 @@ const PUBLIC_QUEUE_PARKED_REASONS = [
   "dispatch_rejected",
   "review_retry_exhausted",
   "source_incompatible",
+  "batch_nonretryable",
   "scanner_refused",
   "direct_publication",
   "stale_revision",

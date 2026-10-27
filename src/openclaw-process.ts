@@ -1,9 +1,23 @@
+import { REVIEW_DIRECT_PROVIDER_ENV_KEYS } from "./codex-env.js";
+import { projectOpenclawExecutionReceipt } from "./review-execution-receipt.js";
 import { isRecord } from "./value-coerce.js";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { runTextConcurrently } from "./command.js";
+import { ValidationRecoveryRequiredError } from "./validation-recovery.js";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizedOutputFileBytes, normalizedTailBytes } from "./codex-output-capture.js";
 import type { CodexProcessResult } from "./codex-process.js";
@@ -34,9 +48,11 @@ export interface OpenClawProcessOptions {
   stdoutPath?: string;
   stderrPath?: string;
   checkoutInspection?: { expectedText: string; expectedPath: string };
+  roleIsolation?: { readRoots: string[]; proofScratchDir?: string };
 }
 
 export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProcessResult {
+  const deadlineAt = Date.now() + options.timeoutMs;
   const stateDir = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-process-"));
   const configPath = join(stateDir, "openclaw.json");
   const promptPath = join(stateDir, "prompt.md");
@@ -44,16 +60,41 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
   const resultPath = join(stateDir, "result.json");
   const stdoutPath = options.stdoutPath ?? join(stateDir, "stdout.log");
   const stderrPath = options.stderrPath ?? join(stateDir, "stderr.log");
+  let retainState = false;
   try {
+    if (options.roleIsolation) {
+      const roots = [
+        ...options.roleIsolation.readRoots,
+        ...(options.roleIsolation.proofScratchDir ? [options.roleIsolation.proofScratchDir] : []),
+      ];
+      if (
+        roots.some((root) => {
+          const path = relative(realpathSync(root), stateDir);
+          return (
+            !path ||
+            (path !== ".." &&
+              !path.startsWith("../") &&
+              !path.startsWith("..\\") &&
+              !isAbsolute(path))
+          );
+        })
+      )
+        throw new Error("Native provider state must be outside every configured role tool root.");
+    }
     const timeoutSeconds = Math.max(1, Math.ceil(options.timeoutMs / 1_000));
     writeFileSync(
       configPath,
-      `${JSON.stringify(openclawConfig(options.env, timeoutSeconds, Boolean(options.checkoutInspection)))}\n`,
+      `${JSON.stringify(openclawConfig({ ...options.env, CLAWSWEEPER_OPENCLAW_MODEL: options.model }, timeoutSeconds, Boolean(options.checkoutInspection), options.roleIsolation, options.cwd))}\n`,
+
       {
         encoding: "utf8",
         mode: 0o600,
       },
     );
+    if (options.roleIsolation) {
+      writeFileSync(join(stateDir, "role-isolation.json"), "1", { mode: 0o600, flag: "wx" });
+      retainState = true;
+    }
     writeFileSync(promptPath, options.prompt, { encoding: "utf8", mode: 0o600 });
     const sessionId = openclawSessionId(options.label);
     const args = [
@@ -84,7 +125,13 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
       OPENCLAW_STATE_DIR: stateDir,
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_WORKSPACE_DIR: options.cwd,
+      // Read-only review metadata must not acquire optional Git locks.
+      GIT_OPTIONAL_LOCKS: "0",
     };
+    if (options.roleIsolation) {
+      delete childEnv.OPENCLAW_GATEWAY_TOKEN;
+      delete childEnv.OPENCLAW_GATEWAY_PASSWORD;
+    }
     if (!childEnv.OPENAI_API_KEY && options.env.CLAWSWEEPER_OPENCLAW_OPENAI_KEY) {
       childEnv.OPENAI_API_KEY = options.env.CLAWSWEEPER_OPENCLAW_OPENAI_KEY;
     }
@@ -120,21 +167,25 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
     }
     const processResult = deserializeResult(JSON.parse(readFileSync(resultPath, "utf8")));
     if (worker.error) return { ...processResult, error: worker.error };
-    return normalizeOpenclawResult(
-      processResult,
-      readFileSync(stdoutPath, "utf8"),
-      options.checkoutInspection,
-      {
-        cwd: options.cwd,
-        // OpenClaw persists an explicit local session under this agent-owned
-        // path; inspect it before the isolated state directory is removed.
-        transcriptPath: join(stateDir, "agents", "main", "sessions", `${sessionId}.jsonl`),
-      },
-    );
+    const completeStdout = readFileSync(stdoutPath, "utf8");
+    return normalizeOpenclawResult(processResult, completeStdout, options.checkoutInspection, {
+      cwd: options.cwd,
+      // OpenClaw persists an explicit local session under this agent-owned
+      // path; inspect it before the isolated state directory is removed.
+      entries:
+        options.checkoutInspection &&
+        processResult.status === 0 &&
+        parseOpenclawJsonEnvelope(completeStdout).text.trim() ===
+          options.checkoutInspection.expectedText
+          ? readCheckoutReceipt({ stateDir, sessionId, options, childEnv, deadlineAt })
+          : undefined,
+    });
   } catch (error) {
     return failedResult(error instanceof Error ? error : new Error(String(error)));
   } finally {
-    rmSync(stateDir, { recursive: true, force: true });
+    // A configured role's native container outlives its CLI process group. The
+    // surviving assessment owner retires it before deleting this private state.
+    if (!retainState) rmSync(stateDir, { recursive: true, force: true });
   }
 }
 
@@ -174,25 +225,39 @@ function openclawConfig(
   env: NodeJS.ProcessEnv,
   timeoutSeconds: number,
   checkoutInspection: boolean,
+  isolation?: OpenClawProcessOptions["roleIsolation"],
+  workspaceDir?: string,
 ): Record<string, unknown> {
   const config: Record<string, unknown> = {
     agents: {
       defaults: {
         skipBootstrap: true,
-        sandbox: { mode: "off" },
+        workspace: workspaceDir,
+        sandbox: isolation ? isolatedRoleSandbox(env, isolation) : { mode: "off" },
         timeoutSeconds,
       },
     },
     tools: checkoutInspection
       ? {
           allow: ["read"],
+          // The receipt binds the direct read call, not an opaque Code Mode program.
+          codeMode: false,
           fs: { workspaceOnly: true },
-          exec: { host: "gateway", mode: "deny" },
+          exec: { host: isolation ? "sandbox" : "gateway", mode: "deny" },
+          ...(isolation ? { elevated: { enabled: false } } : {}),
         }
       : {
           profile: "coding",
           fs: { workspaceOnly: true },
-          exec: { host: "gateway", mode: "full" },
+          exec: { host: isolation ? "sandbox" : "gateway", mode: "full" },
+          ...(isolation
+            ? {
+                allow: ["read", "ls", "exec", "process"],
+                codeMode: false,
+                elevated: { enabled: false },
+                sandbox: { tools: { allow: ["read", "ls", "exec", "process"] } },
+              }
+            : {}),
         },
   };
   const providersJson = env.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON?.trim();
@@ -224,16 +289,103 @@ function openclawConfig(
   return config;
 }
 
+function isolatedRoleSandbox(
+  env: NodeJS.ProcessEnv,
+  isolation: NonNullable<OpenClawProcessOptions["roleIsolation"]>,
+): Record<string, unknown> {
+  const image = env.CLAWSWEEPER_OPENCLAW_SANDBOX_IMAGE?.trim();
+  if (!image || !/(?:^|@)sha256:[0-9a-f]{64}$/.test(image))
+    throw new Error(
+      "Configured OpenClaw roles require an operator-pinned CLAWSWEEPER_OPENCLAW_SANDBOX_IMAGE digest and native Podman sandbox support.",
+    );
+  const uid = process.getuid?.(),
+    gid = process.getgid?.();
+  if (uid === undefined || gid === undefined || uid === 0)
+    throw new Error("Configured OpenClaw roles require a qualified non-root native sandbox host.");
+  const mounts = new Map(isolation.readRoots.map((root) => [realpathSync(root), "ro"]));
+  if (isolation.proofScratchDir) mounts.set(realpathSync(isolation.proofScratchDir), "rw");
+  if (!mounts.size || [...mounts.keys()].some((root) => root.includes(":") || root.includes("\n")))
+    throw new Error("Configured role source mounts require supported absolute native paths.");
+  return {
+    mode: "all",
+    backend: "podman",
+    scope: "session",
+    workspaceAccess: "ro",
+    docker: {
+      image,
+      user: String(uid) + ":" + String(gid),
+      network: "none",
+      readOnlyRoot: true,
+      capDrop: ["ALL"],
+      binds: [...mounts].map(([root, mode]) => root + ":" + root + ":" + mode),
+      // Only the host source owner supplies these exact roots. Native blocked
+      // system/credential/socket/symlink/reserved-target checks remain enabled.
+      dangerouslyAllowExternalBindSources: true,
+    },
+  };
+}
+
+/** Called by the surviving host owner, including after a role worker was killed. */
+export function retireOpenclawRoleStates(
+  privateTemp: string,
+  env: NodeJS.ProcessEnv,
+  deadlineAt: number,
+): void {
+  const states = readdirSync(privateTemp).filter((name) => {
+    const path = join(privateTemp, name);
+    return (
+      name.startsWith("clawsweeper-openclaw-process-") &&
+      lstatSync(path).isDirectory() &&
+      !lstatSync(path).isSymbolicLink() &&
+      existsSync(join(path, "role-isolation.json"))
+    );
+  });
+  const commands = states.map((name) => {
+    const stateDir = join(privateTemp, name);
+    const childEnv = pickEnv(env, OPENCLAW_CHILD_ENV_ALLOWLIST);
+    for (const key of REVIEW_DIRECT_PROVIDER_ENV_KEYS) delete childEnv[key];
+    delete childEnv.OPENCLAW_GATEWAY_TOKEN;
+    delete childEnv.OPENCLAW_GATEWAY_PASSWORD;
+    // Retirement needs the original sandbox/agent binding, not model credentials.
+    // A provider env-reference must not make cleanup require rehydrating a key.
+    const retirement = JSON.parse(readFileSync(join(stateDir, "openclaw.json"), "utf8"));
+    delete retirement.models;
+    const configPath = join(stateDir, "retire-" + randomUUID() + ".json");
+    writeFileSync(configPath, JSON.stringify(retirement), { flag: "wx", mode: 0o600 });
+    return {
+      command: env.CLAWSWEEPER_OPENCLAW_BIN?.trim() || "openclaw",
+      args: ["sandbox", "recreate", "--agent", "main", "--force"],
+      options: {
+        env: { ...childEnv, OPENCLAW_STATE_DIR: stateDir, OPENCLAW_CONFIG_PATH: configPath },
+        inheritEnv: false,
+        deadlineAt,
+        managedProcessGroup: true,
+        retainOnAbnormalExit: true,
+        maxBuffer: 16 * 1024,
+      },
+    };
+  });
+  if (commands.length && runTextConcurrently(commands, 2).some((result) => !("output" in result)))
+    throw new ValidationRecoveryRequiredError(
+      "Configured native sandbox retirement is unverified",
+      undefined,
+      states.map((name) => join(privateTemp, name)),
+    );
+}
+
 function normalizeOpenclawResult(
   processResult: CodexProcessResult,
   completeStdout: string,
   checkoutInspection?: { expectedText: string; expectedPath: string },
-  receipt?: { cwd: string; transcriptPath: string },
+  receipt?: { cwd: string; entries?: unknown[] | undefined },
 ): CodexProcessResult {
   if (processResult.error || processResult.status !== 0) return processResult;
   const parsed = parseOpenclawJsonEnvelope(completeStdout, processResult.stderr);
   if (!parsed.failure) {
-    if (!checkoutInspection) return { ...processResult, stdout: parsed.text };
+    if (!checkoutInspection) {
+      const execution = projectOpenclawExecutionReceipt(JSON.parse(completeStdout));
+      return { ...processResult, stdout: parsed.text, ...(execution ? { execution } : {}) };
+    }
     if (parsed.text.trim() !== checkoutInspection.expectedText) {
       return failedInspectionResult(
         processResult,
@@ -262,27 +414,148 @@ function normalizeOpenclawResult(
   return { ...processResult, status: 1, error: parsed.failure, stdout: parsed.text };
 }
 
+function readCheckoutReceipt(params: {
+  stateDir: string;
+  sessionId: string;
+  options: OpenClawProcessOptions;
+  childEnv: NodeJS.ProcessEnv;
+  deadlineAt: number;
+}): unknown[] | undefined {
+  try {
+    const legacy = join(params.stateDir, "agents", "main", "sessions", params.sessionId + ".jsonl");
+    if (existsSync(legacy)) {
+      if (statSync(legacy).size > 1024 * 1024) return undefined;
+      return readFileSync(legacy, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    }
+    // Current OpenClaw owns transcripts in SQLite. Use its local, read-only
+    // exporter, not a private database schema or another session's state.
+    const remaining = params.deadlineAt - Date.now();
+    if (remaining <= 0) return undefined;
+    const timeoutMs = Math.min(10_000, remaining);
+    const workerOptionsPath = join(params.stateDir, "receipt-worker.json");
+    const resultPath = join(params.stateDir, "receipt-result.json");
+    const stdoutPath = join(params.stateDir, "receipt-stdout.json");
+    writeFileSync(
+      workerOptionsPath,
+      JSON.stringify({
+        command: params.options.env.CLAWSWEEPER_OPENCLAW_BIN?.trim() || "openclaw",
+        args: [
+          "sessions",
+          "export-trajectory",
+          "--agent",
+          "main",
+          "--session-key",
+          "agent:main:explicit:" + params.sessionId,
+          "--workspace",
+          params.stateDir,
+          "--output",
+          "checkout-receipt",
+          "--json",
+        ],
+        timeoutMs,
+        resultPath,
+        stdoutPath,
+        stderrPath: join(params.stateDir, "receipt-stderr.log"),
+        tailBytes: 256 * 1024,
+        maxOutputFileBytes: 256 * 1024,
+      }),
+      { mode: 0o600 },
+    );
+    // Reuse the same native worker's process-group forwarding and escalation.
+    // Pass the filtered environment exactly, never merge ambient workflow secrets.
+    const worker = spawnSync(process.execPath, [OPENCLAW_PROCESS_WORKER_PATH, workerOptionsPath], {
+      cwd: params.options.cwd,
+      env: params.childEnv,
+      stdio: "ignore",
+      timeout: timeoutMs + 10_000,
+    });
+    if (worker.error || !existsSync(resultPath)) return undefined;
+    const exported = deserializeResult(JSON.parse(readFileSync(resultPath, "utf8")));
+    if (exported.error || exported.status !== 0) return undefined;
+    const summary: unknown = JSON.parse(readFileSync(stdoutPath, "utf8"));
+    if (!isRecord(summary) || summary.sessionId !== params.sessionId) return undefined;
+    const exportDir = join(params.stateDir, ".openclaw", "trajectory-exports", "checkout-receipt");
+    const eventPath = join(exportDir, "events.jsonl");
+    if (statSync(eventPath).size > 1024 * 1024) return undefined;
+    const manifest = JSON.parse(readFileSync(join(exportDir, "manifest.json"), "utf8"));
+    const events: unknown[] = readFileSync(eventPath, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    if (
+      !isRecord(manifest) ||
+      manifest.sessionId !== params.sessionId ||
+      manifest.eventCount !== events.length ||
+      (manifest.warnings !== undefined &&
+        (!Array.isArray(manifest.warnings) || manifest.warnings.length > 0))
+    )
+      return undefined;
+    const entries: unknown[] = [];
+    for (const event of events) {
+      if (
+        !isRecord(event) ||
+        event.traceSchema !== "openclaw-trajectory" ||
+        event.schemaVersion !== 1 ||
+        event.sessionId !== params.sessionId
+      )
+        return undefined;
+      if (event.source !== "transcript") continue;
+      if (!isRecord(event.data)) continue;
+      if (event.type === "tool.call")
+        entries.push({
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: event.data.toolCallId,
+                name: event.data.name,
+                arguments: restoreExportedReadPath(event.data.arguments, params),
+              },
+            ],
+          },
+        });
+      if (event.type === "tool.result") entries.push({ message: event.data.message });
+    }
+    return entries;
+  } catch {
+    return undefined;
+  }
+}
+
+function restoreExportedReadPath(
+  args: unknown,
+  params: { stateDir: string; childEnv: NodeJS.ProcessEnv },
+): unknown {
+  if (!isRecord(args) || typeof args.path !== "string") return args;
+  // The native exporter redacts absolute paths. Restore only its known prefixes
+  // from this exact child environment; legacy JSONL receipts stay untouched.
+  const prefix = /^(~|\$WORKSPACE_DIR|\$OPENCLAW_STATE_DIR)(?=$|[/\\])/.exec(args.path);
+  if (!prefix) return args;
+  const roots = new Set(
+    (prefix[1] === "~" ? [params.childEnv.HOME, params.childEnv.USERPROFILE] : [params.stateDir])
+      .filter((value): value is string => Boolean(value))
+      .map((value) => resolve(value)),
+  );
+  // HOME and USERPROFILE share the same exported label. Never guess when the
+  // redaction loses which of two different roots the successful read used.
+  if (roots.size !== 1) return undefined;
+  const root = [...roots][0]!;
+  return { ...args, path: resolve(root + args.path.slice(prefix[0].length)) };
+}
+
 function hasSuccessfulReadReceipt(options: {
   cwd: string;
-  transcriptPath: string;
+  entries?: unknown[] | undefined;
   expectedPath: string;
 }): boolean {
-  let transcript: string;
-  try {
-    transcript = readFileSync(options.transcriptPath, "utf8");
-  } catch {
-    return false;
-  }
+  if (!options.entries) return false;
   const readCalls = new Map<string, { matchesExpectedPath: boolean; resolved: boolean }>();
   let challengedReadSucceeded = false;
-  for (const line of transcript.split("\n")) {
-    if (!line.trim()) continue;
-    let entry: unknown;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      return false;
-    }
+  for (const entry of options.entries) {
     if (!isRecord(entry) || !isRecord(entry.message)) continue;
     const message = entry.message;
     if (message.role === "assistant" && Array.isArray(message.content)) {
@@ -383,13 +656,19 @@ const OPENCLAW_CHILD_ENV_ALLOWLIST = [
   // Base OS/tooling surface the CLI needs to run.
   "PATH",
   "HOME",
+  "USERPROFILE",
   "USER",
+  // Host-side rootless Podman discovery; never injected as a guest mount.
+  "XDG_RUNTIME_DIR",
   "SHELL",
   "LANG",
   "LC_ALL",
   "TMPDIR",
   "TERM",
   "NODE_OPTIONS",
+  "GIT_OPTIONAL_LOCKS",
+  // Keep host-provided TLS roots for managed/corporate egress; verification stays enabled.
+  "NODE_EXTRA_CA_CERTS",
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "NO_PROXY",
@@ -399,21 +678,7 @@ const OPENCLAW_CHILD_ENV_ALLOWLIST = [
   // Provider API keys the embedded agent needs for direct inference. These
   // are the credentials this lane intentionally trades for provider choice;
   // everything else in the step environment stays out.
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-  "OPENROUTER_API_KEY",
-  "XAI_API_KEY",
-  "GROQ_API_KEY",
-  "MINIMAX_API_KEY",
-  "KIMI_API_KEY",
-  "KIMICODE_API_KEY",
-  "MOONSHOT_API_KEY",
-  "CEREBRAS_API_KEY",
-  "ZAI_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "MISTRAL_API_KEY",
+  ...REVIEW_DIRECT_PROVIDER_ENV_KEYS,
 ] as const;
 
 function pickEnv(env: NodeJS.ProcessEnv, names: readonly string[]): NodeJS.ProcessEnv {

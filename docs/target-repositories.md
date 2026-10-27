@@ -41,6 +41,201 @@ guidance.
 policies; being a non-core target does not grant contributors or workers
 permission to edit release-owned files.
 
+## Repository-owned review configuration
+
+Admitted PR reviews may opt in through `.clawsweeper/review.json` on the target
+repository’s default branch. Issue triage is unchanged. The host reads this
+strict configuration once from an authenticated default-branch commit, not the
+PR head, PR base, or webhook/dispatch payload. Missing or empty configuration
+keeps the ordinary prompt, invocation, review cadence and cache identity.
+
+```json
+{
+  "version": 1,
+  "additionalPrompt": "Follow repository review guidance; return the normal full Decision."
+}
+```
+
+`additionalPrompt` appends at most 5,000 characters to the normal review contract.
+The strict version-1 JSON accepts only `additionalPrompt` and `multiModel`; unknown
+keys are rejected. The JSON file is limited to 16 KiB with host-owned blob-size,
+disk and deadline admission.
+
+The optional `multiModel` key selects two to four independent full assessments and
+one full consolidation, with at most two independent workers running at once:
+
+```json
+{
+  "version": 1,
+  "multiModel": {
+    "reviewers": [
+      { "runner": "codex", "model": "<operator-authorized-model>" },
+      { "runner": "openclaw", "model": "<provider>/<operator-authorized-model>" }
+    ],
+    "coordinator": { "runner": "codex", "model": "<operator-authorized-model>" }
+  }
+}
+```
+
+These placeholders are not working model bindings. OpenClaw references split the
+provider at the first slash and preserve the remaining model ID, including vendor
+namespaces; valid syntax does not establish access or model availability. Each selection may include
+`reasoningEffort` and `contextTier: "default"`. Explicit `long_context` is rejected:
+neither adapter has a qualified long-context selector. Each runner environment
+is filtered for its selected role before launch, using only credentials already
+provisioned by the operator. Configuration never grants missing workflow secrets;
+an unprovisioned provider remains unavailable. Configuration cannot
+supply credentials, endpoints, executables, CLI arguments or mutation authority.
+Only `multiModel` opts into additional assessments. The host role header owns
+no-nested-review and full-Decision requirements. No extra baseline assessment runs.
+
+Every worker uses the normal scanner, checkout inspection, strict Decision parser
+and host postprocessing. Model-authored results are scanned before they can become
+durable member evidence. Any scanner refusal is terminal, discards private model
+slots and prevents publication of the rejected batch. Codex source setup is serialized once per private role before that batch of
+workers runs in parallel. A surviving host owns each worker's
+private temporary root and removes native adapter and scanner state after
+all workers settle, including timeout-killed workers. Independent workers and consolidation share the original
+source/configuration snapshot and one absolute deadline. Before boot, each worker
+verifies its options against a digest held in the host supervisor command channel;
+an earlier role cannot silently replace a queued role's options file. For configured OpenClaw
+roles, native checkout inspection (startup, challenged read and receipt export)
+consumes the remaining role deadline; it cannot extend that deadline. Ordinary
+single-review inspection and Codex retain their existing 30-second cap. Output budgets are split
+across all assessments, rather than multiplied. The consolidation model receives
+full validated member Decisions as untrusted evidence and selects the canonical
+priority, relevance and labels through the existing parser/publication owners.
+A small reject-only guard prevents dropping explicit contributor, proof,
+compatibility, owner, product or security holds, or creating new automation
+eligibility. Failure or veto means incomplete review, not a synthetic consensus. Source
+preparation may retain its ordinary typed retry owner before members run; after
+the member batch returns, a coordinator preparation failure is nonretryable and
+preserves completed advisory assessments plus the private original source cause.
+Host-owned failure class, terminal status and retry disposition cross the worker
+boundary without raw diagnostics; a terminal, unknown or vetoed outcome does not
+authorize another potentially paid batch. Hosted producers exit 82 for a nonretryable
+batch; fresh authenticated manual-request follow-ups retain their persisted
+delivery identity across older lease completion, while retained request and
+lease identities fence same-request replay even after delivery-receipt expiry
+and ordinary-source coalescing. Hosted producers complete the queue lease with the closed terminal reason
+`batch_nonretryable`. The queue retains the failed input without automatically
+retrying it; a fresh source or explicit request is required. Deploy the updated
+queue Worker and completion/status readers **before** enabling this producer or
+repository opt-in: the workflow will not strip this terminal reason to work around
+an older Worker. Diagnostic `retryable: false` alone is not retry authority.
+Unverified Git process settlement retains
+owned recovery state and aborts ordinary item conversion; settled host failures
+retain completed advisory assessments without granting retry permission.
+
+The one review comment shows the final assessment and collapsed, escaped,
+section-budgeted individual assessments. Full typed member Decisions remain in
+the durable record even when diagnostic output retention is none. Such records
+use review-record version 2; upgraded readers also accept version 1. Old strict
+readers reject version 2 rather than silently losing the individual assessments.
+The top-level record Decision remains authoritative. Requested settings, native
+runtime selection and terminal facts are separate; absent native facts are
+reported as unreported, not inferred from the model's own answer. Assessment
+completion describes content only; the durable `executionQualification` remains
+`unverified`, and neither completion nor native runtime facts qualify an exact
+actual-model/high-effort pair. The exact
+Codex 0.162.1 human startup header supplies runtime configuration only, never
+terminal selection or provider-observed reasoning effort. OpenClaw's successful
+native envelope supplies only the bounded allowlisted execution receipt fields.
+Actual-provider execution and the requested Windows pair remain qualification
+gates; this configuration example does not assert either has passed.
+
+The host pins scheduling configuration to its verified trusted target revision.
+Missing configuration blobs require size metadata and object-store disk admission
+before hydration; unavailable metadata fails closed.
+Only that JSON's digest participates in hydrated content-cache identity, not the
+global admission policy. Configured reviews skip structural-only reuse because
+that receipt does not bind the settings; unchanged hydrated content can reuse
+its verdict. This does not request another review. The normal scanner also
+checks additional instructions and configuration bytes.
+
+Codex and OpenClaw run in the actual admitted review checkout; repository
+`.agents/skills` discovery belongs to the native harness, just like ordinary source.
+
+Every multi-model role, including models-only configuration, receives a pinned
+working copy with independent Git config, index and refs. A task-owned immutable
+object closure contains only the host-verified head, actual PR base, trusted
+configuration revision and their bounded required history. It never borrows the
+managed checkout's object store. Unreachable objects, unrelated branches,
+untracked files and host configuration are not projected. The role's alternates
+point only at that admitted closure; roles for identical pinned input may share
+its read-only pack. Older history stops at explicit shallow boundaries and must
+not be treated as negative evidence about the PR.
+
+The existing object/file, byte, disk, attribute and absolute-deadline admission
+runs before packing or checkout. Packing streams exact admitted object IDs through
+trusted Git configuration with no hooks, filters, lazy fetching, thin packs or
+reused deltas. Incomplete history or objects, exceeded capacity and unverifiable
+packing fail closed without another paid batch. Private source, reference and
+closure fingerprints are checked before acceptance; permission restoration uses
+only the original filesystem identities. Uncertain Git or native-runtime
+settlement retains owned recovery state rather than deleting or retrying it.
+
+Configured model tools are an enforced filesystem boundary, not just a prompt or
+chmod policy. The native provider client remains trusted on the host; its state
+and credentials must stay outside tool-readable roots. Codex uses a restricted
+native permission profile: admitted source, objects and prepared evidence are
+read-only, only the role's proof scratch is writable, and tool networking is disabled. The operator
+must provide a native CLI executable supporting restricted permission profiles,
+either directly on PATH or through `CODEX_BIN`; an npm launcher alone does not
+establish that binding. An unavailable restricted runtime does not fall back to
+ordinary broad `:read-only` access. Ordinary single-review defaults are unchanged.
+
+Configured OpenClaw checkout probes and full assessments use its existing native
+per-session Podman sandbox. The qualified execution surface is a non-root hosted
+Linux worker, including reviews of the Windows-node repository; this is not a
+claim that local Windows or macOS Podman execution is qualified. Before opting in,
+operators must provision the native Podman capability and set
+`CLAWSWEEPER_OPENCLAW_SANDBOX_IMAGE` to an available immutable SHA-256 image
+reference. Repository configuration cannot choose the image or widen mounts.
+The sandbox retains init, a read-only root, dropped capabilities, no networking,
+disabled elevation, and no gateway-exec fallback. Only this role's source, admitted
+objects and proof scratch are bound; no home, common Git root,
+provider configuration, peer temporary state or engine socket is exposed.
+Host-prepared media is shared through a distinct immutable `prepared-media`
+directory, with its manifest paths unchanged. Only that evidence directory is
+readable across roles; its parent and peer-writable scratch are never mounted.
+The existing bounded fingerprint, filesystem-identity and mode-restoration
+owners protect that root through worker settlement without re-downloading or
+multiplying the admitted media bytes.
+
+The surviving host retires configured native runtimes through their native owner
+before deleting adapter state, including after a killed worker. Retirement keeps
+the sandbox/workspace binding but omits key-bearing model configuration. Missing
+capability or unverified retirement preserves a failed/recovery outcome, never a
+clean review. Existing Codex-source provisioning is not enabled where absent;
+when present, its verified setup-owned alias is replaced with a private pinned
+tracked copy and admitted objects, not a mount of the host dependency cache.
+
+OpenClaw's configured workspace and process CWD remain the exact role checkout,
+with workspace-only restrictions enabled.
+The configured probe reads the exact admitted absolute path through the
+native read tool, not Code Mode, and requires the paired successful receipt.
+Legacy transcripts or the current local `sessions export-trajectory` output must
+come from that adapter's own state; unavailable or mismatched receipts fail closed.
+Host-provided Node CA roots remain available for verified TLS through managed
+egress. A runtime that cannot honor these boundaries is unsupported, not replaced
+with another provider or a broader tool mode.
+
+Offline local-range review instead trusts the operator-selected `--base` ref
+(default `origin/main`), resolved to its exact commit, not the diff’s merge-base
+or the reviewed `HEAD`. Choose a trusted base: this local input is not a PR or
+webhook field and does not assert live GitHub default-branch freshness. No remote
+or `origin/HEAD` is required when a valid local base proves configuration absence.
+A missing/invalid base fails before inference; head deletion cannot disable its
+configuration. Hosted reviews always use the authenticated default branch above.
+
+This active contract is owned by ClawSweeper maintainers; source owners are
+`src/repository-review-config.ts`, `src/clawsweeper-review-runtime.ts` and
+`src/agent-runner.ts`, `src/multi-model-review.ts` and `src/review-record.ts`.
+Verified scope: compiled configuration/worker paths and controlled native
+workspace fixtures, not live provider qualification (2026-10-23). Update it when configuration, native harness isolation,
+source pinning, scanner, budgets or cache identity change.
+
 All profiles share the hidden-payload security guard in
 `src/repair/security-signals.ts`. It checks the raw item body and discussion
 before prompt compaction, inspecting rendered HTML comments for remote shell

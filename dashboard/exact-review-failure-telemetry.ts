@@ -32,6 +32,7 @@ const FAILURE_REASONS = new Set([
   "configuration_missing",
   "setup_script_failed",
   "source_incompatible",
+  "batch_nonretryable",
   "review_commits_unavailable",
   "review_history_unavailable",
   "review_blob_metadata_unavailable",
@@ -128,6 +129,9 @@ export function exactReviewFailureDetail(options: {
   supplied?: ExactReviewFailureDetail;
 }): ExactReviewFailureDetail {
   if (options.supplied) return options.supplied;
+  if (options.terminalReason === "batch_nonretryable") {
+    return { stage: "content_or_output", reasonCode: "batch_nonretryable", retryable: false };
+  }
   if (options.terminalReason === "source_incompatible") {
     return { stage: "source_preparation", reasonCode: "source_incompatible", retryable: false };
   }

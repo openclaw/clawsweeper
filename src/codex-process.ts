@@ -18,6 +18,7 @@ import type { DecisionRepairOptions } from "./review-decision-repair.js";
 export { codexProcessCommand, codexSpawnInvocation } from "./codex-spawn.js";
 
 export interface CodexProcessResult {
+  execution?: import("./review-execution-receipt.js").ReviewExecutionReceipt;
   status: number | null;
   signal: NodeJS.Signals | null;
   error?: Error;
@@ -29,6 +30,7 @@ export interface CodexProcessResult {
 }
 
 interface SerializedCodexProcessResult {
+  execution?: import("./review-execution-receipt.js").ReviewExecutionReceipt;
   status: number | null;
   signal: NodeJS.Signals | null;
   error?: {
@@ -183,6 +185,7 @@ function failedProcessResult(
 
 function deserializeProcessResult(value: SerializedCodexProcessResult): CodexProcessResult {
   return {
+    ...(value.execution ? { execution: value.execution } : {}),
     status: value.status,
     signal: value.signal,
     ...(value.error ? { error: deserializeError(value.error) } : {}),

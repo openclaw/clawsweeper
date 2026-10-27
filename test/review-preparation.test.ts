@@ -471,6 +471,23 @@ for (const uncertain of [false, true])
       mkdirSync(scratch);
       process.env.TMPDIR = scratch;
       writeFileSync(snapshot.path, "fixture\n");
+      childProcess.execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+      childProcess.execFileSync(
+        "git",
+        [
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "commit",
+          "--allow-empty",
+          "-qm",
+          "test: trusted cleanup base",
+          "-m",
+          "Co-authored-by: RomneyDa <6581799+RomneyDa@users.noreply.github.com>",
+        ],
+        { cwd: root },
+      );
       const dependencies = {
         DEFAULT_PLAN_BATCH_SIZE: 3,
         buildLocalRangeReview: () => ({
@@ -519,6 +536,8 @@ for (const uncertain of [false, true])
               "openclaw/clawsweeper",
               "--target-dir",
               root,
+              "--base",
+              "main",
               "--readonly-openclaw",
             ]),
           ),

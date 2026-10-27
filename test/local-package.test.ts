@@ -75,6 +75,7 @@ test("staging rejects undeclared runtime dependencies without creating output", 
     "dist/clawsweeper-local.js": 'import "undeclared-runtime";',
     "dist/codex-process-worker.js": "",
     "dist/openclaw-process-worker.js": "",
+    "dist/review-assessment-worker.js": "",
     "dist/git-acquisition-worker.js": "",
     "scripts/setup-review-tools.mjs": "",
   });
@@ -89,6 +90,7 @@ test("staging validates assets before output and never replaces an existing dest
       "dist/clawsweeper-local.js",
       "dist/codex-process-worker.js",
       "dist/openclaw-process-worker.js",
+      "dist/review-assessment-worker.js",
       "dist/git-acquisition-worker.js",
       "scripts/setup-review-tools.mjs",
       "prompts/review-item.md",
@@ -114,4 +116,13 @@ test("staging validates assets before output and never replaces an existing dest
   writeFileSync(join(destination, "sentinel"), "preserved");
   await assert.rejects(stageLocalPackage(destination, root), /EEXIST/);
   assert.equal(readFileSync(join(destination, "sentinel"), "utf8"), "preserved");
+  const fresh = join(root, "fresh-stage");
+  const inventory = await stageLocalPackage(fresh, root);
+  assert.ok(
+    inventory.some(({ path }: { path: string }) => path === "dist/review-assessment-worker.js"),
+  );
+  assert.equal(
+    readFileSync(join(fresh, "dist/review-assessment-worker.js"), "utf8"),
+    files["dist/review-assessment-worker.js"],
+  );
 });

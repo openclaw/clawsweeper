@@ -164,15 +164,12 @@ const controlResult = run("control", [
 assert.notEqual(controlResult.status, 0);
 const observed = readFileSync(calls, "utf8").trim().split("\n").map(JSON.parse);
 assert.ok(
-  observed.some(
-    ({ kind, args }) =>
-      kind === "gh" && args.includes(`repos/openclaw/openclaw/issues/${pull.number}`),
-  ),
+  observed.some(({ kind, args }) => kind === "gh" && args.includes("repos/openclaw/openclaw")),
   JSON.stringify(observed),
 );
 assert.ok(observed.every(({ kind }) => kind !== "codex"));
 transcript.push(
-  `Control admitted: entered normal issue hydration and stopped at the synthetic GitHub boundary. Calls: ${JSON.stringify(observed)}\nLimits: synthetic GitHub and Git boundaries; no live GitHub close, workflow dispatch, scanner or model execution. Control stops at hydration entry.`,
+  `Control admitted: entered authenticated default-branch configuration preparation and stopped at the synthetic GitHub boundary. Calls: ${JSON.stringify(observed)}\nLimits: synthetic GitHub and Git boundaries; no live GitHub close, workflow dispatch, scanner or model execution. Control stops at normal PR configuration preparation.`,
 );
 writeFileSync(join(root, "transcript.txt"), transcript.join("\n\n") + "\n");
 console.log(transcript.join("\n\n"));

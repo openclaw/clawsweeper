@@ -321,6 +321,7 @@ type ExactReviewParkedReason =
   | "dispatch_rejected"
   | "review_retry_exhausted"
   | "source_incompatible"
+  | "batch_nonretryable"
   | "scanner_refused"
   | "direct_publication"
   | "source_drift_loop"
@@ -774,6 +775,7 @@ type ExactReviewScheduledDisposition =
       dedupe_reason:
         | "item_already_pending_or_active"
         | "source_incompatible"
+        | "batch_nonretryable"
         | "scanner_refused"
         | "source_drift_loop"
         | "review_request_required"
@@ -2166,6 +2168,7 @@ export class ExactReviewQueue {
             dedupe_scope: "scheduled_queue_item",
             dedupe_reason:
               current.parkedReason === "source_incompatible" ||
+              current.parkedReason === "batch_nonretryable" ||
               current.parkedReason === "scanner_refused" ||
               current.parkedReason === "source_drift_loop"
                 ? current.parkedReason
@@ -2189,6 +2192,23 @@ export class ExactReviewQueue {
         let ingressAdmitted = false;
         if (current && !releasesScannerHold && !releasesSourceDriftLoopBySchedule) {
           const ignoredRecovery = isLowPriorityExactReviewDecision(decision);
+          // Manual admission was authenticated and replay-fenced above. A fresh
+          // request may reuse retained source authority, never invent a newer head.
+          const freshManualAdmission =
+            manualAdmission &&
+            deliveryId !== current.admissionDeliveryId &&
+            // Ordinary source coalescing can replace admission provenance; the
+            // retained request and active lease remain replay fences after TTL.
+            deliveryId !== current.decision.sourceDeliveryId &&
+            deliveryId !== current.leaseDecision?.sourceDeliveryId;
+          if (
+            current.parkedReason === "batch_nonretryable" &&
+            !freshManualAdmission &&
+            (ignoredRecovery || !exactReviewBatchInputIdentityChanged(current.decision, decision))
+          ) {
+            this.writeStateSync(state);
+            return { deduped: true as const, key, state };
+          }
           if (ignoredRecovery && sourceDriftLoopParked) {
             // The parked loop already owns this key; another automatic
             // requeue must neither revive it nor count as a new generation.
@@ -2322,7 +2342,7 @@ export class ExactReviewQueue {
             const bindsCommandToCurrentAuthority =
               decision.itemKind === "pull_request" &&
               (current.leaseDecision || current.decision).itemKind === "pull_request" &&
-              Boolean(decision.commandStatusMarker) &&
+              (Boolean(decision.commandStatusMarker) || freshManualAdmission) &&
               !Object.hasOwn(decision, "sourceHeadSha") &&
               !Object.hasOwn(decision, "sourceAuthoritySeq");
             const queuesCommandFollowUp =
@@ -2438,6 +2458,7 @@ export class ExactReviewQueue {
             // non-recovery input releases it to pending.
             const preserveReviewRetryBudget =
               mergeable &&
+              !freshManualAdmission &&
               !sourceDriftLoopParked &&
               !reviewHold &&
               !exactReviewQueueIsPublication(current) &&
@@ -3606,6 +3627,7 @@ export class ExactReviewQueue {
         Boolean(completionResult.parked) &&
         !heldReview &&
         item.parkedReason !== "source_incompatible" &&
+        item.parkedReason !== "batch_nonretryable" &&
         item.parkedReason !== "scanner_refused";
       const lifecycleIdentity: ExactReviewLifecycleProjectionIdentity = {
         canonicalTargetKey: `${lifecycleItem.decision.targetRepo}#${lifecycleItem.decision.itemNumber}`,
@@ -6296,6 +6318,23 @@ export class ExactReviewQueue {
           continue;
         }
       }
+      if (
+        item.state === "pending" &&
+        item.decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION &&
+        candidate.state.state === "open" &&
+        candidate.state.sourceIdentity
+      ) {
+        // A fresh explicit manual request authorizes the live source, not a
+        // retained automatic item's old head. Bind the complete verified tuple
+        // before stale-head handling and the eventual lease snapshot.
+        item.decision = { ...item.decision, ...candidate.state.sourceIdentity };
+        if (
+          !item.sourceAuthorityWatermark?.updatedAt ||
+          Date.parse(item.decision.sourceUpdatedAt || "") >=
+            Date.parse(item.sourceAuthorityWatermark.updatedAt)
+        )
+          advanceExactReviewSourceAuthorityWatermark(item, item.decision);
+      }
       if (exactReviewQueueHasStaleLiveHead(item, candidate.state)) {
         const audit: ExactReviewSupersessionAudit = {
           auditId: crypto.randomUUID(),
@@ -7509,7 +7548,9 @@ export class ExactReviewQueue {
         const retryIdentityChanged = Boolean(
           item &&
           refreshedDecision &&
-          exactReviewRetryIdentityChanged(item, item.decision, refreshedDecision, this.env),
+          (item.parkedReason === "batch_nonretryable"
+            ? exactReviewBatchInputIdentityChanged(item.decision, refreshedDecision)
+            : exactReviewRetryIdentityChanged(item, item.decision, refreshedDecision, this.env)),
         );
         if (
           !item ||
@@ -16497,6 +16538,46 @@ function exactReviewInputIdentityChanged(
   );
 }
 
+/** Recovery deliveries and missing hydration are not fresh paid input; admitted manual request IDs are. */
+function exactReviewBatchInputIdentityChanged(
+  prior: ExactReviewDecision,
+  next: ExactReviewDecision,
+) {
+  const manualRequest = (decision: ExactReviewDecision) =>
+    decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION &&
+    decisionPublicationPolicy(decision) === RECORD_COMMENT_ONLY
+      ? (decision.sourceDeliveryId ?? null)
+      : null;
+  const command = (decision: ExactReviewDecision) =>
+    exactReviewDecisionHasCommandContext(decision)
+      ? stableJson({
+          marker: decision.commandStatusMarker ?? null,
+          status: decision.statusCommentId ?? null,
+          prompt: decision.additionalPrompt ?? null,
+          comment: decision.sourceCommentId ?? null,
+          updated: decision.sourceCommentUpdatedAt ?? null,
+          digest: decision.commandBodyDigest ?? null,
+          origin: decision.commandOrigin ?? null,
+        })
+      : null;
+  return Boolean(
+    (prior.sourceHeadSha && next.sourceHeadSha && next.sourceHeadSha !== prior.sourceHeadSha) ||
+    (prior.sourceBaseSha && next.sourceBaseSha && next.sourceBaseSha !== prior.sourceBaseSha) ||
+    (prior.sourceContentRevision &&
+      next.sourceContentRevision &&
+      next.sourceContentRevision !== prior.sourceContentRevision) ||
+    (typeof prior.sourceIsDraft === "boolean" &&
+      typeof next.sourceIsDraft === "boolean" &&
+      next.sourceIsDraft !== prior.sourceIsDraft) ||
+    (!next.sourceContentRevision &&
+      !prior.sourceContentRevision &&
+      next.itemKind === "issue" &&
+      Date.parse(next.sourceUpdatedAt || "") > Date.parse(prior.sourceUpdatedAt || "")) ||
+    (command(next) !== null && command(next) !== command(prior)) ||
+    (manualRequest(next) !== null && manualRequest(next) !== manualRequest(prior)),
+  );
+}
+
 function exactReviewRetryIdentityChanged(
   item: ExactReviewQueueItem,
   priorDecision: ExactReviewDecision,
@@ -16606,7 +16687,9 @@ function finishExactReviewQueueItem(
     activeRetryPolicyEpoch;
   const sourceIdentityChanged =
     hasNewerRevision &&
-    exactReviewInputIdentityChanged(item.leaseDecision ?? item.decision, item.decision);
+    (reviewFailureReason === "batch_nonretryable"
+      ? exactReviewBatchInputIdentityChanged(item.leaseDecision ?? item.decision, item.decision)
+      : exactReviewInputIdentityChanged(item.leaseDecision ?? item.decision, item.decision));
   const retryIdentityChanged = retryPolicyChanged || sourceIdentityChanged;
   const hasNewerReviewIdentity = hasNewerRevision && sourceIdentityChanged;
   if (
@@ -16648,6 +16731,18 @@ function finishExactReviewQueueItem(
       item.parkedRecoveryAt = undefined;
       item.parkedTerminalCheckedAt = now;
       item.backoffReason = undefined;
+      item.updatedAt = now;
+      return { requeued: false, parked: true };
+    }
+    if (reviewFailureReason === "batch_nonretryable") {
+      item.decision = leaseDecision;
+      clearExactReviewLease(item);
+      item.state = "parked";
+      item.parkedReason = "batch_nonretryable";
+      item.parkedRecoveryAt = undefined;
+      item.parkedTerminalCheckedAt = now;
+      item.backoffReason = undefined;
+      item.firstFailureAt ??= now;
       item.updatedAt = now;
       return { requeued: false, parked: true };
     }
@@ -18125,6 +18220,7 @@ function exactReviewScheduledDispositionFromJson(
     const dedupeReason =
       body.dedupe_reason === "item_already_pending_or_active" ||
       body.dedupe_reason === "source_incompatible" ||
+      body.dedupe_reason === "batch_nonretryable" ||
       body.dedupe_reason === "scanner_refused" ||
       body.dedupe_reason === "review_request_required" ||
       body.dedupe_reason === "source_drift_loop"
@@ -18753,8 +18849,17 @@ async function exactReviewTargetItemState(
       !decision.publication &&
       !exactReviewDecisionHasCommandContext(decision);
     const automatic = isAutomaticPullRequestReview(decision);
+    const bindManualSource =
+      isPullRequest &&
+      decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION &&
+      !decision.publication &&
+      !exactReviewDecisionHasCommandContext(decision);
     const readPullHead =
-      isPullRequest && (/^[0-9a-f]{40}$/.test(queuedHeadSha) || bindScheduledSource || automatic);
+      isPullRequest &&
+      (/^[0-9a-f]{40}$/.test(queuedHeadSha) ||
+        bindScheduledSource ||
+        automatic ||
+        bindManualSource);
     const item = await githubTokenJson({
       env,
       token,
@@ -18789,7 +18894,7 @@ async function exactReviewTargetItemState(
       if (!/^[0-9a-f]{40}$/.test(headSha)) {
         throw new Error("live pull request response missing head SHA");
       }
-      if (bindScheduledSource || automatic) {
+      if (bindScheduledSource || automatic || bindManualSource) {
         const baseSha = String(objectValue(item.base).sha || "").toLowerCase();
         const material = exactReviewSourceRevisionMaterial(item);
         const updatedAt = String(item.updated_at || "");

@@ -610,6 +610,43 @@ test("parked pull request reconciliation requires immutable source drift", async
     });
     assert.equal(mutations.length, 0);
 
+    // Even an old inventory's epoch flag cannot revive terminal batch work.
+    row.parked_reason = "batch_nonretryable";
+    row.retry_policy_changed = true;
+    const batchEpoch = await runOperator(
+      [...common, "--execute", "--output", join(directory, "batch-epoch.json")],
+      "http://127.0.0.1:" + address.port,
+      secret,
+    );
+    assert.equal(batchEpoch.code, 0, batchEpoch.stderr);
+    assert.equal(JSON.parse(batchEpoch.stdout).recovered_targets, 0);
+    assert.equal(mutations.length, 0);
+    const knownTuple = {
+      source_head_sha: row.source_head_sha,
+      source_base_sha: row.source_base_sha,
+      source_content_revision: row.source_content_revision,
+      source_is_draft: row.source_is_draft,
+      source_updated_at: row.source_updated_at,
+    };
+    Object.assign(row, {
+      source_head_sha: null,
+      source_base_sha: null,
+      source_content_revision: null,
+      source_is_draft: null,
+      source_updated_at: null,
+    });
+    const firstHydration = await runOperator(
+      [...common, "--execute", "--output", join(directory, "batch-first-hydration.json")],
+      "http://127.0.0.1:" + address.port,
+      secret,
+    );
+    assert.equal(firstHydration.code, 0, firstHydration.stderr);
+    assert.equal(JSON.parse(firstHydration.stdout).recovered_targets, 0);
+    assert.equal(mutations.length, 0);
+    Object.assign(row, knownTuple);
+    row.parked_reason = "review_retry_exhausted";
+    row.retry_policy_changed = false;
+
     liveUpdatedAt = "2026-08-10T12:01:00.000Z";
     const commentOnlyTimestamp = await runOperator(
       [...common, "--output", join(directory, "comment-only-timestamp.json")],

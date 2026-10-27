@@ -1,3 +1,4 @@
+import { validationRecoveryRequired } from "./validation-recovery.js";
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -90,8 +91,10 @@ export function finalizeReviewCommandOutput(options: {
   results: readonly ReviewOutputResult[];
   cleanupReviewOutput: (error?: unknown) => void;
   commandError: unknown;
+  captureSecondaryFailure?: boolean;
 }): unknown {
   let finalizationError: unknown;
+  const secondaryFailures: unknown[] = [];
   try {
     options.restoreTreeModes();
     if (options.outputSelection.retention === "summary") {
@@ -101,16 +104,27 @@ export function finalizeReviewCommandOutput(options: {
       );
     }
   } catch (error) {
-    if (options.commandError === undefined) finalizationError = error;
+    if (options.captureSecondaryFailure) secondaryFailures.push(error);
+    if (options.commandError === undefined || options.captureSecondaryFailure)
+      finalizationError = error;
     else
       console.error(
         `[review] summary output cleanup failed after command failure: ${error instanceof Error ? error.message : String(error)}`,
       );
   } finally {
     try {
-      options.cleanupReviewOutput(options.commandError);
+      const recovery = options.captureSecondaryFailure
+        ? validationRecoveryRequired(finalizationError)
+        : null;
+      const priorRecovery = validationRecoveryRequired(options.commandError);
+      if (recovery && priorRecovery) recovery.retain([...priorRecovery.recoveryPaths]);
+      options.cleanupReviewOutput(recovery ?? options.commandError);
     } catch (error) {
-      if (options.commandError === undefined && finalizationError === undefined)
+      if (options.captureSecondaryFailure) secondaryFailures.push(error);
+      if (
+        finalizationError === undefined &&
+        (options.commandError === undefined || options.captureSecondaryFailure)
+      )
         finalizationError = error;
       else
         console.error(
@@ -118,6 +132,10 @@ export function finalizeReviewCommandOutput(options: {
         );
     }
   }
+  if (options.captureSecondaryFailure && secondaryFailures.length > 1)
+    return new AggregateError(secondaryFailures, "Multiple review output finalization failures", {
+      cause: finalizationError,
+    });
   return finalizationError;
 }
 
@@ -669,6 +687,10 @@ export function assertReviewOutputFilePeak(
   }
 }
 
+export function reviewAssessmentOutputDir(codexWorkDir: string, itemNumber: number): string {
+  return join(codexWorkDir, "multi-model", String(itemNumber));
+}
+
 export function pruneReviewOutputItem(options: {
   artifactDir: string;
   codexWorkDir: string;
@@ -691,6 +713,12 @@ export function pruneReviewOutputItem(options: {
   ]) {
     rmSync(path, { force: true });
   }
+  const assessments = assertOwnedOutputPath(
+    artifactDir,
+    reviewAssessmentOutputDir(codexWorkDir, options.itemNumber),
+  );
+  rmSync(assessments, { recursive: true, force: true });
+  removeDirectoryIfEmpty(dirname(assessments));
   rmSync(proofScratchDir, { recursive: true, force: true });
   if (options.retention === "none") rmSync(reportPath, { force: true });
   removeDirectoryIfEmpty(dirname(proofScratchDir));

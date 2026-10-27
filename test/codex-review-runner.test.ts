@@ -692,6 +692,8 @@ test("runCodex rejects OpenClaw checkout text without structured read evidence",
     `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
+// Export is a local receipt read, not another inference invocation.
+if (process.argv[2] !== "agent") process.exit(2);
 const count = fs.existsSync(process.env.OPENCLAW_TEST_INVOCATIONS_PATH)
   ? Number(fs.readFileSync(process.env.OPENCLAW_TEST_INVOCATIONS_PATH, "utf8"))
   : 0;
@@ -1444,6 +1446,9 @@ import { syncBuiltinESMExports } from "node:module";
 const spawn = childProcess.spawn;
 childProcess.spawn = function(...args) {
   const child = spawn.apply(this, args);
+  // The injected Windows exit tuple belongs to model execution, not the
+  // read-only checkout probe that now receives the same per-call environment.
+  if (!Array.isArray(args[1]) || args[1][0] !== "exec") return child;
   const once = child.once;
   child.once = function(event, listener) {
     return once.call(this, event, event === "close"

@@ -1019,6 +1019,7 @@ export function untrustedCodexEnv(
   options: {
     ghToken?: string | undefined;
     preserveCodexAuth?: boolean | undefined;
+    runner?: "codex" | "openclaw" | undefined;
   } = {},
 ): NodeJS.ProcessEnv {
   const env = codexEnv(options);
