@@ -110,7 +110,7 @@ test(
         [...runtimeDependencies].sort().map((name) => [name, sourceMetadata.dependencies[name]]),
       ),
     );
-    assert.equal(metadata.bin["clawsweeper-review"], "dist/clawsweeper-local.js");
+    assert.deepEqual(metadata.bin, { clawsweeper: "dist/clawsweeper-local.js" });
     assert.ok(localStaged.some(({ path }) => path === "dist/repair/contained-command-worker.js"));
     assert.ok(
       !localStaged.some(({ path }) => /close-coverage|app-server|action-ledger/.test(path)),
@@ -319,7 +319,7 @@ test(
       prefix,
       "node_modules",
       ".bin",
-      process.platform === "win32" ? "clawsweeper-review.cmd" : "clawsweeper-review",
+      process.platform === "win32" ? "clawsweeper.cmd" : "clawsweeper",
     );
 
     // Only installed processes activate this hook. The parity suite's one
@@ -386,7 +386,7 @@ if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify
       assert.match(
         stdout,
         flag === "--help"
-          ? /Local ClawSweeper/
+          ? /^clawsweeper \[review\]/
           : new RegExp(`^${metadata.version.replaceAll(".", "\\.")}`),
       );
     }

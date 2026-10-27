@@ -43,7 +43,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       });
       assert.ifError(result.error);
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, flag === "--help" ? /Local ClawSweeper/ : /^\d+\.\d+\.\d+/);
+      assert.match(result.stdout, flag === "--help" ? /^clawsweeper \[review\]/ : /^\d+\.\d+\.\d+/);
     }
   });
 });

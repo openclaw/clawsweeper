@@ -4,12 +4,13 @@
 - Owner: ClawSweeper local-runtime maintainers
 - Source of truth: `scripts/stage-local-package.mjs`, `src/clawsweeper-local.ts`,
   and `.github/workflows/local-package-qualification.yml`
-- Verified source baseline: `a8ed845bfdad2467c4d73d8b470f4284dce625f0`; CI artifacts identify the tested source and diff
+- Verified source baseline: `118a07468663a22e9cc0e3fd76dfe2f17532eec0`; CI artifacts identify the tested source and diff
 - Update when: the local entrypoint, imports, workers, assets, package format, or qualification matrix changes
 
 The private package candidate contains the full committed-range reviewer. It
-does not contain hosted admission, publication, or service state. Its package
-name and `clawsweeper-review` bin are provisional; nothing is published to npm.
+does not contain hosted admission, publication, or service state. The scoped
+package stays private as `@openclaw/clawsweeper` and exposes the `clawsweeper`
+command. It does not require npm registry publication.
 
 From a development checkout with dependencies installed, build and stage into
 a new directory outside the checkout:
@@ -31,8 +32,8 @@ Install the resulting tarball into a disposable directory to qualify it:
 
 ```sh
 npm install --prefix /tmp/clawsweeper-local-install --ignore-scripts --omit=dev --no-audit --no-fund ./openclaw-clawsweeper-0.3.1.tgz
-/tmp/clawsweeper-local-install/node_modules/.bin/clawsweeper-review --help
-/tmp/clawsweeper-local-install/node_modules/.bin/clawsweeper-review --version
+/tmp/clawsweeper-local-install/node_modules/.bin/clawsweeper --help
+/tmp/clawsweeper-local-install/node_modules/.bin/clawsweeper --version
 ```
 
 Node 24 or newer and Git are required. A real review also needs the configured
@@ -44,7 +45,7 @@ scanner, install target dependencies, or call a review model.
 Run from a clean target repository or pass its path explicitly:
 
 ```sh
-clawsweeper-review review --base origin/main --target-repo owner/repo --target-dir /path/to/target
+clawsweeper review --base origin/main --target-repo owner/repo --target-dir /path/to/target
 ```
 
 That command runs a real model review. `--help` and `--version` do not.
@@ -113,11 +114,11 @@ provider access, native scanner coverage, a published release, or global install
 Keep the original target, reports, and operator authentication separate from the
 disposable install.
 
-## Proposed release rehearsal
+## Release rehearsal
 
 The manual `.github/workflows/release.yml` caller is preparation only. It has
 no publishing mode and cannot create a version tag, npm package, or tap change.
-The existing package and command names remain private and provisional.
+The generated package remains private and exposes the same `clawsweeper` command.
 
 Both CI and the caller reuse `.github/workflows/local-package-qualification.yml`.
 Its Linux producer emits one canonical four-file envelope. Linux, Windows, and
@@ -147,10 +148,9 @@ strict-CI options are fixed, and Homebrew handoff is disabled. Qualification
 has only `contents: read`; no secrets are inherited or supplied, and the shared
 build strips token environment variables before running the wrapper.
 
-A protected-main rehearsal is still blocked until the release maintainer
-approves dated release notes matching package version `0.3.1`. The current
-`0.3.1 - Unreleased` heading does not satisfy the shared metadata contract.
-Do not dispatch an expected failure or invent release metadata. Public naming,
-signer policy for a future real release, dependency delivery for Homebrew, and
-publication require separate decisions. This caller does not establish those
-outcomes or a full shared-workflow rehearsal.
+A protected-main rehearsal requires maintainer-approved dated release notes
+matching the requested package version. Prepare that metadata before dispatch;
+an Unreleased heading does not satisfy the shared contract. A successful run
+qualifies only its exact source and generated artifact. It does not publish a
+release or establish signer policy, Homebrew dependency delivery, or installed
+provider access. Those outcomes require their own validation and authorization.
