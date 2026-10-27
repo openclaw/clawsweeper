@@ -154,7 +154,7 @@ test("release caller defaults to rehearsal with explicit signed-tag publication"
   const release = caller.jobs.release;
   assert.equal(
     release.uses,
-    "openclaw/release-workflows/.github/workflows/release-source.yml@9d81ab3d2877f9900ef787e6dbcf4d9af96eb013",
+    "openclaw/release-workflows/.github/workflows/release-source.yml@f9519db8dfed03abd17ba74e92279d8a01c8ba5e",
   );
   assert.equal(release.secrets, undefined);
   assert.deepEqual(release.permissions, {
@@ -167,6 +167,7 @@ test("release caller defaults to rehearsal with explicit signed-tag publication"
     version: "${{ inputs.version }}",
     dry_run: "${{ !inputs.publish }}",
     "require-signed-tag": true,
+    "require-current-signer": true,
     "strict-checks": true,
     "ci-check-events": '["push"]',
     "test-runs-on": "ubuntu-latest",

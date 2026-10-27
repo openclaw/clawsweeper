@@ -128,6 +128,15 @@ then push that tag. Select that exact tag when dispatching the workflow and
 set `publish` true. Publication from a branch or a different version tag
 fails before package qualification. The pinned shared workflow verifies the
 existing tag signature and protected-main source before publishing assets.
+Before creating a draft, uploading each asset, or making the release public,
+it also verifies the tag signer against the current protected default branch's
+`.github/release-allowed-signers`. Removing a signer blocks the next checked
+write, including a publisher-only retry. The policy read and release write
+are not atomic: removal cannot revoke an already-issued write. This protects
+runs selecting this workflow pin, including older tags routed through it;
+runs or retries pinned to older workflow code do not gain the check.
+An already-public release with exactly matching bytes remains a no-write
+comparison, even after signer removal.
 
 Both CI and the caller reuse `.github/workflows/local-package-qualification.yml`.
 Its Linux producer emits one canonical four-file envelope. Linux, Windows, and
@@ -135,7 +144,7 @@ macOS must all consume the producer's exact artifact ID successfully before the
 workflow exposes that ID. A failed or skipped consumer prevents the release job.
 
 The caller pins `openclaw/release-workflows` at
-`9d81ab3d2877f9900ef787e6dbcf4d9af96eb013`. That shared workflow downloads the
+`f9519db8dfed03abd17ba74e92279d8a01c8ba5e`. That shared workflow downloads the
 same-run ID into `RELEASE_ASSET_INPUT_DIR`. The dependency-free
 `scripts/release-local-package-envelope.mjs` validates the original four files,
 their hashes and locked resolution, and their source commit, tree, and clean

@@ -1,1 +1,1 @@
-- Keep local package release rehearsals as the default and permit explicit publication only from the matching signed version tag, verified against the protected release signer policy.
+- Keep local package release rehearsals as the default and permit explicit publication only from the matching signed version tag, verified against the frozen signer policy and the current protected default-branch policy before every release write.
