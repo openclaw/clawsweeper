@@ -1,3 +1,4 @@
+import { blockCredentialPublication, redactPublication } from "./publication-dlp.js";
 import {
   AGENTS_POLICY_STATUSES,
   AGENTS_POLICY_STATUS_SCHEMA_KEYS,
@@ -1036,7 +1037,11 @@ export function createDecisionParser({
   }
 
   function parseDecision(value: unknown, item?: RootCauseNormalizationItem): Decision {
-    return parseDecisionFields(value, item, "model");
+    const safe = redactPublication(value);
+    return blockCredentialPublication(
+      parseDecisionFields(safe.value, item, "model"),
+      safe.redactions,
+    );
   }
 
   /** Parses the schema fields of a decision from a stored review record. */

@@ -291,6 +291,31 @@ export function runPrCloseCoverageProofModel(options: {
     env: codexEnv({ ghToken: options.runtime.ghToken }),
     timeoutMs: options.runtime.timeoutMs,
   });
+  if (result.compromised) {
+    // Revoke any earlier envelope and retain a schema-valid denial for failed-run diagnostics.
+    rmSync(
+      prCloseCoverageProofEnvelopePath(
+        options.runtime.workDir,
+        options.source.number,
+        options.covering.number,
+      ),
+      { force: true },
+    );
+    writeFileSync(
+      outputPath,
+      JSON.stringify({
+        sourceSummary: "Coverage review failed.",
+        coveringSummary: "Coverage review failed.",
+        coveredWork: [],
+        uniqueSourceWork: [],
+        decision: "keep_open",
+        reason: "Credential output was redacted; a fresh coverage review is required.",
+      } satisfies PrCloseCoverageProofModelResult),
+    );
+    throw new Error(
+      `Codex PR close coverage proof failed for #${options.source.number}: credential output was redacted.`,
+    );
+  }
   if (result.error) {
     throw new Error(
       `Codex PR close coverage proof failed for #${options.source.number}: ${

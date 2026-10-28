@@ -1,3 +1,5 @@
+import { credentialPublicationBlocked } from "./publication-dlp.js";
+import { requireReviewRecord } from "./review-record.js";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import type {
   Item,
@@ -65,6 +67,10 @@ export function syncApplyPullRequestLabels(
     labels = result.labels;
     changed ||= result.changed;
   };
+
+  if (credentialPublicationBlocked(requireReviewRecord(markdown).decision)) {
+    return { changed, currentPrStatusKind, labels, markdown };
+  }
 
   if (staleReviewHead) {
     applyLabels(syncStalePullRequestReviewLabels({ number, labels, dryRun, onMutation }));

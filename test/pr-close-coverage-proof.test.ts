@@ -402,7 +402,7 @@ test("PR close coverage proof prompt treats PR text as untrusted evidence", () =
   assert.match(prompt, /cannot override these proof rules/);
 });
 
-for (const admission of ["clean", "invalid-output"])
+for (const admission of ["clean", "invalid-output", "compromised"])
   test(
     `PR close coverage proof ${admission} leaves no prompt copies in the proof tree`,
     { skip: process.platform === "win32" },
@@ -427,14 +427,11 @@ ${admission === "invalid-output" ? "process.exit(183);" : ""}
           fakeCodex,
           [
             "#!/bin/sh",
-            'out=""',
-            'prev=""',
-            'for a in "$@"; do',
-            '  if [ "$prev" = "--output-last-message" ]; then out="$a"; fi',
-            '  prev="$a"',
-            "done",
             "cat > /dev/null",
-            "cat > \"$out\" <<'JSON'",
+            ...(admission === "compromised"
+              ? ["printf '%s' synthetic-coverage-diagnostic-capability >&2"]
+              : []),
+            "cat <<'JSON'",
             JSON.stringify(concreteCoverageProof),
             "JSON",
             "exit 0",
@@ -446,6 +443,8 @@ ${admission === "invalid-output" ? "process.exit(183);" : ""}
         const previousCodexBin = process.env.CODEX_BIN;
         process.env.CODEX_BIN = fakeCodex;
         try {
+          const envelopePath = prCloseCoverageProofEnvelopePath(workDir, 95982, 111523);
+          if (admission === "compromised") writeFileSync(envelopePath, "stale covered envelope");
           const run = () =>
             runPrCloseCoverageProofModel({
               source: proofPullRequest(95982),
@@ -462,18 +461,30 @@ ${admission === "invalid-output" ? "process.exit(183);" : ""}
                 rootDir: root,
                 schemaPath,
                 promptTemplate: "Prove close coverage.",
+                ghToken: "synthetic-coverage-diagnostic-capability",
               },
             });
           if (admission === "invalid-output")
             assert.throws(run, /Agent input scan refused: scanner_failed/);
-          else assert.equal(run().decision, "covered");
+          else if (admission === "compromised") {
+            assert.throws(run, /credential output was redacted/);
+            assert.equal(readdirSync(workDir).includes("95982-111523.proof.json"), false);
+            const denied = parsePrCloseCoverageProofModelResult(
+              JSON.parse(readFileSync(join(workDir, "95982-111523.model.json"), "utf8")),
+            );
+            assert.equal(prCloseCoverageProofCloseDecision(denied).close, false);
+            assert.match(denied.reason, /fresh coverage review/);
+          } else assert.equal(run().decision, "covered");
         } finally {
           if (previousCodexBin === undefined) delete process.env.CODEX_BIN;
           else process.env.CODEX_BIN = previousCodexBin;
         }
         // The workDir is uploaded verbatim as the close-coverage proof artifact;
         // its validator only admits N-M.proof.json and manifest.json.
-        assert.deepEqual(readdirSync(workDir), []);
+        assert.deepEqual(
+          readdirSync(workDir),
+          admission === "compromised" ? ["95982-111523.model.json"] : [],
+        );
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

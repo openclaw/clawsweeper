@@ -1,5 +1,8 @@
+import { publicationSafeReport, requireReviewRecord } from "./review-record.js";
+import { redactPublication } from "./publication-dlp.js";
 import type {
   CloseReason,
+  Decision,
   ProductFixScope,
   ProductReview,
   ProductReviewKind,
@@ -552,7 +555,7 @@ function renderKeepOpenCommentFromReport(
   );
 }
 
-export function renderReviewCommentFromReport(
+function renderReviewComment(
   markdown: string,
   reason: CloseReason,
   options: ReviewCommentRenderOptions = {},
@@ -612,4 +615,23 @@ export function renderReviewCommentFromReport(
   return [body.trimEnd(), markers, reviewVersionMarkerFromReport(markdown)]
     .filter(Boolean)
     .join("\n\n");
+}
+
+/** Return the safe report as well as its comment so persistence owners retain invalidation. */
+export function prepareReviewCommentFromReport(
+  markdown: string,
+  reason: CloseReason,
+  options: ReviewCommentRenderOptions = {},
+): { markdown: string; comment: string; decision: Decision } {
+  let safe = publicationSafeReport(markdown);
+  const rendered = redactPublication(renderReviewComment(safe, reason, options));
+  if (!rendered.redactions)
+    return {
+      markdown: safe,
+      comment: rendered.value,
+      decision: requireReviewRecord(safe).decision,
+    };
+  safe = publicationSafeReport(safe, rendered.redactions);
+  const failed = redactPublication(renderReviewComment(safe, "none", options));
+  return { markdown: safe, comment: failed.value, decision: requireReviewRecord(safe).decision };
 }

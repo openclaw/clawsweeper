@@ -479,3 +479,52 @@ test("checkout inspection lists tracked files beyond the 1 MB spawn default", (t
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("shared runner redacts final files and split diagnostic streams before any sink write", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "dlp-runner-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  useFakeScanner(t);
+  const binary = join(root, "fake-codex.cjs");
+  const token = "synthetic-runner-capability-123456";
+  const output = join(root, "answer.md");
+  const stdoutPath = join(root, "stdout.log");
+  const stderrPath = join(root, "stderr.log");
+  writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+const token = process.env.GH_TOKEN;
+const output = process.argv[process.argv.indexOf('--output-last-message') + 1];
+if (process.argv.includes('--output-last-message')) fs.writeFileSync(output, token);
+process.stdout.write(token.slice(0, 12));
+setTimeout(() => { process.stdout.write(token.slice(12) + '\\n'); process.stderr.write(JSON.stringify({rootCauseCluster: token}) + '\\n'); }, 10);
+`,
+  );
+  chmodSync(binary, 0o755);
+  const result = runAgentProcess({
+    label: "dlp",
+    scanSource: { kind: "prompt" },
+    prompt: "Synthetic proof",
+    model: "internal",
+    cwd: root,
+    env: {
+      ...process.env,
+      CODEX_BIN: binary,
+      GH_TOKEN: token,
+    },
+    timeoutMs: 30_000,
+    codexExtraArgs: ["--output-last-message", output, "-"],
+    stdoutPath,
+    stderrPath,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  for (const path of [output, stdoutPath, stderrPath]) {
+    const text = readFileSync(path, "utf8");
+    assert.ok(!text.includes(token), path);
+    assert.ok(text.includes("[redacted credential]"), path);
+  }
+  assert.equal(
+    JSON.parse(readFileSync(stderrPath, "utf8")).rootCauseCluster,
+    "[redacted credential]",
+  );
+});

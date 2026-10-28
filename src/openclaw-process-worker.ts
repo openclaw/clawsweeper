@@ -1,3 +1,4 @@
+import { redactPublication, registerOpenclawProviderCapabilities } from "./publication-dlp.js";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import {
@@ -18,6 +19,11 @@ interface WorkerOptions {
   stderrPath: string;
   tailBytes: number;
   maxOutputFileBytes: number;
+}
+
+if (process.env.OPENCLAW_CONFIG_PATH) {
+  const config = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8"));
+  registerOpenclawProviderCapabilities(JSON.stringify(config.models?.providers));
 }
 
 const options = JSON.parse(readFileSync(process.argv[2] ?? "", "utf8")) as WorkerOptions;
@@ -67,16 +73,18 @@ child.once("close", (status, signal) => {
   clearTimeout(timeout);
   closeCodexOutputCapture(stdout);
   closeCodexOutputCapture(stderr);
+  const safe = redactPublication({
+    status,
+    signal,
+    ...(timeoutError || spawnError ? { error: serializedError(timeoutError ?? spawnError!) } : {}),
+    stdout: codexOutputTail(stdout),
+    stderr: codexOutputTail(stderr),
+  });
   writeFileSync(
     options.resultPath,
     JSON.stringify({
-      status,
-      signal,
-      ...(timeoutError || spawnError
-        ? { error: serializedError(timeoutError ?? spawnError!) }
-        : {}),
-      stdout: codexOutputTail(stdout),
-      stderr: codexOutputTail(stderr),
+      ...safe.value,
+      compromised: stdout.compromised || stderr.compromised || safe.redactions > 0,
     }),
     "utf8",
   );

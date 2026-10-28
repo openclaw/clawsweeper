@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { renderReviewCommentFromReport } from "./helpers.ts";
 import { reviewAutomationMarkersFromReport } from "../dist/clawsweeper-review-comment-automation.js";
 import { reportRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.js";
 import { pullRequestProofReport } from "./helpers.ts";

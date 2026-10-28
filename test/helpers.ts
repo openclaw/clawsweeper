@@ -1,4 +1,4 @@
-import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { prepareReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -1313,9 +1313,7 @@ export function withMockCodexProof(
   const script =
     result.type === "decision"
       ? `#!/usr/bin/env node
-	const { appendFileSync, writeFileSync } = require("fs");
-	const args = process.argv.slice(2);
-	const outputPath = args[args.indexOf("--output-last-message") + 1];
+	const { appendFileSync } = require("fs");
 	const invocationLogPath = ${JSON.stringify(result.invocationLogPath ?? "")};
 	const prompt = require("fs").readFileSync(0, "utf8");
 	const expectedPrompt = ${JSON.stringify(result.expectedPromptIncludes ?? "")};
@@ -1336,7 +1334,7 @@ export function withMockCodexProof(
 		    ? "keep_open"
 		    : ${JSON.stringify(result.decision)};
 		if (invocationLogPath) appendFileSync(invocationLogPath, "proof\\n");
-		writeFileSync(outputPath, JSON.stringify({
+		console.log(JSON.stringify({
 	  sourceSummary: "PR A updates the provider route.",
 	  coveringSummary: "PR B updates a different provider path.",
 	  coveredWork: decision === "covered" ? ["PR B includes PR A's provider route update."] : [],
@@ -1494,4 +1492,11 @@ export function mockGhBinEnv(ghPath: string, binDir?: string): NodeJS.ProcessEnv
         }),
     ...(binDir ? { PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}` } : {}),
   };
+}
+
+// Test-only presentation convenience; production owners must persist prepared markdown.
+export function renderReviewCommentFromReport(
+  ...args: Parameters<typeof prepareReviewCommentFromReport>
+): string {
+  return prepareReviewCommentFromReport(...args).comment;
 }

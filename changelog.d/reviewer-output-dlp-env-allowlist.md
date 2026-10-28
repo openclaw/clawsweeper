@@ -1,0 +1,1 @@
+- Redact credentials from review, assist, coverage-proof, and local commit-review output; preserve failed/keep-open decisions through diagnostics, rendering, stored records, and apply; avoid false credential matches inside ordinary identifiers, and isolate reviewer environments and hosted credential stores.

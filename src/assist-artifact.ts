@@ -1,3 +1,4 @@
+import { redactPublication } from "./publication-dlp.js";
 import {
   requireRecord as record,
   requirePositiveInteger as positiveInteger,
@@ -303,7 +304,9 @@ export function validateAssistArtifact(value: unknown): AssistArtifact {
 
   const output = record(artifact.output, "output");
   exactKeys(output, ["answer"]);
-  const answer = scalar(output.answer, "output.answer", ASSIST_ANSWER_MAX_BYTES, false, true);
+  const answer = redactPublication(
+    scalar(output.answer, "output.answer", ASSIST_ANSWER_MAX_BYTES, false, true),
+  ).value;
   if (!answer.trim()) throw new Error("output.answer must not be empty");
   if (CLAWSWEEPER_MARKER_PATTERN.test(answer)) {
     throw new Error("output.answer must not contain ClawSweeper control markers");

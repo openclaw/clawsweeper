@@ -1,4 +1,4 @@
-import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { renderReviewCommentFromReport } from "./helpers.ts";
 import { reviewActionForDecision } from "../dist/clawsweeper-report-actions.js";
 import assert from "node:assert/strict";
 import { serializeReviewPreflightPayload } from "../dist/review-preflight-contract.js";

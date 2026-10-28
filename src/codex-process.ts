@@ -1,3 +1,5 @@
+import { isolatedReviewerHome } from "./reviewer-home.js";
+import { redactPublication, redactPublicationFiles } from "./publication-dlp.js";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -22,6 +24,7 @@ export interface CodexProcessResult {
   signal: NodeJS.Signals | null;
   error?: Error;
   processError?: boolean;
+  compromised?: boolean;
   // Validator error of the first final message when the worker ran one decision repair turn.
   decisionRepairError?: string;
   stdout: string;
@@ -36,6 +39,7 @@ interface SerializedCodexProcessResult {
     code?: string;
   };
   processError?: boolean;
+  compromised?: boolean;
   decisionRepairError?: string;
   stdout: string;
   stderr: string;
@@ -65,6 +69,8 @@ export function runCodexProcess(options: {
   const stdoutPath = options.stdoutPath ?? join(workDir, "stdout.log");
   const stderrPath = options.stderrPath ?? join(workDir, "stderr.log");
   try {
+    if (!options.env.HOME)
+      options = { ...options, env: isolatedReviewerHome(options.env, workDir) };
     const outputLastMessageBytes = normalizedOutputLastMessageBytes(
       options.outputLastMessageBytes,
       options.outputLastMessagePath,
@@ -97,6 +103,7 @@ export function runCodexProcess(options: {
       stdio: ["pipe", "ignore", "ignore"],
       timeout: options.timeoutMs + 10_000,
     });
+    const diagnosticRedactions = redactPublicationFiles([stdoutPath, stderrPath]);
     if (existsSync(resultPath)) {
       const resultBytes = statSync(resultPath).size;
       const maxResultBytes = workerResultMaxBytes(normalizedTailBytes(options.tailBytes));
@@ -108,6 +115,9 @@ export function runCodexProcess(options: {
         );
       }
       const result = deserializeProcessResult(JSON.parse(readFileSync(resultPath, "utf8")));
+      const safe = redactPublication({ stdout: result.stdout, stderr: result.stderr });
+      Object.assign(result, safe.value);
+      result.compromised ||= diagnosticRedactions > 0 || safe.redactions > 0;
       if (outputLastMessageBytes !== undefined && options.outputLastMessagePath) {
         try {
           const metadata = lstatSync(options.outputLastMessagePath);
@@ -116,6 +126,11 @@ export function runCodexProcess(options: {
           }
           if (metadata.size > outputLastMessageBytes) {
             throw new Error(`Codex result exceeded its ${outputLastMessageBytes}-byte limit.`);
+          }
+          if (redactPublicationFiles([options.outputLastMessagePath])) {
+            result.compromised = true;
+            if (statSync(options.outputLastMessagePath).size > outputLastMessageBytes)
+              throw new Error(`Codex result exceeded its ${outputLastMessageBytes}-byte limit.`);
           }
         } catch (error) {
           if (!(result.error && (error as NodeJS.ErrnoException).code === "ENOENT")) {
@@ -184,6 +199,7 @@ function failedProcessResult(
 function deserializeProcessResult(value: SerializedCodexProcessResult): CodexProcessResult {
   return {
     status: value.status,
+    compromised: Boolean(value.compromised),
     signal: value.signal,
     ...(value.error ? { error: deserializeError(value.error) } : {}),
     ...(value.processError === undefined ? {} : { processError: value.processError }),

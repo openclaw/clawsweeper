@@ -144,7 +144,7 @@ import {
   reviewActionForDecision,
 } from "./clawsweeper-report-actions.js";
 import { markdownFor, updateReviewStructuralFrontMatter } from "./clawsweeper-report-document.js";
-import { renderReviewCommentFromReport } from "./clawsweeper-report-comment-presentation.js";
+import { prepareReviewCommentFromReport } from "./clawsweeper-report-comment-presentation.js";
 import { syncWorkPlanFromReport } from "./clawsweeper-report-context.js";
 import { workPlanPathForReport } from "./clawsweeper-label-presentation.js";
 import { existingReview } from "./clawsweeper-record-metadata.js";
@@ -702,7 +702,7 @@ const { reviewCommand: reviewCommandWithoutReceipts } = createReviewCommandWorkf
   itemSnapshotHash,
   markdownFor,
   pullRequestHeadSha,
-  renderReviewCommentFromReport,
+  prepareReviewCommentFromReport,
   reviewActionForDecision,
   updateReviewStructuralFrontMatter,
   repoFromArgs,
@@ -742,7 +742,6 @@ const { applyDecisionsCommandInner: applyDecisionsWithoutReceipts } = createAppl
   livePullRequestHasNoDiff,
   prCloseCoverageProofGateResult,
   pullRequestClosePromotion,
-  renderReviewCommentFromReport,
   staleCanonicalCommentSyncPendingReason,
   staleCanonicalPullRequestNumber,
   syncWorkPlanFromReport,

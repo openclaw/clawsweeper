@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import * as provenance from "../dist/clawsweeper-regression-provenance.js";
 import { parseDecision } from "../dist/clawsweeper.js";
-import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
+import { renderReviewCommentFromReport } from "./helpers.ts";
 import { ReviewRecordFormatError } from "../dist/review-record.js";
 import { closeDecision, reportFrontMatter, withReviewRecord } from "./helpers.ts";
 import { maintainerDecisionFromReport } from "../dist/decision-packets.js";
@@ -670,6 +670,7 @@ test("local review publishes host facts through the report and public comment ro
   try {
     const fakeCodexScript = join(f.root, "fake-codex.mjs");
     const fakeCodex = join(f.root, process.platform === "win32" ? "fake-codex.cmd" : "fake-codex");
+    const decisionFile = join(f.root, "decision.json");
     writeFileSync(
       fakeCodexScript,
       `import { spawnSync } from 'node:child_process';
@@ -682,7 +683,7 @@ if (args[0] === 'sandbox') {
   process.exit(result.status ?? 1);
 }
 fs.readFileSync(0, 'utf8');
-process.stdout.write(fs.readFileSync(process.env.FIXTURE_DECISION, 'utf8') + '\\n');
+process.stdout.write(fs.readFileSync(${JSON.stringify(decisionFile)}, 'utf8') + '\\n');
 `,
     );
     writeFileSync(
@@ -692,7 +693,6 @@ process.stdout.write(fs.readFileSync(process.env.FIXTURE_DECISION, 'utf8') + '\\
         : `#!/bin/sh\nexec "${process.execPath}" "${fakeCodexScript}" "$@"\n`,
       { mode: 0o755 },
     );
-    const decisionFile = join(f.root, "decision.json");
     const runReview = (checkout: string, owners: unknown[], name: string) => {
       const artifacts = join(f.root, name);
       writeFileSync(
@@ -754,7 +754,6 @@ process.stdout.write(fs.readFileSync(process.env.FIXTURE_DECISION, 'utf8') + '\\
             ...process.env,
             CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: "1",
             CODEX_BIN: fakeCodex,
-            FIXTURE_DECISION: decisionFile,
           },
         },
       );

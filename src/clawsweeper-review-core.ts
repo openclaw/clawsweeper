@@ -1,3 +1,4 @@
+import { blockCredentialPublication } from "./publication-dlp.js";
 import {
   chmodSync,
   existsSync,
@@ -891,6 +892,12 @@ ${extra}
         ? {}
         : { preserveCodexAuth: options.preserveCodexAuth }),
     });
+    if (checkoutInspection.compromised)
+      return blockCredentialPublication(
+        codexFailure(checkoutInspection.status, "Checkout inspection output was redacted.")
+          .decision,
+        1,
+      );
     if (checkoutInspection.error || checkoutInspection.status !== 0) {
       const stderr = redactedOutputTail(checkoutInspection.stderr);
       const stdout = redactedOutputTail(checkoutInspection.stdout);
@@ -1015,16 +1022,19 @@ ${extra}
             `[review] ${new Date().toISOString()} decision-repair-turn #${options.item.number} ok`,
           );
         }
-        return {
-          ...verifyLikelyOwnerHistory(decision, {
-            checkoutDir: options.openclawDir,
-            reviewedCommitShas: [
-              options.git.mainSha,
-              nonBlankStringOrUndefined(asRecord(pull.head).sha),
-            ],
-          }),
-          localCheckoutAccess: "verified",
-        };
+        return blockCredentialPublication(
+          {
+            ...verifyLikelyOwnerHistory(decision, {
+              checkoutDir: options.openclawDir,
+              reviewedCommitShas: [
+                options.git.mainSha,
+                nonBlankStringOrUndefined(asRecord(pull.head).sha),
+              ],
+            }),
+            localCheckoutAccess: "verified",
+          },
+          result.compromised ? 1 : 0,
+        );
       } catch (error) {
         failureDetail = `Codex review failed for #${options.item.number} with exit ${
           result.status ?? "unknown"
@@ -1077,6 +1087,11 @@ ${extra}
         /\b(?:ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|transport failure)\b/i.test(
           `${errorCode ?? ""}\n${processFailureDetail}`,
         ));
+    if (result.compromised)
+      return blockCredentialPublication(
+        codexFailure(result.status, processFailureDetail, stdout, stderr).decision,
+        1,
+      );
     throw new CodexReviewError({
       message: processFailureDetail || `Codex review failed for #${options.item.number}.`,
       status: result.status,

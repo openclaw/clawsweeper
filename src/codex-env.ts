@@ -1,3 +1,9 @@
+import { openclawProviderEnv } from "./openclaw-process.js";
+import {
+  registerOpenclawProviderCapabilities,
+  registerPublicationCapability,
+  registerCodexAuthCapabilities,
+} from "./publication-dlp.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -70,32 +76,103 @@ export function redactInternalCodexModel(
   );
 }
 
+// Only runtime/tool controls cross the model boundary. Job-level additions stay private.
+const CODEX_ENV_ALLOWLIST = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "SHELL",
+  "CODEX_HOME",
+  "CODEX_BIN",
+  "CODEX_BIN_ARGS",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "TZ",
+  "TERM",
+  "NODE_OPTIONS",
+  "NODE_EXTRA_CA_CERTS",
+  "CI",
+  "GITHUB_ACTIONS",
+  "GITHUB_WORKSPACE",
+  "RUNNER_TEMP",
+  "RUNNER_OS",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  // Windows command resolution and the local Codex Desktop fallback.
+  "SystemRoot",
+  "SYSTEMROOT",
+  "COMSPEC",
+  "PATHEXT",
+  "USERPROFILE",
+  "LOCALAPPDATA",
+  "APPDATA",
+  // Read-only Git discovery and isolation; never numbered/config-parameter overrides.
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_CONFIG_NOSYSTEM",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+  "GIT_NO_LAZY_FETCH",
+  "GIT_TERMINAL_PROMPT",
+  "GH_CONFIG_DIR",
+  "CLAWSWEEPER_RUNNER",
+  "CLAWSWEEPER_REVIEW_TOOLS_DIR",
+  "CLAWSWEEPER_PROOF_SCRATCH_DIR",
+]);
+
+const OPENCLAW_ENV_ALLOWLIST = new Set([
+  "CLAWSWEEPER_OPENCLAW_MODEL",
+  "CLAWSWEEPER_OPENCLAW_BIN",
+  "CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON",
+]);
+
 export function codexEnv(options: CodexEnvOptions = {}): NodeJS.ProcessEnv {
-  const env = { ...process.env };
+  registerCodexAuthCapabilities();
+  const env: NodeJS.ProcessEnv = {};
+  const openclaw = process.env.CLAWSWEEPER_RUNNER?.trim() === "openclaw";
+  if (openclaw)
+    registerOpenclawProviderCapabilities(process.env.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON);
+  for (const [key, value] of Object.entries(process.env)) {
+    // Windows env names are case-insensitive and Node often reports `Path`, not `PATH`.
+    const name = process.platform === "win32" ? key.toUpperCase() : key;
+    if (
+      CODEX_ENV_ALLOWLIST.has(name) ||
+      /^LC_[A-Z_]+$/.test(name) ||
+      (openclaw && OPENCLAW_ENV_ALLOWLIST.has(name)) ||
+      (!openclaw &&
+        options.preserveCodexAuth &&
+        ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"].includes(name))
+    ) {
+      // Store the canonical spelling so later case-sensitive filters (pickEnv) keep it.
+      env[name] = value;
+    }
+  }
+  if (openclaw) Object.assign(env, openclawProviderEnv(process.env));
+  if (openclaw || !options.preserveCodexAuth) {
+    // Keep Codex configuration/auth at its existing explicit location, not under the new HOME.
+    env.CODEX_HOME ||= join(process.env.HOME || homedir(), ".codex");
+    for (const key of ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"]) delete env[key];
+    for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GH_CONFIG_DIR"]) delete env[key];
+    env.GIT_CONFIG_NOSYSTEM = "1";
+  } else {
+    // Native Windows local auth can have USERPROFILE without HOME.
+    env.HOME ||= env.USERPROFILE;
+  }
   const ghToken = options.ghToken?.trim();
-  delete env.GH_TOKEN;
-  delete env.GITHUB_TOKEN;
-  delete env.REPO_TOKEN;
-  delete env.COMMIT_SWEEPER_TARGET_GH_TOKEN;
-  delete env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN;
-  delete env.CLAWSWEEPER_APP_ID;
-  delete env.CLAWSWEEPER_APP_PRIVATE_KEY;
-  delete env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN;
-  delete env.CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN;
-  delete env.CLAWSWEEPER_CRABFLEET_RUNNER_PTY_URL;
-  delete env.CLAWSWEEPER_CRABFLEET_WORK_STATE_URL;
-  for (const key of Object.keys(env)) {
-    // Keep trusted preparation's process-local Git overrides out of model subprocesses.
-    if (/^GIT_CONFIG_(COUNT|PARAMETERS|(KEY|VALUE)_\d+)$/i.test(key)) delete env[key];
-    if (/^CLAWSWEEPER_.*GH_TOKEN$/.test(key)) delete env[key];
+  if (ghToken) {
+    env.GH_TOKEN = ghToken;
+    registerPublicationCapability(ghToken, true);
   }
-  if (!options.preserveCodexAuth) {
-    if (env.CLAWSWEEPER_RUNNER !== "openclaw") delete env.OPENAI_API_KEY;
-    delete env.CODEX_API_KEY;
-    delete env.CODEX_ACCESS_TOKEN;
-  }
-  delete env.CLAWSWEEPER_INTERNAL_MODEL;
-  if (ghToken) env.GH_TOKEN = ghToken;
   env.GIT_OPTIONAL_LOCKS = "0";
   return env;
 }
