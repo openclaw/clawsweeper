@@ -1,0 +1,1 @@
+- Allow credential-free Team work-session provenance links on RoboClaw and GitHub-verified OpenClaw organization PRs without weakening privacy or proof requirements. Thanks @brokemac79.

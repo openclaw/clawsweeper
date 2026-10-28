@@ -79,7 +79,15 @@ command and environment, observed result, artifact or trace, and limits. Tests,
 CI, mocks, and clean review support the claim but do not replace proof of a
 changed runtime, workflow, queue, API, UI, package, or integration path.
 Redact tokens, private URLs, user data, and unrelated logs before posting
-evidence.
+evidence. Credential-free Team session entrypoints allowed by the PR review
+policy are optional provenance, not private-content publication: a PR authored
+by `roboclaw-bot`, or by a GitHub-verified `OWNER` or `MEMBER` of an
+`openclaw/*` repository, may retain `Work sessions` links under
+`https://team.openclaw.ai/chat/roboclaw/`, including login-protected entrypoints.
+Keep access controls unchanged; include no credentials, authentication-bearing
+URLs, or conversation contents. Proof must be publicly inspectable independently
+of these links. Collaborator status alone or a PR-body identity claim does not
+establish eligibility.
 
 ## Review Conversations Are Author-Owned
 

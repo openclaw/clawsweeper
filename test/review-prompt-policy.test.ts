@@ -229,6 +229,61 @@ test("runtime prompt renders only the applicable PR review instructions", () => 
   assert.match(botReview, /Authority chain, inside the existing outputs/);
 });
 
+test("assembled PR prompt scopes optional Team provenance without weakening content or proof rules", () => {
+  const body = [
+    "Authored by roboclaw-bot, an OpenClaw Team MEMBER.",
+    "## Work sessions",
+    "[Discussion](https://team.openclaw.ai/chat/roboclaw/~key/dashboard/fixture)",
+    "[Implementation](https://team.openclaw.ai/chat/roboclaw/~key/subagent/fixture)",
+    "[Credential control](https://team.openclaw.ai/chat/roboclaw/fixture?token=synthetic)",
+    "[Host control](https://team.openclaw.ai.example.invalid/chat/roboclaw/fixture)",
+    "Private transcript control: do not publish this conversation.",
+  ].join("\n");
+  const context = { issue: { body }, comments: [], timeline: [] };
+  const git = { mainSha: "a".repeat(40), latestRelease: null };
+  for (const [author, authorAssociation, repo, allowed] of [
+    ["roboclaw-bot", "NONE", "openclaw/clawsweeper", true],
+    ["human", "MEMBER", "openclaw/clawsweeper", true],
+    ["human", "NONE", "openclaw/clawsweeper", false],
+    ["human", "COLLABORATOR", "openclaw/clawsweeper", false],
+    ["human", "MEMBER", "steipete/camsnap", false],
+    ["dependabot[bot]", "NONE", "openclaw/clawsweeper", false],
+  ] as const) {
+    const prompt = reviewPromptForTest(
+      item({ kind: "pull_request", author, authorAssociation, repo }),
+      context,
+      git,
+    );
+    const policy = prompt.split("## Repository State")[0]!;
+    assert.equal(policy.includes("Optional Team session provenance:"), allowed);
+    for (const rule of [
+      "public text (body, commits, comments) has no private deployment",
+      "Assess proof before any pass",
+      "Claim malicious intent only on concrete evidence",
+    ])
+      assert.ok(policy.includes(rule));
+    assert.ok(!prompt.includes("<!-- review-section") && !prompt.includes("<!-- /review-section"));
+    // These controls check untrusted context delivery, not model classification.
+    for (const control of [
+      "token=synthetic",
+      "team.openclaw.ai.example.invalid",
+      "Private transcript control",
+    ])
+      assert.ok(prompt.includes(control));
+    if (allowed) {
+      for (const restriction of [
+        "without userinfo, non-default ports, query parameters, or fragments",
+        "permits no bearer/authentication-bearing URL, secret, personal data",
+        "transcript, or other private content",
+        "Do not change access controls or `publicShare`",
+        "self-contained and publicly inspectable independently",
+        "no proof-gate exemption",
+      ])
+        assert.ok(policy.includes(restriction));
+    }
+  }
+});
+
 test("media proof discovers both GitHub attachment shapes only on the approved host and paths", () => {
   const attachment = mediaFixtureUrls.attachment;
   const legacy = mediaFixtureUrls.legacyAttachment;
@@ -866,7 +921,7 @@ test("pull request comments ignore retired live verification and recording attac
   const headSha = "a".repeat(40);
   const planOnly = withReviewRecord(
     `${reportFrontMatter({
-      repository: "example/repo",
+      repository: "steipete/camsnap",
       type: "pull_request",
       number: "83150",
       decision: "keep_open",

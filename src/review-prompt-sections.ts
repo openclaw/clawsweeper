@@ -3,6 +3,7 @@ import {
   isAutomationReportAuthor,
   isMaintainerAuthorAssociation,
   isProtectedItem,
+  normalizeAuthorAssociation,
 } from "./clawsweeper-item-policy.js";
 import {
   evaluateOversizedPullRequest,
@@ -27,7 +28,8 @@ export type ReviewPromptSection =
   | "media"
   | "maintainer_author"
   | "external_author"
-  | "authority_chain";
+  | "authority_chain"
+  | "team_session_provenance";
 
 /** Semantic authority changes stay model-assessed: even Markdown can be a runtime template. */
 export function reviewPromptSections(
@@ -42,6 +44,11 @@ export function reviewPromptSections(
     maintainer_author: maintainer,
     external_author: !maintainer && !isAutomationReportAuthor(item.author),
     authority_chain: item.kind === "pull_request",
+    team_session_provenance:
+      item.kind === "pull_request" &&
+      (item.author.toLowerCase() === "roboclaw-bot" ||
+        (item.repo.toLowerCase().startsWith("openclaw/") &&
+          ["OWNER", "MEMBER"].includes(normalizeAuthorAssociation(item.authorAssociation)))),
   };
 }
 
