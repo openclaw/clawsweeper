@@ -114,13 +114,16 @@ function strict<T extends object>(label: string, values: T): T {
   });
 }
 
-test("apply does not close an item after it loses its mutation lease during close execution", () => {
-  for (const [name, lostAfterChecks, expectedClosed] of [
-    ["lease held", Infinity, [42]],
-    ["lease lost after the first check", 1, []],
+test("apply does not close an item after it loses its lease or is locked during close execution", () => {
+  for (const [name, lostAfterChecks, expectedClosed, locked] of [
+    ["lease held", Infinity, [42], false],
+    ["lease lost after the first check", 1, [], false],
+    // Issues get no closeout comment, so the close guard's live read is the only lock check.
+    ["issue locked after review", Infinity, [], true],
   ] as const) {
     const closed: number[] = [];
     const leaseSkips: string[] = [];
+    const skips: string[] = [];
     let leaseChecks = 0;
     let markdown = withReviewRecord(
       reviewReportFrontMatter({
@@ -133,7 +136,7 @@ test("apply does not close an item after it loses its mutation lease during clos
     executeApplyClose(
       strict("dependency", {
         closeReasonEnabled: () => true,
-        ghJson: () => ({ body: "Please help with this issue." }),
+        ghJson: () => ({ body: "Please help with this issue.", locked }),
         fetchIssueReviewComments: () => [],
         implementedOnMainPullRequestProvenanceApplyBlock: () => null,
         validateCloseDecision: () => ({ ok: true }),
@@ -183,6 +186,7 @@ test("apply does not close an item after it loses its mutation lease during clos
         currentApplyMutationLeaseBlockReason: () =>
           ++leaseChecks > lostAfterChecks ? "apply mutation lease is not held" : null,
         recordReviewLeaseSkip: (reason: string) => (leaseSkips.push(reason), false),
+        markApplySkipped: (action: string) => skips.push(action),
         archiveClosed: () => undefined,
         onClosed: () => false,
         logProgress: () => undefined,
@@ -191,8 +195,9 @@ test("apply does not close an item after it loses its mutation lease during clos
     assert.deepEqual(closed, expectedClosed, name);
     assert.deepEqual(
       leaseSkips,
-      expectedClosed.length ? [] : ["apply mutation lease is not held"],
+      expectedClosed.length || locked ? [] : ["apply mutation lease is not held"],
       name,
     );
+    assert.deepEqual(skips, locked ? ["skipped_locked_conversation"] : [], name);
   }
 });

@@ -39,10 +39,8 @@ maintainer can evaluate that case through the ordinary review path.
 
 Before any mutation, apply rechecks report freshness, source state, labels,
 locks, and post-review human activity. The close mutation boundary rereads the
-item's lock last, so an issue a human locks after review stays open. The
-controlled proof is `node scripts/e2e/apply-issue-close-freshness.mjs` after
-`pnpm run build`; it drives the built `apply-decisions` CLI against a loopback
-GitHub boundary. The linked issue has its own mutation
+item's lock last, so an issue a human locks after review stays open. The linked
+issue has its own mutation
 lease and ledger record; it is archived before the parent PR, so an interrupted
 parent close cannot erase an independently completed issue record.
 
