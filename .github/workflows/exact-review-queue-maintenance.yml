@@ -39,7 +39,7 @@ on:
         description: "Storage stats only: optional exact logical-content census for one table"
         type: string
       storage_cursor:
-        description: 'Storage census: options {"retention":true} for webhook payload reasons, or nextCursor JSON to continue'
+        description: 'Storage census: options {"retention":true} for eligible webhook bytes, or nextCursor JSON to continue'
         type: string
       storage_max_pages:
         description: "Storage census: bounded pages (1..1000, 128 rows or 64 with retention, 240 seconds total)"

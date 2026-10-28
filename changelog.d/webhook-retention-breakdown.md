@@ -1,1 +1,1 @@
-- Explain webhook payload storage by retention reason in the bounded, read-only storage census.
+- Measure webhook payload bytes eligible for retirement in the bounded, read-only storage census.

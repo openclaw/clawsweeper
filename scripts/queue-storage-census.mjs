@@ -1,16 +1,6 @@
 import { createHmac } from "node:crypto";
 import { appendFileSync } from "node:fs";
 let progress;
-const retentionCategories = [
-  "retired",
-  "tombstone",
-  "placeholder_comment",
-  "placeholder_parent",
-  "stale_protection",
-  "active_family",
-  "idle_future_deadline",
-  "due_eligible",
-];
 
 // Explicit operator diagnostic: retain only one bounded page and column totals.
 async function main() {
@@ -92,33 +82,17 @@ async function main() {
         summary.asOf < 0 ||
         (cursor.asOf !== undefined && summary.asOf !== cursor.asOf) ||
         (retention && summary.asOf !== retention.asOf) ||
-        !summary.categories ||
-        Array.isArray(summary.categories) ||
-        Object.keys(summary.categories).sort().join("\0") !==
-          [...retentionCategories].sort().join("\0")
+        page.scannedRows > 64 ||
+        !keys.includes("snapshot_json") ||
+        !Number.isSafeInteger(summary.eligibleRows) ||
+        summary.eligibleRows < 0 ||
+        summary.eligibleRows > page.scannedRows ||
+        !Number.isSafeInteger(summary.eligibleStoredBytes) ||
+        summary.eligibleStoredBytes < 0 ||
+        summary.eligibleStoredBytes > page.columns.snapshot_json ||
+        (summary.eligibleRows === 0 && summary.eligibleStoredBytes !== 0)
       )
         throw new Error("invalid census retention");
-      let rows = 0,
-        bytes = 0;
-      for (const category of retentionCategories) {
-        const counts = summary.categories[category];
-        for (const metric of ["rows", "bytes"]) {
-          if (
-            !Number.isSafeInteger(counts?.[metric]) ||
-            counts[metric] < 0 ||
-            !Number.isSafeInteger((retention?.categories[category][metric] ?? 0) + counts[metric])
-          )
-            throw new Error("invalid census retention counts");
-        }
-        rows += counts.rows;
-        bytes += counts.bytes;
-      }
-      if (
-        page.scannedRows > 64 ||
-        rows !== page.scannedRows ||
-        bytes !== page.columns.snapshot_json
-      )
-        throw new Error("invalid census retention totals");
     } else if (page.retention !== undefined) throw new Error("unexpected census retention");
     if (
       page.complete
@@ -136,16 +110,13 @@ async function main() {
     if (retentionRequested) {
       retention ??= {
         asOf: page.retention.asOf,
-        semantics:
-          "observed stored snapshot_json bytes; due_eligible is not reclaimed pages; current metadata at a fixed cutoff, not an atomic snapshot",
-        categories: Object.fromEntries(
-          retentionCategories.map((category) => [category, { rows: 0, bytes: 0 }]),
-        ),
+        eligibleRows: 0,
+        eligibleStoredBytes: 0,
       };
-      for (const category of retentionCategories) {
-        for (const metric of ["rows", "bytes"])
-          retention.categories[category][metric] += page.retention.categories[category][metric];
-      }
+      // Eligibility is a subset of the validated page totals, so their bounds
+      // also protect these accumulators from overflow.
+      retention.eligibleRows += page.retention.eligibleRows;
+      retention.eligibleStoredBytes += page.retention.eligibleStoredBytes;
     }
     scannedRows += page.scannedRows;
     pages++;

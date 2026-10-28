@@ -4,7 +4,7 @@
 // the average size of a small sample of rows, so the estimate costs one COUNT(*) and two bounded
 // samples per table instead of reading every row's content. This estimates content bytes,
 // not occupied pages: record headers, indexes, and unused space within pages are not counted.
-import { webhookPayloadRetention } from "./github-webhook-read-model.ts";
+import { webhookPayloadEligibility } from "./github-webhook-read-model.ts";
 
 // Rows sampled from each end of a table (oldest and newest by rowid): old and new rows of a
 // growing table can differ in size.
@@ -42,7 +42,7 @@ export function storageContentPage(sql: SqlStorage, input: unknown) {
   const afterRowid = value.afterRowid ?? 0;
   const upper = value.upperRowid;
   const retention = value.retention === true;
-  const asOf = value.asOf ?? Date.now();
+  const asOf = value.asOf === undefined ? Date.now() : value.asOf;
   if (
     (value.retention !== undefined && typeof value.retention !== "boolean") ||
     (retention &&
@@ -118,8 +118,8 @@ export function storageContentPage(sql: SqlStorage, input: unknown) {
   const scannedRows = Number(row.scanned);
   const lastRowid = Number(row.last_id ?? upperRowid);
   const complete = scannedRows < pageRows || lastRowid === upperRowid;
-  const classification = retention
-    ? webhookPayloadRetention(sql, table, Number(afterRowid), lastRowid, Number(asOf))
+  const eligibility = retention
+    ? webhookPayloadEligibility(sql, table, Number(afterRowid), lastRowid, Number(asOf))
     : null;
   return {
     table,
@@ -134,7 +134,7 @@ export function storageContentPage(sql: SqlStorage, input: unknown) {
           upperRowid,
           ...(retention ? { retention: true, asOf: Number(asOf) } : {}),
         },
-    ...(classification ? { retention: classification } : {}),
+    ...(eligibility ? { retention: eligibility } : {}),
     complete,
     semantics:
       "observed TEXT/BLOB bytes; excludes numeric storage, indexes and overhead; concurrent pages are not an atomic snapshot",

@@ -25,17 +25,6 @@ const PAYLOAD_TABLES = [
 ] as const;
 const REVIEW_PLACEHOLDER_MARKER = STORED_JSON_PLACEHOLDER;
 
-export const WEBHOOK_PAYLOAD_RETENTION_CATEGORIES = [
-  "retired",
-  "tombstone",
-  "placeholder_comment",
-  "placeholder_parent",
-  "stale_protection",
-  "active_family",
-  "idle_future_deadline",
-  "due_eligible",
-] as const;
-
 function payloadProtectionSql(table: string): string {
   return table.endsWith("items_v1")
     ? `EXISTS (
@@ -73,7 +62,7 @@ function payloadFamilyRetireAt(sql: ReadModelStorage["sql"], repository: unknown
   return Number(latest?.received_at) + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS;
 }
 
-export function webhookPayloadRetention(
+export function webhookPayloadEligibility(
   sql: ReadModelStorage["sql"],
   table: string,
   afterRowid: number,
@@ -83,52 +72,38 @@ export function webhookPayloadRetention(
   if (!PAYLOAD_TABLES.some((candidate) => candidate === table)) {
     throw new Error("invalid_storage_census_retention_table");
   }
-  const categories = Object.fromEntries(
-    WEBHOOK_PAYLOAD_RETENTION_CATEGORIES.map((category) => [category, { rows: 0, bytes: 0 }]),
-  );
   const protection = payloadProtectionSql(table);
-  // The census has already bounded this raw rowid range to 64 rows. Only
-  // counters cross the boundary; searchable envelopes need no inflation.
+  // Drive the bounded rowid range: the expiry index could scan unrelated due
+  // rows. Reuse the pruner's rules without returning or inflating payloads.
   const rows = sql.exec(
-    `SELECT repository, number, payload_pruned, payload_retire_at,
-            ${table.endsWith("items_v1") ? "0" : "tombstone"} AS tombstone,
+    `SELECT repository, number,
             ${protection} AS protected, octet_length(snapshot_json) AS bytes
-       FROM ${table} WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 64`,
+       FROM ${table} NOT INDEXED WHERE rowid > ? AND rowid <= ?
+         AND payload_pruned = 0 AND payload_retire_at >= 0 AND payload_retire_at < ?
+         ${table.endsWith("items_v1") ? "" : "AND tombstone = 0"}
+       ORDER BY rowid LIMIT 64`,
     ...(protection === "0" ? [] : [REVIEW_PLACEHOLDER_MARKER]),
     afterRowid,
     lastRowid,
+    asOf,
   );
   const deadlines = new Map<string, number>();
+  let eligibleRows = 0,
+    eligibleStoredBytes = 0;
   for (const row of rows) {
-    let category: (typeof WEBHOOK_PAYLOAD_RETENTION_CATEGORIES)[number];
-    if (row.payload_pruned) category = "retired";
-    else if (row.tombstone) category = "tombstone";
-    else if (row.protected)
-      category = table.endsWith("items_v1") ? "placeholder_parent" : "placeholder_comment";
-    else if (Number(row.payload_retire_at) < 0) category = "stale_protection";
-    else {
-      const key = `${row.repository}#${row.number}`;
-      let deadline = deadlines.get(key);
-      if (deadline === undefined) {
-        deadline = payloadFamilyRetireAt(sql, row.repository, row.number);
-        deadlines.set(key, deadline);
-      }
-      category =
-        deadline >= asOf
-          ? "active_family"
-          : Number(row.payload_retire_at) >= asOf
-            ? "idle_future_deadline"
-            : "due_eligible";
+    if (row.protected) continue;
+    const key = `${row.repository}#${row.number}`;
+    let deadline = deadlines.get(key);
+    if (deadline === undefined) {
+      deadline = payloadFamilyRetireAt(sql, row.repository, row.number);
+      deadlines.set(key, deadline);
     }
-    categories[category]!.rows++;
-    categories[category]!.bytes += Number(row.bytes);
+    if (deadline < asOf) {
+      eligibleRows++;
+      eligibleStoredBytes += Number(row.bytes);
+    }
   }
-  return {
-    asOf,
-    categories,
-    semantics:
-      "observed stored snapshot_json bytes, not reclaimable pages; due_eligible means idle and unprotected if selected; concurrent pages are not an atomic snapshot",
-  };
+  return { asOf, eligibleRows, eligibleStoredBytes };
 }
 
 type JsonRecord = Record<string, unknown>;

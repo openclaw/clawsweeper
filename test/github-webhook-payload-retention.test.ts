@@ -9,6 +9,8 @@ import {
   type GithubWebhookReadModelObject,
 } from "../dashboard/github-webhook-read-model.ts";
 import { TestStorage } from "./exact-review-test-storage.ts";
+import { storageContentPage } from "../dashboard/storage-stats.ts";
+import { encodeStoredJson, STORED_JSON_PLACEHOLDER } from "../dashboard/stored-json.ts";
 
 const repository = "example/project";
 const now = Date.parse("2026-10-14T00:00:00Z");
@@ -514,6 +516,11 @@ test("fresh empty comment census owns freshness and retains an idle parent until
     { repository, repair_kind: "comments", objects: [], complete_comment_items: [1] },
     now,
   );
+  assert.equal(
+    storageContentPage(storage.sql, { table: items, retention: true, asOf: now }).retention!
+      .eligibleRows,
+    0,
+  );
   assert.equal(prune(storage, store), 0);
   const result = await store.readComments({ repository, number: 1 }, now);
   assert.equal(result.usable, true);
@@ -630,4 +637,153 @@ test("placeholder discovery exposes missing and retired parent gaps through part
     assert.equal(restored.usable, true);
     assert.equal((restored.candidates as unknown[]).length, 1);
   }
+});
+
+test("retirement eligibility measures stored bytes without writes and matches the real pruner", () => {
+  const { storage, store } = fixture();
+  const payload = { body: "雪🦊\0" };
+  observe(
+    store,
+    "mixed",
+    Array.from({ length: 9 }, (_, index) => {
+      const number = index + 1;
+      return [
+        item(number),
+        {
+          ...comment(number, number === 3),
+          number,
+          snapshot: [2, 9].includes(number) ? { body: STORED_JSON_PLACEHOLDER } : payload,
+        },
+      ];
+    }).flat(),
+    old,
+  );
+  storage.run(
+    `UPDATE ${comments} SET snapshot_json=? WHERE number=2`,
+    encodeStoredJson(JSON.stringify({ body: STORED_JSON_PLACEHOLDER + "雪🦊".repeat(1000) })),
+  );
+  storage.exec(`UPDATE ${comments} SET payload_pruned=1, snapshot_json='{}' WHERE number=4`);
+  storage.exec(`UPDATE ${comments} SET payload_retire_at=-1 WHERE number=5`);
+  storage.run(
+    `UPDATE ${items} SET received_at=? WHERE number=6`,
+    now - GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS,
+  );
+  storage.run(`UPDATE ${comments} SET payload_retire_at=? WHERE number=7`, now);
+  const tables = [items, comments, activity];
+  const snapshot = () => tables.map((table) => [...storage.sql.exec(`SELECT * FROM ${table}`)]);
+  const before = snapshot();
+  const sql = {
+    exec(query: string, ...bindings: unknown[]) {
+      assert.match(query, /^\s*SELECT\b/i);
+      if (query.includes("AS protected, octet_length")) {
+        const plan = [...storage.sql.exec(`EXPLAIN QUERY PLAN ${query}`, ...bindings)]
+          .map((row) => row.detail)
+          .join("\n");
+        assert.match(plan, /USING INTEGER PRIMARY KEY/);
+      }
+      return storage.sql.exec(query, ...bindings);
+    },
+  };
+  const pages = tables.map((table) =>
+    storageContentPage(sql, { table, retention: true, asOf: now }),
+  );
+  assert.deepEqual(pages[1].retention, {
+    asOf: now,
+    eligibleRows: 2,
+    eligibleStoredBytes: 2 * Buffer.byteLength(encodeStoredJson(JSON.stringify(payload))),
+  });
+  assert.deepEqual(snapshot(), before);
+  assert.equal(storage.scheduledAlarm(), null);
+  const result = storage.transactionSync(() => store.prunePayloadsSync(now));
+  const rows = pages.reduce((sum, page) => sum + page.retention!.eligibleRows, 0);
+  const bytes = pages.reduce((sum, page) => sum + page.retention!.eligibleStoredBytes, 0);
+  assert.equal(result.retired, rows);
+  assert.equal(
+    result.retired_bytes,
+    bytes - rows * 2,
+    "retirement leaves {} rather than deleting identities",
+  );
+});
+
+test("eligibility shares fresh activity retention without protecting marker text in activity bodies", () => {
+  for (const kind of ["review", "review_comment"] as const) {
+    const { storage, store } = fixture();
+    observe(store, "old", [item(1), comment(1)], old);
+    observe(
+      store,
+      "fresh-activity",
+      [
+        {
+          ...comment(2),
+          kind,
+          sourceUpdatedAt: new Date(now).toISOString(),
+          snapshot: { body: STORED_JSON_PLACEHOLDER },
+        },
+      ],
+      now,
+    );
+    for (const table of [items, comments, activity])
+      assert.equal(
+        storageContentPage(storage.sql, { table, retention: true, asOf: now }).retention!
+          .eligibleRows,
+        0,
+      );
+    assert.equal(prune(storage, store), 0);
+    const expired = now + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS + 1;
+    for (const table of [items, comments, activity])
+      assert.equal(
+        storageContentPage(storage.sql, { table, retention: true, asOf: expired }).retention!
+          .eligibleRows,
+        1,
+      );
+    assert.equal(storage.transactionSync(() => store.prunePayloadsSync(expired)).retired, 3);
+  }
+});
+
+test("eligibility pages preserve their cutoff and frontier across gaps, growth and deletion", () => {
+  const { storage, store } = fixture();
+  observe(
+    store,
+    "pages",
+    Array.from({ length: 66 }, (_, index) => item(index + 1)),
+    old,
+  );
+  storage.exec(`DELETE FROM ${items} WHERE number=10`);
+  const first = storageContentPage(storage.sql, { table: items, retention: true, asOf: now });
+  assert.equal(first.scannedRows, 64);
+  assert.equal(first.retention!.eligibleRows, 64);
+  assert.deepEqual(first.nextCursor, {
+    afterRowid: 65,
+    upperRowid: 66,
+    retention: true,
+    asOf: now,
+  });
+  observe(store, "growth", [item(100)], old);
+  const last = storageContentPage(storage.sql, { table: items, ...first.nextCursor });
+  assert.equal(last.scannedRows, 1);
+  assert.equal(last.retention!.asOf, now);
+  assert.equal(last.complete, true);
+  storage.exec(`DELETE FROM ${items} WHERE number=66`);
+  const empty = storageContentPage(storage.sql, { table: items, ...first.nextCursor });
+  assert.deepEqual(empty.retention, { asOf: now, eligibleRows: 0, eligibleStoredBytes: 0 });
+  assert.equal(empty.complete, true);
+});
+
+test("eligibility rejects invalid modes, cutoffs and resumes without initializing storage", () => {
+  const { storage } = fixture();
+  for (const input of [
+    { table: comments, retention: "true" },
+    { table: comments, retention: true, asOf: -1 },
+    { table: comments, retention: true, asOf: 0.5 },
+    { table: comments, retention: true, afterRowid: 1, upperRowid: 9, asOf: null },
+    { table: comments, retention: true, afterRowid: 1, upperRowid: 9 },
+    { table: "github_webhook_read_model_deliveries_v1", retention: true },
+  ])
+    assert.throws(() => storageContentPage(storage.sql, input), /invalid_storage_census_retention/);
+  const cold = new TestStorage();
+  assert.throws(
+    () => storageContentPage(cold.sql, { table: comments, retention: true }),
+    /invalid_storage_census_table/,
+  );
+  assert.deepEqual([...cold.sql.exec("SELECT name FROM sqlite_master WHERE type='table'")], []);
 });
