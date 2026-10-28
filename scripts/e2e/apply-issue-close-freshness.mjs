@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { implementedCloseReport, reportWithSyncedReviewComment } from "../../test/helpers.ts";
+import { implementedCloseReport } from "../../test/helpers.ts";
 import { itemSourceRevisionSha256 } from "../../dist/clawsweeper-source-revision.js";
 import { sha256 } from "../../dist/content-hash.js";
 import { stableJson } from "../../dist/stable-json.js";
@@ -19,18 +19,9 @@ export const issueCloseProofScenarios = [
   "late_lock",
   "same_second_lock",
   "same_review_second_lock",
-  "late_closed",
-  "reopened",
-  "human_activity",
-  "post_receipt_lock",
   "initially_locked",
-  "same_review_second_activity",
   "legacy_owned_write",
   "legacy_late_lock",
-  "legacy_human_activity",
-  "legacy_missing_source",
-  "legacy_missing_source_synced",
-  "legacy_bot_source_edit",
 ];
 
 // Each test owns one scenario instead of sharing an opaque whole-matrix timeout.
@@ -74,14 +65,14 @@ export async function runIssueCloseProof({ artifactDir, scenario: selected, sign
           leaseOwner,
         }),
       };
-      let report = implementedCloseReport({
+      const report = implementedCloseReport({
         repository: "openclaw/openclaw",
         number: 321,
         type: "issue",
         title,
         item_updated_at: reviewed,
         reviewed_at: reviewed,
-        ...(scenario.startsWith("legacy_missing_source") ? {} : { item_source_revision: source }),
+        item_source_revision: source,
         ...(scenario.startsWith("legacy_")
           ? {}
           : { review_timeline_revision: sha256(stableJson([])) }),
@@ -89,12 +80,6 @@ export async function runIssueCloseProof({ artifactDir, scenario: selected, sign
         review_lease_comment_id: "77",
         labels: "[]",
       });
-      let initialComment = null;
-      if (scenario === "legacy_missing_source_synced") {
-        const synced = reportWithSyncedReviewComment(report, 321, "implemented_on_main");
-        report = synced.report;
-        initialComment = synced.comment;
-      }
       writeFileSync(join(dir, "items/321.md"), report);
       writeFileSync(
         join(dir, "fixture.json"),
@@ -106,7 +91,6 @@ export async function runIssueCloseProof({ artifactDir, scenario: selected, sign
           written,
           changed,
           lease,
-          initialComment,
         }),
       );
       const boundary = spawn(
@@ -266,8 +250,7 @@ export async function runIssueCloseProof({ artifactDir, scenario: selected, sign
           assert.equal(result.closePatchCount, 1, JSON.stringify(result));
           assert.equal(result.archived, true);
         } else {
-          if (["initially_locked", "legacy_missing_source_synced"].includes(scenario))
-            assert.equal(result.durableWrites, 0);
+          if (scenario === "initially_locked") assert.equal(result.durableWrites, 0);
           else
             assert.ok(
               result.durableWrites > 0,

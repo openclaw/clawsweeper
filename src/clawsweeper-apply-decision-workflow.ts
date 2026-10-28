@@ -1190,26 +1190,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         item.kind === "pull_request"
           ? (pullHeadShaFromContext(currentItemContext()) ?? "")
           : liveIssueSourceRevision(number, { liveReadGeneration });
-      // Older issue reports lack a stored timeline digest. Preserve their existing automation
-      // admission only with the same captured source revision and a complete, fresh activity
-      // scan from the reviewed second. A timestamp or an owned comment alone is not a receipt.
-      const applyHasCompleteActivityIdentity = reviewHasCompleteActivityIdentity || Boolean(
-        item.kind === "issue" && reviewedSourceRevision && /^[0-9a-f]{64}$/.test(reviewedSourceRevision) && storedUpdatedAt &&
-        Number.isFinite(Date.parse(storedUpdatedAt)),
-      );
-      const completeApplyActivityReceiptMatches = (context: ItemContext): boolean => {
-        if (reviewHasCompleteActivityIdentity) return completeReviewActivityReceiptMatches(context);
-        if (
-          item.kind !== "issue" || !context[completeActivityContextSymbol] ||
-          !reviewedSourceRevision || !/^[0-9a-f]{64}$/.test(reviewedSourceRevision) ||
-          context.sourceRevision !== reviewedSourceRevision || context.sourceRevision !== initialReviewHeadSha ||
-          !storedUpdatedAt || !Number.isFinite(Date.parse(storedUpdatedAt))
-        ) return false;
-        const reviewedSecondStartMs = Math.floor(Date.parse(storedUpdatedAt) / 1000) * 1000;
-        return !contextHasNonAutomationActivityAfter(context, reviewedSecondStartMs - 1, {
-          truncationCountsAsActivity: true, useCompleteActivityContext: true,
-        });
-      };
       if (state === "open" && exactEventPublication && !oversizedMetadataDecision) {
         const exactLeaseDisposition = exactEventReviewLeaseDisposition(
           markdownBeforeApplyDecisionMutations,
@@ -1379,7 +1359,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           return false;
         if (
           !allowsPostReviewAutomationActivity &&
-          !completeApplyActivityReceiptMatches(receiptContext)
+          !completeReviewActivityReceiptMatches(receiptContext)
         )
           return false;
         if (
@@ -1943,7 +1923,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             markdownBeforeApplyDecisionMutations,
             "automation_item_updated_at",
           ),
-          completeReviewActivityReceiptMatches: completeApplyActivityReceiptMatches,
+          completeReviewActivityReceiptMatches,
           currentProofState: () => ({
             ...coverageProofState,
             acceptedUpdatedAt: reviewedSourceFresh() ? item.updatedAt : undefined,
@@ -1953,7 +1933,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           expectedReviewActivityCursor,
           itemKind: item.kind,
           number,
-          reviewHasCompleteActivityIdentity: applyHasCompleteActivityIdentity,
+          reviewHasCompleteActivityIdentity,
           reviewMarkdown: markdownBeforeApplyDecisionMutations,
           retryCloseCoverageCommandStatusOnlyUpdate,
           selfMutationItemReceipts,

@@ -1,1 +1,1 @@
-- Keep issue close proposals open when a human locks, closes, reopens, or changes the issue after review synchronization, and require a fresh review for legacy reports without reviewed source identity. Thanks @brokemac79.
+- Keep issue close proposals open when a human locks the issue after review. Thanks @brokemac79.

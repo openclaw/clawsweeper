@@ -120,18 +120,6 @@ export function createApplyProofFreshnessGuards({
         currentUpdatedAt: refreshed.item.updatedAt,
       };
     }
-    if (itemKind === "issue" && refreshed.item.locked) {
-      return {
-        reason: "conversation is locked",
-        currentUpdatedAt: refreshed.item.updatedAt,
-      };
-    }
-    if (options.force && itemKind === "issue" && !reviewHasCompleteActivityIdentity) {
-      return {
-        reason: "reviewed issue source identity is missing; fresh review required",
-        currentUpdatedAt: refreshed.item.updatedAt,
-      };
-    }
     let refreshedContext: ItemContext | null = null;
     const refreshedCommandStatusOnlyUpdate =
       action === "retry_pr_close_coverage_proof" &&
@@ -263,15 +251,7 @@ export function createApplyProofFreshnessGuards({
         .filter((value) => Number.isFinite(value))
         .sort((left, right) => right - left)[0];
       const activityStartMs = prCloseCoverageProofStartedAtMs ?? postReviewSelfMutationAtMs;
-      if (activityStartMs === undefined) {
-        // Standalone issues have no coverage-proof clock. Their ordinary owned writes may
-        // advance updated_at only while the complete original review receipt still matches.
-        return !(
-          itemKind === "issue" &&
-          reviewHasCompleteActivityIdentity &&
-          refreshedCompleteReceiptMatchesReview()
-        );
-      }
+      if (activityStartMs === undefined) return true;
       refreshedContext ??= collectItemContext(refreshed.item, {
         fullTimelineForRelations: true,
         reviewCacheDigest: true,

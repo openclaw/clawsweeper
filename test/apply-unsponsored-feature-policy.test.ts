@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 
 import {
   reportWithSyncedReviewComment,
@@ -118,16 +117,14 @@ function unsponsoredApplyGhMock(
     logPath?: string;
     reactions?: Record<string, number>;
     recentHuman?: boolean;
-    recentHumanAt?: string;
   } = {},
 ) {
-  const recentHumanAt = options.recentHumanAt ?? new Date().toISOString();
   const recentHuman = options.recentHuman
     ? `,{
       id: 9901,
       html_url: "https://github.com/openclaw/openclaw/issues/321#issuecomment-9901",
-      created_at: ${JSON.stringify(recentHumanAt)},
-      updated_at: ${JSON.stringify(recentHumanAt)},
+      created_at: ${JSON.stringify(new Date().toISOString())},
+      updated_at: ${JSON.stringify(new Date().toISOString())},
       author_association: "NONE",
       user: { login: "community-member", type: "User" },
       body: "I can still reproduce the need for this feature."
@@ -167,7 +164,7 @@ if (args[0] === "api" && path.startsWith("search/issues?")) {
     html_url: "https://github.com/openclaw/openclaw/issues/321",
     body: "Please add this optional feature.",
     created_at: "2026-01-01T00:00:00Z",
-    updated_at: ${JSON.stringify(options.recentHuman ? recentHumanAt : "2026-01-01T00:00:00Z")},
+    updated_at: "2026-01-01T00:00:00Z",
     closed_at: null,
     state: "open",
     locked: false,
@@ -219,7 +216,6 @@ function runUnsponsoredApply(options: {
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
     const closeReason = options.closeReason ?? "unsponsored_feature_request";
-    const recentHumanAt = new Date().toISOString();
     const report =
       closeReason !== "stale_insufficient_info"
         ? unsponsoredCloseReport({
@@ -227,30 +223,7 @@ function runUnsponsoredApply(options: {
             title: "Old unsponsored feature request",
             close_reason: closeReason,
           })
-        : staleInsufficientInfoCloseReport({
-            number: 321,
-            title: "Old unverifiable bug",
-            ...(options.recentHuman
-              ? { reviewed_at: recentHumanAt, item_updated_at: recentHumanAt }
-              : {}),
-            item_source_revision: itemSourceRevisionSha256(
-              {
-                title: "Old unsponsored feature request",
-                body: "Please add this optional feature.",
-                labels: options.labels ?? [],
-              },
-              options.recentHuman
-                ? [
-                    {
-                      id: 9901,
-                      user: { login: "community-member" },
-                      body: "I can still reproduce the need for this feature.",
-                      updated_at: recentHumanAt,
-                    },
-                  ]
-                : [],
-            ),
-          });
+        : staleInsufficientInfoCloseReport({ number: 321, title: "Old unverifiable bug" });
     const synced = reportWithSyncedReviewComment(report, 321, closeReason);
     const itemPath = join(itemsDir, "321.md");
     writeFileSync(
@@ -269,36 +242,32 @@ function runUnsponsoredApply(options: {
     }
     let applyFailed = false;
     try {
-      withMockGh(
-        root,
-        unsponsoredApplyGhMock(synced.comment, { ...options, logPath, recentHumanAt }),
-        () => {
-          try {
-            runApplyDecisionsForTest({
-              itemsDir,
-              closedDir,
-              plansDir,
-              reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--apply-close-reasons",
-                "all",
-                "--apply-kind",
-                "issue",
-                "--item-number",
-                "321",
-                "--processed-limit",
-                "1",
-                "--skip-dashboard",
-                ...(options.dryRun === false ? [] : ["--dry-run"]),
-              ],
-            });
-          } catch {
-            applyFailed = true;
-          }
-        },
-      );
+      withMockGh(root, unsponsoredApplyGhMock(synced.comment, { ...options, logPath }), () => {
+        try {
+          runApplyDecisionsForTest({
+            itemsDir,
+            closedDir,
+            plansDir,
+            reportPath,
+            extraArgs: [
+              "--target-repo",
+              "openclaw/openclaw",
+              "--apply-close-reasons",
+              "all",
+              "--apply-kind",
+              "issue",
+              "--item-number",
+              "321",
+              "--processed-limit",
+              "1",
+              "--skip-dashboard",
+              ...(options.dryRun === false ? [] : ["--dry-run"]),
+            ],
+          });
+        } catch {
+          applyFailed = true;
+        }
+      });
     } finally {
       if (original === undefined) {
         delete process.env.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED;

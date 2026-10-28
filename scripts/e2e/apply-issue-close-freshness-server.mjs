@@ -17,7 +17,7 @@ const state = {
       node_id: "IC_9321",
       html_url: "https://github.com/openclaw/openclaw/issues/321#issuecomment-9321",
       user: { login: "clawsweeper[bot]", type: "Bot" },
-      body: fixture.initialComment ?? "Codex review: old.\n\n<!-- clawsweeper-review item=321 -->",
+      body: "Codex review: old.\n\n<!-- clawsweeper-review item=321 -->",
       created_at: fixture.reviewed,
       updated_at: fixture.reviewed,
     },
@@ -42,7 +42,6 @@ const issue = {
 };
 if (scenario.startsWith("missing_source"))
   state.comments = state.comments.filter((comment) => comment.id !== 77);
-let postWriteTimelineReads = 0;
 function lock(at) {
   issue.locked = true;
   issue.active_lock_reason = "resolved";
@@ -81,46 +80,10 @@ function gh({ args: raw, input }) {
       comment.body = input.body;
       comment.updated_at = fixture.written;
       state.durableWrites++;
-      if (scenario === "bot_source_edit") {
-        issue.body += " Changed by another automation actor.";
-        state.timeline.push({
-          id: 559,
-          event: "edited",
-          actor: { login: "another[bot]", type: "Bot" },
-          created_at: fixture.written,
-        });
-      }
       issue.updated_at = scenario === "no_drift" ? fixture.reviewed : fixture.written;
       if (scenario === "late_lock") lock(fixture.changed);
       if (scenario === "same_second_lock") lock(fixture.written);
       if (scenario === "same_review_second_lock") lock(fixture.reviewed);
-      if (scenario === "late_closed") {
-        issue.state = "closed";
-        issue.updated_at = fixture.changed;
-        state.timeline.push({
-          id: 556,
-          event: "closed",
-          actor: { login: "human-maintainer" },
-          created_at: fixture.changed,
-        });
-      }
-      if (scenario === "reopened") {
-        for (const event of ["closed", "reopened"])
-          state.timeline.push({
-            id: state.timeline.length + 556,
-            event,
-            actor: { login: "human-maintainer" },
-            created_at: fixture.written,
-          });
-      }
-      if (scenario === "same_review_second_activity") issue.updated_at = fixture.reviewed;
-      if (["human_activity", "same_review_second_activity"].includes(scenario))
-        state.timeline.push({
-          id: 558,
-          event: "assigned",
-          actor: { login: "human-maintainer" },
-          created_at: fixture.written,
-        });
       return ok(comment);
     }
     return ok(state.comments.find((comment) => comment.id === id));
@@ -137,12 +100,6 @@ function gh({ args: raw, input }) {
   }
   if (args[0] === "api" && /issues\/321\/comments/.test(path)) return ok(paged(state.comments));
   if (args[0] === "api" && /issues\/321\/timeline/.test(path)) {
-    if (
-      state.durableWrites > 0 &&
-      ++postWriteTimelineReads === 2 &&
-      scenario === "post_receipt_lock"
-    )
-      lock(fixture.written);
     const value = paged(state.timeline);
     return ok(args[1] === "-i" ? "HTTP/2 200\n\n" + JSON.stringify(value) : value);
   }
