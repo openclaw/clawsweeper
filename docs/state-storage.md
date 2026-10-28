@@ -157,6 +157,30 @@ an incomplete run by copying `nextCursor` into `storage_cursor`; each result
 reports totals only for that run's scanned range. Failed runs print their last
 completed page's totals and cursor before failing.
 
+For webhook item, comment or activity payloads, start with
+`storage_cursor={"retention":true}`. Each page then inspects at most 64 raw row
+identities and reports row counts and stored `snapshot_json` bytes by retention
+reason. It reuses the retirement owner's protection and family-activity checks;
+no payload is returned or decompressed. Categories are exclusive, in precedence
+order: `retired`, `tombstone`, `placeholder_comment`, `placeholder_parent`,
+`stale_protection`, `active_family`, `idle_future_deadline`, `due_eligible`.
+The stale-protection category means a persisted protection sentinel no longer
+has a matching placeholder; it does not assert a leak. An idle future deadline
+likewise reports the observed scheduling state. Due eligibility means an idle,
+unprotected payload would retire if selected, not that the next bounded alarm
+will reach it or that those bytes are reclaimable pages.
+
+Copy the entire returned `nextCursor` when continuing: its `retention` flag and
+`asOf` preserve the mode and time cutoff. Resumed retention scans require that
+cutoff. Concurrent writes can still change family activity or protection between
+pages, so the classification is an observation using one fixed cutoff, not a
+historical snapshot. Category rows and bytes must sum to the page's row count
+and `snapshot_json` column bytes; the runner rejects missing or inconsistent
+breakdowns rather than silently continuing without classification. This optional
+diagnostic uses the existing signed read route before queue initialization and
+performs no schema ensure, state write, alarm scheduling or cleanup. Production
+deployment and execution remain separately approved operator actions.
+
 The census fixes the initial upper row identity; inserts above that bound are excluded.
 Concurrent updates and deletions mean pages are not one atomic snapshot.
 Numeric values, indexes, row headers and unused pages are excluded; these are

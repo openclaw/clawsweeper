@@ -1,0 +1,1 @@
+- Explain webhook payload storage by retention reason in the bounded, read-only storage census.

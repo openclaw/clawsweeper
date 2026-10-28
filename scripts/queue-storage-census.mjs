@@ -1,6 +1,16 @@
 import { createHmac } from "node:crypto";
 import { appendFileSync } from "node:fs";
 let progress;
+const retentionCategories = [
+  "retired",
+  "tombstone",
+  "placeholder_comment",
+  "placeholder_parent",
+  "stale_protection",
+  "active_family",
+  "idle_future_deadline",
+  "due_eligible",
+];
 
 // Explicit operator diagnostic: retain only one bounded page and column totals.
 async function main() {
@@ -20,6 +30,10 @@ async function main() {
   let cursor = JSON.parse(process.env.STORAGE_CENSUS_CURSOR || "{}");
   if (!cursor || typeof cursor !== "object" || Array.isArray(cursor))
     throw new Error("invalid census cursor");
+  if (cursor.retention !== undefined && typeof cursor.retention !== "boolean")
+    throw new Error("invalid census retention mode");
+  const retentionRequested = cursor.retention === true;
+  let retention;
   const started = Date.now();
   const columns = Object.create(null);
   let result;
@@ -70,6 +84,42 @@ async function main() {
       )
         throw new Error("invalid census bytes");
     }
+    if (retentionRequested) {
+      const summary = page.retention;
+      if (
+        !summary ||
+        !Number.isSafeInteger(summary.asOf) ||
+        summary.asOf < 0 ||
+        (cursor.asOf !== undefined && summary.asOf !== cursor.asOf) ||
+        (retention && summary.asOf !== retention.asOf) ||
+        !summary.categories ||
+        Array.isArray(summary.categories) ||
+        Object.keys(summary.categories).sort().join("\0") !==
+          [...retentionCategories].sort().join("\0")
+      )
+        throw new Error("invalid census retention");
+      let rows = 0,
+        bytes = 0;
+      for (const category of retentionCategories) {
+        const counts = summary.categories[category];
+        for (const metric of ["rows", "bytes"]) {
+          if (
+            !Number.isSafeInteger(counts?.[metric]) ||
+            counts[metric] < 0 ||
+            !Number.isSafeInteger((retention?.categories[category][metric] ?? 0) + counts[metric])
+          )
+            throw new Error("invalid census retention counts");
+        }
+        rows += counts.rows;
+        bytes += counts.bytes;
+      }
+      if (
+        page.scannedRows > 64 ||
+        rows !== page.scannedRows ||
+        bytes !== page.columns.snapshot_json
+      )
+        throw new Error("invalid census retention totals");
+    } else if (page.retention !== undefined) throw new Error("unexpected census retention");
     if (
       page.complete
         ? page.nextCursor !== null
@@ -77,10 +127,26 @@ async function main() {
           !Number.isSafeInteger(page.nextCursor.afterRowid) ||
           page.nextCursor.afterRowid <= page.afterRowid ||
           page.nextCursor.afterRowid > page.upperRowid ||
-          page.nextCursor.upperRowid !== page.upperRowid
+          page.nextCursor.upperRowid !== page.upperRowid ||
+          (retentionRequested &&
+            (page.nextCursor.retention !== true || page.nextCursor.asOf !== page.retention.asOf))
     )
       throw new Error("invalid census continuation");
     for (const key of keys) columns[key] = (columns[key] ?? 0) + page.columns[key];
+    if (retentionRequested) {
+      retention ??= {
+        asOf: page.retention.asOf,
+        semantics:
+          "observed stored snapshot_json bytes; due_eligible is not reclaimed pages; current metadata at a fixed cutoff, not an atomic snapshot",
+        categories: Object.fromEntries(
+          retentionCategories.map((category) => [category, { rows: 0, bytes: 0 }]),
+        ),
+      };
+      for (const category of retentionCategories) {
+        for (const metric of ["rows", "bytes"])
+          retention.categories[category][metric] += page.retention.categories[category][metric];
+      }
+    }
     scannedRows += page.scannedRows;
     pages++;
     result = {
@@ -94,6 +160,7 @@ async function main() {
       nextCursor: page.nextCursor,
       databaseBytes: value.databaseBytes,
       semantics: page.semantics,
+      ...(retention ? { retention } : {}),
     };
     progress = result;
     if (page.complete) break;
