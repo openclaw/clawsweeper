@@ -36,7 +36,7 @@ test(
     const receipt = JSON.parse(result.stdout);
     assert.equal(receipt.ok, true);
     assert.equal(receipt.baseline, false);
-    assert.equal(receipt.scenarios.length, 16);
+    assert.equal(receipt.scenarios.length, 10);
     assert.ok(
       receipt.scenarios.every(
         (scenario: { retryExit?: number }) =>

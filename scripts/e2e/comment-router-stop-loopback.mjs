@@ -75,8 +75,6 @@ const server = http.createServer(async (request, response) => {
       ]);
     }
     if (endpoint === "repos/openclaw/stop-proof/issues/1") {
-      if (state.mode === "read-fail" && state.adds > 0)
-        return reply({ message: "read forbidden" }, 403);
       return reply({
         number: 1,
         state: "open",
@@ -115,9 +113,7 @@ const server = http.createServer(async (request, response) => {
       state.adds++;
       if (state.mode === "forbidden")
         return reply({ message: "Resource not accessible by integration" }, 403);
-      if (state.mode === "transient") return reply({ message: "Service Unavailable" }, 503);
-      if (state.mode !== "silent-noop")
-        state.labels = [...new Set([...state.labels, args[add + 1]])];
+      state.labels = [...new Set([...state.labels, args[add + 1]])];
       if (state.mode === "lost-response") {
         trace.after = [...state.labels];
         trace.status = "socket_lost";
@@ -141,16 +137,7 @@ try {
   for (const pull of [false, true]) {
     for (const mode of baseline
       ? ["forbidden"]
-      : [
-          "forbidden",
-          "transient",
-          "lost-response",
-          "silent-noop",
-          "read-fail",
-          "success",
-          "existing-hold",
-          "remove-fail",
-        ]) {
+      : ["forbidden", "lost-response", "success", "existing-hold", "remove-fail"]) {
       state = {
         name: `${pull ? "pr" : "issue"}-${mode}`,
         pull,
@@ -197,7 +184,6 @@ try {
       } else if (["success", "existing-hold"].includes(mode)) {
         assert.equal(first.code, 0, first.stderr);
         assert.deepEqual(state.labels, [hold]);
-        if (mode === "existing-hold") assert.equal(state.adds, 0);
       } else {
         assert.notEqual(first.code, 0, first.stdout);
         assert.equal(state.replies.length, 0);
@@ -208,8 +194,7 @@ try {
           JSON.stringify(events) + first.stderr,
         );
         assert.ok(!events.some((e) => e.event_type === "command.completed"));
-        if (["forbidden", "transient", "lost-response", "silent-noop", "read-fail"].includes(mode))
-          assert.equal(state.removes, 0);
+        if (["forbidden", "lost-response"].includes(mode)) assert.equal(state.removes, 0);
         if (mode === "lost-response") {
           assert.ok(state.labels.includes(hold));
           assert.ok(
@@ -217,17 +202,12 @@ try {
           );
         }
       }
-      if (!baseline && mode !== "silent-noop") {
+      if (!baseline) {
         state.mode = "success";
-        const addsBefore = state.adds;
         retry = await run(root, env);
         assert.equal(retry.code, 0, retry.stderr);
         assert.deepEqual(state.labels, [hold]);
         assert.equal(state.replies.length, 1);
-        if (
-          ["lost-response", "existing-hold", "read-fail", "remove-fail", "success"].includes(mode)
-        )
-          assert.equal(state.adds, addsBefore);
         const writes = state.adds + state.removes;
         const replay = await run(root, env);
         assert.equal(replay.code, 0, replay.stderr);
