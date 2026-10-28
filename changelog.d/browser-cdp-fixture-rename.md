@@ -1,0 +1,1 @@
+- Admit the existing browser CDP discovery URI fixture after OpenClaw renamed its test variable, so reviews of PRs touching `pw-session.connections.test.ts` are no longer refused.

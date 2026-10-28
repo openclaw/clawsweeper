@@ -639,7 +639,7 @@ function githubCheckLinkFixture(): ReturnType<typeof autoreviewFixtures>[number]
   return { raw, rawV2, line: '    "' + rawV2 + '",', decoders: ["PLAIN", "HTML"] };
 }
 
-function browserSessionFixture(): ReturnType<typeof autoreviewFixtures>[number] {
+function browserSessionFixture(variable = "cdpUrl"): ReturnType<typeof autoreviewFixtures>[number] {
   const raw = [
     "https://",
     "browser-user",
@@ -649,7 +649,12 @@ function browserSessionFixture(): ReturnType<typeof autoreviewFixtures>[number] 
     "browserless.example",
   ].join("");
   const rawV2 = raw + "/cdp";
-  return { raw, rawV2, line: '    const cdpUrl = "' + rawV2 + '";', decoders: ["PLAIN", "HTML"] };
+  return {
+    raw,
+    rawV2,
+    line: "    const " + variable + ' = "' + rawV2 + '";',
+    decoders: ["PLAIN", "HTML"],
+  };
 }
 
 function exactUriFixtureTests(
@@ -1431,7 +1436,12 @@ exactUriFixtureTests(
 exactUriFixtureTests(
   "browser session",
   "extensions/browser/src/browser/pw-session.connections.test.ts",
-  browserSessionFixture,
+  () => browserSessionFixture(),
+);
+exactUriFixtureTests(
+  "renamed browser session",
+  "extensions/browser/src/browser/pw-session.connections.test.ts",
+  () => browserSessionFixture("endpoint"),
 );
 
 exactUriFixtureTests(
