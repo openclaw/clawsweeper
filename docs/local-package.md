@@ -137,6 +137,8 @@ runs selecting this workflow pin, including older tags routed through it;
 runs or retries pinned to older workflow code do not gain the check.
 An already-public release with exactly matching bytes remains a no-write
 comparison, even after signer removal.
+Publisher retries discover an existing draft by its exact tag and preserve its
+release ID and existing asset bytes. Listing failures stop further writes.
 
 Both CI and the caller reuse `.github/workflows/local-package-qualification.yml`.
 Its Linux producer emits one canonical four-file envelope. Linux, Windows, and
@@ -144,7 +146,7 @@ macOS must all consume the producer's exact artifact ID successfully before the
 workflow exposes that ID. A failed or skipped consumer prevents the release job.
 
 The caller pins `openclaw/release-workflows` at
-`f9519db8dfed03abd17ba74e92279d8a01c8ba5e`. That shared workflow downloads the
+`933d6886e83ec26f29f13b3444638f0d7fd9cde3`. That shared workflow downloads the
 same-run ID into `RELEASE_ASSET_INPUT_DIR`. The dependency-free
 `scripts/release-local-package-envelope.mjs` validates the original four files,
 their hashes and locked resolution, and their source commit, tree, and clean
