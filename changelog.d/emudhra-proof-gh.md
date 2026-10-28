@@ -1,1 +1,0 @@
-- Refresh the isolated GitHub telemetry proof to checksum-pinned GitHub CLI 2.102.1 and the local release rehearsal to its qualified patched Node producer.

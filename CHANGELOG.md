@@ -5,7 +5,32 @@ All notable ClawSweeper changes are tracked here.
 This file was reconstructed from first-parent git history. Generated dashboard,
 checkpoint, and status-only commits are intentionally omitted.
 
-## 0.3.2 - Unreleased
+## 0.3.3 - Unreleased
+
+## 0.3.2 - 2026-10-28
+
+- Distinguish submitted publication outcome kinds from accepted and skipped acknowledgements in batch completion and cleanup summaries.
+- Admit the existing browser CDP discovery URI fixture after OpenClaw renamed its test variable, so reviews of PRs touching `pw-session.connections.test.ts` are no longer refused.
+- Preserve canonical verification baseline provenance across operator updates and require an independently reviewed baseline checksum for rechecks.
+- Expose the local review package as `clawsweeper`, with matching help and installation examples while keeping the scoped package private.
+- Refresh the dashboard review corpus hourly from only the canonical records changed since the last refresh, in its own workflow, so publishing the dashboard never waits on or times out in a full record export.
+- Publish reviews successfully when a repository has no labels, using paginated REST label catalogs.
+- Refresh the isolated GitHub telemetry proof to checksum-pinned GitHub CLI 2.102.1 and the local release rehearsal to its qualified patched Node producer.
+- Skip package installation for routine GitHub activity by applying the shared event admission policy before workflow setup, while preserving delivery reports and maintainer command routing.
+- Keep local package release rehearsals as the default and permit explicit publication only from the matching signed version tag, verified against the frozen signer policy and the current protected default-branch policy before every release write; preserve the original draft and asset bytes on publisher retries.
+- Local PR review reports compare advisory preflight source with the observed target, merge base, and head, without treating self-reported completion as review proof.
+- Compress retained webhook snapshots and lifecycle projections losslessly, preserving placeholder protection and logical state, with bounded explicit maintenance for historical rows and a codec-capable deployment rollback floor.
+- Skip dashboard-only typechecking in Node-only audit, review, apply and failed-review retry jobs while retaining both Node compiler profiles and required dashboard CI.
+- Skip three-platform local package qualification for explicitly classified operational-only pull requests while preserving full qualification for package inputs and unknown changes.
+- Keep audit and failed-review retry jobs on the source revision used for hydration, dependency installation, and build; let the existing state publisher refresh the separate operational-state repository.
+- Hydrate only claimed publication records under the batch heartbeat and preparation deadline, avoiding whole-repository setup stalls.
+- Clarify that the queue runaway alert counts claimed review runs, including runs that skip model execution, and that Cloudflare storage size excludes free pages.
+- Let a dashboard corpus rebuild span several hourly runs instead of timing out when stored snapshots lag far behind the journal.
+- Let the canonical record snapshot resume across runs instead of timing out on a large backlog, which had stopped scheduled re-reviews of openclaw/openclaw.
+- Repair review decisions that use an issue-only or PR-only close reason on the wrong subject before publication, and classify older invalid artifacts as policy failures instead of unknown publication errors.
+- Reuse npm download caches in the secretless review-network smoke job while preserving fresh pinned Codex installations and isolated sandbox homes.
+- Reuse the pinned review scanner archive between hosted setups while verifying a fresh scanner installation on every run.
+- Refresh hosted review tools to Codex 0.164.0 and checksum-pinned TruffleHog 3.99.4.
 
 ## 0.3.1 - 2026-10-24
 

@@ -1,1 +1,0 @@
-- Let a dashboard corpus rebuild span several hourly runs instead of timing out when stored snapshots lag far behind the journal.

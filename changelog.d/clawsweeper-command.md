@@ -1,1 +1,0 @@
-- Expose the local review package as `clawsweeper`, with matching help and installation examples while keeping the scoped package private.

@@ -1,1 +1,0 @@
-- Refresh the dashboard review corpus hourly from only the canonical records changed since the last refresh, in its own workflow, so publishing the dashboard never waits on or times out in a full record export.

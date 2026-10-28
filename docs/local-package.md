@@ -31,7 +31,7 @@ The source service package remains private and unchanged in scope.
 Install the resulting tarball into a disposable directory to qualify it:
 
 ```sh
-npm install --prefix /tmp/clawsweeper-local-install --ignore-scripts --omit=dev --no-audit --no-fund ./openclaw-clawsweeper-0.3.1.tgz
+npm install --prefix /tmp/clawsweeper-local-install --ignore-scripts --omit=dev --no-audit --no-fund ./openclaw-clawsweeper-0.3.2.tgz
 /tmp/clawsweeper-local-install/node_modules/.bin/clawsweeper --help
 /tmp/clawsweeper-local-install/node_modules/.bin/clawsweeper --version
 ```

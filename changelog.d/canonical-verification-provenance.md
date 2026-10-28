@@ -1,1 +1,0 @@
-- Preserve canonical verification baseline provenance across operator updates and require an independently reviewed baseline checksum for rechecks.

@@ -1,1 +1,0 @@
-- Compress retained webhook snapshots and lifecycle projections losslessly, preserving placeholder protection and logical state, with bounded explicit maintenance for historical rows and a codec-capable deployment rollback floor.

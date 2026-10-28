@@ -1,1 +1,0 @@
-- Let the canonical record snapshot resume across runs instead of timing out on a large backlog, which had stopped scheduled re-reviews of openclaw/openclaw.

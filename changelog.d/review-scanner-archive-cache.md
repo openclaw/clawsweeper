@@ -1,1 +1,0 @@
-- Reuse the pinned review scanner archive between hosted setups while verifying a fresh scanner installation on every run.

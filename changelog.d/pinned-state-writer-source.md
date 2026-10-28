@@ -1,1 +1,0 @@
-- Keep audit and failed-review retry jobs on the source revision used for hydration, dependency installation, and build; let the existing state publisher refresh the separate operational-state repository.
