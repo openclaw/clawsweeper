@@ -1,0 +1,1 @@
+- Distinguish submitted publication outcome kinds from accepted and skipped acknowledgements in batch completion and cleanup summaries.

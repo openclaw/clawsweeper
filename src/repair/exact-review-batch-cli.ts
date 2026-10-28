@@ -595,16 +595,13 @@ async function complete() {
     receipt.stateWriter,
     true,
   );
-  const retryable = completions.filter(
-    (completion) =>
-      completion.terminalOutcome !== "published" && completion.terminalOutcome !== "superseded",
-  ).length;
   console.log(
     JSON.stringify({
       ok: true,
       batch_id: manifest.batchId,
       accepted: result?.accepted ?? 0,
-      retryable,
+      skipped: result?.skipped ?? 0,
+      submitted_outcomes: submittedOutcomeCounts(completions),
     }),
   );
 }
@@ -662,8 +659,24 @@ async function release() {
       ok: true,
       batch_id: manifest.batchId,
       released: result?.accepted ?? 0,
+      skipped: result?.skipped ?? 0,
+      submitted_outcomes: submittedOutcomeCounts(completions),
     }),
   );
+}
+
+function submittedOutcomeCounts(completions: readonly ExactReviewBatchCompletion[]) {
+  // The server returns aggregate acknowledgements, not accepted identities or
+  // final retry decisions. Keep submitted classifications separate from both.
+  const counts = {
+    published: 0,
+    superseded: 0,
+    retryable_failure: 0,
+    refresh_required: 0,
+    permanent_failure: 0,
+  };
+  for (const completion of completions) counts[completion.terminalOutcome] += 1;
+  return counts;
 }
 
 async function acknowledge(

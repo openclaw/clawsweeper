@@ -588,6 +588,14 @@ router dispatch encounters quota pressure. All typed observations and request
 counters are acknowledged with the same fenced batch completion, so a delayed
 cleanup is idempotent and cannot duplicate accounting.
 
+The batch CLI's `complete` and `release` summaries report five fixed
+`submitted_outcomes` counts: `published`, `superseded`, `retryable_failure`,
+`refresh_required`, and `permanent_failure`. These replace the misleading
+`retryable` total that combined all three failure kinds. `accepted` (`released`
+for cleanup) and `skipped` are separate server acknowledgement totals; submitted
+classifications do not prove which members were accepted or their final queue
+disposition. Retry budgets and refresh policy still belong to the queue.
+
 ## Schedules
 
 `ClawSweeper Review Plan` (`review-plan.yml`) owns the normal-backfill and
