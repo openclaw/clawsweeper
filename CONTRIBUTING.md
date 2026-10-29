@@ -48,8 +48,27 @@ Use the narrowest meaningful validation for the changed surface first. For a
 docs-only change, run `git diff --check` and verify the changed links and
 commands. For code, test, workflow, queue, API, UI, package, or integration
 changes, follow `AGENTS.md`: satisfy the real-behavior proof contract and
-mandatory Codex review loop before opening even a draft PR or updating one.
+final committed whole-branch Codex review before publication or handoff, including
+opening even a draft PR, updating one, or a direct push where otherwise permitted.
+Early local review is optional; the final review and any required repeats remain
+mandatory before landing. This does not replace the separate current-head/body
+ClawSweeper, CI, security, proof, or explicit merge-approval gates.
 Only Martin may expressly approve an evidence-in-progress exception.
+
+Use the [shared AutoReview helper](https://github.com/openclaw/agent-skills/tree/main/skills/autoreview)
+from the clean final branch. Set `AUTOREVIEW` to its installed helper path and
+`review_base` to the verified full commit ID of the intended target branch:
+
+```bash
+python3 "$AUTOREVIEW" --engine codex --mode branch --base "$review_base" \
+  --max-priority P3 --prompt-file AGENTS.md --prompt-file CONTRIBUTING.md
+```
+
+Branch mode reviews merge-base(`review_base`, HEAD) through HEAD, excluding dirty
+work. Supply applicable scoped instructions and needed unchanged owner context
+through the helper's existing context options. Resolve findings and repeat the
+affected proof/review under `AGENTS.md`; a saved clean report or equal final tree
+does not certify changed inputs.
 
 Documentation-only changes should also classify new pages as active, proposed,
 compatibility-only, or historical. Active runbooks need a role owner, owning

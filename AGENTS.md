@@ -108,11 +108,21 @@ not split reports into issue/PR subtrees.
 ## PR Validation and Landing
 
 - For code-bearing changes, run focused validation that exercises the changed
-  behavior, then run a fresh Codex `/review` before committing and again on the
-  committed branch against its base before landing. Address every accepted or
-  actionable finding and repeat the relevant proof and review. CI, an older
-  ClawSweeper comment, prior review comments, or manual self-review alone do
-  not replace this loop.
+  behavior, commit the final candidate, then obtain a fresh Codex review of the
+  entire committed branch against a pinned intended base. Require a clean index
+  and working tree; review the merge-base-to-HEAD range, not only the last commit.
+  Complete this review before publication, handoff, or landing, including direct
+  pushes where otherwise permitted. Early local review is optional feedback and
+  does not replace this final branch review. See `CONTRIBUTING.md` for the command.
+- Address every accepted or actionable finding and repeat the affected proof and
+  review after fixes. A changed head, parent or selected base/range, dirty source,
+  post-review hook edits, or changed review evidence, context, or applicable policy
+  invalidates the affected review. Verify the final source after hooks and before
+  publication or handoff. A failed or incomplete review never falls back to an
+  earlier clean result; repeat review when needed, not merely to obtain a nicer
+  verdict. An unchanged Git tree alone does not establish equivalent review inputs.
+  CI, an older ClawSweeper comment, prior review comments, or manual self-review
+  alone do not replace this loop or the separate gates below.
 - At task kickoff, define the `pr-behavior-proof` contract for every
   code-bearing PR: claim, exercised surface, scenario or fixture, command and
   environment, observable result, artifact or trace, and limits. Run its

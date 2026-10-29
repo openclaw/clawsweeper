@@ -1,0 +1,1 @@
+- Require one fresh final whole-branch review before publication or handoff, with optional early feedback and fresh review after relevant changes; retain separate proof, ClawSweeper, CI, and landing gates.
