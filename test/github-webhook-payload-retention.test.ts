@@ -605,6 +605,7 @@ test("unresolved placeholders survive beyond the live discovery lookback", async
 test("placeholder discovery exposes missing and retired parent gaps through partial repairs", async () => {
   for (const retired of [false, true]) {
     const { storage, store } = fixture();
+    observe(store, "comment-coverage", [], old);
     if (retired) {
       observe(store, "old", [item(1)], old);
       prune(storage, store);

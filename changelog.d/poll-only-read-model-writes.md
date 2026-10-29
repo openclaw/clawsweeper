@@ -1,0 +1,1 @@
+- Skip unusable polling cache repairs without webhook coverage, and honor equal-timestamp comment deletions so stale bodies do not remain protected.

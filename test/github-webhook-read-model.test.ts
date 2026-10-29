@@ -260,8 +260,9 @@ test("read model dedupes GUIDs, keeps object watermarks monotonic, tombstones, a
 
   for (const [deliveryId, action, body, updatedAt] of [
     ["comment-create", "created", "placeholder", "2026-08-14T10:01:00.000Z"],
-    ["comment-delete", "deleted", "placeholder", "2026-08-14T10:03:00.000Z"],
-    ["comment-late-edit", "edited", "resurrected", "2026-08-14T10:02:00.000Z"],
+    ["comment-delete", "deleted", "placeholder", "2026-08-14T10:01:00.000Z"],
+    ["comment-equal-edit", "edited", "resurrected", "2026-08-14T10:01:00.000Z"],
+    ["comment-late-edit", "edited", "resurrected", "2026-08-14T10:00:00.000Z"],
   ] as const) {
     store.ingest(
       requiredDelivery("issue_comment", deliveryId, updatedAt, {
@@ -293,6 +294,49 @@ test("read model dedupes GUIDs, keeps object watermarks monotonic, tombstones, a
   assert.equal(stale.usable, false);
   assert.equal((stale.freshness as Record<string, unknown>).stale, true);
 });
+
+for (const event of ["issue_comment", "pull_request_review_comment"] as const) {
+  test(`${event} deletion wins equal timestamps and releases retained payloads`, () => {
+    const storage = new MemoryDurableStorage();
+    const store = new GithubWebhookReadModelStore(storage);
+    store.ensureSchemaSync();
+    const now = Date.parse("2026-08-26T12:00:00Z");
+    const at = now - GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS - 1;
+    const updatedAt = new Date(at).toISOString();
+    const table =
+      event === "issue_comment"
+        ? "github_webhook_read_model_comments_v1"
+        : "github_webhook_read_model_activity_v1";
+    const deliver = (id: string, action: string, receivedAt: number) =>
+      store.ingest(
+        requiredDelivery(event, id, new Date(receivedAt).toISOString(), {
+          action,
+          repository,
+          ...(event === "issue_comment"
+            ? { issue: issue(42, "parent", updatedAt) }
+            : { pull_request: pull(42, updatedAt) }),
+          comment: { id: 4201, body: "ClawSweeper status: review started.", updated_at: updatedAt },
+        }),
+        receivedAt,
+      );
+    deliver("created", "created", at);
+    storage.transactionSync(() => store.prunePayloadsSync(now));
+    deliver("deleted", "deleted", now);
+    const deleted = [...storage.sql.exec(`SELECT * FROM ${table}`)];
+    assert.equal(deleted[0].tombstone, 1);
+    assert.equal(JSON.parse(decodeStoredJson(String(deleted[0].snapshot_json))).body, null);
+    deliver("late-edit", "edited", now + 1);
+    assert.deepEqual([...storage.sql.exec(`SELECT * FROM ${table}`)], deleted);
+    storage.transactionSync(() =>
+      store.prunePayloadsSync(now + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS + 1),
+    );
+    assert.equal(
+      [...storage.sql.exec("SELECT payload_pruned FROM github_webhook_read_model_items_v1")][0]
+        .payload_pruned,
+      1,
+    );
+  });
+}
 
 test("receipt expiry upgrades existing databases idempotently and uses a SQLite range search", (t) => {
   const { storage, store, now } = receiptExpiryFixture();
@@ -482,6 +526,121 @@ function readModelState(storage: MemoryDurableStorage) {
   );
 }
 
+for (const repairKind of ["items", "comments", "placeholders"] as const) {
+  for (const itemKind of ["issue", "pull_request"] as const) {
+    test(`${repairKind} repair waits for its consumer's webhook class (${itemKind})`, async () => {
+      const storage = new MemoryDurableStorage();
+      const store = new GithubWebhookReadModelStore(storage);
+      store.ensureSchemaSync();
+      const now = Date.parse("2026-08-26T12:00:00Z");
+      const updatedAt = new Date(now).toISOString();
+      const item = {
+        kind: "item",
+        repository: repository.full_name,
+        number: 77,
+        itemKind,
+        sourceUpdatedAt: updatedAt,
+        snapshot: { ...issue(77, "polled item", updatedAt), comments: 1 },
+      };
+      const comment = commentObject(77, 7701, "ClawSweeper status: review started.", updatedAt);
+      const repair = {
+        repository: repository.full_name,
+        repair_kind: repairKind,
+        complete_comment_items: [77],
+        objects: repairKind === "items" ? [item] : [item, comment],
+      };
+      const requiredClass =
+        repairKind === "items"
+          ? itemKind === "issue"
+            ? "issues"
+            : "pull_requests"
+          : "issue_comments";
+      store.ingest(
+        {
+          version: 1,
+          deliveryId: "unrelated-class",
+          event: "workflow_run",
+          action: "completed",
+          receivedAt: updatedAt,
+          eventClasses: ["workflow_runs"],
+          objects: [],
+        },
+        now,
+      );
+      const before = readModelState(storage);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        assert.deepEqual(store.repair(repair, now + attempt), {
+          accepted: false,
+          reason: "event_class_unavailable",
+          watermark: 1,
+          evicted_workflow_runs: 0,
+        });
+        assert.deepEqual(readModelState(storage), before);
+      }
+      store.ingest(
+        {
+          version: 1,
+          deliveryId: "required-class",
+          event: requiredClass,
+          action: "created",
+          receivedAt: updatedAt,
+          eventClasses: [requiredClass],
+          objects: [],
+        },
+        now + 2,
+      );
+      assert.equal(store.repair(repair, now + 3).accepted, true);
+      assert.equal(store.classState(requiredClass, now + 3).available, true);
+      const response =
+        repairKind === "items"
+          ? await store.readItem({ repository: repository.full_name, number: 77 }, now + 4)
+          : repairKind === "comments"
+            ? await store.readComments({ repository: repository.full_name, number: 77 }, now + 4)
+            : await store.readPlaceholders(
+                { repository: repository.full_name, state: "open" },
+                now + 4,
+              );
+      assert.equal(response.usable, true);
+    });
+  }
+}
+
+test("mixed item repairs wait for every required class without partial writes", () => {
+  const storage = new MemoryDurableStorage();
+  const store = new GithubWebhookReadModelStore(storage);
+  store.ensureSchemaSync();
+  const now = Date.parse("2026-08-26T12:00:00Z");
+  const updatedAt = new Date(now).toISOString();
+  store.ingest(
+    requiredDelivery("issues", "issue-class", updatedAt, {
+      action: "opened",
+      repository,
+      issue: issue(77, "known issue", updatedAt),
+    }),
+    now,
+  );
+  const before = readModelState(storage);
+  assert.equal(
+    store.repair(
+      {
+        repository: repository.full_name,
+        repair_kind: "items",
+        objects: ["issue", "pull_request"].map((itemKind, index) => ({
+          kind: "item",
+          repository: repository.full_name,
+          number: 78 + index,
+          itemKind,
+          sourceUpdatedAt: updatedAt,
+          snapshot: issue(78 + index, "polled", updatedAt),
+        })),
+      },
+      now,
+    ).accepted,
+    false,
+  );
+  assert.deepEqual(readModelState(storage), before);
+});
+
 for (const kind of ["comment", "review"] as const) {
   for (const count of [499, 500, 501, 620]) {
     test(`${kind} pruning preserves retained IDs across the limit (${count})`, () => {
@@ -493,6 +652,18 @@ for (const kind of ["comment", "review"] as const) {
       const columns = `repository, number, ${kind === "review" ? "activity_kind," : ""}
         ${idColumn}, source_updated_at, tombstone, snapshot_json, delivery_id, watermark, received_at, payload_retire_at`;
       const now = Date.parse("2026-08-26T12:00:00Z");
+      store.ingest(
+        {
+          version: 1,
+          deliveryId: "comment-coverage",
+          event: "issue_comment",
+          action: "created",
+          receivedAt: new Date(now).toISOString(),
+          eventClasses: ["issue_comments"],
+          objects: [],
+        },
+        now,
+      );
       storage.transactionSync(() => {
         for (let id = 1; id <= count; id += 1) {
           storage.sql.exec(

@@ -4795,7 +4795,7 @@ export class ExactReviewQueue {
         if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_repair" }, 400);
       }
-      await this.scheduleStorageMaintenance();
+      if (result.accepted) await this.scheduleStorageMaintenance();
       return json(result, 202);
     }
 

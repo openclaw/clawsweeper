@@ -40,6 +40,8 @@ new GitHub App event subscriptions.
 
 The Durable Object assigns one monotonic repository-wide watermark to every unique GitHub delivery GUID. Per-object rows retain the source `updated_at`, delivery GUID, object watermark, receipt time, and normalized JSON. Older deliveries with previously unseen GUIDs advance the global observation watermark but cannot replace a newer object row.
 
+Comment and inline-review-comment deletions can retain the previous edit timestamp. At equal source time, a deletion replaces a live row with a tombstone; later delivery of an equal-time live event cannot restore it or renew its lifetime.
+
 - One item row per repository and issue/PR number.
 - Comments ordered by numeric ID, including deletion tombstones; at most 500 rows per item and 64 KiB per comment body.
 - Reviews and inline review comments stored separately with tombstones, counts, and a stable activity digest; at most 500 rows per item.
@@ -119,7 +121,7 @@ the SQLite access path, not retention, constraints, transaction rollback, or
 the public read-model contract. Building it on existing history has a one-time
 initialization cost and adds storage and receipt-write work.
 
-Item snapshots are stale after 15 minutes, comment and review collections after 30 minutes, and workflow state after 5 minutes. Placeholder discovery additionally requires a successful repair census within 6 hours. Missing, stale, incomplete, unsubscribed, or gap-detected snapshots fall back to GitHub and repair the Durable Object before later reads reuse it.
+Item snapshots are stale after 15 minutes, comment and review collections after 30 minutes, and workflow state after 5 minutes. Placeholder discovery additionally requires a successful repair census within 6 hours. Missing, stale, incomplete, unsubscribed, or gap-detected snapshots fall back to GitHub. Item, comment, and placeholder repairs persist only after the event class required by their reader has been observed. Otherwise the repair returns `accepted: false` with `reason: event_class_unavailable` and leaves snapshots, watermarks, completeness receipts, and retirement deadlines unchanged. Live polling still returns its result; it does not make an unsubscribed cache usable. Placeholder repairs require issue-comment coverage, including when they also carry parent issue or PR snapshots.
 
 Item and placeholder projections preserve the stored issue/PR kind using the
 Issues API's `pull_request` marker, including older rows whose JSON lacks that
@@ -131,9 +133,9 @@ source digest; the live head-drift and mutation guards are unchanged.
 
 Publisher-authenticated POST routes live below `/internal/state/github-read-model/`: `item`, `comments`, `activity`, `workflows`, `placeholders`, and `repair`. Authentication uses the same body HMAC as the other automated queue data-plane routes. Responses carry `watermark`, per-class subscription state, `freshness`, and `usable`; callers must not infer freshness from a successful HTTP response alone.
 
-The consumers are exact-item review planning, review-placeholder discovery,
-and repair-loop comment hydration in the comment router. Each retains a bounded
-repair poll. Dashboard workflow health instead uses GitHub polling exclusively.
+The consumers are exact-item review planning and review-placeholder discovery.
+Each retains a bounded repair poll. The comment router and dashboard workflow
+health use GitHub polling directly.
 
 Stored workflow rows alone never establish completeness. Workflow read-model
 snapshots require a persisted successful bounded run census, and job snapshots

@@ -577,7 +577,12 @@ export class GithubWebhookReadModelStore {
   repair(
     value: unknown,
     now = Date.now(),
-  ): { accepted: boolean; watermark: number; evicted_workflow_runs: number } {
+  ): {
+    accepted: boolean;
+    reason?: "event_class_unavailable";
+    watermark: number;
+    evicted_workflow_runs: number;
+  } {
     const body = record(value);
     const repository = normalizedRepository(body.repository);
     const repairKind = stringValue(body.repair_kind);
@@ -629,6 +634,27 @@ export class GithubWebhookReadModelStore {
       (repairKind !== "workflows" || workflowRunVerificationStartedAt === null)
     ) {
       throw new Error("invalid_github_webhook_read_model_workflow_eviction");
+    }
+    // Polls cannot provide ongoing event coverage. Skip the entire repair before
+    // renewing payloads or completeness facts that its reader cannot reuse.
+    // Placeholder parents need only their consumer's issue-comment coverage.
+    const requiredClasses = new Set<GithubWebhookReadModelEventClass>();
+    if (repairKind === "comments" || repairKind === "placeholders") {
+      requiredClasses.add("issue_comments");
+    } else if (repairKind === "items") {
+      for (const object of objects) {
+        if (object.kind === "item") {
+          requiredClasses.add(object.itemKind === "pull_request" ? "pull_requests" : "issues");
+        }
+      }
+    }
+    if ([...requiredClasses].some((eventClass) => !this.classState(eventClass, now).available)) {
+      return {
+        accepted: false,
+        reason: "event_class_unavailable",
+        watermark: this.watermarkSync(),
+        evicted_workflow_runs: 0,
+      };
     }
     return this.storage.transactionSync(() => {
       const watermark = this.watermarkSync() + 1;
@@ -1228,6 +1254,8 @@ export class GithubWebhookReadModelStore {
       );
       return;
     }
+    // GitHub deletes retain the last edit timestamp. At equal source time,
+    // tombstones win over live rows; delayed edits must never resurrect them.
     const snapshotJson = this.encodeText(JSON.stringify(object.snapshot));
     if (object.kind === "comment") {
       const accepted = firstRow(
@@ -1246,7 +1274,7 @@ export class GithubWebhookReadModelStore {
            watermark = excluded.watermark,
            received_at = excluded.received_at
          WHERE excluded.source_updated_at > github_webhook_read_model_comments_v1.source_updated_at
-            OR (? AND excluded.source_updated_at = github_webhook_read_model_comments_v1.source_updated_at
+            OR ((? OR excluded.tombstone = 1) AND excluded.source_updated_at = github_webhook_read_model_comments_v1.source_updated_at
                 AND github_webhook_read_model_comments_v1.tombstone = 0)
          RETURNING comment_id`,
           object.repository,
@@ -1288,7 +1316,7 @@ export class GithubWebhookReadModelStore {
            watermark = excluded.watermark,
            received_at = excluded.received_at
          WHERE excluded.source_updated_at > github_webhook_read_model_activity_v1.source_updated_at
-            OR (? AND excluded.source_updated_at = github_webhook_read_model_activity_v1.source_updated_at
+            OR ((? OR excluded.tombstone = 1) AND excluded.source_updated_at = github_webhook_read_model_activity_v1.source_updated_at
                 AND github_webhook_read_model_activity_v1.tombstone = 0)`,
         object.repository,
         object.number,
