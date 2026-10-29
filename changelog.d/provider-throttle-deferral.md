@@ -1,0 +1,1 @@
+- Defer exact reviews the model provider throttles instead of retrying them as failures every few minutes.

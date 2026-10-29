@@ -6902,3 +6902,47 @@ test("late intake recovery retries after an early recovery failure and successfu
     );
   }
 });
+
+for (const [classification, deferred] of [
+  ["provider_throttle", true],
+  ["codex_execution", false],
+] as const) {
+  test(`exact review failure diagnostics defer only provider throttles: ${classification}`, () => {
+    const steps = YAML.parse(readText(".github/workflows/sweep.yml")).jobs["event-review-apply"]
+      .steps;
+    const run = steps.find((step: any) => step.id === "review-exact-event-item").run as string;
+    const start = run.indexOf(
+      'if [ "$review_exit_code" -ne 0 ] && [ -f artifacts/event/failure-diagnostics/manifest.json ]; then',
+    );
+    const branch = run.slice(start, run.indexOf("# Keep 78 aligned", start));
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      mkdirSync(join(root, "artifacts/event/failure-diagnostics"), { recursive: true });
+      writeFileSync(
+        join(root, "artifacts/event/failure-diagnostics/manifest.json"),
+        JSON.stringify({
+          classification,
+          retryable: true,
+          failure: { stage: "unknown", reason_code: "unknown" },
+        }),
+      );
+      const output = join(root, "output");
+      const before = Date.now();
+      execFileSync("bash", ["-e", "-u", "-c", `review_exit_code=1\n${branch}`], {
+        cwd: root,
+        env: { ...process.env, GITHUB_OUTPUT: output },
+      });
+      const text = readText(output);
+      assert.match(text, new RegExp(`^failure_reason_code=${classification}$`, "m"));
+      if (deferred) {
+        assert.match(text, /^retry_kind=throttle$/m);
+        const retryAt = Date.parse(/^retry_at=(.+)$/m.exec(text)![1]!);
+        assert.ok(retryAt >= before + 1_200_000 && retryAt <= Date.now() + 1_200_000);
+      } else {
+        assert.doesNotMatch(text, /retry_kind|retry_at/);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}

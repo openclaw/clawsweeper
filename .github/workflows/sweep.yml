@@ -1161,6 +1161,14 @@ jobs:
             echo "failure_stage=$review_failure_stage" >> "$GITHUB_OUTPUT"
             echo "failure_reason_code=$review_failure_reason_code" >> "$GITHUB_OUTPUT"
             echo "failure_retryable=$review_failure_retryable" >> "$GITHUB_OUTPUT"
+            # A provider throttle is not a failure of this revision. Defer it like a GitHub
+            # throttle so the queue waits instead of spending the revision's retry budget.
+            if jq -e '.classification == "provider_throttle" and .retryable == true' artifacts/event/failure-diagnostics/manifest.json >/dev/null; then
+              retry_at="$(node -e 'console.log(new Date(Date.now() + 1_200_000).toISOString())')"
+              echo "retry_kind=throttle" >> "$GITHUB_OUTPUT"
+              echo "retry_at=$retry_at" >> "$GITHUB_OUTPUT"
+              echo "::notice::The review provider throttled this review; deferring until $retry_at."
+            fi
           fi
           # Keep 78 aligned with INCOMPLETE_AGENT_INPUT_SOURCE_EXIT_CODE. This
           # unchanged source tuple is terminal, while the workflow stays red.
