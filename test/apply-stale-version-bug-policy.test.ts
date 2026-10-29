@@ -249,7 +249,12 @@ for (const [name, options, message] of [
   ["milestone", { milestone: { title: "Next" } }, /milestoned issue/],
   ["reactions", { reactions: 20 }, /20 or more reactions/],
   ["missing reaction count", { omitReactions: true }, /reaction count is unavailable/],
-  ["live age", { createdAt: "2026-07-01T00:00:00Z" }, /older than 120 days/],
+  // Relative to now: a fixed date ages past the 120-day threshold and stops testing the guard.
+  [
+    "live age",
+    { createdAt: new Date(Date.now() - 30 * 86_400_000).toISOString() },
+    /older than 120 days/,
+  ],
   ["security label", { labels: ["area: security"] }, /protected label: area: security/],
   ["protected label", { labels: ["clawsweeper:human-review"] }, /protected label/],
   ["linked PR", { labels: ["clawsweeper:linked-pr-open"] }, /linked-pr-open/],
