@@ -1,0 +1,1 @@
+- Prepare target-bound permission acquisition for review authority without changing active admission, transport retries, or caches.
