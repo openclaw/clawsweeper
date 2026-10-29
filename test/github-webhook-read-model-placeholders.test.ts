@@ -6,6 +6,7 @@ import {
   GithubWebhookReadModelStore,
 } from "../dashboard/github-webhook-read-model.ts";
 import { TestStorage } from "./exact-review-test-storage.ts";
+import { decodeStoredJson, encodeStoredJson } from "../dashboard/stored-json.ts";
 
 const repository = "example/project";
 const now = Date.parse("2026-10-13T10:00:00Z");
@@ -13,6 +14,196 @@ const marker = "ClawSweeper status: review started.";
 type Row = Record<string, unknown>;
 type Storage = ConstructorParameters<typeof GithubWebhookReadModelStore>[0];
 type Candidate = { number: number; item: Row; comments: Row[] };
+
+for (const encoded of [false, true]) {
+  test(`placeholder repairs retain ordering without unrelated bodies (encoded=${encoded})`, async () => {
+    const storage = new TestStorage();
+    const store = new GithubWebhookReadModelStore(storage, encoded ? encodeStoredJson : undefined);
+    store.ensureSchemaSync();
+    store.ingest(
+      {
+        version: 1,
+        deliveryId: "coverage",
+        event: "issue_comment",
+        action: "created",
+        receivedAt: new Date(now).toISOString(),
+        eventClasses: ["issue_comments"],
+        objects: [],
+      },
+      now,
+    );
+    const at = new Date(now).toISOString();
+    const item = {
+      kind: "item",
+      repository,
+      number: 1,
+      itemKind: "issue",
+      sourceUpdatedAt: at,
+      snapshot: { number: 1, state: "open", comments: 2 },
+    };
+    const ordinary = {
+      kind: "comment",
+      repository,
+      number: 1,
+      id: 1,
+      sourceUpdatedAt: at,
+      snapshot: { id: 1, body: "ordinary comment ".repeat(1_000) },
+    };
+    const placeholder = { ...ordinary, id: 2, snapshot: { id: 2, body: marker } };
+    store.repair(
+      { repository, repair_kind: "placeholders", objects: [item, ordinary, placeholder] },
+      now,
+    );
+    const rows = () => [
+      ...storage.sql.exec(
+        "SELECT comment_id, source_updated_at, snapshot_json, payload_pruned FROM github_webhook_read_model_comments_v1 ORDER BY comment_id",
+      ),
+    ];
+    assert.equal(rows()[0].snapshot_json, "{}");
+    assert.equal(rows()[0].payload_pruned, 1);
+    assert.equal(rows()[0].source_updated_at, now);
+    assert.equal(JSON.parse(decodeStoredJson(String(rows()[1].snapshot_json))).body, marker);
+    const candidates = (await store.readPlaceholders({ repository, state: "open" }, now))
+      .candidates as Candidate[];
+    assert.deepEqual(
+      candidates[0].comments.map(({ id }) => id),
+      [2],
+    );
+    assert.equal((await store.readComments({ repository, number: 1 }, now)).usable, false);
+    const before = rows();
+    for (const source of [now - 1, now]) {
+      store.ingest(
+        {
+          version: 1,
+          deliveryId: `late-${source}`,
+          event: "issue_comment",
+          action: "edited",
+          receivedAt: new Date(now + 1).toISOString(),
+          eventClasses: ["issue_comments"],
+          objects: [
+            {
+              ...ordinary,
+              sourceUpdatedAt: new Date(source).toISOString(),
+              snapshot: { id: 1, body: marker },
+            },
+          ],
+        },
+        now + 1,
+      );
+    }
+    assert.deepEqual(rows(), before, "delayed placeholder events must not restore a retired body");
+    store.repair(
+      {
+        repository,
+        repair_kind: "comments",
+        complete_comment_items: [1],
+        objects: [ordinary, placeholder],
+      },
+      now + 2,
+    );
+    assert.equal(
+      JSON.parse(decodeStoredJson(String(rows()[0].snapshot_json))).body,
+      ordinary.snapshot.body,
+    );
+    assert.equal(rows()[0].payload_pruned, 0);
+    assert.equal((await store.readComments({ repository, number: 1 }, now + 2)).usable, true);
+    store.repair({ repository, repair_kind: "placeholders", objects: [ordinary] }, now + 3);
+    store.repair({ repository, repair_kind: "comments", objects: [ordinary] }, now + 4);
+    assert.equal(rows()[0].payload_pruned, 0);
+    assert.equal(
+      (await store.readComments({ repository, number: 1 }, now + 4)).usable,
+      false,
+      "a partial restoration must not reuse completeness from before retirement",
+    );
+    store.repair(
+      {
+        repository,
+        repair_kind: "comments",
+        complete_comment_items: [1],
+        objects: [ordinary, placeholder],
+      },
+      now + 5,
+    );
+    assert.equal((await store.readComments({ repository, number: 1 }, now + 5)).usable, true);
+  });
+}
+
+test("placeholder repair completion clears its hold while preserving a pending sibling", async () => {
+  const storage = new TestStorage();
+  const store = new GithubWebhookReadModelStore(storage);
+  store.ensureSchemaSync();
+  const old = now - 60 * 60_000;
+  const comment = (id: number, body: string, at: number) => ({
+    kind: "comment",
+    repository,
+    number: 1,
+    id,
+    sourceUpdatedAt: new Date(at).toISOString(),
+    snapshot: { id, body },
+  });
+  store.ingest(
+    {
+      version: 1,
+      deliveryId: "pending",
+      event: "issue_comment",
+      action: "created",
+      receivedAt: new Date(old).toISOString(),
+      eventClasses: ["issue_comments"],
+      objects: [
+        {
+          kind: "item",
+          repository,
+          number: 1,
+          itemKind: "issue",
+          sourceUpdatedAt: new Date(old).toISOString(),
+          snapshot: { state: "open" },
+        },
+        comment(1, marker, old),
+        comment(2, marker, old),
+      ],
+    },
+    old,
+  );
+  storage.transactionSync(() => store.prunePayloadsSync(now));
+  store.repair(
+    { repository, repair_kind: "placeholders", objects: [comment(1, "review complete", now)] },
+    now,
+  );
+  assert.equal(
+    storage.scalar(
+      "SELECT payload_pruned AS value FROM github_webhook_read_model_comments_v1 WHERE comment_id = 1",
+    ),
+    1,
+  );
+  assert.equal(
+    storage.scalar("SELECT payload_retire_at AS value FROM github_webhook_read_model_items_v1"),
+    0,
+  );
+  storage.transactionSync(() => store.prunePayloadsSync(now));
+  assert.equal(
+    storage.scalar("SELECT payload_retire_at AS value FROM github_webhook_read_model_items_v1"),
+    -1,
+  );
+  assert.deepEqual(
+    (
+      (await store.readPlaceholders({ repository, state: "open" }, now)).candidates as Candidate[]
+    )[0].comments.map(({ id }) => id),
+    [2],
+  );
+  store.repair(
+    { repository, repair_kind: "placeholders", objects: [comment(2, "review complete", now + 1)] },
+    now + 1,
+  );
+  assert.deepEqual(
+    (await store.readPlaceholders({ repository, state: "open" }, now + 1)).candidates,
+    [],
+  );
+  storage.transactionSync(() => store.prunePayloadsSync(now + 60 * 60_000));
+  assert.equal(
+    storage.scalar("SELECT payload_pruned AS value FROM github_webhook_read_model_items_v1"),
+    1,
+  );
+});
 
 function scriptedStore(rows: Iterable<Row>) {
   const storage: Storage = {

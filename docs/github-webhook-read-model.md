@@ -137,6 +137,13 @@ The consumers are exact-item review planning and review-placeholder discovery.
 Each retains a bounded repair poll. The comment router and dashboard workflow
 health use GitHub polling directly.
 
+Placeholder repairs retain bodies only for unresolved placeholder comments.
+Other live comments retain ordering metadata with an empty, retired payload;
+this also clears completed placeholders without letting delayed events restore
+them. Deletion tombstones remain intact. These repairs do not establish a usable
+full comment collection. Signed webhook ingestion and full comment repairs still
+retain ordinary bodies for the comment API.
+
 Stored workflow rows alone never establish completeness. Workflow read-model
 snapshots require a persisted successful bounded run census, and job snapshots
 require fresh complete coverage for each run. Census repair removes older rows

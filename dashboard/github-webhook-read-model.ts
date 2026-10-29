@@ -803,7 +803,16 @@ export class GithubWebhookReadModelStore {
           watermark,
         );
       }
-      for (const object of objects) this.upsertObjectSync(object, deliveryId, watermark, now, true);
+      for (const object of objects) {
+        // Placeholder polls own pending bodies only. Keep other comments' source
+        // ordering so delayed events cannot resurrect a completed placeholder.
+        const retirePayload =
+          repairKind === "placeholders" &&
+          object.kind === "comment" &&
+          !object.tombstone &&
+          !stringValue(object.snapshot.body).includes(REVIEW_PLACEHOLDER_MARKER);
+        this.upsertObjectSync(object, deliveryId, watermark, now, true, retirePayload);
+      }
       this.storage.sql.exec(
         `INSERT INTO github_webhook_read_model_repairs_v1
          (repository, repair_kind, repaired_at, watermark) VALUES (?, ?, ?, ?)
@@ -1205,6 +1214,7 @@ export class GithubWebhookReadModelStore {
     watermark: number,
     receivedAt: number,
     confirmed = false,
+    retirePayload = false,
   ): void {
     const sourceUpdatedAt = timestampMs(object.sourceUpdatedAt);
     if (sourceUpdatedAt === null) return;
@@ -1256,19 +1266,19 @@ export class GithubWebhookReadModelStore {
     }
     // GitHub deletes retain the last edit timestamp. At equal source time,
     // tombstones win over live rows; delayed edits must never resurrect them.
-    const snapshotJson = this.encodeText(JSON.stringify(object.snapshot));
+    const snapshotJson = retirePayload ? "{}" : this.encodeText(JSON.stringify(object.snapshot));
     if (object.kind === "comment") {
       const accepted = firstRow(
         this.storage.sql.exec(
           `INSERT INTO github_webhook_read_model_comments_v1
          (repository, number, comment_id, source_updated_at, tombstone, snapshot_json,
-          delivery_id, watermark, received_at, payload_retire_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          delivery_id, watermark, received_at, payload_pruned, payload_retire_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (repository, number, comment_id) DO UPDATE SET
            source_updated_at = excluded.source_updated_at,
            tombstone = excluded.tombstone,
            snapshot_json = excluded.snapshot_json,
-           payload_pruned = 0,
+           payload_pruned = excluded.payload_pruned,
            payload_retire_at = excluded.payload_retire_at,
            delivery_id = excluded.delivery_id,
            watermark = excluded.watermark,
@@ -1286,11 +1296,22 @@ export class GithubWebhookReadModelStore {
           deliveryId,
           watermark,
           receivedAt,
+          retirePayload ? 1 : 0,
           receivedAt + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS,
           confirmed ? 1 : 0,
         ),
       );
-      if (accepted) this.recheckItemProtectionSync(object.repository, object.number);
+      if (accepted) {
+        // A partial repair must not reuse a census from before payload retirement.
+        if (retirePayload)
+          this.storage.sql.exec(
+            `UPDATE github_webhook_read_model_collections_v1 SET complete = 0
+            WHERE repository = ? AND number = ? AND collection_kind = 'comments'`,
+            object.repository,
+            object.number,
+          );
+        this.recheckItemProtectionSync(object.repository, object.number);
+      }
       this.pruneItemRowsSync(
         "github_webhook_read_model_comments_v1",
         "comment_id",
