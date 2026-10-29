@@ -38,7 +38,9 @@ maintainer can evaluate that case through the ordinary review path.
 ## Mutation and visibility boundaries
 
 Before any mutation, apply rechecks report freshness, source state, labels,
-locks, and post-review human activity. The linked issue has its own mutation
+locks, and post-review human activity. The close mutation boundary rereads the
+item's lock last, so an issue a human locks after review stays open. The linked
+issue has its own mutation
 lease and ledger record; it is archived before the parent PR, so an interrupted
 parent close cannot erase an independently completed issue record.
 

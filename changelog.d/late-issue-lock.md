@@ -1,0 +1,1 @@
+- Keep issue close proposals open when a human locks the issue after review. Thanks @brokemac79.

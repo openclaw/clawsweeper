@@ -903,6 +903,7 @@ async function startGithubLoopback() {
     defaultBranch: "main",
     dispatches: [] as Record<string, unknown>[],
     failAcknowledgement: false,
+    failLabelAdd: false,
     reactions: 0,
   };
   const server = http.createServer(async (request, response) => {
@@ -953,6 +954,8 @@ async function startGithubLoopback() {
     }
     const labelPath = `/repos/openclaw/openclaw/issues/${ITEM_NUMBER}/labels`;
     if (url.pathname === labelPath && request.method === "POST") {
+      if (state.failLabelAdd)
+        return sendJson(response, 403, { message: "Resource not accessible by integration" });
       for (const label of body.labels as string[]) {
         state.labelWrites.push(`add:${label}`);
         if (!state.labels.includes(label)) state.labels.push(label);
@@ -1310,14 +1313,22 @@ test("keyless OIDC comment intake uses live authority and coalesces with the App
   t.after(() => allowedRouter.close());
   assert.equal((await post()).status, 202);
   const stopPayload = fixture.dispatches.at(-1)!.client_payload as Record<string, unknown>;
+  // A failed hold write keeps the old labels, sends no reply, and leaves the command retryable.
+  fixture.failLabelAdd = true;
+  const acknowledgementsBeforeStop = fixture.acknowledgements.length;
+  await assert.rejects(allowedRouter.run(stopPayload), /HTTP 403/);
+  assert.deepEqual(fixture.labels, ["clawsweeper:autofix", "clawsweeper:automerge"]);
+  assert.deepEqual(fixture.labelWrites, []);
+  assert.equal(fixture.acknowledgements.length, acknowledgementsBeforeStop);
+  fixture.failLabelAdd = false;
   const allowed = await allowedRouter.run(stopPayload);
   assert.equal(allowed.commands[0].status, "executed");
   assert.equal(allowed.commands[0].author_repository_permission, "write");
   assert.deepEqual(fixture.labels, ["clawsweeper:human-review"]);
   assert.deepEqual(fixture.labelWrites, [
+    "add:clawsweeper:human-review",
     "remove:clawsweeper:automerge",
     "remove:clawsweeper:autofix",
-    "add:clawsweeper:human-review",
   ]);
   const writesAfterAllowed = fixture.labelWrites.length;
   const appStopBody = JSON.stringify({

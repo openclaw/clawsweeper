@@ -508,7 +508,13 @@ export function executeApplyClose(
       if (reason) return { actionTaken: "skipped_low_signal_live_guard", reason };
     }
     const pairReason = checkPair ? currentSameAuthorPairBlockReason() : null;
-    return pairReason ? { actionTaken: "skipped_same_author_pair", reason: pairReason } : null;
+    if (pairReason) return { actionTaken: "skipped_same_author_pair", reason: pairReason };
+    // Issues get no closeout comment, so a human lock after review is only visible here.
+    // Read last, after the policy reads, to keep the window before the close PATCH short.
+    const live = asRecord(ghJson(["api", `repos/${repo}/issues/${mutationNumber}`]));
+    return live.locked === true
+      ? { actionTaken: "skipped_locked_conversation", reason: "conversation is locked" }
+      : null;
   };
   // Paired implementation closes already have dedicated issue source/lease guards.
   // Recheck parent policy for both mutations; pair admission is needed for the parent.
