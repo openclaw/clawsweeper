@@ -115,25 +115,6 @@ jobs:
           permission-issues: read
           permission-pull-requests: read
 
-      - name: Select target read token
-        id: target-token
-        env:
-          PRIMARY_TOKEN: ${{ github.token }}
-          APP_FALLBACK_TOKEN: ${{ steps.target-read-token.outputs.token }}
-        run: |
-          token="$PRIMARY_TOKEN"
-          if [ -n "$PRIMARY_TOKEN" ]; then
-            echo "Using workflow token for public audit reads."
-          else
-            echo "Using ClawSweeper App token fallback for audit reads."
-            token="$APP_FALLBACK_TOKEN"
-          fi
-          if [[ ! "$token" =~ ^[A-Za-z0-9_-]*$ ]]; then
-            echo "::error::Invalid audit read token." >&2
-            exit 1
-          fi
-          echo "token=$token" >> "$GITHUB_OUTPUT"
-
       - name: Create state token
         id: state-token
         uses: ./.github/actions/create-state-token
@@ -157,7 +138,7 @@ jobs:
       - name: Refresh Audit Health
         env:
           CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/audit-canonical-baseline
-          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          GH_TOKEN: ${{ github.token || steps.target-read-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           WORKFLOW_REPOSITORY: ${{ github.repository }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}

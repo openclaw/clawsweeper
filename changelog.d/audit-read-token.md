@@ -1,0 +1,1 @@
+- Restore scheduled audits, which failed on every run since 2026-10-19 because the workflow token was rejected as an invalid audit read token.
