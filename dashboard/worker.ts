@@ -9623,7 +9623,7 @@ function isCodexWorkflowFallback(run) {
   ) {
     return false;
   }
-  return /review clawsweeper items|review hot (?:clawsweeper items|target repo)|review target repo|review event items?|retry failed codex reviews|commit review|repair cluster|automerge repair|issue implementation|assist\b/i.test(
+  return /review clawsweeper items|review hot (?:clawsweeper items|target repo)|review target repo|review event items?|review exact item|review scheduled (?:hot|normal) item|retry failed codex reviews|commit review|repair cluster|automerge repair|issue implementation|assist\b/i.test(
     name,
   );
 }
