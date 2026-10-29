@@ -5,7 +5,7 @@ import {
   type ReviewAuthoritySubject,
 } from "./review-authority.js";
 
-type JsonGet = (path: string) => unknown | Promise<unknown>;
+type JsonGet = (path: string) => unknown;
 
 /** Inert binding: callers retain transport, credential, retry, and admission ownership. */
 export async function acquireReviewAuthority(
