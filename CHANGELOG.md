@@ -9,6 +9,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.3 - 2026-10-29
 
+- Stop placeholder-recovery polls from retaining unrelated comment bodies while preserving event ordering, pending placeholders, and the full comment API.
+- Tell authors of stale PR reviews to comment `@clawsweeper re-review`, since later pushes are not reviewed automatically.
 - Allow credential-free Team work-session provenance links on RoboClaw and GitHub-verified OpenClaw organization PRs without weakening privacy or proof requirements. Thanks @brokemac79.
 - Restore scheduled audits, which failed on every run since 2026-10-19 because the workflow token was rejected as an invalid audit read token.
 - Require one fresh final whole-branch review before publication or handoff, with optional early feedback and fresh review after relevant changes; retain separate proof, ClawSweeper, CI, and landing gates.

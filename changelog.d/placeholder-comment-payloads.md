@@ -1,1 +1,0 @@
-- Stop placeholder-recovery polls from retaining unrelated comment bodies while preserving event ordering, pending placeholders, and the full comment API.

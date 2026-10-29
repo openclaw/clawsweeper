@@ -1,1 +1,0 @@
-- Tell authors of stale PR reviews to comment `@clawsweeper re-review`, since later pushes are not reviewed automatically.
