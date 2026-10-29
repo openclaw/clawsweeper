@@ -5141,17 +5141,15 @@ test("public OpenClaw reads use workflow tokens without moving mutation identity
   );
 
   const audit = YAML.parse(readText(".github/workflows/audit.yml")) as Workflow;
-  const auditSelection = audit.jobs["audit-dashboard"]?.steps.find(
-    (candidate) => candidate.name === "Select target read token",
+  const auditRefresh = audit.jobs["audit-dashboard"]?.steps.find(
+    (candidate) => candidate.name === "Refresh Audit Health",
   );
-  assert.ok(auditSelection);
-  assert.equal(auditSelection.env?.PRIMARY_TOKEN, "${{ github.token }}");
+  assert.ok(auditRefresh);
+  // The read token goes straight to env, never through a shell or GITHUB_OUTPUT record.
   assert.equal(
-    auditSelection.env?.APP_FALLBACK_TOKEN,
-    "${{ steps.target-read-token.outputs.token }}",
+    auditRefresh.env?.GH_TOKEN,
+    "${{ github.token || steps.target-read-token.outputs.token }}",
   );
-  assert.match(auditSelection.run ?? "", /Using workflow token for public audit reads/);
-  assert.match(auditSelection.run ?? "", /Using ClawSweeper App token fallback for audit reads/);
 
   for (const [job, name, expression] of [
     [
