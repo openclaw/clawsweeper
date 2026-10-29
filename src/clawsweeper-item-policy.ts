@@ -47,6 +47,18 @@ export function isAutomationReportAuthor(author: string | undefined): boolean {
   return Boolean(author && (/\[bot\]$/i.test(author) || author.startsWith("app/")));
 }
 
+export function usesContributorProofPolicy(
+  author: string | undefined,
+  authorAssociation: unknown,
+  localRange = false,
+): boolean {
+  // Local Git display names are not GitHub identities and cannot grant bot exemptions.
+  return (
+    localRange ||
+    (!isMaintainerAuthorAssociation(authorAssociation) && !isAutomationReportAuthor(author))
+  );
+}
+
 export function lockedConversationApplyReason(
   item: Pick<Item, "activeLockReason" | "locked">,
 ): string | null {

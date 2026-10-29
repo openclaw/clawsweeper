@@ -1,9 +1,9 @@
 import {
   applyBlockingProtectedLabels,
-  isAutomationReportAuthor,
   isMaintainerAuthorAssociation,
   isProtectedItem,
   normalizeAuthorAssociation,
+  usesContributorProofPolicy,
 } from "./clawsweeper-item-policy.js";
 import {
   evaluateOversizedPullRequest,
@@ -37,14 +37,19 @@ export function reviewPromptSections(
   context: ItemContext,
   hints: ReviewPromptRuntimeHints = {},
 ): Record<ReviewPromptSection, boolean> {
-  const maintainer = isMaintainerAuthorAssociation(item.authorAssociation);
+  const maintainer = !hints.localRange && isMaintainerAuthorAssociation(item.authorAssociation);
   return {
     follow_up: item.kind === "pull_request" && context.previousClawSweeperReview != null,
     media: Boolean(hints.mediaProofSummary?.trim() && hints.mediaProofManifestPath?.trim()),
     maintainer_author: maintainer,
-    external_author: !maintainer && !isAutomationReportAuthor(item.author),
+    external_author: usesContributorProofPolicy(
+      item.author,
+      item.authorAssociation,
+      hints.localRange,
+    ),
     authority_chain: item.kind === "pull_request",
     team_session_provenance:
+      !hints.localRange &&
       item.kind === "pull_request" &&
       (item.author.toLowerCase() === "roboclaw-bot" ||
         (item.repo.toLowerCase().startsWith("openclaw/") &&

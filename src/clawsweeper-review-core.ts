@@ -352,8 +352,8 @@ ${additionalPrompt.trim()}
 - Type: ${item.kind}
 - Title: ${omitReviewedFixtureReferences(item.title)}
 - URL: ${item.url}
-- Author: ${item.author}
-- Author association: ${item.authorAssociation}
+- Author: ${item.author}${runtimeHints.localRange ? " (unverified local Git display name)" : ""}
+- Author association: ${item.authorAssociation}${runtimeHints.localRange ? " (synthetic contributor proof context; GitHub role is unverified)" : ""}
 - Created at: ${item.createdAt}
 - Updated at: ${item.updatedAt}
 - Fetched target branch SHA (not necessarily the checkout revision): ${git.mainSha}

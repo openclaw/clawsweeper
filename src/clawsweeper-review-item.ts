@@ -129,6 +129,7 @@ export function runPreparedReviewItem(
         })
       : undefined;
   const prompt = buildReviewPrompt(item, context, git, additionalPrompt, {
+    localRange,
     ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
     targetDir: reviewOpenclawDir,
     ...reviewNetworkCapability(sandboxMode, reviewEnv),
@@ -283,6 +284,7 @@ export function writePreparedReviewReport(
     git,
     action,
     reviewMode: "propose",
+    localRange,
     snapshotHash,
     contentDigest,
     reviewPolicy,

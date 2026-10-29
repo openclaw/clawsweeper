@@ -455,6 +455,7 @@ export function markdownFor(options: {
   git: GitInfo;
   action: Action;
   reviewMode: "propose" | "apply";
+  localRange?: boolean;
   snapshotHash: string;
   contentDigest: string;
   reviewPolicy: string;
@@ -566,7 +567,7 @@ url: ${options.item.url}
 state_at_review: open
 item_created_at: ${options.item.createdAt}
 item_updated_at: ${options.item.updatedAt}
-author: ${options.item.author}
+${options.localRange ? "review_origin: local_range\n" : ""}author: ${options.item.author}
 author_association: ${options.item.authorAssociation}
 labels: ${JSON.stringify(options.item.labels)}
 bulk_filer_detected: ${options.context.bulkFiler?.detected === true}
@@ -718,9 +719,9 @@ Type: ${options.item.kind}
 
 URL: ${markdownLink(options.item.url, options.item.url)}
 
-Author: ${options.item.author}
+Author: ${options.item.author}${options.localRange ? " (unverified local Git display name)" : ""}
 
-Author association: ${options.item.authorAssociation}
+Author association: ${options.item.authorAssociation}${options.localRange ? " (synthetic contributor proof context; GitHub role is unverified)" : ""}
 
 Labels: ${labels}
 

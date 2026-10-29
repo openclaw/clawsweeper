@@ -780,6 +780,7 @@ export interface ReviewContextLedgerEntry {
 }
 
 export interface ReviewPromptRuntimeHints {
+  localRange?: boolean;
   networkCapability?: "allowlisted-proxy" | "unrestricted" | "none";
   hasGitHubToken?: boolean;
   targetDir?: string;
