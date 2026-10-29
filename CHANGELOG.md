@@ -5,7 +5,21 @@ All notable ClawSweeper changes are tracked here.
 This file was reconstructed from first-parent git history. Generated dashboard,
 checkpoint, and status-only commits are intentionally omitted.
 
-## 0.3.3 - Unreleased
+## 0.3.4 - Unreleased
+
+## 0.3.3 - 2026-10-29
+
+- Allow credential-free Team work-session provenance links on RoboClaw and GitHub-verified OpenClaw organization PRs without weakening privacy or proof requirements. Thanks @brokemac79.
+- Restore scheduled audits, which failed on every run since 2026-10-19 because the workflow token was rejected as an invalid audit read token.
+- Require one fresh final whole-branch review before publication or handoff, with optional early feedback and fresh review after relevant changes; retain separate proof, ClawSweeper, CI, and landing gates.
+- Keep issue close proposals open when a human locks the issue after review. Thanks @brokemac79.
+- Keep local committed-range contributor proof requirements independent of Git author display names, without treating local names as verified bot or Team identities.
+- Skip unusable polling cache repairs without webhook coverage, and honor equal-timestamp comment deletions so stale bodies do not remain protected.
+- Defer exact reviews the model provider throttles instead of retrying them as failures every few minutes.
+- Prepare target-bound permission acquisition for review authority without changing active admission, transport retries, or caches.
+- Confirm the human-review hold before removing existing stop-command protection, and fail safely instead of acknowledging failed or unverified label changes.
+- Measure webhook payload bytes eligible for retirement in the bounded, read-only storage census.
+- Count current exact and scheduled review runs in the dashboard's worker error rate, which was reporting 0% because it sampled none of them.
 
 ## 0.3.2 - 2026-10-28
 

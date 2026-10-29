@@ -1,1 +1,0 @@
-- Count current exact and scheduled review runs in the dashboard's worker error rate, which was reporting 0% because it sampled none of them.

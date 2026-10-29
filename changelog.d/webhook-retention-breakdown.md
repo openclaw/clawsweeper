@@ -1,1 +1,0 @@
-- Measure webhook payload bytes eligible for retirement in the bounded, read-only storage census.

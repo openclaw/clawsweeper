@@ -1,10 +1,11 @@
-# Local review package candidate
+# Local review package
 
-- Status: active development and qualification guide; no package release
+- Status: active development and qualification guide; 0.3.3 is a proposed release
+- Published baseline: [v0.3.2](https://github.com/openclaw/clawsweeper/releases/tag/v0.3.2)
 - Owner: ClawSweeper local-runtime maintainers
 - Source of truth: `scripts/stage-local-package.mjs`, `src/clawsweeper-local.ts`,
   and `.github/workflows/local-package-qualification.yml`
-- Verified source baseline: `118a07468663a22e9cc0e3fd76dfe2f17532eec0`; CI artifacts identify the tested source and diff
+- Last verified source baseline: `b9d03d33fedd9100c8079bc7df77d5f1a1e406d5` (source contracts only); CI artifacts identify the tested candidate and diff
 - Update when: the local entrypoint, imports, workers, assets, package format, or qualification matrix changes
 
 The private package candidate contains the full committed-range reviewer. It
@@ -31,7 +32,7 @@ The source service package remains private and unchanged in scope.
 Install the resulting tarball into a disposable directory to qualify it:
 
 ```sh
-npm install --prefix /tmp/clawsweeper-local-install --ignore-scripts --omit=dev --no-audit --no-fund ./openclaw-clawsweeper-0.3.2.tgz
+npm install --prefix /tmp/clawsweeper-local-install --ignore-scripts --omit=dev --no-audit --no-fund ./openclaw-clawsweeper-0.3.3.tgz
 /tmp/clawsweeper-local-install/node_modules/.bin/clawsweeper --help
 /tmp/clawsweeper-local-install/node_modules/.bin/clawsweeper --version
 ```
@@ -102,7 +103,7 @@ installed entry. The harness prints the actual Node version, OS, architecture,
 and tarball hash. Runner labels do not qualify other architectures or every
 Node 24 patch release.
 
-The committed-range suite expects 18 tests; Windows intentionally skips two
+The committed-range suite expects 25 tests; Windows intentionally skips two
 POSIX Git fault wrappers and one case whose filenames Windows cannot represent.
 Scanner fixtures validate file types and excluded secret variables, and read
 materialized input files on Windows; permission-bit assertions apply only on

@@ -1,1 +1,0 @@
-- Keep local committed-range contributor proof requirements independent of Git author display names, without treating local names as verified bot or Team identities.
