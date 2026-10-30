@@ -6,7 +6,8 @@ import SegmentBar from '../../components/SegmentBar.astro';
 import ItemTable from '../../components/ItemTable.astro';
 import Clear from '../../components/Clear.astro';
 import Icon from '../../components/Icon.astro';
-import { lists, repos, type Repo } from '../../lib/data';
+import { collectionsForRepository, repos, type Repo } from '../../lib/data';
+import { repositoryCollectionStatus } from '../../lib/repository-collections';
 import { int, pct } from '../../lib/format';
 
 export function getStaticPaths() {
@@ -14,12 +15,12 @@ export function getStaticPaths() {
 }
 
 const { repo } = Astro.props as { repo: Repo };
-const mine = <T extends { repo: string }>(items: T[]) => items.filter(item => item.repo === repo.repo);
+const collections = collectionsForRepository(repo);
 const sections = [
-  { title: 'Stalest open items', tip: 'Open items with the oldest latest review.', items: mine(lists.stale), meta: 'age' as const, empty: 'No stale open items.' },
-  { title: 'Needs a maintainer', tip: 'Latest reviews that flagged a maintainer decision. Historical flags.', items: mine(lists.maintainer), meta: 'maintainer' as const, empty: 'No maintainer flags.' },
-  { title: 'Security attention', tip: 'Latest reviews that marked security as needing attention.', items: mine(lists.security), meta: 'security' as const, empty: 'No security flags.' },
-  { title: 'Recent closes', tip: 'Most recent closes ClawSweeper recorded.', items: mine(lists.closes), meta: 'reason' as const, empty: 'No recent closes.' },
+  { title: 'Stalest open items', tip: 'Open items with the oldest latest review.', collection: collections.stale, meta: 'age' as const, empty: 'No stale open items in the stored corpus.' },
+  { title: 'Needs a maintainer', tip: 'Latest reviews that flagged a maintainer decision. Historical flags.', collection: collections.maintainer, meta: 'maintainer' as const, empty: 'No maintainer flags in the stored corpus.' },
+  { title: 'Security attention', tip: 'Latest reviews that marked security as needing attention.', collection: collections.security, meta: 'security' as const, empty: 'No security flags in the stored corpus.' },
+  { title: 'Recent closes', tip: 'Most recent closes ClawSweeper recorded.', collection: collections.closes, meta: 'reason' as const, empty: 'No recorded closes in the stored corpus.' },
 ];
 const fresh = repo.open ? (repo.open - repo.staleOpen) / repo.open : null;
 ---
@@ -48,12 +49,16 @@ const fresh = repo.open ? (repo.open - repo.staleOpen) / repo.open : null;
   </Card>
 
   <div class="mt-3 grid gap-3 xl:grid-cols-2">
-    {sections.map(section => (
-      <Card title={section.title} flush tip={`${section.tip}\nFiltered from the 500-item list across all repositories.`}>
-        {section.items.length
-          ? <ItemTable items={section.items} meta={section.meta} limit={10} showRepo={false} />
-          : <Clear text={section.empty} class="px-4 pb-5 pt-1" />}
-      </Card>
-    ))}
+    {sections.map(section => {
+      const status = repositoryCollectionStatus(section.collection);
+      return (
+        <Card title={section.title} flush tip={`${section.tip}\nUp to 10 matches selected within this repository’s stored corpus. Not live GitHub coverage.`}>
+          {section.collection.items.length > 0 && <ItemTable items={section.collection.items} meta={section.meta} limit={10} showRepo={false} />}
+          {status.empty
+            ? <Clear text={section.empty} class="px-4 pb-5 pt-1" />
+            : <p class="px-4 pb-4 pt-2 text-[12px] text-fg-muted">{status.message}</p>}
+        </Card>
+      );
+    })}
   </div>
 </Layout>

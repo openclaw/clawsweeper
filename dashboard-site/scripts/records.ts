@@ -7,6 +7,10 @@ import { createInterface } from "node:readline";
 import { isRecord } from "./guards.ts";
 import { compareAttention, reviewerPriority } from "./attention.ts";
 import { isMaintainerAuthorAssociation } from "../../src/maintainer-review-policy.ts";
+import {
+  boundedRepositoryCollection,
+  type CollectionName,
+} from "../src/lib/repository-collections.ts";
 
 const DAY_MS = 86_400_000;
 const LIST_LIMIT = 500;
@@ -153,6 +157,8 @@ export type RepoCorpus = {
   };
   closedElsewhere: Counts;
   lists: Record<ListName, Row[]>;
+  // Exact qualifying stored-corpus counts, before bounding. Absent in legacy caches.
+  collectionTotals?: Record<CollectionName, number>;
   codexMs: number[];
   createdToReviewHours: number[];
 };
@@ -242,6 +248,7 @@ export async function aggregateRecords(
       closes: { total: 0, byReason: {}, days: {}, recent: [] },
       closedElsewhere: {},
       lists: { maintainer: [], security: [], stale: [] },
+      collectionTotals: { maintainer: 0, security: 0, stale: 0, closes: 0 },
       codexMs: [],
       createdToReviewHours: [],
     };
@@ -251,8 +258,12 @@ export async function aggregateRecords(
       let files: string[];
       try {
         files = await readdir(`${root}/${directory.name}/${area}`);
-      } catch {
-        continue;
+      } catch (error) {
+        // An absent section has no stored records; other read failures must not
+        // produce a partial aggregate with convincing zero counts.
+        if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
+          continue;
+        throw error;
       }
       for (const file of files) {
         if (!/^\d+\.md$/.test(file)) continue;
@@ -314,6 +325,7 @@ export async function aggregateRecords(
           } else {
             const reason = decision.closeReason || "reason_not_recorded";
             part.closes.total++;
+            part.collectionTotals!.closes++;
             bump(part.closes.byReason, reason);
             const closeDay = (part.closes.days[day] ??= { count: 0, byReason: {} });
             closeDay.count++;
@@ -328,6 +340,7 @@ export async function aggregateRecords(
           if (age <= 30 * DAY_MS) stats.reviewed30d++;
           if (!archived && age > 7 * DAY_MS) {
             stats.staleOpen++;
+            part.collectionTotals!.stale++;
             keep(part.lists.stale, row, LIST_ORDER.stale);
           }
           const day = (part.days[reviewedAt.slice(0, 10)] ??= {
@@ -364,10 +377,13 @@ export async function aggregateRecords(
           bump(distributions.findings, `P${finding.priority}`);
         if (!archived && decision.maintainerDecision?.required) {
           bump(distributions.maintainerKinds, decision.maintainerDecision.kind);
+          part.collectionTotals!.maintainer++;
           keep(part.lists.maintainer, row, LIST_ORDER.maintainer);
         }
-        if (!archived && decision.securityReview?.status === "needs_attention")
+        if (!archived && decision.securityReview?.status === "needs_attention") {
+          part.collectionTotals!.security++;
           keep(part.lists.security, row, LIST_ORDER.security);
+        }
       }
     }
     if (!stats.records) continue;
@@ -452,6 +468,31 @@ export function combineCorpus(cache: CorpusCache, isKept: (repo: string) => bool
     distributions,
     days: byDate(days).map(([day, count]) => ({ date: day, ...count })),
     repos: kept.map((part) => part.stats).sort((a, b) => b.open - a.open),
+    // Select from each kept repository before applying the much smaller card limit.
+    repositoryCollections: Object.fromEntries(
+      kept.map((part) => [
+        part.stats.slug,
+        {
+          ...Object.fromEntries(
+            (["stale", "maintainer", "security"] as const).map((name) => [
+              name,
+              boundedRepositoryCollection(
+                [...part.lists[name]].sort(listOrder[name]),
+                part.collectionTotals?.[name],
+                name !== "stale" && !cache.attentionOrder
+                  ? "legacy-unknown"
+                  : "repository-before-limit",
+              ),
+            ]),
+          ),
+          closes: boundedRepositoryCollection(
+            [...part.closes.recent].sort(newestCloseFirst),
+            part.collectionTotals?.closes,
+            "repository-before-limit",
+          ),
+        },
+      ]),
+    ),
     lists: {
       maintainer: top(lists.maintainer, listOrder.maintainer),
       security: top(lists.security, listOrder.security),

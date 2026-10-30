@@ -286,6 +286,20 @@ alerts count recorded claims, which may end before model execution. The bounded
 public target sample links to GitHub for revision and trigger investigation; it is
 not a ranking or proof of wasted execution.
 
+Repository cards select stale, maintainer, security and recent-close matches
+within each kept public repository before applying their ten-row display limit;
+the global lists remain capped at 500. The corpus cache carries optional exact
+`collectionTotals` before truncation, and the public snapshot carries slug-keyed
+`repositoryCollections` envelopes (`items`, `total`, `limit`, `selection`). These
+counts describe stored-corpus matches, not complete live GitHub coverage or source
+validity. Older caches/snapshots retain observed rows with unknown selection
+coverage; missing rows or a nonzero count never establish an all-clear. Only a
+known zero from repository-before-limit selection gets an empty-state flag.
+Non-absence filesystem errors stop aggregation rather than publish partial zeros.
+The source owners are `dashboard-site/scripts/records.ts` and
+`dashboard-site/src/lib/repository-collections.ts`; update this contract when
+selection, limits, visibility filtering or legacy compatibility changes.
+
 The site shows no report bodies, author identities or free-text concerns.
 Local preview: in `dashboard-site/`, install dependencies, run
 `scripts/build-corpus.ts --records <records dir> --out <state dir>` and

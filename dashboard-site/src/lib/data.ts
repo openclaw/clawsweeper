@@ -2,6 +2,11 @@ import raw from "../data/dashboard.json";
 import type { Operations, OperationsHour } from "../../scripts/operations.ts";
 import { duration, label } from "./format";
 import { reviewTimingWindow, summarizeRunWindow } from "./run-window.ts";
+import {
+  repositoryCollection,
+  type CollectionName,
+  type RepositoryCollections,
+} from "./repository-collections.ts";
 
 // The build snapshot (scripts/build-data.ts). Typed loosely at the edge; every page reads
 // through the view helpers below so presentation never learns the raw shapes.
@@ -386,6 +391,26 @@ export const lists = {
   maintainer: corpus.lists.maintainer as Item[],
   closes: corpus.recordedCloses.recent as Item[],
 };
+
+// Optional transport: older snapshots only have globally capped observations.
+export function collectionsForRepository(repo: Repo): RepositoryCollections<Item> {
+  const scoped = corpus.repositoryCollections?.[repo.slug] as
+    | Partial<RepositoryCollections<Item>>
+    | undefined;
+  const get = (name: CollectionName) =>
+    repositoryCollection(
+      scoped?.[name],
+      repo.repo,
+      lists[name],
+      name === "stale" ? repo.staleOpen : undefined,
+    );
+  return {
+    stale: get("stale"),
+    maintainer: get("maintainer"),
+    security: get("security"),
+    closes: get("closes"),
+  };
+}
 
 function entries(record: Record<string, number>, drop: string[] = []) {
   return Object.entries(record)
