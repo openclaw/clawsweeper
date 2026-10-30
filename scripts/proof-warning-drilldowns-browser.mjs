@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
@@ -13,9 +14,13 @@ const dataPath = resolve("dashboard-site/src/data/dashboard.json");
 const originalData = existsSync(dataPath) ? readFileSync(dataPath) : null;
 const beforeRoot = join(out, "baseline");
 mkdirSync(beforeRoot, { recursive: true });
-execFileSync("tar", ["-xf", "-", "-C", beforeRoot], {
-  input: execFileSync("git", ["archive", base, "dashboard-site"]),
-});
+// An explicit archive is produced from the pinned base by the caller when manifest sync
+// does not carry Git history. Its bytes are hashed in the trace for independent comparison.
+const baselineArchive = process.argv[4]
+  ? readFileSync(process.argv[4])
+  : execFileSync("git", ["archive", base, "dashboard-site"]);
+const baselineArchiveSha256 = createHash("sha256").update(baselineArchive).digest("hex");
+execFileSync("tar", ["-xf", "-", "-C", beforeRoot], { input: baselineArchive });
 const beforeSite = join(beforeRoot, "dashboard-site");
 if (!existsSync(join(beforeSite, "node_modules")))
   symlinkSync(resolve("dashboard-site/node_modules"), join(beforeSite, "node_modules"), "dir");
@@ -255,6 +260,7 @@ try {
     JSON.stringify(
       {
         base,
+        baseline_archive_sha256: baselineArchiveSha256,
         checks,
         canonical_navigations: navigations,
         request_count: requests.length,

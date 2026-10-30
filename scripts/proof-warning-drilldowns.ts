@@ -13,6 +13,11 @@ import { MemoryDurableStorage } from "../test/dashboard-worker-harness.ts";
 
 const out = resolve(process.argv[2] ?? ".artifacts/warning-proof");
 await mkdir(out, { recursive: true });
+// Manifest sync may omit Git metadata for an unpublished commit. In that mode the caller
+// supplies a pinned head; the returned source hashes must be checked against that commit.
+const suppliedHead = process.argv[3];
+if (suppliedHead && !/^[a-f0-9]{40}$/.test(suppliedHead))
+  throw new Error("Invalid proof source head");
 const now = Date.now();
 const repo = "openclaw/clawsweeper";
 const originalFetch = globalThis.fetch;
@@ -163,6 +168,17 @@ try {
     JSON.stringify({ ...snapshot, queue: unavailable }),
   );
   const sourcePaths = [
+    "dashboard/exact-review-read-model.ts",
+    "dashboard-site/src/components/Layout.astro",
+    "dashboard-site/src/components/SegmentBar.astro",
+    "dashboard-site/src/components/Card.astro",
+    "dashboard-site/src/components/BarList.astro",
+    "dashboard-site/src/lib/format.ts",
+    "test/dashboard-worker-harness.ts",
+    "package.json",
+    "pnpm-lock.yaml",
+    "dashboard-site/package.json",
+    "dashboard-site/pnpm-lock.yaml",
     "dashboard/exact-review-warning-evidence.ts",
     "dashboard/exact-review-review-loop.ts",
     "dashboard/exact-review-queue.ts",
@@ -190,7 +206,11 @@ try {
     join(out, "producer-trace.json"),
     JSON.stringify(
       {
-        head: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+        head:
+          suppliedHead ?? execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+        head_binding: suppliedHead
+          ? "caller-pinned; verify source_sha256 against committed blobs"
+          : "local Git HEAD",
         source_sha256: sourceHashes,
         fixture: "isolated parked queue records and real SQLite claim generation writes",
         commands: [
