@@ -1,0 +1,1 @@
+- Attribute failed review publication and lifecycle handoffs to publication failures instead of blaming successful review generation.

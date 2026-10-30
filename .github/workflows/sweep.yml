@@ -1977,6 +1977,19 @@ jobs:
               (
                 steps.exact-review-generation-result.outputs.outcome != 'success' &&
                 steps.exact-review-generation-result.outputs.retry_kind == '' &&
+                (
+                  steps.create-exact-review-bundle.outcome == 'failure' ||
+                  steps.direct-setup-state.outcome == 'failure' ||
+                  steps.prepare-direct-exact-review-publication.outcome == 'failure' ||
+                  steps.direct-exact-review-publication.outcome == 'failure' ||
+                  steps.finalize-direct-exact-review-lifecycle.outcome == 'failure' ||
+                  steps.upload-exact-review-bundle.outcome == 'failure' ||
+                  steps.queue-exact-review-publication.outcome == 'failure'
+                )
+              ) && 'publication_failure' ||
+              (
+                steps.exact-review-generation-result.outputs.outcome != 'success' &&
+                steps.exact-review-generation-result.outputs.retry_kind == '' &&
                 steps.reserve-exact-review-lease.outputs.status != 'held' &&
                 steps.reserve-exact-review-lease.outputs.status != 'superseded'
               ) && 'codex_or_content_failure' || 'queue_completion_failure'
@@ -1985,8 +1998,10 @@ jobs:
           RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status || 'unknown' }}
           REVIEW_EXIT_CODE: ${{ steps.review-exact-event-item.outputs.exit_code || 'unknown' }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome || 'not_started' }}
+          PUBLICATION_QUEUE_OUTCOME: ${{ steps.queue-exact-review-publication.outcome || 'not_started' }}
+          DIRECT_LIFECYCLE_OUTCOME: ${{ steps.finalize-direct-exact-review-lifecycle.outcome || 'not_started' }}
         run: |
-          echo "::error::Exact review run failed: classification=$CLASSIFICATION reservation=$RESERVATION_STATUS review_outcome=$REVIEW_OUTCOME review_exit=$REVIEW_EXIT_CODE queue_completion=$COMPLETION_OUTCOME"
+          echo "::error::Exact review run failed: classification=$CLASSIFICATION reservation=$RESERVATION_STATUS review_outcome=$REVIEW_OUTCOME review_exit=$REVIEW_EXIT_CODE queue_completion=$COMPLETION_OUTCOME publication_queue=$PUBLICATION_QUEUE_OUTCOME direct_lifecycle=$DIRECT_LIFECYCLE_OUTCOME"
           exit 1
 
   event-review-publish:
