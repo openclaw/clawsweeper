@@ -1,0 +1,1 @@
+- Keep background re-review start statuses in existing durable comments with lossless bytes, size-limit fallback, and fenced leases that survive apply publication, avoiding repeated subscriber notifications while preserving review history and recovery.

@@ -43,6 +43,28 @@ export function hasReviewStartLeaseCommentMarker(body: string, itemNumber: numbe
   );
 }
 
+export const REVIEW_STARTED_STATUS = "ClawSweeper status: review started.";
+
+// A combined lease ends at the durable identity, never at a dedicated lease
+// identity. Only remove that canonical tail; quoted markers are review text.
+export function clearInPlaceReviewStartStatus(body: string, itemNumber?: number): string {
+  const tail =
+    /<!--\s*clawsweeper-review-status:started\s+item=([1-9]\d*)\b[^>]*-->\s*(<!--\s*clawsweeper-review\s+item=([1-9]\d*)\s*-->\s*)$/i.exec(
+      body,
+    );
+  if (
+    !tail ||
+    tail[1] !== tail[3] ||
+    (itemNumber !== undefined && Number(tail[1]) !== itemNumber)
+  ) {
+    return body;
+  }
+  return (body.slice(0, tail.index) + tail[2]).replace(
+    /^ClawSweeper status: review started\.(?:\r?\n){2}/,
+    "",
+  );
+}
+
 export function trailingHtmlComments(value: string): string[] {
   let end = value.length;
   const trailing: string[] = [];
