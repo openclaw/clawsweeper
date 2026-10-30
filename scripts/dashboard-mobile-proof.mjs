@@ -191,6 +191,34 @@ try {
       } else {
         assert.ok(await page.locator("aside [aria-current=page]").isVisible());
       }
+      if (width >= 768) await page.locator("aside a[href='/coverage/']").click();
+      const info = page.locator("[data-info-tip]").first();
+      assert.equal(
+        await page.locator("[data-info-tip]").count(),
+        5,
+        "all landed Coverage explanations remain present",
+      );
+      await info.focus();
+      assert.ok(await page.locator("#tip.on").isVisible(), "landed info tooltip opens on focus");
+      await page.keyboard.press("Escape");
+      assert.equal(await page.locator("#tip.on").count(), 0);
+      if (width < 768) await info.tap();
+      else await info.click();
+      assert.ok(await page.locator("#tip.on").isVisible(), "info tooltip pins on tap/click");
+      if (width < 768) await info.tap();
+      else await info.click();
+      assert.equal(await page.locator("#tip.on").count(), 0, "second activation dismisses");
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("Shift+Tab");
+      assert.ok(await page.locator("#tip.on").isVisible());
+      // Event-only compatibility check for the existing inner repository scroller.
+      // Real touch and keyboard activation above remains separate from this capture-phase check.
+      await page.locator("#cmd-list").evaluate((node) => node.dispatchEvent(new Event("scroll")));
+      assert.equal(
+        await page.locator("#tip.on").count(),
+        0,
+        "inner non-bubbling scroll is captured and dismisses the tip",
+      );
       const darkBefore = await page
         .locator("html")
         .evaluate((node) => node.classList.contains("dark"));
