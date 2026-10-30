@@ -1,0 +1,15 @@
+---
+import Icon from './Icon.astro';
+
+interface Props {
+  label: string;
+  tip: string;
+}
+const { label, tip } = Astro.props;
+const descriptionId = `info-${crypto.randomUUID()}`;
+---
+<button type="button" aria-label={`About ${label}`} aria-describedby={descriptionId} data-info-tip data-tip={tip}
+  class="-m-[5px] inline-flex size-[24px] shrink-0 items-center justify-center rounded text-fg-faint hover:text-fg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg-muted">
+  <Icon name="info" size={13} />
+</button>
+<span id={descriptionId} class="sr-only">{tip}</span>

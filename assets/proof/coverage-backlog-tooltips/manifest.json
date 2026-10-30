@@ -1,0 +1,369 @@
+{
+  "status": "historical execution evidence",
+  "claim": "Five Reviewable backlog legend statuses expose accurate explanations via matching info controls without changing metric values or row layout",
+  "base": "5577656d79ed491486b5e9ab9853df481f9aa8f1",
+  "sourceGitBlobs": {
+    "dashboard-site/src/components/InfoTip.astro": "dc470ede1ded82de7c12d7a7b2b5671302cd4a94",
+    "dashboard-site/src/components/Layout.astro": "969055311aaf6a57262efcbbd6de11bf27d545f2",
+    "dashboard-site/src/components/SegmentBar.astro": "c40c892468a0d9ae8af0cfe1148b05b9e33653e0",
+    "dashboard-site/src/lib/data.ts": "4cfc98835e1ef0db919c33ee3e050d32e0edd070"
+  },
+  "fixture": "dashboard-site/fixtures/dashboard.json, controlled copy with failed=11, expired reduced by 11, pending reduced by 11; clock fixed to 2026-10-12T07:32:00Z for both builds",
+  "command": "crabbox run --id cbx_aeabc224ed25 --keep --no-hydrate --timing-json --script .artifacts/coverage-tooltips/run-proof.sh",
+  "runtime": "Node 24.19.0; two built Astro sites served locally; Playwright Chromium",
+  "limits": "Controlled static snapshot and Chromium emulation only; no production traffic, deployment, physical devices, Safari/Firefox or screen-reader session",
+  "provider": "aws",
+  "lease": "cbx_aeabc224ed25",
+  "image": "ami-04beed173f1785931",
+  "browser": "154.0.8037.97",
+  "scenarios": [
+    {
+      "name": "desktop-light",
+      "width": 1280,
+      "height": 900,
+      "theme": "light",
+      "labels": [
+        {
+          "label": "Reviewed recently",
+          "values": "5,156\n65.2%",
+          "color": "background:var(--ok)",
+          "box": {
+            "y": 332.75,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Stale",
+          "values": "367\n4.6%",
+          "color": "background:var(--warn)",
+          "box": {
+            "y": 357.5,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Expired",
+          "values": "2,243\n28.4%",
+          "color": "background:var(--accent)",
+          "box": {
+            "y": 382.25,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Failed",
+          "values": "11\n0.1%",
+          "color": "background:var(--bad)",
+          "box": {
+            "y": 407,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Never reviewed",
+          "values": "132\n1.7%",
+          "color": "background:var(--fg-faint)",
+          "box": {
+            "y": 431.75,
+            "height": 19.5
+          }
+        }
+      ],
+      "definitions": [
+        {
+          "name": "About Reviewed recently",
+          "tip": "Reviewable items with a completed review dated within the last 7 days.",
+          "description": "Reviewable items with a completed review dated within the last 7 days.",
+          "size": 24
+        },
+        {
+          "name": "About Stale",
+          "tip": "Items whose recorded review status is marked stale. This is separate from completed reviews that have aged out.",
+          "description": "Items whose recorded review status is marked stale. This is separate from completed reviews that have aged out.",
+          "size": 24
+        },
+        {
+          "name": "About Expired",
+          "tip": "Completed reviews whose recorded date is outside the current 7-day freshness window.",
+          "description": "Completed reviews whose recorded date is outside the current 7-day freshness window.",
+          "size": 24
+        },
+        {
+          "name": "About Failed",
+          "tip": "Items whose latest recorded review attempt failed.",
+          "description": "Items whose latest recorded review attempt failed.",
+          "size": 24
+        },
+        {
+          "name": "About Never reviewed",
+          "tip": "Items with no usable review status recorded, plus open items not yet tracked in the review inventory. Earlier review attempts may exist.",
+          "description": "Items with no usable review status recorded, plus open items not yet tracked in the review inventory. Earlier review attempts may exist.",
+          "size": 24
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "name": "desktop-dark",
+      "width": 1280,
+      "height": 900,
+      "theme": "dark",
+      "labels": [
+        {
+          "label": "Reviewed recently",
+          "values": "5,156\n65.2%",
+          "color": "background:var(--ok)",
+          "box": {
+            "y": 332.75,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Stale",
+          "values": "367\n4.6%",
+          "color": "background:var(--warn)",
+          "box": {
+            "y": 357.5,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Expired",
+          "values": "2,243\n28.4%",
+          "color": "background:var(--accent)",
+          "box": {
+            "y": 382.25,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Failed",
+          "values": "11\n0.1%",
+          "color": "background:var(--bad)",
+          "box": {
+            "y": 407,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Never reviewed",
+          "values": "132\n1.7%",
+          "color": "background:var(--fg-faint)",
+          "box": {
+            "y": 431.75,
+            "height": 19.5
+          }
+        }
+      ],
+      "definitions": [
+        {
+          "name": "About Reviewed recently",
+          "tip": "Reviewable items with a completed review dated within the last 7 days.",
+          "description": "Reviewable items with a completed review dated within the last 7 days.",
+          "size": 24
+        },
+        {
+          "name": "About Stale",
+          "tip": "Items whose recorded review status is marked stale. This is separate from completed reviews that have aged out.",
+          "description": "Items whose recorded review status is marked stale. This is separate from completed reviews that have aged out.",
+          "size": 24
+        },
+        {
+          "name": "About Expired",
+          "tip": "Completed reviews whose recorded date is outside the current 7-day freshness window.",
+          "description": "Completed reviews whose recorded date is outside the current 7-day freshness window.",
+          "size": 24
+        },
+        {
+          "name": "About Failed",
+          "tip": "Items whose latest recorded review attempt failed.",
+          "description": "Items whose latest recorded review attempt failed.",
+          "size": 24
+        },
+        {
+          "name": "About Never reviewed",
+          "tip": "Items with no usable review status recorded, plus open items not yet tracked in the review inventory. Earlier review attempts may exist.",
+          "description": "Items with no usable review status recorded, plus open items not yet tracked in the review inventory. Earlier review attempts may exist.",
+          "size": 24
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "name": "mobile",
+      "width": 390,
+      "height": 844,
+      "theme": "light",
+      "touch": true,
+      "labels": [
+        {
+          "label": "Reviewed recently",
+          "values": "5,156\n65.2%",
+          "color": "background:var(--ok)",
+          "box": {
+            "y": 503,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Stale",
+          "values": "367\n4.6%",
+          "color": "background:var(--warn)",
+          "box": {
+            "y": 527.75,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Expired",
+          "values": "2,243\n28.4%",
+          "color": "background:var(--accent)",
+          "box": {
+            "y": 552.5,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Failed",
+          "values": "11\n0.1%",
+          "color": "background:var(--bad)",
+          "box": {
+            "y": 577.25,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Never reviewed",
+          "values": "132\n1.7%",
+          "color": "background:var(--fg-faint)",
+          "box": {
+            "y": 602,
+            "height": 19.5
+          }
+        }
+      ],
+      "definitions": [
+        {
+          "name": "About Reviewed recently",
+          "tip": "Reviewable items with a completed review dated within the last 7 days.",
+          "description": "Reviewable items with a completed review dated within the last 7 days.",
+          "size": 24
+        },
+        {
+          "name": "About Stale",
+          "tip": "Items whose recorded review status is marked stale. This is separate from completed reviews that have aged out.",
+          "description": "Items whose recorded review status is marked stale. This is separate from completed reviews that have aged out.",
+          "size": 24
+        },
+        {
+          "name": "About Expired",
+          "tip": "Completed reviews whose recorded date is outside the current 7-day freshness window.",
+          "description": "Completed reviews whose recorded date is outside the current 7-day freshness window.",
+          "size": 24
+        },
+        {
+          "name": "About Failed",
+          "tip": "Items whose latest recorded review attempt failed.",
+          "description": "Items whose latest recorded review attempt failed.",
+          "size": 24
+        },
+        {
+          "name": "About Never reviewed",
+          "tip": "Items with no usable review status recorded, plus open items not yet tracked in the review inventory. Earlier review attempts may exist.",
+          "description": "Items with no usable review status recorded, plus open items not yet tracked in the review inventory. Earlier review attempts may exist.",
+          "size": 24
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "name": "narrow-mobile",
+      "width": 320,
+      "height": 720,
+      "theme": "dark",
+      "touch": true,
+      "labels": [
+        {
+          "label": "Reviewed recently",
+          "values": "5,156\n65.2%",
+          "color": "background:var(--ok)",
+          "box": {
+            "y": 503,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Stale",
+          "values": "367\n4.6%",
+          "color": "background:var(--warn)",
+          "box": {
+            "y": 527.75,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Expired",
+          "values": "2,243\n28.4%",
+          "color": "background:var(--accent)",
+          "box": {
+            "y": 552.5,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Failed",
+          "values": "11\n0.1%",
+          "color": "background:var(--bad)",
+          "box": {
+            "y": 577.25,
+            "height": 19.5
+          }
+        },
+        {
+          "label": "Never reviewed",
+          "values": "132\n1.7%",
+          "color": "background:var(--fg-faint)",
+          "box": {
+            "y": 602,
+            "height": 19.5
+          }
+        }
+      ],
+      "definitions": [
+        {
+          "name": "About Reviewed recently",
+          "tip": "Reviewable items with a completed review dated within the last 7 days.",
+          "description": "Reviewable items with a completed review dated within the last 7 days.",
+          "size": 24
+        },
+        {
+          "name": "About Stale",
+          "tip": "Items whose recorded review status is marked stale. This is separate from completed reviews that have aged out.",
+          "description": "Items whose recorded review status is marked stale. This is separate from completed reviews that have aged out.",
+          "size": 24
+        },
+        {
+          "name": "About Expired",
+          "tip": "Completed reviews whose recorded date is outside the current 7-day freshness window.",
+          "description": "Completed reviews whose recorded date is outside the current 7-day freshness window.",
+          "size": 24
+        },
+        {
+          "name": "About Failed",
+          "tip": "Items whose latest recorded review attempt failed.",
+          "description": "Items whose latest recorded review attempt failed.",
+          "size": 24
+        },
+        {
+          "name": "About Never reviewed",
+          "tip": "Items with no usable review status recorded, plus open items not yet tracked in the review inventory. Earlier review attempts may exist.",
+          "description": "Items with no usable review status recorded, plus open items not yet tracked in the review inventory. Earlier review attempts may exist.",
+          "size": 24
+        }
+      ],
+      "result": "passed"
+    }
+  ],
+  "errors": [],
+  "result": "passed"
+}

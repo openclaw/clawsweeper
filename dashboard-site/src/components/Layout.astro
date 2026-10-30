@@ -198,6 +198,12 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
 
       const tip = document.getElementById('tip');
       let owner = null;
+      let focusOwner = null;
+      let pinnedOwner = null;
+      const hideTip = () => {
+        owner = focusOwner = pinnedOwner = null;
+        tip.classList.remove('on');
+      };
       const place = event => {
         const pad = 12;
         const { innerWidth: w } = window;
@@ -207,16 +213,57 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
         tip.style.left = `${Math.max(8, x)}px`;
         tip.style.top = `${Math.max(8, event.clientY - rect.height - pad)}px`;
       };
-      document.addEventListener('pointerover', event => {
-        const target = event.target.closest('[data-tip]');
-        if (target === owner) return;
+      const showTip = (target, event) => {
         owner = target;
         if (!target) return tip.classList.remove('on');
         tip.textContent = target.dataset.tip;
         tip.classList.add('on');
         place(event);
+      };
+      const showInfoTip = target => {
+        const rect = target.getBoundingClientRect();
+        showTip(target, { clientX: rect.left, clientY: rect.top });
+      };
+      document.addEventListener('pointerover', event => {
+        if (focusOwner || pinnedOwner) return;
+        const target = event.target.closest('[data-tip]');
+        if (target === owner) return;
+        showTip(target, event);
       });
-      document.addEventListener('pointermove', event => owner && place(event));
+      document.addEventListener('pointermove', event => {
+        if (owner && !focusOwner && !pinnedOwner) place(event);
+      });
+      // Explicit info buttons also support focus and tap-to-toggle.
+      document.addEventListener('focusin', event => {
+        const target = event.target.closest('[data-info-tip]');
+        if (!target) return;
+        focusOwner = target;
+        pinnedOwner = null;
+        showInfoTip(target);
+      });
+      document.addEventListener('focusout', event => {
+        if (event.target !== focusOwner && event.target !== pinnedOwner) return;
+        hideTip();
+      });
+      document.addEventListener('click', event => {
+        const target = event.target.closest('[data-info-tip]');
+        if (!target) return;
+        if (pinnedOwner === target) return hideTip();
+        pinnedOwner = target;
+        showInfoTip(target);
+      });
+      document.addEventListener('pointerdown', event => {
+        if ((!focusOwner && !pinnedOwner) || event.target.closest('[data-info-tip]')) return;
+        hideTip();
+        // The same tap may open an existing ordinary tooltip.
+        const target = event.target.closest('[data-tip]');
+        if (target) showTip(target, event);
+      });
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') hideTip();
+      });
+      document.addEventListener('scroll', hideTip, true);
+      window.addEventListener('resize', hideTip);
 
       const dialog = document.getElementById('cmd');
       const input = document.getElementById('cmd-q');

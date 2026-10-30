@@ -1,0 +1,1 @@
+- Explain all five Coverage backlog statuses with matching info tips available on hover, keyboard focus, and tap. Thanks @brokemac79.

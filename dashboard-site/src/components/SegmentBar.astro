@@ -1,8 +1,9 @@
 ---
 import { int, pct } from '../lib/format';
+import InfoTip from './InfoTip.astro';
 
 interface Props {
-  segments: { label: string; value: number; color: string }[];
+  segments: { label: string; value: number; color: string; tip?: string }[];
   legend?: boolean;
 }
 const { segments, legend = true } = Astro.props;
@@ -18,7 +19,7 @@ const total = segments.reduce((sum, segment) => sum + segment.value, 0) || 1;
     <ul class="mt-3 grid gap-1.5">
       {segments.map(segment => (
         <li class="flex items-center justify-between text-[13px]">
-          <span class="flex items-center gap-2 text-fg-muted"><span class="size-2 rounded-[3px]" style={`background:${segment.color}`}></span>{segment.label}</span>
+          <span class="flex items-center gap-2 text-fg-muted"><span class="size-2 rounded-[3px]" style={`background:${segment.color}`}></span>{segment.label}{segment.tip && <InfoTip label={segment.label} tip={segment.tip} />}</span>
           <span class="flex items-baseline gap-2"><span class="num font-medium">{int(segment.value)}</span><span class="num w-11 text-right text-[12px] text-fg-faint">{pct(segment.value / total)}</span></span>
         </li>
       ))}
