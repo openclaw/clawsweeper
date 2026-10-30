@@ -279,6 +279,14 @@ const OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S = [
   "fa7f7f34b57faf013f53bbd8824cf9a2263c02a42a481282ae3d7d8be29184a2",
 ] as const;
 
+// OCE #2518's original base/head and refreshed base retain this model-URL rejection fixture.
+// Its head now constructs the synthetic URL at runtime; qualify only these complete blobs.
+const OCE_MODEL_ENDPOINT_SOURCE_SHA256S = [
+  "74221411b5fa46a5be9c593dc5572eabe6983a9667830faaa0b00574631ca208",
+  "754f7089704228fcdfa8b3586752c4faecba734e45b8a1a65d4db5fe88445f62",
+  "d66caf0df7a586321da4c1077bbc3a51aa118f7fde343010fc1dbec28cecc8a8",
+] as const;
+
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   // Ship #19: CLI-generated event_id; Privacy's keyword window crosses the reason field.
@@ -287,6 +295,8 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   // Retain the removed OCE fixtures only in source blobs already held by open OCE PRs.
   [17, "URI", "PLAIN", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457", "6c17481ec8ebdfc543923950c2959e58568b8ad6daddabf26ce870e7a5d69274", "tests/conformance/kubernetes-compute.test.mjs", "100644", OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S],
   [17, "URI", "PLAIN", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b", "fb50a8d4a7885dd59938f6421133018054740ef7a91dd01b62b9c109bb4c471c", "tests/conformance/kubernetes-compute.test.mjs", "100644", OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S],
+  // Synthetic model-URL user-info rejection, observed with the pinned native URI detector.
+  [17, "URI", "PLAIN", "a03b652cf4bbbacf754187bc254e62291d6a24dcdd3d7eb65c18f7272a05e7d1", "4a53b24813c2f0d8a0a4c32e6225b379b956559c49fcbf57cd2a39edcdbda1a5", "0eeee59e6f534ec7f2ae070deec4d65bd70b5c81970a4e6b8ce05133193d54ad", "tests/integration/profile-renderer.test.mjs", "100644", OCE_MODEL_ENDPOINT_SOURCE_SHA256S],
   // OpenClaw catalog-icon rejection fixture: observed native prefixes bind the complete source line.
   [17, "URI", "PLAIN", "580f7a7c0ff4d88005bb0a7ad56ab18f84dc6ba38060fd35914e020e8b581a6a", "02fcb6434869afdf5b29773aad1295172012f6445975eba685b873c79e4567b9", "6c9cdafa1ff07a62a8ffc88c6b8d5d377becfb6fc09c3709d997dcc9ca890469", "src/plugins/catalog-icon-registry.test.ts", "100644"],
   [17, "URI", "HTML", "580f7a7c0ff4d88005bb0a7ad56ab18f84dc6ba38060fd35914e020e8b581a6a", "02fcb6434869afdf5b29773aad1295172012f6445975eba685b873c79e4567b9", "6c9cdafa1ff07a62a8ffc88c6b8d5d377becfb6fc09c3709d997dcc9ca890469", "src/plugins/catalog-icon-registry.test.ts", "100644"],
@@ -490,7 +500,8 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorType === 17 &&
           detectorName === "URI" &&
           decoder === "PLAIN") ||
-        (source === "tests/conformance/kubernetes-compute.test.mjs" &&
+        ((source === "tests/conformance/kubernetes-compute.test.mjs" ||
+          source === "tests/integration/profile-renderer.test.mjs") &&
           detectorType === 17 &&
           detectorName === "URI" &&
           decoder === "PLAIN" &&

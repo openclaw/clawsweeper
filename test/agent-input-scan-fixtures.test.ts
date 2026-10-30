@@ -827,6 +827,28 @@ test("Historical OCE URI fixture admits only an exact reviewed source blob", (t)
   if (refused.kind === "refused") assert.equal(refused.diagnostic.reason, "source_not_reviewed");
 });
 
+test("OCE model endpoint fixture policy refuses unreviewed source copies", (t) => {
+  // Matching the synthetic URL, source line and path must not qualify a new complete blob.
+  const raw = ["https://", "user", ":", "pass", "@", "models.example.com"].join("");
+  const rawV2 = raw + "/v1";
+  const patch = fixturePatch(
+    t,
+    "tests/integration/profile-renderer.test.mjs",
+    [
+      {
+        raw,
+        rawV2,
+        line: '      "' + rawV2 + '",',
+        decoders: ["PLAIN"],
+      },
+    ],
+    "remove",
+  );
+  const result = patch.classify("PLAIN", {}, { blobOnly: true });
+  assert.equal(result.kind, "refused", JSON.stringify(result));
+  if (result.kind === "refused") assert.equal(result.diagnostic.reason, "source_not_reviewed");
+});
+
 function catalogIconUriFixture(): ReturnType<typeof autoreviewFixtures>[number] {
   const raw = ["https://", "user", ":", "password", "@", "cdn.example.com"].join("");
   const rawV2 = raw + "/icon";
