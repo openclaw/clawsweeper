@@ -1,3 +1,4 @@
+import { publicWarningEvidence } from "./exact-review-warning-evidence.ts";
 import { publicTimestamp } from "./public-timestamp.ts";
 import { writeReviewUsage } from "./review-usage.ts";
 import { isReviewUsageRecord } from "../src/review-usage-contract.ts";
@@ -5389,6 +5390,7 @@ export function publicExactReviewQueueProjection(
       source.review_runaway_health,
       allowedRepositories,
     ),
+    warning_evidence: publicWarningEvidence(source.warning_evidence, allowedRepositories),
     publication_handoff: publicPublicationHandoff(source.publication_handoff),
     manual_publication:
       objectValue(source.manual_publication).policy === "record_comment_only"

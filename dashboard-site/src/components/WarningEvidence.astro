@@ -1,0 +1,45 @@
+---
+import { int, label } from '../lib/format';
+import type { WarningEvidence } from '../../../dashboard/exact-review-warning-evidence';
+interface Props { evidence: WarningEvidence | null; mode?: 'queue' | 'claims'; }
+const { evidence, mode = 'queue' } = Astro.props;
+const titles = { scanner_refused: 'Scanner refused input', review_retry_exhausted: 'Retries exhausted', stale_revision: 'Retained superseded publications' };
+const descriptions = {
+  scanner_refused: 'Input safety scan holds. Only the closed failure category is public; scanner input and findings are not disclosed.',
+  review_retry_exhausted: 'Review retries reached their limit. A later automatic recovery is shown only when the queue reports one.',
+  stale_revision: 'Superseded publication revisions retained for command acknowledgements. These are not claimable backlog and do not establish failed delivery.',
+};
+const claims = evidence?.repeated_claims;
+const time = (at: string | null) => at ? new Date(at).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC') : 'Not recorded';
+---
+{mode === 'queue' ? <div class="space-y-3" data-warning-evidence>
+  {evidence ? evidence.groups.map(group => <details id={'warning-' + group.kind} class="rounded-lg border border-line p-3 scroll-mt-4">
+    <summary class="cursor-pointer text-[13px] font-medium">{titles[group.kind]} <span class="num text-fg-muted">· {int(group.total)} records</span><span class="ml-2 text-[12px] text-accent">View evidence</span></summary>
+    <p class="mt-3 text-[12px] text-fg-muted">{descriptions[group.kind]}</p>
+    <p class="mt-2 text-[11px] text-fg-muted">Showing {group.items.length} of {int(group.total)} records. Bounded public sample, at most {evidence.sample_limit}; other records may be outside the sample or ineligible for public display. This is not a complete inventory.</p>
+    {group.items.length ? <ul class="mt-3 divide-y divide-line">{group.items.map(item => <li class="py-3 min-w-0">
+      <a class="text-[13px] underline [overflow-wrap:anywhere]" href={'https://github.com/' + item.repository + '/' + (item.item_kind === 'pull_request' ? 'pull' : 'issues') + '/' + item.item_number}>{item.repository}#{item.item_number}</a>
+      <dl class="mt-2 grid gap-x-5 gap-y-1 text-[12px] sm:grid-cols-2">
+        <div><dt class="inline text-fg-muted">Queue revision: </dt><dd class="inline num">{item.revision ?? 'Not recorded'}</dd></div>
+        <div><dt class="inline text-fg-muted">Failed review attempts: </dt><dd class="inline num">{item.review_failure_attempts ?? 'Not recorded'}</dd></div>
+        <div><dt class="inline text-fg-muted">{group.kind === 'scanner_refused' ? 'Scan hold observed' : 'Record updated'}: </dt><dd class="inline">{time(item.observed_at)}</dd></div>
+        <div><dt class="inline text-fg-muted">Automatic recovery: </dt><dd class="inline">{item.next_retry_at ? time(item.next_retry_at) : 'No scheduled recovery reported'}</dd></div>
+        <div class="sm:col-span-2"><dt class="inline text-fg-muted">Failure stage / reason: </dt><dd class="inline">{item.failure ? label(item.failure.stage) + ' / ' + label(item.failure.reason) : 'Not recorded'}</dd></div>
+      </dl>
+    </li>)}</ul> : <p class="mt-3 text-[13px] text-fg-muted">{group.total === 0 ? 'No records in this warning class.' : 'No eligible public records in this bounded sample.'}</p>}
+  </details>) : <p class="text-[13px] text-fg-muted">Warning evidence unavailable in this snapshot. Aggregate counts above do not identify affected records.</p>}
+</div> : <div data-claim-evidence>
+  {claims ? <>
+    <p class="text-[12px] text-fg-muted">Showing {claims.items.length} of {int(claims.total)} flagged targets. Bounded public sample, at most {evidence.sample_limit}; other targets may be outside the sample or ineligible for public display. No private-target count is inferred.</p>
+    {claims.items.length ? <ul class="mt-3 divide-y divide-line">{claims.items.map(item => <li class="py-3 min-w-0">
+      <a class="text-[13px] underline [overflow-wrap:anywhere]" href={'https://github.com/' + item.repository + '/issues/' + item.item_number}>{item.repository}#{item.item_number}</a>
+      <p class="mt-1 text-[12px]"><span class="num font-medium">{int(item.claims)} claims</span><span class="text-fg-muted"> · first {time(item.first_claim_at)} · last {time(item.last_claim_at)}</span></p>
+      <details class="mt-2 text-[12px]">
+        <summary class="cursor-pointer text-accent">Recent claim history ({item.recent_claims.length} observed, at most 5)</summary>
+        <ol class="mt-2 space-y-1 text-fg-muted">{item.recent_claims.map(claim => <li>{time(claim.claimed_at)} · workflow attempt {claim.run_attempt ?? 'not recorded'}</li>)}</ol>
+        {!item.recent_claims.length && <p class="mt-2 text-fg-muted">Recent claim observations unavailable.</p>}
+      </details>
+    </li>)}</ul> : <p class="mt-3 text-[13px] text-fg-muted">{claims.total === 0 ? 'No targets over the claim threshold.' : 'No eligible public targets in this bounded sample.'}</p>}
+    <p class="mt-3 text-[11px] text-fg-muted">Claims are not completed reviews. Revision, trigger, model execution and next retry are not recorded by claim history. Workflow/job URLs are unavailable; item links are canonical GitHub references.</p>
+  </> : <p class="text-[13px] text-fg-muted">Per-target claim counts and history unavailable in this snapshot.</p>}
+</div>}

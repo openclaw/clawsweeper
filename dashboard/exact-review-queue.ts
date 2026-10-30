@@ -1,3 +1,4 @@
+import { exactReviewWarningEvidence } from "./exact-review-warning-evidence.ts";
 import { StoredJsonCorruptionError, encodeStoredJson } from "./stored-json.ts";
 import {
   ReadModelCompressionStore,
@@ -5189,6 +5190,7 @@ export class ExactReviewQueue {
         reviewFlow: this.reviewFlowSummarySync(now),
         reviewFailureHealth: this.reviewFailureHealthSafely(now),
         reviewRunawayHealth: this.reviewRunawayHealthSafely(now),
+        warningClaims: this.warningClaimEvidenceSafely(now),
         publicationFlow: this.publicationFlowSummarySync(now),
         deadLetters: this.deadLetterStatsSync(),
         // Full review observability scans up to 10k durable records. Keep it on
@@ -5202,6 +5204,7 @@ export class ExactReviewQueue {
       reviewFlow,
       reviewFailureHealth,
       reviewRunawayHealth,
+      warningClaims,
       publicationFlow,
       deadLetters,
       stateWriter,
@@ -5308,6 +5311,7 @@ export class ExactReviewQueue {
       bay_projection: bayProjection,
       review_failure_health: reviewFailureHealth,
       review_runaway_health: reviewRunawayHealth,
+      warning_evidence: exactReviewWarningEvidence(state, staleRevisionItemKeys, warningClaims),
       lanes: {
         review: {
           ...stats.lanes.review,
@@ -7796,6 +7800,17 @@ export class ExactReviewQueue {
       } catch {
         // Preserve the same-instance marker when durable telemetry storage is unavailable.
       }
+    }
+  }
+
+  private warningClaimEvidenceSafely(now: number) {
+    try {
+      return this.reviewLoopStore.warningClaimEvidenceSync(
+        now,
+        exactReviewRunawayReviewsPerDay(this.env),
+      );
+    } catch {
+      return null;
     }
   }
 

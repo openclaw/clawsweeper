@@ -216,6 +216,7 @@ export const live = {
   handoff: object(queue.handoff_health),
   failures: object(queue.review_failure_health),
   runaway: object(queue.review_runaway_health),
+  warningEvidence: object(queue.warning_evidence),
   feed: object(queue.scheduled_feed),
   pressure: object(queue.pressure),
   publicationHandoff: object(queue.publication_handoff),

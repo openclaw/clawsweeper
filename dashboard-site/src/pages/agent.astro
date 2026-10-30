@@ -1,5 +1,6 @@
 ---
 import Layout from '../components/Layout.astro';
+import WarningEvidence from '../components/WarningEvidence.astro';
 import Kpi from '../components/Kpi.astro';
 import Card from '../components/Card.astro';
 import TimeChart from '../components/TimeChart.astro';
@@ -45,12 +46,13 @@ const timingObserved = timingDays.filter(day => day.reviewP50 !== null || day.re
       {failures && <p class="mt-2 text-[11px] text-fg-muted">{int(failures.affected_targets)} affected targets · last {failures.window_minutes} minutes · snapshot {stamp(asOf.queue)}</p>}
     </Card>
     <Card title="Repeatedly claimed items" tip="A bounded sample of public targets over the claim threshold, not a ranking of the most repeated items.">
-      {targets.length ? <ul class="divide-y divide-line">{targets.map(key => {
+      {live.warningEvidence?.repeated_claims ? <WarningEvidence evidence={live.warningEvidence} mode="claims" /> : targets.length ? <ul class="divide-y divide-line">{targets.map(key => {
         const [repo, number] = key.split('#');
         return <li class="py-2"><a class="break-all text-[13px] underline" href={`https://github.com/${repo}/issues/${number}`}>{key}</a></li>;
       })}</ul> : runaway?.runaway_items === 0 ? <Clear text="No items over the claim threshold." /> : <p class="text-[13px] text-fg-muted">{runaway ? 'No public sample targets in this snapshot.' : 'Claim telemetry unavailable.'}</p>}
-      <p class="mt-4 text-[13px] text-fg-muted">Compare revisions and triggers on these items. Repeated claims alone do not prove wasted execution.</p>
-      {runaway && <p class="mt-2 text-[11px] text-fg-muted">Showing {targets.length} of {int(runaway.runaway_items)} flagged items · snapshot {stamp(asOf.queue)}</p>}
+      {!live.warningEvidence?.repeated_claims && <p class="mt-2 text-[12px] text-fg-muted">Per-target counts and recent claim history are unavailable in this snapshot.</p>}
+      <p class="mt-4 text-[13px] text-fg-muted">Repeated claims alone do not prove wasted execution. Counts and recent history appear only when observed; revisions and triggers remain unknown.</p>
+      {!live.warningEvidence?.repeated_claims && runaway && <p class="mt-2 text-[11px] text-fg-muted">Showing {targets.length} of {int(runaway.runaway_items)} flagged items · snapshot {stamp(asOf.queue)}</p>}
     </Card>
   </div>
 
