@@ -122,13 +122,18 @@ const feedLanes = Object.entries((live.feed?.lanes ?? {}) as Record<string, { ta
     </Card>
   )}
   <script>
-    function revealWarning() {
-      const id = window.location.hash.slice(1);
+    function revealWarning(id: string) {
       if (!id.startsWith('warning-')) return;
       const details = document.getElementById(id);
       if (details instanceof HTMLDetailsElement) { details.open = true; details.scrollIntoView(); }
     }
-    window.addEventListener('hashchange', revealWarning);
-    revealWarning();
+    window.addEventListener('hashchange', () => revealWarning(window.location.hash.slice(1)));
+    document.addEventListener('click', event => {
+      if (!(event.target instanceof Element)) return;
+      const link = event.target.closest('a[href^="#warning-"]');
+      const href = link?.getAttribute('href');
+      if (href) revealWarning(href.slice(1));
+    });
+    revealWarning(window.location.hash.slice(1));
   </script>
 </Layout>

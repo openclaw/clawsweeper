@@ -116,6 +116,14 @@ try {
               const link = page.locator('a[href="#warning-scanner_refused"]');
               await link.focus();
               await page.keyboard.press("Enter");
+              await page.waitForFunction(
+                () => document.querySelector("#warning-scanner_refused")?.open,
+              );
+              await page.locator("#warning-scanner_refused > summary").click();
+              await link.click(); // Reopening the same hash must not depend on another hashchange event.
+              await page.waitForFunction(
+                () => document.querySelector("#warning-scanner_refused")?.open,
+              );
               assert.equal(
                 await page.locator("#warning-scanner_refused").evaluate((el) => el.open),
                 true,
