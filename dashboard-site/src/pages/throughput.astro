@@ -43,23 +43,22 @@ const perDay = (points: { value: number }[]) => points.reduce((total, point) => 
     <Card title="Sweep runs per day" tip="All sweep workflow runs, any outcome.">
       <TimeChart points={last30.map(day => ({ date: day.date, value: day.total }))} kind="bar" noun="runs" height={200} />
     </Card>
-    <Card title="Sweep failure rate" tip="Failed + startup-failure runs ÷ all sweep runs, per day.">
+    <Card title="Sweep failure rate" tip="Failure, startup_failure and timed_out conclusions ÷ all recorded sweep runs, per day. Skipped, cancelled and runs without a conclusion remain separate outcomes.">
       <TimeChart points={runs.failureRate.slice(-30)} kind="bar" unit="percent" noun="failed" color="var(--bad)" height={200} />
     </Card>
   </div>
 
-  <Card title="Workflows" flush class="mt-3" tip="GitHub Actions archive, per workflow, over the days each one ran. For sweep, days before the hourly history add counts and a duration sample.">
+  <Card title="Workflows" flush class="mt-3" tip="GitHub Actions archive, per workflow, over the days each one ran. Raw conclusion counts plus runs without a recorded conclusion reconcile to Runs. No conclusion does not establish that a run is still active. For sweep, older days add counts and a duration sample.">
     <div class="overflow-x-auto">
       <table class="table">
-        <thead><tr><th>Workflow</th><th class="r">Runs</th><th class="r">Success</th><th class="r">Failed</th><th class="r">Cancelled</th><th class="r">p50</th><th class="r">p90</th><th class="r">Days</th></tr></thead>
+        <thead><tr><th>Workflow</th><th class="r">Runs</th><th>Recorded conclusions</th><th class="r">No conclusion</th><th class="r">p50</th><th class="r">p90</th><th class="r">Days</th></tr></thead>
         <tbody>
           {runs.workflows.map(workflow => (
             <tr>
               <td><div class="font-medium">{workflow.id}</div><div class="font-mono text-[11px] text-fg-faint">{workflow.file}</div></td>
               <td class="r num">{int(workflow.runs)}</td>
-              <td class="r num"><span class:list={[workflow.success !== null && workflow.success < 0.9 ? 'text-bad' : workflow.success !== null && workflow.success < 0.97 ? 'text-warn' : '']}>{pct(workflow.success)}</span></td>
-              <td class="r num">{int(workflow.failed)}</td>
-              <td class="r num text-fg-muted">{int(workflow.cancelled)}</td>
+              <td><div class="flex flex-wrap gap-x-3 gap-y-1">{workflow.outcomes.map(outcome => <span class="whitespace-nowrap text-[12px]"><span class="font-mono text-fg-muted">{outcome.status}</span> <span class="num">{int(outcome.count)}</span></span>)}</div>{workflow.excessConclusions > 0 && <div class="mt-1 text-[12px] text-warn">Count mismatch: {int(workflow.excessConclusions)} excess conclusions</div>}</td>
+              <td class="r num text-fg-muted">{int(workflow.unconcluded)}</td>
               <td class="r num">{duration(workflow.p50)}</td>
               <td class="r num">{duration(workflow.p90)}</td>
               <td class="r num text-fg-muted">{workflow.days}</td>
