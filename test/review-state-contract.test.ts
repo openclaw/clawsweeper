@@ -248,13 +248,29 @@ test("an outstanding maintainer decision alone is awaiting the maintainer, not a
     /clawsweeper-verdict:needs-human [^>]* hold=maintainer_decision findings=0 -->/,
   );
   assert.doesNotMatch(markers, /clawsweeper-verdict:(?:pass|needs-changes)/);
-  // The durable identity reader accepts the state beside the version marker.
-  const identity = durableReviewCausalIdentityFromBody(
-    markedReviewCommentForTest(fixture.item, comment),
-    fixture.item,
-  );
-  assert.equal(identity?.state, "awaiting-maintainer");
+  // The wire contract is unchanged: the marker stays a v1 `blocked` state and only adds
+  // `hold=maintainer_decision`, so the released reader still recognizes the comment.
+  const marked = markedReviewCommentForTest(fixture.item, comment);
+  const identity = durableReviewCausalIdentityFromBody(marked, fixture.item);
+  assert.equal(identity?.state, "blocked");
   assert.equal(identity?.headSha, reviewedHead);
+  // A reader that fails closed on unknown states would drop the comment; prove the
+  // producer never emits one by checking the marker is a v1 state with the attribute.
+  const stateMarker = comment.match(/<!-- clawsweeper-review-state:[^>]+-->/)?.[0] ?? "";
+  assert.match(
+    stateMarker,
+    /^<!-- clawsweeper-review-state:blocked item=\d+ sha=[0-9a-f]{40} v=1 hold=maintainer_decision -->$/,
+  );
+  assert.equal(
+    durableReviewCausalIdentityFromBody(
+      marked.replace(
+        "clawsweeper-review-state:blocked",
+        "clawsweeper-review-state:awaiting-maintainer",
+      ),
+      fixture.item,
+    ),
+    null,
+  );
 });
 
 test("a maintainer decision beside remaining work keeps the PR blocked, as before", () => {

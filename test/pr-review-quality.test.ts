@@ -151,6 +151,7 @@ function readiness(overrides: Record<string, unknown>) {
     comment,
     passes: markers.includes("clawsweeper-verdict:pass"),
     state: markers.match(/clawsweeper-review-state:([a-z-]+)/)?.[1],
+    stateHold: markers.match(/clawsweeper-review-state:[a-z-]+[^>]*\bhold=([a-z_]+)/)?.[1],
   };
 }
 
@@ -193,8 +194,11 @@ test("a product call with a maintainer decision packet asks the owner once", () 
     },
   });
   assert.match(result.comment, /## Decision needed/);
+  assert.match(result.comment, /⏳ \*\*Ready, awaiting maintainer decision\*\*/);
   assert.doesNotMatch(result.comment, /Product call needed|Resolve maintainer decision/);
-  assert.equal(result.state, "awaiting-maintainer");
+  // Presentation says awaiting; the v1 wire state stays blocked with the hold attribute.
+  assert.equal(result.state, "blocked");
+  assert.equal(result.stateHold, "maintainer_decision");
 });
 
 test("an unexplained provenance override needs changes, not a block", () => {
