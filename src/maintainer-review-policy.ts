@@ -6,7 +6,9 @@ export function authorReviewCohort(authorAuthority: ReviewAuthority): "maintaine
   return authorAuthority.role === "maintainer" ? "maintainer" : "ordinary";
 }
 
-export function requesterHasMaintainerReviewAuthority(requesterAuthority: ReviewAuthority): boolean {
+export function requesterHasMaintainerReviewAuthority(
+  requesterAuthority: ReviewAuthority,
+): boolean {
   return requesterAuthority.role === "maintainer";
 }
 
