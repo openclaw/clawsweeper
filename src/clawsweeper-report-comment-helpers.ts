@@ -274,12 +274,9 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
       "Resolve review disposition",
       "Only a keep-open review can publish merge readiness.",
     );
-    block(
-      decisionPending,
-      "Resolve maintainer decision",
-      "Resolve the maintainer decision shown above before merge.",
-      "maintainer",
-    );
+    // An outstanding maintainer decision is the owner's work, not a defect in the
+    // PR. It renders once under "Decision needed" and holds readiness through
+    // `maintainerDecisionPending`; it is not a Before-merge item.
     const product = decision.productReview;
     block(
       product.worthIt === "no",
@@ -345,20 +342,31 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
         detail: `${entry.introducedBy}: ${entry.originalReason || "reason not recorded"}`,
       });
     }
+    // A decision beside remaining work keeps the PR blocked, as before. Only a
+    // decision with nothing else left is awaiting the maintainer.
+    const state: PullRequestReviewReadiness["state"] = items.some(
+      (item) => item.state === "blocked",
+    )
+      ? "blocked"
+      : items.length
+        ? decisionPending
+          ? "blocked"
+          : "needs-changes"
+        : decisionPending
+          ? "awaiting-maintainer"
+          : "ready";
     return {
       headSha,
-      state: items.some((item) => item.state === "blocked")
-        ? "blocked"
-        : items.length
-          ? "needs-changes"
-          : "ready",
+      state,
       items,
+      maintainerDecisionPending: decisionPending,
       normalizationFailed: false,
     };
   } catch {
     return {
       headSha,
       state: "blocked",
+      maintainerDecisionPending: false,
       normalizationFailed: true,
       items: [
         {

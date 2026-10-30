@@ -118,6 +118,7 @@ function prStatusLabels(
         needsContributorAction: unresolvedProof && (options.needsContributorAction ?? true),
       },
       beforeMergeItems: (options.beforeMergeItems ?? []).map((state) => ({ state })),
+      maintainerDecisionPending: false,
       securityReview: { status: options.securityStatus ?? "cleared" },
       mergeRiskOptions: options.mergeRiskOptions ?? [],
       hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(labels),

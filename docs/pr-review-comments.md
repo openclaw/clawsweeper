@@ -207,7 +207,10 @@ merge, and why not yet" in this order:
    regression source exists.
 6. `## Merge readiness` leads with one dynamic plain-language outcome, the
    number of real items remaining, a short bottom line, priority, the reviewed
-   head, and an owner-decision pointer only when a decision packet exists.
+   head, and an owner-decision pointer only when a decision packet exists. A PR
+   whose only open hold is that decision reads
+   `⏳ Ready, awaiting maintainer decision` with no remaining items: the
+   decision is the owner's work, not a defect in the PR.
 7. `## Decision needed` appears only when a maintainer decision packet exists.
    It lists the concrete question, the recommended option (or every option when
    none is recommended), and why, as bullet points.
@@ -215,9 +218,14 @@ merge, and why not yet" in this order:
    actions or risks. Routine CI, ordinary maintainer review, and no-op guidance
    collapse to `None.` These items are the one source of merge readiness: the
    PR status label is `status: 👀 ready for maintainer look` only when this
-   section is `None.`, and `status: ⏳ waiting on author` when an item needs
-   changes from the author. If every remaining item is explicitly maintainer-owned,
-   use `status: ⏳ waiting on maintainer` instead; readiness stays blocked.
+   section is `None.` and no maintainer decision is outstanding, and
+   `status: ⏳ waiting on author` when an item needs changes from the author. If
+   every remaining item is explicitly maintainer-owned, use
+   `status: ⏳ waiting on maintainer` instead; readiness stays blocked.
+   An outstanding maintainer decision is never a Before-merge item and never
+   counts toward the remaining items: it renders once under `Decision needed`.
+   When nothing else remains, readiness is `awaiting-maintainer` with
+   `status: ⏳ waiting on maintainer`; beside other items the PR stays blocked.
    Unknown ownership never implies maintainer-only work. When a duplicate close is kept open because the
    close check did not confirm coverage, the item asks a maintainer to close or
    keep the PR, not the author.
@@ -364,10 +372,13 @@ version:
 <!-- clawsweeper-review-state:ready item=<number> sha=<full-head-sha> v=1 -->
 ```
 
-Its states are `ready`, `blocked`, and `needs-changes`. Human-owned blockers take
-precedence over repairable work. A valid exact item, head, review time, and owned
-lease are required before emitting the marker. Ready means no remaining review
-work; it does not grant merge permission or bypass normal maintainer review.
+Its states are `ready`, `awaiting-maintainer`, `blocked`, and `needs-changes`.
+Human-owned blockers take precedence over repairable work. A valid exact item,
+head, review time, and owned lease are required before emitting the marker. Ready
+means no remaining review work; it does not grant merge permission or bypass
+normal maintainer review. `awaiting-maintainer` means no Before-merge item
+remains and only a maintainer decision is outstanding; it is not `blocked`, and it
+is not `ready` either, because an owner still has to decide.
 Consumers must pair it with the matching durable identity, never infer authority
 from a standalone marker or visible prose. The compact producer contract is in
 [`test/fixtures/review-state-contract-v1.json`](../test/fixtures/review-state-contract-v1.json).
@@ -783,8 +794,9 @@ Neither attribute enrolls a repair or merge workflow.
 - `hold` tells why the verdict is human-only: `normalization_failed`,
   `review_identity`, `maintainer_decision`, `review_failed`, `security`,
   `proof`, `not_opted_in` (a retained historical readiness classification),
-  `blocked`, or `undecided`. `maintainer_decision` and `proof` appear only when
-  that hold is the one Before-merge item; otherwise the hold is `blocked`.
+  `blocked`, or `undecided`. `maintainer_decision` appears only when no
+  Before-merge item remains beside the decision, and `proof` only when the proof
+  ask is the one Before-merge item; otherwise the hold is `blocked`.
 - `findings` is the number of typed review findings. It is `0` for a failed or
   unnormalized review. Findings remain work for the contributor or maintainer.
 

@@ -12,6 +12,7 @@ import type {
   AcquiredReviewStartLease,
   CloseReason,
   ItemContext,
+  PullRequestReviewState,
   ReviewStartStatusCommentOptions,
 } from "./clawsweeper-types.js";
 import {
@@ -549,7 +550,7 @@ export function durableReviewCausalIdentityFromBody(
   sourceRevision: string | null;
   leaseOwner: string;
   leaseCommentId: number;
-  state: "ready" | "blocked" | "needs-changes" | null;
+  state: PullRequestReviewState | null;
 } | null {
   const identity = reviewCommentMarker(number);
   const identityIndex = body.lastIndexOf(identity);
@@ -585,7 +586,14 @@ export function durableReviewCausalIdentityFromBody(
   );
   if (!stateMatch) return null;
   const state = stateMatch[1];
-  if (state !== "ready" && state !== "blocked" && state !== "needs-changes") return null;
+  if (
+    state !== "ready" &&
+    state !== "awaiting-maintainer" &&
+    state !== "blocked" &&
+    state !== "needs-changes"
+  ) {
+    return null;
+  }
   const stateAttributes = stateMatch[2] ?? "";
   const stateAttribute = (name: string) =>
     stateAttributes.match(new RegExp(`\\b${name}=([^\\s>]+)`))?.[1] ?? null;
