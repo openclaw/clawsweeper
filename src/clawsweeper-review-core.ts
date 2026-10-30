@@ -7,7 +7,7 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import {
   agentRunner,
   reviewNetworkCapability,
@@ -128,6 +128,7 @@ export function createReviewCoreRuntime({
   ensureDir,
 }: Omit<ReviewRuntimeDependencies, "targetRepo" | "ghJson">) {
   let reviewPromptTemplatesCache: ReviewItemPrompts | undefined;
+  const reviewProcedureCache = new Map<Item["kind"], string>();
   let reviewDecisionSchemaCache: string | undefined;
   let prCloseCoverageProofPromptTemplateCache: string | undefined;
   function localExactReviewItem(
@@ -233,6 +234,21 @@ export function createReviewCoreRuntime({
     return reviewPromptTemplatesCache;
   }
 
+  function reviewProcedureTemplate(kind: Item["kind"]): string {
+    let procedure = reviewProcedureCache.get(kind);
+    if (procedure === undefined) {
+      procedure = readFileSync(
+        join(
+          dirname(REVIEW_ITEM_PROMPT_PATHS.core),
+          kind === "pull_request" ? "review-pr.md" : "review-issue.md",
+        ),
+        "utf8",
+      );
+      reviewProcedureCache.set(kind, procedure);
+    }
+    return procedure;
+  }
+
   // The applicability owner has already filtered these reasons against host facts.
   function closeReasonsPrompt(guidance: string, reasons: readonly string[]): string {
     const lines = guidance.trim().split("\n");
@@ -288,9 +304,14 @@ export function createReviewCoreRuntime({
     const templates = reviewPromptTemplates();
     const profile = repositoryProfileFor(item.repo);
     const sections = reviewPromptSections(item, context, runtimeHints);
+    const core = fillPromptSlot(
+      templates.core,
+      "{{review_procedure}}",
+      reviewProcedureTemplate(item.kind).trimEnd(),
+    );
     const prompt = fillPromptSlot(
       fillPromptSlot(
-        templates.core,
+        core,
         "{{item_kind_review}}",
         renderReviewSections(templates[item.kind], sections).trim(),
       ),
@@ -929,6 +950,9 @@ ${extra}
     const result = runAgentProcess({
       scanSource,
       ...(options.promptFileBytes === 0 ? {} : { diagnosticPromptPath: promptPath }),
+      ...(options.promptFileBytes === undefined
+        ? {}
+        : { promptFileBytes: options.promptFileBytes }),
       label: `review-${options.item.number}-attempt-1`,
       prompt,
       model: options.model,
@@ -1103,6 +1127,7 @@ ${extra}
     reviewPromptForTest,
     reviewPromptTelemetryForTest,
     reviewPromptTemplates,
+    reviewProcedureTemplate,
     runCodexForTest,
     buildReviewPrompt,
     reviewEnvironment,
