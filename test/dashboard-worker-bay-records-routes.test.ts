@@ -3056,6 +3056,24 @@ test("worker health samples a bounded recent run history within its section dead
   );
 });
 
+test("worker health samples current exact and scheduled review run titles", () => {
+  const titled = (id: number, title: string) => ({
+    ...completedReviewRun(id, id, "failure", id * 1_000),
+    name: title,
+    display_title: title,
+  });
+  const sample = recentWorkerHealthRunSample([
+    titled(1, `Review exact item openclaw/openclaw#1 rev 2 head ${"a".repeat(40)}`),
+    titled(2, "Review scheduled hot item openclaw/openclaw#2 rev 1"),
+    titled(3, "Review scheduled normal item openclaw/openclaw#3 rev 1"),
+    titled(4, "Reconcile exact-review leases"),
+  ]);
+  assert.deepEqual(
+    sample.map((run) => run.id),
+    [1, 2, 3],
+  );
+});
+
 test("hosted webhook distinguishes terminal command updates from retrying failures without GitHub reads", async () => {
   const triggerAtMs = Date.now() - 2 * 60 * 60 * 1000;
   const at = (offsetMs = 0) => new Date(triggerAtMs + offsetMs).toISOString();

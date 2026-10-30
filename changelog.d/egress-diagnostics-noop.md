@@ -1,1 +1,0 @@
-- Stop the GitHub egress telemetry store from rewriting its diagnostics row on every queue start once the one-time legacy backfill is done.

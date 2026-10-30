@@ -1,0 +1,42 @@
+name: Setup trusted review scanner
+description: Restore the pinned scanner archive and verify a fresh host-owned installation.
+outputs:
+  archive-path:
+    description: Private verified release archive transport.
+    value: ${{ steps.archive.outputs.archive-path }}
+  cache-hit:
+    description: Whether Actions restored the exact pinned archive key.
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Prepare private scanner archive transport
+      id: archive
+      shell: bash
+      env:
+        WORKFLOW_ACTION_PATH: ${{ github.action_path }}
+      run: node "${WORKFLOW_ACTION_PATH}/archive-cache.mjs"
+
+    - name: Restore pinned scanner archive
+      id: restore
+      uses: actions/cache/restore@v6
+      continue-on-error: true
+      with:
+        path: ${{ steps.archive.outputs.archive-path }}
+        key: ${{ steps.archive.outputs.cache-key }}
+
+    - name: Install trusted review scanner
+      shell: bash
+      env:
+        WORKFLOW_ACTION_PATH: ${{ github.action_path }}
+        CLAWSWEEPER_REVIEW_ARCHIVE_PATH: ${{ steps.archive.outputs.archive-path }}
+      run: bash "${WORKFLOW_ACTION_PATH}/install.sh"
+
+    # Save before any reviewed target or model can run; never publish installed binaries.
+    - name: Save verified scanner archive
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      continue-on-error: true
+      with:
+        path: ${{ steps.archive.outputs.archive-path }}
+        key: ${{ steps.archive.outputs.cache-key }}

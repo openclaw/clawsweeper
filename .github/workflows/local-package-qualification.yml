@@ -1,0 +1,94 @@
+name: Local package qualification
+
+on:
+  workflow_call:
+    outputs:
+      artifact-id:
+        description: Canonical envelope accepted by every platform consumer
+        value: ${{ jobs.qualified.outputs.artifact-id }}
+
+permissions:
+  contents: read
+
+jobs:
+  package-envelope:
+    name: canonical local package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      artifact-id: ${{ steps.envelope.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:node
+
+      - name: Produce the qualified Linux envelope
+        env:
+          CLAWSWEEPER_TEST_PACKAGE_OUTPUT: ${{ runner.temp }}/local-package-envelope
+        run: node --test test/local-package-install.test.ts
+
+      - name: Retain qualified private package inputs
+        id: envelope
+        uses: actions/upload-artifact@v7
+        with:
+          name: local-package-canonical
+          path: ${{ runner.temp }}/local-package-envelope/
+          if-no-files-found: error
+          retention-days: 7
+
+  installed-package:
+    name: canonical package consumer (${{ matrix.os }})
+    needs: package-envelope
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, xcode-27]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:node
+
+      - name: Fetch the producer's exact envelope
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.package-envelope.outputs.artifact-id }}
+          path: ${{ runner.temp }}/local-package-envelope
+
+      - name: Qualify the same installed local reviewer
+        env:
+          CLAWSWEEPER_TEST_PACKAGE_INPUT: ${{ runner.temp }}/local-package-envelope
+        run: node --test test/local-package-install.test.ts
+
+  # Expose the producer ID only after the entire consumer matrix succeeds.
+  qualified:
+    needs: [package-envelope, installed-package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      artifact-id: ${{ steps.result.outputs.artifact-id }}
+    steps:
+      - name: Export the qualified producer ID
+        id: result
+        env:
+          ARTIFACT_ID: ${{ needs.package-envelope.outputs.artifact-id }}
+        run: |
+          node --input-type=module -e '
+            import { appendFileSync } from "node:fs";
+            const id = process.env.ARTIFACT_ID;
+            if (!/^[1-9][0-9]*$/.test(id) || !Number.isSafeInteger(Number(id))) {
+              throw new Error("invalid qualified artifact ID");
+            }
+            appendFileSync(process.env.GITHUB_OUTPUT, `artifact-id=${id}\n`);
+          '

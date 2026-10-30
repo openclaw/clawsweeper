@@ -1,1 +1,0 @@
-- Record token usage for reviews that run through the Codex app-server (queue-leased `openclaw/openclaw` pull requests with proof tools). Their ephemeral threads write no session file, so the worker now sums `thread/tokenUsage/updated` for the turns it started, minus usage from earlier attempts on a resumed thread.

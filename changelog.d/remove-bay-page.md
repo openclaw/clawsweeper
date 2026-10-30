@@ -1,1 +1,0 @@
-- Remove the public Bay page and its dedicated read APIs: the expensive lifecycle read used roughly 20 seconds of CPU and 45 seconds of wall time, stalling Durable Object claims and heartbeats. Preserve lifecycle telemetry writes, authenticated audit evidence, and Overview public references.

@@ -81,6 +81,26 @@ assertion holds and the baseline requeues on every cycle.
 
 ## Recorded run
 
+### Claim-counting clarification
+
+The `claim-counting` mode compares a base that already has the runaway alert
+with the candidate. It claims and completes 25 runs without executing a model,
+reads the real public queue route, and verifies that the candidate declares
+`counting_basis: "claimed_review_runs"`. Both variants must still alert and age
+out after the window. Unit coverage separately checks legacy snapshots,
+malformed bases, unavailable history, reprojection, and private sample filtering.
+
+```sh
+node docs/proof/source-drift-loop-breaker/run-proof.mjs <base-sha> /tmp/clawsweeper-proof-tools .artifacts/claim-counting-proof claim-counting
+```
+
+Keep the fresh output directory under the checkout so the archived baseline can
+resolve installed workspace dependencies. This mode writes
+`claim-counting-result.json` there; it does not replace the historical receipts
+below.
+
+### Original loop-breaker run
+
 - base: `cac974b3e1da900cac3e7480b91d02a36ca60163` (origin/main)
 - head: `2f91363b9d6081ea7ae4e4ea31450e3a3ec5feb7`, `working_tree_dirty: false`
 - runtime: Node v24.21.0, workerd 1.20260701.1, Miniflare 4.20260701.0

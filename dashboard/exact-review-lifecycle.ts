@@ -1,3 +1,4 @@
+import { decodeStoredJson } from "./stored-json.ts";
 import type { DurableStorage } from "./durable-storage.ts";
 
 export const EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE = "exact_review_lifecycle_projection_v1";
@@ -241,11 +242,13 @@ export function sameCommandStatusAddress(left: CommandStatusAddress, right: Comm
 
 export class ExactReviewLifecycleProjectionStore {
   private readonly storage: DurableStorage;
+  private readonly encodeText: (text: string) => string;
   private schemaReady = false;
   private auditSchemaReady = false;
 
-  constructor(storage: DurableStorage) {
+  constructor(storage: DurableStorage, encodeText: (text: string) => string = (text) => text) {
     this.storage = storage;
+    this.encodeText = encodeText;
   }
 
   ensureSchemaSync() {
@@ -260,21 +263,13 @@ export class ExactReviewLifecycleProjectionStore {
          PRIMARY KEY (canonical_target_key, fence_key, revision)
        ) STRICT`,
     );
-    // The timing reader rejects competing children with an exact indexed lookup.
-    // A partial index preserves fail-closed reads of malformed legacy JSON.
+    // The retired Bay timing queries were the only JSON-expression consumers.
+    // Encoded text is deliberately not SQL JSON; keep only live identity indexes.
     this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_producer_lineage_v1
-         ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} (
-           canonical_target_key,
-           json_extract(projection_json, '$.producerLineage.fenceKey'),
-           json_extract(projection_json, '$.producerLineage.revision'),
-           json_extract(projection_json, '$.producerLineage.claimGeneration')
-         ) WHERE json_valid(projection_json)`,
+      "DROP INDEX IF EXISTS exact_review_lifecycle_projection_producer_lineage_v1",
     );
     this.storage.sql.exec(
-      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_malformed_target_v1
-         ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} (canonical_target_key)
-         WHERE NOT json_valid(projection_json)`,
+      "DROP INDEX IF EXISTS exact_review_lifecycle_projection_malformed_target_v1",
     );
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_fence
@@ -1246,7 +1241,7 @@ export class ExactReviewLifecycleProjectionStore {
       projection.canonicalTargetKey,
       projection.revision,
       projection.fenceKey,
-      JSON.stringify(projection),
+      this.encodeText(JSON.stringify(projection)),
       projection.updatedAt,
     );
   }
@@ -1842,7 +1837,7 @@ export function validLifecycleProjectionJson(
 }
 
 function projectionFromRow(value: string): ExactReviewLifecycleProjection {
-  return normalizeProjection(JSON.parse(value));
+  return normalizeProjection(JSON.parse(decodeStoredJson(value)));
 }
 
 function normalizeProjection(

@@ -5,12 +5,54 @@ import { requiredEnv as env } from "../required-env.js";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { ExactReviewBatchQueueClient } from "./exact-review-batch-queue-client.js";
+import { ExactReviewBatchQueueRequestError } from "./exact-review-queue-transport-error.js";
 
-if (process.argv[2] === "canonical-bodies") {
+const canonicalProgress: {
+  stage: "arguments" | "lifecycle" | "queue_request" | "queue_response";
+  completed_passes: number;
+  last_observed_checkpoint: Record<string, number | null> | null;
+} = { stage: "arguments", completed_passes: 0, last_observed_checkpoint: null };
+
+if (process.argv[2] === "canonical-bodies" || process.argv[2] === "read-model-compression") {
   try {
-    await maintainCanonicalBodies();
-  } catch {
-    console.error('{"ok":false,"status":"canonical_tiering_failed"}');
+    if (process.argv[2] === "canonical-bodies") await maintainCanonicalBodies();
+    else await compressReadModels();
+  } catch (error) {
+    const failure = error instanceof ExactReviewBatchQueueRequestError ? error : null;
+    // A shaped server string may still contain a private identifier. Only these
+    // endpoint-owned codes and closed transport fields may reach operator logs.
+    const code = failure?.details.code;
+    console.error(
+      JSON.stringify({
+        ok: false,
+        status:
+          process.argv[2] === "canonical-bodies"
+            ? "canonical_tiering_failed"
+            : "read_model_compression_failed",
+        ...canonicalProgress,
+        reason: failure?.reason.startsWith("HTTP_") ? "http_error" : (failure?.reason ?? "unknown"),
+        http_status: failure?.details.status ?? null,
+        code:
+          code &&
+          [
+            "canonical_tiering_deployment_mismatch",
+            "canonical_tiering_reviewed_preview_required",
+            "read_model_compression_deployment_mismatch",
+            "read_model_compression_reviewed_preview_required",
+            "read_model_compression_checkpoint_changed",
+            "invalid_read_model_compression_action",
+            "invalid_canonical_tiering_action",
+            "exact_review_queue_unavailable",
+            "exact_review_queue_not_configured",
+            "invalid_signature",
+            "webhook_not_configured",
+          ].includes(code)
+            ? code
+            : null,
+        failure_category: failure?.details.category ?? null,
+        trace_id: failure?.details.traceId ?? null,
+      }),
+    );
     console.error("[exact-review-queue-maintenance] FAILED (exit 1)");
     process.exitCode = 1;
   }
@@ -30,6 +72,84 @@ if (process.argv[2] === "canonical-bodies") {
   console.error("[exact-review-queue-maintenance] invalid arguments");
   console.error("[exact-review-queue-maintenance] FAILED (exit 1)");
   process.exitCode = 1;
+}
+
+async function compressReadModels() {
+  const { values } = parseArgs({
+    args: process.argv.slice(3),
+    options: {
+      apply: { type: "boolean", default: false },
+      "expected-deployment-sha": { type: "string" },
+      "reviewed-plan-sha256": { type: "string" },
+    },
+  });
+  if (
+    !/^[a-f0-9]{40}$/.test(values["expected-deployment-sha"] ?? "") ||
+    (values.apply && !/^[a-f0-9]{64}$/.test(values["reviewed-plan-sha256"] ?? ""))
+  )
+    throw new Error("expected deployment and reviewed compression plan required");
+  const client = new ExactReviewBatchQueueClient({
+    baseUrl: env("EXACT_REVIEW_QUEUE_URL"),
+    webhookSecret: env("CLAWSWEEPER_WEBHOOK_SECRET"),
+  });
+  const started = Date.now();
+  for (let passes = 0; passes < 100_000 && Date.now() - started < 50 * 60_000; passes++) {
+    canonicalProgress.stage = "queue_request";
+    const result = await client.compressReadModels({
+      action: values.apply ? "migrate" : "preview",
+      execute: values.apply,
+      expectedDeploymentSha: values["expected-deployment-sha"],
+      reviewedPreviewSha256: values["reviewed-plan-sha256"],
+    });
+    canonicalProgress.stage = "queue_response";
+    if (result.ok !== true)
+      throw new ExactReviewBatchQueueRequestError(
+        "invalid_response",
+        "Invalid compression response",
+      );
+    if (!values.apply) {
+      console.log(JSON.stringify(result));
+      return;
+    }
+    const checkpoint = result.checkpoint as Record<string, unknown> | undefined;
+    const progress: Record<string, number | null> = {};
+    for (const field of [
+      "table",
+      "afterRowid",
+      "scanned",
+      "converted",
+      "sourceBytes",
+      "savedBytes",
+      "oversized",
+      "conflicts",
+      "completedAt",
+    ]) {
+      const value = checkpoint?.[field];
+      if (
+        (field === "completedAt" && value === null) ||
+        (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+      )
+        progress[field] = value;
+      else
+        throw new ExactReviewBatchQueueRequestError(
+          "invalid_response",
+          "Invalid compression checkpoint",
+        );
+    }
+    const previous = canonicalProgress.last_observed_checkpoint;
+    canonicalProgress.last_observed_checkpoint = progress;
+    canonicalProgress.completed_passes = passes + 1;
+    if (progress.completedAt !== null) {
+      console.log(JSON.stringify({ ok: true, stop: "complete", ...canonicalProgress }));
+      return;
+    }
+    if (previous && progress.scanned === previous.scanned) {
+      console.log(JSON.stringify({ ok: true, stop: "unresolved_source", ...canonicalProgress }));
+      return;
+    }
+    if ((passes + 1) % 100 === 0) console.log(JSON.stringify({ ok: true, ...canonicalProgress }));
+  }
+  console.log(JSON.stringify({ ok: true, stop: "invocation_limit", ...canonicalProgress }));
 }
 
 function validReconciliationArguments(): boolean {
@@ -155,13 +275,16 @@ async function maintainCanonicalBodies() {
       "expected-deployment-sha": { type: "string" },
       "attestation-file": { type: "string" },
       "reviewed-plan-sha256": { type: "string" },
+      "previous-plan-sha256": { type: "string" },
     },
   });
   const action = values.action;
+  const preview = action === "preview" || action === "requalify-preview";
+  const requalification = action === "requalify-preview" || action === "requalify";
   if (
-    !["preview", "activate", "migrate"].includes(action) ||
-    (action !== "preview" && !values.apply) ||
-    (action === "preview" && values.apply)
+    !["preview", "activate", "migrate", "requalify-preview", "requalify"].includes(action) ||
+    preview === values.apply ||
+    (requalification && !/^[a-f0-9]{64}$/.test(values["previous-plan-sha256"] ?? ""))
   )
     throw new Error("invalid canonical tiering action");
   if (!values["attestation-file"] || statSync(values["attestation-file"]).size > 8192)
@@ -169,6 +292,7 @@ async function maintainCanonicalBodies() {
   const bytes = readFileSync(values["attestation-file"]);
   if (bytes.byteLength > 8192) throw new Error("attestation too large");
   const attestation: unknown = JSON.parse(bytes.toString("utf8"));
+  canonicalProgress.stage = "lifecycle";
   await verifyCanonicalBodyLifecycle(
     attestation,
     env("CLOUDFLARE_ACCOUNT_ID"),
@@ -190,32 +314,69 @@ async function maintainCanonicalBodies() {
       stop = "time_limit";
       break;
     }
+    canonicalProgress.stage = "queue_request";
     result = await client.maintainCanonicalBodies({
       action,
       execute: values.apply,
       expectedDeploymentSha: values["expected-deployment-sha"],
       reviewedPreviewSha256: values["reviewed-plan-sha256"],
+      previousPlanSha256: values["previous-plan-sha256"],
       attestation,
     });
+    canonicalProgress.stage = "queue_response";
+    if (result.ok !== true)
+      throw new ExactReviewBatchQueueRequestError(
+        "invalid_response",
+        "Invalid canonical maintenance response",
+      );
     passes++;
     if (action !== "migrate") {
       stop = "requested_action";
       break;
     }
     const checkpoint = result.checkpoint as Record<string, unknown>;
-    if (checkpoint.completed_at) {
+    // The last acknowledged checkpoint is advisory: a lost response may follow
+    // a committed pass. Never copy plan JSON or arbitrary response fields here.
+    const progress: Record<string, number | null> = {};
+    for (const key of [
+      "after_rowid",
+      "migrated",
+      "scanned",
+      "source_bytes",
+      "conflicts",
+      "completed_at",
+    ]) {
+      const value = checkpoint?.[key];
+      if (
+        value === null ||
+        (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+      )
+        progress[key] = value;
+    }
+    if (
+      !Number.isSafeInteger(progress.after_rowid) ||
+      !Number.isSafeInteger(progress.migrated) ||
+      (progress.completed_at !== null && !Number.isSafeInteger(progress.completed_at))
+    )
+      throw new ExactReviewBatchQueueRequestError(
+        "invalid_response",
+        "Invalid canonical migration checkpoint",
+      );
+    canonicalProgress.last_observed_checkpoint = progress;
+    canonicalProgress.completed_passes = passes;
+    if (progress.completed_at !== null) {
       stop = "complete";
       break;
     }
     if (
       previous &&
-      Number(checkpoint.after_rowid) <= Number(previous.after_rowid) &&
-      checkpoint.migrated === previous.migrated
+      Number(progress.after_rowid) <= Number(previous.after_rowid) &&
+      progress.migrated === previous.migrated
     ) {
       stop = "unresolved_source";
       break;
     }
-    previous = checkpoint;
+    previous = progress;
     if (passes % 100 === 0) console.log(JSON.stringify({ ok: true, passes, checkpoint }));
   }
   console.log(JSON.stringify({ ...result, passes, stop }));

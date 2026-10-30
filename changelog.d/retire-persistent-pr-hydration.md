@@ -1,1 +1,0 @@
-- Stop persisting PR hydration caches in review records and remove unused prior-snapshot reads. Retire existing cache fields in bounded, restartable maintenance while preserving review evidence, publication receipts, answered state, and tuple provenance.

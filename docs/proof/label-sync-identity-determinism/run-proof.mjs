@@ -75,7 +75,9 @@ async function record(modulePath, root) {
   let scenario;
   let syntheticInvocations = 0;
   const operations = createLabelMutationOperations({
+    // The optional historical baseline predates REST catalog pages.
     ghJson: () => [],
+    readLabelCatalogPages: () => [[]],
     normalizeLabelName,
     prStatusLabelForKind: () => ({ name: "status:ready", color: "1F883D", description: "fixture" }),
     ghObservedMutationCommand: (mutation) => {

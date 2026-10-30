@@ -1,1 +1,0 @@
-- Wait for the exact-review queue deployment revision before marking a dashboard rollout ready.

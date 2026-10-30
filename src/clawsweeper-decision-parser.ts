@@ -86,6 +86,7 @@ import type {
   TestingReview,
 } from "./clawsweeper-types.js";
 import { normalizePrRating } from "./clawsweeper-rating.js";
+import { closeReasonItemKindError } from "./clawsweeper-close-reasons.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
 import { parseMaintainerDecision } from "./decision-packets.js";
 import { normalizeRepo } from "./repository-profiles.js";
@@ -1023,6 +1024,10 @@ export function createDecisionParser({
       ),
     };
     if (source === "model") {
+      if (decision.decision === "close" && item) {
+        const kindError = closeReasonItemKindError(decision.closeReason, item.kind);
+        if (kindError) throw new Error(`decision.closeReason: ${kindError}`);
+      }
       validateMergeRiskOptions(decision);
       validateMaintainerDecisionOwner(decision);
       validateLabelJustifications(decision);

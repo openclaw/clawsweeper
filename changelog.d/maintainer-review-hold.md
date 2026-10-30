@@ -1,1 +1,0 @@
-- Stop repeated automatic claims of maintainer items that require an explicit review request; retain the skipped result as a queue hold until new input arrives.

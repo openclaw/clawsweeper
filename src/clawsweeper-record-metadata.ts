@@ -30,8 +30,7 @@ import type {
 } from "./clawsweeper-types.js";
 import { isRetryableCodexTransportError } from "./codex-transient.js";
 import {
-  isAutomationReportAuthor,
-  isMaintainerAuthorAssociation,
+  usesContributorProofPolicy,
   isVerifiedFixedCloseReason,
   lockedConversationApplyReason,
 } from "./clawsweeper-item-policy.js";
@@ -72,8 +71,11 @@ export function isExternalPullRequestReport(markdown: string): boolean {
   if (frontMatterValue(markdown, "type") !== "pull_request") return false;
   const authorAssociation = frontMatterValue(markdown, "author_association");
   if (!authorAssociation) return false;
-  if (isMaintainerAuthorAssociation(authorAssociation)) return false;
-  return !isAutomationReportAuthor(frontMatterValue(markdown, "author"));
+  return usesContributorProofPolicy(
+    frontMatterValue(markdown, "author"),
+    authorAssociation,
+    frontMatterValue(markdown, "review_origin") === "local_range",
+  );
 }
 
 export function reportCloseReason(markdown: string): CloseReason | undefined {

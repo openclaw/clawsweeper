@@ -1,9 +1,10 @@
 // Per-table size estimate for a Durable Object's SQLite store.
 //
-// Cloudflare reports only the total stored bytes. This reads, for each table, its row count and
+// Cloudflare reports occupied SQLite bytes, excluding free pages. This reads each table's row count and
 // the average size of a small sample of rows, so the estimate costs one COUNT(*) and two bounded
 // samples per table instead of reading every row's content. This estimates content bytes,
-// not physical allocation: record headers, index pages, and unused space are not counted.
+// not occupied pages: record headers, indexes, and unused space within pages are not counted.
+import { webhookPayloadEligibility } from "./github-webhook-read-model.ts";
 
 // Rows sampled from each end of a table (oldest and newest by rowid): old and new rows of a
 // growing table can differ in size.
@@ -40,6 +41,17 @@ export function storageContentPage(sql: SqlStorage, input: unknown) {
   const table = typeof value.table === "string" ? value.table : "";
   const afterRowid = value.afterRowid ?? 0;
   const upper = value.upperRowid;
+  const retention = value.retention === true;
+  const asOf = value.asOf === undefined ? Date.now() : value.asOf;
+  if (
+    (value.retention !== undefined && typeof value.retention !== "boolean") ||
+    (retention &&
+      (!Number.isSafeInteger(asOf) ||
+        Number(asOf) < 0 ||
+        (Number(afterRowid) > 0 && value.asOf === undefined)))
+  )
+    throw new Error("invalid_storage_census_retention");
+  const pageRows = retention ? 64 : CENSUS_PAGE_ROWS;
   if (
     !Number.isSafeInteger(afterRowid) ||
     Number(afterRowid) < 0 ||
@@ -97,7 +109,7 @@ export function storageContentPage(sql: SqlStorage, input: unknown) {
     sql.exec(
       `SELECT COUNT(*) AS scanned, MAX(id) AS last_id, ${totals.join(", ")} FROM (
        SELECT rowid AS id, ${sizes.join(", ")} FROM ${quoted}
-        WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ${CENSUS_PAGE_ROWS}
+        WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ${pageRows}
      )`,
       afterRowid,
       upperRowid,
@@ -105,14 +117,24 @@ export function storageContentPage(sql: SqlStorage, input: unknown) {
   )[0]!;
   const scannedRows = Number(row.scanned);
   const lastRowid = Number(row.last_id ?? upperRowid);
-  const complete = scannedRows < CENSUS_PAGE_ROWS || lastRowid === upperRowid;
+  const complete = scannedRows < pageRows || lastRowid === upperRowid;
+  const eligibility = retention
+    ? webhookPayloadEligibility(sql, table, Number(afterRowid), lastRowid, Number(asOf))
+    : null;
   return {
     table,
     afterRowid: Number(afterRowid),
     upperRowid,
     scannedRows,
     columns: Object.fromEntries(columns.map((name, i) => [name, Number(row[`c${i}`])])),
-    nextCursor: complete ? null : { afterRowid: lastRowid, upperRowid },
+    nextCursor: complete
+      ? null
+      : {
+          afterRowid: lastRowid,
+          upperRowid,
+          ...(retention ? { retention: true, asOf: Number(asOf) } : {}),
+        },
+    ...(eligibility ? { retention: eligibility } : {}),
     complete,
     semantics:
       "observed TEXT/BLOB bytes; excludes numeric storage, indexes and overhead; concurrent pages are not an atomic snapshot",

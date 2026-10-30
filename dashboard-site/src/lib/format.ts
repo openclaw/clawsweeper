@@ -13,9 +13,10 @@ export function delta(value: number | null) {
 
 export function duration(seconds: number | null) {
   if (seconds === null || !Number.isFinite(seconds)) return '–';
-  if (seconds < 60) return `${Math.round(seconds)}s`;
+  seconds = Math.round(seconds);
+  if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${String(Math.round(seconds % 60)).padStart(2, '0')}s`;
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
   const hours = Math.floor(minutes / 60);
   if (hours < 48) return `${hours}h ${String(minutes % 60).padStart(2, '0')}m`;
   return `${Math.round(hours / 24)}d`;

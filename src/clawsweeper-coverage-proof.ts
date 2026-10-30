@@ -210,8 +210,32 @@ function sourcePrCloseCoveragePullRequestView(
 
 function coveringPrCloseCoveragePullRequestView(
   number: number,
+  requireCurrentMain = false,
 ): PrCloseCoverageProofPullRequestView {
   const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
+  let mainSha: string | undefined;
+  if (requireCurrentMain) {
+    if (!nonBlankStringOrUndefined(pull.merged_at)) {
+      throw new Error("obsolete-fix coverage requires a merged canonical pull request");
+    }
+    const repository = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}`]));
+    const branch = nonBlankStringOrUndefined(repository.default_branch);
+    if (!branch) throw new Error("obsolete-fix coverage requires the default branch");
+    const main = asRecord(
+      ghJson<unknown>(["api", `repos/${targetRepo()}/commits/${encodeURIComponent(branch)}`]),
+    );
+    mainSha = nonBlankStringOrUndefined(main.sha);
+    const mergeSha = nonBlankStringOrUndefined(pull.merge_commit_sha);
+    if (!mainSha || !/^[a-f0-9]{40}$/i.test(mainSha) || !mergeSha) {
+      throw new Error("obsolete-fix coverage requires exact main and canonical merge revisions");
+    }
+    const comparison = asRecord(
+      ghJson<unknown>(["api", `repos/${targetRepo()}/compare/${mergeSha}...${mainSha}`]),
+    );
+    if (!["ahead", "identical"].includes(String(comparison.status))) {
+      throw new Error("obsolete-fix canonical implementation is not reachable from current main");
+    }
+  }
   const issue = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${number}`]));
   const commentsPath = `repos/${targetRepo()}/issues/${number}/comments`;
   const commentsCount = numberOrUndefined(issue.comments);
@@ -244,11 +268,17 @@ function coveringPrCloseCoveragePullRequestView(
     headSha: nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? null,
     comments: filteredComments.included.map(compactPrCloseCoverageProofComment),
     commentsTruncated: commentsWindow.truncated,
+    ...(mainSha ? { mainSha } : {}),
   };
 }
 
-export function coveringPrCloseCoveragePullRequestSnapshotSha256(number: number): string {
-  return prCloseCoverageProofSnapshotSha256(coveringPrCloseCoveragePullRequestView(number));
+export function coveringPrCloseCoveragePullRequestSnapshotSha256(
+  number: number,
+  requireCurrentMain = false,
+): string {
+  return prCloseCoverageProofSnapshotSha256(
+    coveringPrCloseCoveragePullRequestView(number, requireCurrentMain),
+  );
 }
 
 function prCloseCoverageProofSignalSnippets(
@@ -295,14 +325,26 @@ export function prCloseCoverageProofGateResult(options: {
     "while resolving",
   );
   if (afterCandidateResolution) return afterCandidateResolution;
-  if (candidateNumbers.length === 0) return null;
+  const obsolete = reportReviewDecision(options.markdown).closeReason === "obsolete_fix_pr";
+  if (candidateNumbers.length === 0) {
+    return obsolete
+      ? {
+          status: "blocked",
+          block: {
+            actionTaken: "skipped_pr_close_coverage_proof",
+            reason:
+              "obsolete-fix nomination has no canonical PR for independent scope coverage proof",
+          },
+        }
+      : null;
+  }
 
   const source = sourcePrCloseCoveragePullRequestView(options.item, options.context);
   const coveringViews = new Map<number, PrCloseCoverageProofPullRequestView>();
   const coveringView = (number: number): PrCloseCoverageProofPullRequestView => {
     const cached = coveringViews.get(number);
     if (cached) return cached;
-    const view = coveringPrCloseCoveragePullRequestView(number);
+    const view = coveringPrCloseCoveragePullRequestView(number, obsolete);
     coveringViews.set(number, view);
     return view;
   };
@@ -339,6 +381,15 @@ export function prCloseCoverageProofGateResult(options: {
       "while hydrating",
     );
     if (afterHydration) return afterHydration;
+    if (obsolete && (source.commentsTruncated || covering.commentsTruncated)) {
+      return {
+        status: "blocked",
+        block: {
+          actionTaken: "skipped_pr_close_coverage_proof",
+          reason: "obsolete-fix coverage requires complete source and canonical human history",
+        },
+      };
+    }
     checkedPullRequestCandidate = true;
     if (!prCloseCoverageProofCandidateCanClose(covering)) {
       return {
@@ -406,6 +457,7 @@ export function prCloseCoverageProofGateResult(options: {
           status: "allowed",
           covering: {
             number: covering.number,
+            ...(covering.mainSha ? { mainSha: covering.mainSha } : {}),
             provedAtMs: proofStartedAtMs,
             snapshotSha256: prCloseCoverageProofSnapshotSha256(covering),
             updatedAt: covering.updatedAt,

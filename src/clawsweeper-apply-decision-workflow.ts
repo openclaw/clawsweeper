@@ -8,7 +8,7 @@ import {
   createOversizedPrFreshnessGuard,
   parseOversizedPrSourceSnapshot,
 } from "./clawsweeper-oversized-pr-freshness.js";
-import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
+import { REVIEW_SECTIONS, requiresPrCloseCoverageProof } from "./clawsweeper-policy.js";
 import {
   oversizedPrCloseEnabled,
   parseOversizedPullRequestEvidence,
@@ -751,7 +751,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const changedSinceReviewDuplicateCommentRepair =
         action === "skipped_changed_since_review" &&
         decision === "close" &&
-        closeReason === "duplicate_or_superseded";
+        requiresPrCloseCoverageProof(closeReason);
       let staleCanonicalCommentSyncPending = action === "retry_stale_canonical_comment_sync";
       let storedHash = frontMatterValue(markdown, "item_snapshot_hash");
       let storedUpdatedAt = frontMatterValue(markdown, "item_updated_at");
@@ -2115,7 +2115,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       );
       if (
         isCloseProposal &&
-        closeReason === "duplicate_or_superseded" &&
+        requiresPrCloseCoverageProof(closeReason) &&
         !syncCommentsOnly &&
         (applyKind === "all" || item.kind === applyKind) &&
         closeReasonEnabled(closeReason, applyCloseReasons)

@@ -86,6 +86,24 @@ manual publication policy. A valid disabled manual-publication policy passes.
 Local smoke runs without `CLAWSWEEPER_EXPECTED_DEPLOY_SHA` explicitly report this
 signed check as skipped. A persistently unavailable queue still fails readiness.
 
+To repeat verification without deploying or syncing Worker secrets, dispatch the
+same workflow with `mode=verify` and an explicit full deployed commit SHA:
+
+```bash
+gh workflow run dashboard.yml --repo openclaw/clawsweeper --ref <reviewed-branch> \
+  -f mode=verify -f expected_deployment_sha=<deployed-commit-sha>
+```
+
+The separate verification job runs the existing full smoke against the fixed
+production URL using only the webhook signing secret. It checks both the outer
+Worker and signed Durable Object deployment identities. Its concurrency group
+cannot cancel a deployment. The default manual mode and matching pushes to
+`main` still deploy and sync secrets; merging a change to this workflow therefore
+still triggers the normal deployment path.
+
+The signed probe uses the existing Durable Object initialization and legacy
+cleanup path; it does not run a migration or add an administrative write.
+
 A status contract failure keeps its original error and nonzero smoke exit, with
 one bounded diagnostic summary: projection completeness, freshness, cache state,
 validated numeric diagnostic count, and fetch duration. It excludes response
@@ -177,12 +195,31 @@ not restarted by it.
 Each build reads four sources:
 
 - the corpus aggregate (totals, decisions, quality, closes, per-repository
-  counts), cached in the workflow state. It is rebuilt twice a day by the first
-  scheduled build in the 00 or 12 UTC hour (the quietest review hours) that finds
-  the corpus over 11 hours old, by any scheduled build that finds it over 13 hours
-  old (GitHub delays and drops scheduled runs), and when the workflow is started
-  by hand with `refresh_corpus`: that run hydrates every canonical
-  record read-only with `scripts/hydrate-state.ts`, reads front matter only and
+  counts). The site build never reads canonical records: it restores the newest
+  aggregate saved by the separate `Dashboard corpus` workflow
+  (`.github/workflows/dashboard-corpus.yml`), so a slow or failed corpus refresh
+  never blocks a publish. That workflow keeps a tree of the `items` and
+  `closed` records, trimmed to front matter, with a per-repository cursor
+  (`scripts/dashboard-corpus.ts`). Every hour it skips repositories whose newest
+  store revision is not above their cursor and replays the export journal above
+  it, tombstones included; the cursor is the first page's watermark, so a write
+  that lands mid-export is read again next time. A full rebuild (Sundays at 00:20
+  UTC, by hand with `mode=full`, or by a scheduled run in the 00 or 12 UTC hour
+  that finds no saved tree) hydrates the R2 snapshots plus the journal, as
+  `scripts/hydrate-state.ts` does. Stored snapshots can lag the journal far behind,
+  so a run stops starting repositories after 25 minutes and saves what it has;
+  the next hourly runs hydrate the rest, and the aggregate is rebuilt only once
+  every repository has a cursor (until then the site keeps the last complete
+  corpus). A repository without a stored snapshot whose journal is over the
+  cold-hydration bound is left out with a warning and tried again every hour
+  until the snapshot sweep reaches it; the other repositories keep refreshing.
+  The tree includes private repositories and default-branch Actions caches are
+  readable from pull-request workflows, so it is cached only as an AES-256-GCM
+  archive keyed from `CLAWSWEEPER_WEBHOOK_SECRET`. A tree that cannot be opened
+  (the secret was rotated) counts as missing: the next scheduled run in the 00 or
+  12 UTC hour rebuilds it, or dispatch `mode=full`. A failed refresh saves
+  nothing and the next hourly run replays from the last saved tree.
+  The aggregate (`dashboard-site/scripts/build-corpus.ts`) reads front matter only and
   keeps repositories that GitHub reports as public. The cache keeps each
   repository's contribution apart, so every build checks visibility again,
   drops a repository that is no longer public and recomputes every total
@@ -193,7 +230,10 @@ Each build reads four sources:
   inside the exact-review queue Durable Object and slows reviews while it runs
   (a full export on 2026-10-12 failed 26 review runs in 14 minutes; after the
   queue fixes, the 2026-10-14 and 2026-10-15 refreshes saw 1 failure in 100 review
-  runs), so the schedule uses the quietest hours. Until the first such run, scheduled builds skip with a notice;
+  runs; on 2026-10-20 the full export inside the 30-minute publish job started
+  timing out and froze the site), so full rebuilds keep to the quietest hour and
+  hourly refreshes read only the changed records. Until the first corpus refresh,
+  site builds skip with a notice;
 - the public `/api/exact-review-queue` and `/api/review-coverage` responses;
 - the public 7-day `/api/health-history` samples and the 24-hour and 7-day
   `/api/apply-observability` summaries, for the Operations page. Samples are
@@ -219,7 +259,7 @@ Open pages check for a newer build every five minutes and when the tab becomes
 visible, and reload when one is published. The header shows both the build time
 and the review-corpus time. A page warns when its build is more than an hour old
 (the 15-minute rebuild has stopped) or when the corpus is more than 14 hours old
-(the scheduled refresh has stopped). Unknown paths return the site's 404 page with
+(the hourly corpus refresh has stopped or keeps failing). Unknown paths return the site's 404 page with
 status 404. Pull requests that touch `dashboard-site/` build the site from
 `dashboard-site/fixtures/dashboard.json`, without secrets or publishing.
 
@@ -248,8 +288,9 @@ not a ranking or proof of wasted execution.
 
 The site shows no report bodies, author identities or free-text concerns.
 Local preview: in `dashboard-site/`, install dependencies, run
-`dashboard-site/scripts/build-data.ts` with `GITHUB_TOKEN`, `--records <records dir>` and
-`--state <state dir>`, then start the Astro dev server.
+`scripts/build-corpus.ts --records <records dir> --out <state dir>` and
+`scripts/build-data.ts --state <state dir>` with `GITHUB_TOKEN`, then start the
+Astro dev server.
 
 ## Review usage metrics
 
@@ -903,7 +944,10 @@ newly claimed review run per item (publication and finalizer-only claims
 excluded) and reports `degraded` with reason `review_runaway` when any item
 claimed more than `EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY` (production: 24)
 reviews in the trailing 24 hours; otherwise it is `healthy`. A failed history
-read reports `unknown` with reason `telemetry_unavailable`. The object carries
+read reports `unknown` with reason `telemetry_unavailable`. New snapshots declare
+`counting_basis: "claimed_review_runs"`, including cache hits, semantic no-ops,
+and failures before model execution. The alert does not count model calls.
+The object carries
 `window_hours`, `threshold_reviews_per_day`, the `runaway_items` count across all
 repositories, and `sample_item_keys`: at most five `owner/repo#number` keys,
 highest review count first, limited to repositories in `PUBLIC_BAY_REPOS`.
@@ -1028,6 +1072,21 @@ by the **first** delta page. Later pages may observe concurrent writes, so using
 the highest revision observed would risk claiming changes not present in the
 archive. As with object-side production, later record versions may be included;
 future hydration replays every change after the initial watermark.
+
+The scheduled producer passes `--replay-budget-seconds 1080`. Without a budget a
+backlog only grows: each timed-out run leaves more changes for the next, and
+every reader that hydrates from the stale snapshot inherits the whole delta.
+When the budget passes, the replay stops between
+export pages (always after at least one) and the snapshot's watermark becomes the
+last cursor applied instead of the first-page revision. Export pages hold one
+row per identity, ordered by its unique store revision, so every identity whose
+current revision is at or below that cursor is in the tree at that revision;
+anything rewritten during the run lands past it and is replayed by readers and
+by the next producer run. Registration independently refuses a cut that misses
+an identity (`snapshot_coverage_incomplete`). The result reports
+`replay.complete`, `resumeRevision`, `replayedRecords` and per-phase durations,
+and the workflow annotates a run whose replay is still catching up. Readers
+never accept a budget; they always replay to the end.
 
 The outer Worker's signed `POST /internal/state/records/snapshots/upload/`
 `start`, `part`, `manifest`, `complete`, and `abort` routes reuse the blob upload pattern:
@@ -1430,5 +1489,5 @@ concurrently changed successor revision, reason, or deadline is not overwritten.
 Attention lists from a complete corpus refresh sort by reviewer-assigned priority
 (P0 through P3), then oldest review, with unranked items last. These are historical
 flags, not verified unresolved work. Cached corpora built before priority collection
-retain newest-first ordering until the next `refresh_corpus` run; discarded older
+retain newest-first ordering until the next corpus refresh; discarded older
 rows cannot be reconstructed by sorting the cache.

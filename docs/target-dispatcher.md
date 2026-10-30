@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers and target-repository maintainers
 - Source of truth: the embedded dispatcher workflow, receiver workflow,
   repository profiles, and dispatcher tests
-- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
+- Last verified: this revision (keyless template and local Worker/queue proof)
 - Update when: forwarded events, authentication, payloads, permissions, close
   authority, or installation steps change
 
@@ -13,9 +13,9 @@ from sibling repositories directly. Target repositories forward those events so
 ClawSweeper can run a single-job exact one-item review, sync the durable review
 comment, and immediately apply a safe close proposal for that same item. The
 dispatcher first enqueues the event directly with its GitHub Actions OIDC
-identity (see [Direct queue intake](#direct-queue-intake)) and falls back to
-`repository_dispatch` only when that fails, so a forwarded event no longer costs
-a ClawSweeper Actions relay run.
+identity (see [Direct queue intake](#direct-queue-intake)). It holds no
+ClawSweeper credential and never sends `repository_dispatch`; failures warn and
+leave delivery to the independent GitHub App webhook route.
 
 This document covers issue and PR item dispatch via
 `.github/workflows/clawsweeper-dispatch.yml`; `openclaw/openclaw` uses this
@@ -28,8 +28,8 @@ posts to `#clawsweeper` only when the event is surprising or actionable. See
 [openclaw-event-hooks.md](openclaw-event-hooks.md#github-activity-stream).
 
 For issue and PR dispatch, copy this workflow into each target repository as
-`.github/workflows/clawsweeper-dispatch.yml`, or merge these triggers and the
-`Dispatch exact ClawSweeper review` step into an existing combined dispatcher:
+`.github/workflows/clawsweeper-dispatch.yml`. Keep that canonical dispatcher filename
+when combining it with other triggers: OIDC rejects other workflow paths.
 
 Target repositories no longer need a TypeScript profile before exact event
 review can run. Any installed `openclaw/*` repository that is not denied in
@@ -54,14 +54,13 @@ reminder comments cannot trigger the command router.
 Before enabling the workflow:
 
 1. Install the `clawsweeper` GitHub App on the target repository.
-2. Add the App private key as the target repository Actions secret
-   `CLAWSWEEPER_APP_PRIVATE_KEY`.
-3. Install exactly one target dispatcher. Do not add separate comment, spam, and
-   generic-activity dispatch workflows that forward the same event twice.
-4. Keep the target write token limited to the comment acknowledgement path.
-   Issue/PR review dispatch only needs the ClawSweeper installation token for
-   its fallback, plus the dispatch job's `id-token: write` permission for
-   direct queue intake.
+2. Verify the App webhook subscribes to Issues, Pull requests, and Issue comments
+   and reaches `/github/webhook`; see [required subscriptions](github-webhook-read-model.md#required-github-app-event-subscriptions).
+3. Install exactly one dispatcher using the canonical filename below. Do not add
+   separate comment, spam, or generic-activity dispatch workflows for the same event.
+4. Grant only `contents: read` and job-scoped `id-token: write`. Do not configure
+   a ClawSweeper secret, token action, hosted-admission reusable job, or PAT.
+   The Worker owns eligibility, visibility checks, and all acknowledgement writes.
 
 ```yaml
 name: ClawSweeper Dispatch
@@ -82,58 +81,20 @@ concurrency:
   cancel-in-progress: ${{ github.event.action == 'edited' || github.event.action == 'synchronize' || github.event.action == 'ready_for_review' }}
 
 jobs:
-  hosted-target-admission:
-    uses: openclaw/clawsweeper/.github/workflows/hosted-target-admission.yml@174a2c9c903323eb9387d030748ed2b41824a7be # reviewed upstream main
-    with:
-      target_repo: ${{ github.repository }}
-    secrets:
-      CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-
-  reject-hosted-target:
-    needs: hosted-target-admission
-    if: ${{ always() && needs.hosted-target-admission.outputs.outcome != 'public' }}
-    permissions: {}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Report hosted target admission
-        env:
-          ADMISSION_OUTCOME: ${{ needs.hosted-target-admission.outputs.outcome }}
-        run: |
-          set -euo pipefail
-          if [ "$ADMISSION_OUTCOME" = "terminal" ]; then
-            echo "::notice title=ClawSweeper hosted target admission::This repository is not eligible for hosted review. A maintainer can run the review locally."
-          else
-            echo "::warning title=ClawSweeper hosted target admission::Repository eligibility or public visibility could not be verified. Retry the workflow later."
-          fi
-
   dispatch:
-    needs: hosted-target-admission
     runs-on: ubuntu-latest
     # id-token proves this repository, event, branch, and run to the queue.
     # The job never checks out or executes pull request code.
     permissions:
       contents: read
       id-token: write
-    if: ${{ needs.hosted-target-admission.outputs.outcome == 'public' && !(endsWith(github.actor, '[bot]') && (github.event.action == 'labeled' || github.event.action == 'unlabeled')) }}
+    if: ${{ !(endsWith(github.actor, '[bot]') && (github.event.action == 'labeled' || github.event.action == 'unlabeled')) }}
     env:
-      HAS_CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY != '' }}
-      CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       SUPERSEDES_IN_PROGRESS: ${{ (github.event.action == 'edited' || github.event.action == 'synchronize' || github.event.action == 'ready_for_review') && 'true' || 'false' }}
     steps:
       - name: Debounce bursty metadata events
         if: ${{ github.event.action == 'labeled' || github.event.action == 'unlabeled' }}
         run: sleep 20
-
-      - name: Create ClawSweeper dispatch token
-        id: token
-        if: ${{ env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true' }}
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: openclaw
-          repositories: clawsweeper
-          permission-contents: write
 
       - name: Pre-filter ClawSweeper comment
         id: comment_filter
@@ -152,141 +113,18 @@ jobs:
             echo "is_command=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create target comment token
-        id: target_token
-        if: >-
-          ${{
-            github.event_name == 'issue_comment' &&
-            steps.comment_filter.outputs.is_command == 'true' &&
-            env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true'
-          }}
-        continue-on-error: true
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-issues: write
-          permission-pull-requests: read
-
-      - name: Create target PR acknowledgement token
-        id: pr_ack_token
-        if: ${{ env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true' && github.event_name == 'pull_request_target' }}
-        continue-on-error: true
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-issues: write
-
-      - name: Acknowledge received pull request
-        id: pr_acknowledgement
-        if: >-
-          ${{
-            github.event_name == 'pull_request_target' &&
-            env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true'
-          }}
-        continue-on-error: true
-        env:
-          ACK_TOKEN: ${{ steps.pr_ack_token.outputs.token }}
-          TARGET_REPO: ${{ github.repository }}
-          ITEM_NUMBER: ${{ github.event.pull_request.number }}
-          SOURCE_ACTION: ${{ github.event.action }}
-        run: |
-          set -euo pipefail
-          if [ -z "$ACK_TOKEN" ]; then
-            echo "::notice::Skipping ClawSweeper pull request acknowledgement because no target credential is configured."
-            exit 0
-          fi
-          list_ack_comments() {
-            local comments='[]' batch page
-            for ((page = 1; page <= 10; page++)); do
-              batch="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100&page=$page")" || return 1
-              jq -e 'type == "array"' <<< "$batch" >/dev/null || return 1
-              comments="$(printf '%s\n' "$comments" "$batch" | jq -s 'add')" || return 1
-              if [ "$(jq 'length' <<< "$batch")" -lt 100 ]; then
-                printf '%s\n' "$comments"
-                return 0
-              fi
-            done
-            echo "::notice::Acknowledgement lookup reached its 10-page limit; leaving existing comments untouched." >&2
-            return 1
-          }
-          ack_comment_id() {
-            jq -r \
-              --arg marker_prefix "clawsweeper-pr-ack:" \
-              --arg marker_suffix " item=$ITEM_NUMBER -->" \
-              '[.[] | ((.user.login // "") | ascii_downcase) as $login | select(
-                (["clawsweeper", "clawsweeper[bot]", "openclaw-clawsweeper[bot]"] | index($login)) and
-                ((.body // "") | contains($marker_prefix)) and
-                ((.body // "") | contains($marker_suffix))
-              )] as $matches |
-              ([$matches[] | select(
-                ((.body // "") | contains("clawsweeper-command-status:")) or
-                ((.body // "") | contains("<!-- clawsweeper-command-progress:start -->")) or
-                ((.body // "") | contains("<!-- clawsweeper-review-progress:start -->"))
-              )] | sort_by(.updated_at // .created_at, .id) | last) //
-              ($matches | sort_by(.created_at, .id) | first) | .id // empty' <<< "$1"
-          }
-          comments="$(GH_TOKEN="$ACK_TOKEN" list_ack_comments)"
-          status_comment_id="$(ack_comment_id "$comments")"
-          if [ -n "$status_comment_id" ]; then
-            echo "status_comment_id=$status_comment_id" >> "$GITHUB_OUTPUT"
-            echo "ClawSweeper pull request acknowledgement already exists."
-            exit 0
-          fi
-          if [ "$SOURCE_ACTION" != "ready_for_review" ] &&
-            { [ "$SOURCE_ACTION" != "opened" ] || [ "${{ github.event.pull_request.draft }}" != "false" ]; }; then
-            echo "::notice::No existing ClawSweeper pull request acknowledgement is available for this event."
-            exit 0
-          fi
-          # opened and ready_for_review can fire seconds apart for the same
-          # pull request, and both runs can list comments before either
-          # acknowledgement is visible. Wait, then recheck right before
-          # posting; a superseding run cancels this one while it sleeps.
-          sleep 15
-          comments="$(GH_TOKEN="$ACK_TOKEN" list_ack_comments)"
-          status_comment_id="$(ack_comment_id "$comments")"
-          if [ -n "$status_comment_id" ]; then
-            echo "status_comment_id=$status_comment_id" >> "$GITHUB_OUTPUT"
-            echo "ClawSweeper pull request acknowledgement already exists."
-            exit 0
-          fi
-          ack_body="$(printf '%s\n' \
-            "<!-- clawsweeper-pr-ack:$SOURCE_ACTION item=$ITEM_NUMBER -->" \
-            "🦞👀" \
-            "ClawSweeper picked this up." \
-            "" \
-            "Pull request received. I will update this pull request when review starts.")"
-          ack_payload="$(jq -nc --arg body "$ack_body" '{body:$body}')"
-          ack_response="$(GH_TOKEN="$ACK_TOKEN" gh api \
-            "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments" \
-            --method POST \
-            --input - <<< "$ack_payload")"
-          status_comment_id="$(jq -r '.id // empty' <<< "$ack_response")"
-          test "$status_comment_id" -gt 0
-          echo "status_comment_id=$status_comment_id" >> "$GITHUB_OUTPUT"
-
       - name: Dispatch exact ClawSweeper review
         if: ${{ github.event_name != 'issue_comment' }}
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
           TARGET_REPO: ${{ github.repository }}
           TARGET_BRANCH: ${{ github.event.repository.default_branch }}
           ITEM_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           ITEM_KIND: ${{ github.event_name == 'pull_request_target' && 'pull_request' || 'issue' }}
           SOURCE_EVENT: ${{ github.event_name }}
           SOURCE_ACTION: ${{ github.event.action }}
-          REVIEW_ACKNOWLEDGEMENT_COMMENT_ID: ${{ steps.pr_acknowledgement.outputs.status_comment_id }}
           TARGET_DISPATCH_URL: https://clawsweeper.openclaw.ai/github/target-dispatch
         run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::notice::Skipping ClawSweeper dispatch because no dispatch credential is configured."
-            exit 0
-          fi
+          set -euo pipefail
           source_identity_json="$(node <<'NODE'
           const crypto = require("node:crypto");
           const fs = require("node:fs");
@@ -301,12 +139,6 @@ jobs:
           const updatedAt = String(pullRequest.updated_at || "").trim();
           const queueClaim = {};
           const result = { queue_claim: queueClaim };
-          const reviewAcknowledgementCommentId = Number(
-            process.env.REVIEW_ACKNOWLEDGEMENT_COMMENT_ID,
-          );
-          if (Number.isSafeInteger(reviewAcknowledgementCommentId) && reviewAcknowledgementCommentId > 0) {
-            queueClaim.review_acknowledgement_comment_id = reviewAcknowledgementCommentId;
-          }
           const sourceUpdatedAt = String(source.updated_at || "").trim();
           if (sourceUpdatedAt && Number.isFinite(Date.parse(sourceUpdatedAt))) {
             queueClaim.source_updated_at = sourceUpdatedAt;
@@ -404,20 +236,16 @@ jobs:
             --argjson source_identity "$source_identity_json" \
             --argjson supersedes_in_progress "$SUPERSEDES_IN_PROGRESS" \
             '{target_repo:$target_repo,target_branch:$target_branch,item_number:$item_number,item_kind:$item_kind,source_event:$source_event,source_action:$source_action,supersedes_in_progress:$supersedes_in_progress} + $source_identity')"
-          # Direct queue intake costs no ClawSweeper Actions run. Any failure
-          # falls back to the repository_dispatch relay, so no event is lost.
+          # The App webhook remains an independent delivery route.
           if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] &&
             [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] &&
             oidc_token="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
               --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
               --get --data-urlencode "audience=$TARGET_DISPATCH_URL" \
               "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -er '.value | strings | select(length > 0)')" &&
-            # jq 1.6 exits 0 on empty input, and the step runs without pipefail.
             [ -n "$oidc_token" ]; then
             echo "::add-mask::$oidc_token"
             direct_body="$RUNNER_TEMP/clawsweeper-direct-intake.json"
-            # Only a 2xx answer means the queue took the item; --fail would also
-            # accept a 3xx and drop the event without reaching the relay.
             if direct_status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
               --request POST \
               --header "authorization: Bearer $oidc_token" \
@@ -427,85 +255,73 @@ jobs:
               --write-out '%{http_code}' \
               "$TARGET_DISPATCH_URL")" &&
               [[ "$direct_status" == 2[0-9][0-9] ]]; then
-              echo "Queued exact ClawSweeper review directly: $(jq -c . "$direct_body" 2>/dev/null || echo '{}')"
+              echo "Queued ClawSweeper intake directly: $(jq -c . "$direct_body" 2>/dev/null || echo '{}')"
               exit 0
             fi
-            echo "Direct ClawSweeper queue intake answered HTTP ${direct_status:-none}."
+            # Only non-transient 4xx is a deliberate refusal; the App webhook covers it.
+            # Timeouts, throttling, and verifier/Worker failures must stay re-runnable.
+            if [[ "${direct_status:-}" == 4[0-9][0-9] && "$direct_status" != 408 && "$direct_status" != 429 ]]; then
+              echo "::warning::ClawSweeper intake declined this event (HTTP $direct_status); the App webhook route still applies."
+              exit 0
+            fi
+            echo "::error::ClawSweeper intake unavailable (HTTP ${direct_status:-none}); re-run this job after the Worker recovers."
+          else
+            echo "::error::ClawSweeper OIDC token unavailable; the dispatch job needs id-token: write."
           fi
-          echo "::notice::Direct ClawSweeper queue intake was unavailable; dispatching through repository_dispatch."
-          payload="$(jq -nc --argjson client_payload "$client_payload" '{event_type:"clawsweeper_item",client_payload:$client_payload}')"
-          gh api repos/openclaw/clawsweeper/dispatches \
-            --method POST \
-            --input - <<< "$payload"
-
-      - name: Acknowledge and dispatch ClawSweeper comment
+          exit 1
+      - name: Dispatch ClawSweeper comment
         if: >-
           ${{
             github.event_name == 'issue_comment' &&
             steps.comment_filter.outputs.is_command == 'true'
           }}
         env:
-          DISPATCH_TOKEN: ${{ steps.token.outputs.token }}
-          TARGET_TOKEN: ${{ steps.target_token.outputs.token }}
           TARGET_REPO: ${{ github.repository }}
           ITEM_NUMBER: ${{ github.event.issue.number }}
           COMMENT_ID: ${{ github.event.comment.id }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
-          AUTHOR_ASSOCIATION: ${{ github.event.comment.author_association }}
           SOURCE_ACTION: ${{ github.event.action }}
+          TARGET_DISPATCH_URL: https://clawsweeper.openclaw.ai/github/target-dispatch
         run: |
-          if [ -z "$DISPATCH_TOKEN" ]; then
-            echo "::notice::Skipping ClawSweeper dispatch because no dispatch credential is configured."
-            exit 0
-          fi
-          body_file="$RUNNER_TEMP/clawsweeper-comment-body.txt"
-          printf '%s\n' "$COMMENT_BODY" > "$body_file"
-          if grep -Eiq '<!--[[:space:]]*clawsweeper-proof-nudge([[:space:]]|-->)' "$body_file"; then
-            echo "Ignoring ClawSweeper proof-nudge comment."
-            exit 0
-          fi
-          if [ -n "$TARGET_TOKEN" ]; then
-            GH_TOKEN="$TARGET_TOKEN" gh api -X POST \
-              -H "Accept: application/vnd.github+json" \
-              "repos/$TARGET_REPO/issues/comments/$COMMENT_ID/reactions" \
-              -f content="eyes" >/dev/null || true
-          fi
-          status_comment_id=""
-          if [ -n "$TARGET_TOKEN" ]; then
-            case "$AUTHOR_ASSOCIATION" in
-              OWNER|MEMBER|COLLABORATOR)
-                status_body="$(printf '%s\n' \
-                  "<!-- clawsweeper-command-ack:$COMMENT_ID -->" \
-                  "🦞👀" \
-                  "ClawSweeper picked this up." \
-                  "" \
-                  "Command router queued. I will update this comment with the next step.")"
-                status_payload="$(jq -nc --arg body "$status_body" '{body:$body}')"
-                status_err="$(mktemp)"
-                if status_response="$(GH_TOKEN="$TARGET_TOKEN" gh api \
-                  "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments" \
-                  --method POST \
-                  --input - <<< "$status_payload" 2>"$status_err")"; then
-                  status_comment_id="$(jq -r '.id // empty' <<< "$status_response")"
-                else
-                  cat "$status_err" >&2
-                  echo "::warning::Could not create ClawSweeper queued status comment; dispatching command router without one."
-                fi
-                rm -f "$status_err"
-                ;;
-            esac
-          fi
-          payload="$(jq -nc \
+          set -euo pipefail
+          client_payload="$(jq -nc \
             --arg target_repo "$TARGET_REPO" \
             --argjson item_number "$ITEM_NUMBER" \
             --argjson comment_id "$COMMENT_ID" \
-            --arg status_comment_id "$status_comment_id" \
-            --arg source_event "issue_comment" \
             --arg source_action "$SOURCE_ACTION" \
-            '{event_type:"clawsweeper_comment",client_payload:({target_repo:$target_repo,item_number:$item_number,comment_id:$comment_id,source_event:$source_event,source_action:$source_action,max_comments:"1"} + (if $status_comment_id != "" then {status_comment_id:($status_comment_id|tonumber)} else {} end))}')"
-          GH_TOKEN="$DISPATCH_TOKEN" gh api repos/openclaw/clawsweeper/dispatches \
-            --method POST \
-            --input - <<< "$payload"
+            '{target_repo:$target_repo,item_number:$item_number,comment_id:$comment_id,source_event:"issue_comment",source_action:$source_action}')"
+          # The App webhook remains an independent delivery route.
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] &&
+            [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] &&
+            oidc_token="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+              --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              --get --data-urlencode "audience=$TARGET_DISPATCH_URL" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -er '.value | strings | select(length > 0)')" &&
+            [ -n "$oidc_token" ]; then
+            echo "::add-mask::$oidc_token"
+            direct_body="$RUNNER_TEMP/clawsweeper-direct-intake.json"
+            if direct_status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+              --request POST \
+              --header "authorization: Bearer $oidc_token" \
+              --header "content-type: application/json" \
+              --data "$client_payload" \
+              --output "$direct_body" \
+              --write-out '%{http_code}' \
+              "$TARGET_DISPATCH_URL")" &&
+              [[ "$direct_status" == 2[0-9][0-9] ]]; then
+              echo "Queued ClawSweeper intake directly: $(jq -c . "$direct_body" 2>/dev/null || echo '{}')"
+              exit 0
+            fi
+            # Only non-transient 4xx is a deliberate refusal; the App webhook covers it.
+            # Timeouts, throttling, and verifier/Worker failures must stay re-runnable.
+            if [[ "${direct_status:-}" == 4[0-9][0-9] && "$direct_status" != 408 && "$direct_status" != 429 ]]; then
+              echo "::warning::ClawSweeper intake declined this event (HTTP $direct_status); the App webhook route still applies."
+              exit 0
+            fi
+            echo "::error::ClawSweeper intake unavailable (HTTP ${direct_status:-none}); re-run this job after the Worker recovers."
+          else
+            echo "::error::ClawSweeper OIDC token unavailable; the dispatch job needs id-token: write."
+          fi
+          exit 1
 ```
 
 `target_branch` is branch authority from the signed event repository payload,
@@ -524,8 +340,8 @@ authenticated by a GitHub Actions OIDC token whose audience is that URL. The
 Worker accepts it only when the signed token proves all of the following:
 
 - the token was issued for the payload's `target_repo`;
-- the run was triggered by `issues` or `pull_request_target`, matching the
-  payload's `source_event` and `item_kind`;
+- the run was triggered by `issues`, `pull_request_target`, or `issue_comment`,
+  matching the payload's `source_event` (and item payloads' `item_kind`);
 - its `ref` is `refs/heads/<target_branch>` and the running workflow is that
   repository's `.github/workflows/clawsweeper-dispatch.yml` at that ref; other
   workflows, including reusable-workflow callers, are refused.
@@ -540,34 +356,66 @@ and public-visibility admission before `/enqueue`. Its delivery id is
 retried request from the same run is an exact delivery dedupe, and the
 cross-route identity below still collapses it against the direct App webhook.
 
-Any non-2xx answer, an unavailable OIDC token, or a network failure makes the
-dispatcher send the unchanged `repository_dispatch`, so no event is lost. That
-includes pull requests to a non-default base branch (their token `ref` is that
-base branch), a combined dispatcher under another file name, and payloads with
-relay-only fields such as `installation_id`, `additional_prompt`, or command
-markers. The relay job remains for that
-fallback and for dispatchers that have not adopted this template.
+Comment payloads contain only `target_repo`, `item_number`, `comment_id`,
+`source_event: issue_comment`, and `source_action: created|edited`. The Worker
+rejects extra fields, including payload-supplied author, association, or body.
+It uses its own App credentials to resolve the installation, read the repository's
+live default branch, verify the token ref against it, fetch the live comment,
+bind its ID and `issue_url` to the requested item, and read that live item.
+The existing App-webhook classifier and shared comment handler then decide
+command authorization, acknowledgement, and routing from those API responses.
+The inert [review authority classifier](review-authority.md) is not activated.
 
-A copied dispatcher only stops spending relay runs after it adopts this
-template: the dispatch job needs `id-token: write`, and the review step needs
-the direct-intake block. Deploy the Worker route first; a dispatcher updated
-before that deploy simply falls back. `openclaw/openclaw` maintains its own dispatcher
-variant, which must gain the same two changes there; until then its events
-keep using the relay.
+OIDC validation checks RS256 against GitHub's JWKS, exact issuer and audience,
+bounded `iat`/`nbf`/`exp`, repository and repository ID, supported event, branch ref,
+canonical `workflow_ref`, absent or identical `job_workflow_ref`, and positive
+run ID/attempt. Repository, event, and ref are bound to payload/live authority;
+OIDC never grants authority to a payload-provided comment body or association.
 
-Non-draft pull request receipts get one best-effort `clawsweeper-pr-ack`
-comment. Later pull-request events recover that exact trusted bot comment id and
-carry it with the durable review decision, so a terminal input refusal can edit
-the receipt in place instead of posting one comment per attempt. `opened` and
-`ready_for_review` can fire seconds apart when a draft is
-marked ready immediately after creation, and both runs can list comments before
-either acknowledgement is visible. The acknowledgement step therefore matches
-any existing trusted-bot `clawsweeper-pr-ack` marker for the item, then waits and rechecks
-right before posting; when a superseding event arrives during that wait, the
-item-event concurrency group cancels the sleeping run before it posts. Comment
-events use the comment id in a separate event-type group, so editing an unrelated
-comment cannot cancel an item review. Ignored bot label events also use their own
-actor-specific suffix, preventing them from replacing a pending human label run.
+### Failure semantics and legacy receivers
+
+A Worker `401` or `403` answer is a definitive rejection. These and other
+non-transient `4xx` answers emit `::warning::` and exit zero; the independent App
+webhook route still applies. A `503` means the OIDC verifier or Worker is
+unavailable, including JWKS fetch failures or key-rotation propagation. Verifier
+unavailability includes a `Retry-After` header. A missing or unavailable OIDC
+token, network failure, redirect, `408`, `429`, or `5xx` emits `::error::` and
+fails the job, leaving a visible, re-runnable record instead of silently dropping
+the event. The App webhook does not depend on OIDC JWKS, but shares other Worker
+failure modes. The keyless template has no `repository_dispatch` fallback and
+makes no target GitHub
+writes. These cases previously fell back and now rely solely on the App webhook
+route (or a re-run once the Worker recovers):
+
+- every configured issue, PR, or command event during OIDC or Worker failure;
+- PRs targeting a non-default base branch (their token ref is that base branch);
+- combined dispatchers installed under another filename, reusable-workflow callers,
+  or runs whose workflow/ref claims differ from the canonical default-branch file;
+- legacy/custom payloads with relay-only fields such as `installation_id`,
+  `additional_prompt`, or command markers, and malformed or oversized payloads;
+- events during a default-branch rename when the dispatched ref no longer matches.
+
+The App handles `issues`, `pull_request` (the counterpart of `pull_request_target`),
+and `issue_comment` created/edited independently of workflow filename or PR base.
+Non-command comments, unauthorized commands, and label-only observations retain
+the existing classifier/admission policy. They do not gain review authority.
+Verify the three subscriptions before migrating any target; do not migrate an
+installation missing one. Outages affecting both routes can delay or lose an
+individual delivery; the failed dispatcher run is the record to re-run, not a
+durable admission receipt.
+
+Receiving `clawsweeper_item` and `clawsweeper_comment` `repository_dispatch`
+handlers are **legacy compatibility** for unmigrated target copies. Keep them
+until all 83 copies and the `openclaw/openclaw` variant have migrated and no
+remaining dispatcher relies on them. Existing item payloads and receiver protocols
+remain supported. No SQLite/Durable Object schema or configuration changes are
+needed. Deploy the compatible Worker first in a separately approved operation;
+updating a target before that deployment can lose its dispatcher-route delivery.
+
+Non-draft PR receipt comments are owned by the App-webhook Worker path. The
+keyless item workflow no longer creates or recovers them. Comment concurrency
+still uses the source comment ID, and ignored bot label events use their own
+actor-specific suffix, so neither can cancel an unrelated item admission.
 
 Comments are a lightweight trigger only when the body contains a ClawSweeper
 command, and generated proof-nudge comments are explicitly ignored before
@@ -580,10 +428,10 @@ Only after durable admission does it converge the marker-backed status comment
 and `eyes` reaction. Redelivery is therefore idempotent, and App-token throttling
 cannot leave an optimistic “router queued” comment as the only record of intent.
 
-Other commands retain the comment-router path. The target workflow reacts with
-`eyes` and creates one visible queued status comment for maintainer-authored
-commands when target write permission is available, but both acknowledgement
-writes are best-effort. It must still dispatch `clawsweeper_comment` to the
+Other commands retain the comment-router path. The shared Worker handler reacts
+with `eyes` and creates a marker-backed queued status comment only for live
+OWNER/MEMBER/COLLABORATOR association. Both acknowledgement writes are best-effort.
+It still dispatches `clawsweeper_comment` to the
 comment router when acknowledgement or queued-comment creation gets a
 target-repository 403. The dispatch carries the exact source comment id and,
 when available, the queued status comment id. The router edits that queued
@@ -608,9 +456,8 @@ installation token for repository dispatch, and queues exact
 direct durable command-intake route described above. The durable Worker queue
 dispatches at most 80 leased exact-review executors, with up to 64 active
 reviews per target repository. Keep the Actions
-dispatcher installed as a compatibility fallback; it enqueues through
-[direct queue intake](#direct-queue-intake) and its legacy dispatch is bridged
-into the same queue before Codex starts.
+dispatcher installed as an independent reliability route; it enqueues through
+[direct queue intake](#direct-queue-intake). Only unmigrated dispatchers use the legacy relay.
 
 For a local receiver, run `pnpm run build:repair` followed by
 `pnpm run repair:comment-webhook`. It preserves the same signed review-command
@@ -629,7 +476,7 @@ stale-insufficient-info issues also require 60 days without a non-bot comment.
 
 ## Cross-route exact-review identity
 
-The direct GitHub App webhook and this compatibility dispatcher are independent
+The direct GitHub App webhook and this keyless dispatcher are independent
 reliability routes. Do not disable either one. For pull requests, the template
 above emits an opaque SHA-256 fingerprint of the immutable event snapshot
 (repository, number, action, head SHA, update timestamp, body, and label). The
@@ -645,6 +492,14 @@ receipt remains after a completed review, so a delayed matching counterpart is
 also suppressed rather than recreating the completed review. A fallback that
 the queue rejects as stale is not an admission receipt, so it cannot suppress
 the later verified direct event.
+
+Comment review commands share the existing `command-<comment-id>-<timestamp>-<body-digest>`
+identity from `directReReviewIntake`, regardless of transport. The queue coalesces
+OIDC/App counterparts before acknowledgements and after completion. An edit or
+changed digest creates a new version. Other commands carry the live update timestamp
+and body digest with `comment_event_auth: github_webhook_v1` to the existing router
+ledger; router coalescing and marker-based acknowledgement convergence remain the
+owners of that path, rather than a second Worker receipt table.
 
 Before enabling this protocol for a target repository, roll out the dispatcher
 and verify direct-only, legacy-only, cross-route duplicate, later body/revision,
@@ -671,26 +526,35 @@ dispatch workflows in the target repository.
 The full dispatcher example above is the copy-pasteable job definition and the
 canonical reference for its rate-limit behavior.
 
-The job mints one short-lived `clawsweeper` App token scoped to
-`openclaw/clawsweeper`. An issue or PR event is then enqueued directly; only
-when that fails does it send one `clawsweeper_item` `repository_dispatch`.
-A command comment sends one `clawsweeper_comment` `repository_dispatch`. For comments, the
-`Pre-filter ClawSweeper comment` step runs before the target write token is
-minted, so ordinary comments consume neither a target installation token nor a
-dispatch. The prefilter is only an ingress guard: `/clawsweeper` may carry any
-supported subcommand, while `/review`, `/autoclose`, and `/auto-merge` (with
-spaces or tabs allowed between `auto` and `merge`) are the standalone aliases.
-The router remains authoritative. Do not use a PAT or dispatch the same comment
-through both the exact router and a second spam/generic workflow.
+The job requests only a short-lived OIDC token for the Worker audience.
+Ordinary comments consume no OIDC request or GitHub token. The env-quoted command
+prefilter remains an ingress guard; the live Worker classifier and router are
+authoritative. Do not use a PAT or add another comment dispatcher.
 
-To verify a target installation, open a pull request or issue and confirm one
-`ClawSweeper Dispatch` run whose review step logs
-`Queued exact ClawSweeper review directly`, with no matching
-`Review event item` run in `openclaw/clawsweeper`. Add a maintainer comment containing `@clawsweeper`
-or a supported slash command and confirm one `clawsweeper_comment` dispatch.
-An ordinary comment should produce no ClawSweeper comment dispatch and no
-target-token step. If the target app secret is absent, the workflow should
-finish with a notice rather than fall back to a maintainer PAT.
+To verify a migrated target, confirm one `ClawSweeper Dispatch` run with
+`Queued ClawSweeper intake directly`, no relay workflow run for the item, and one
+canonical command acknowledgement/review when both routes deliver. An ordinary
+comment should produce no command POST. Exercise a Worker rejection (`401`/`403`) and
+verify warning plus successful workflow exit while the App route still admits the
+event, and a timeout (`408`), throttling (`429`), or verifier/Worker outage (`503`)
+and verify a failed, re-runnable run.
+
+### Rollout checklist (separate operation)
+
+1. Deploy the compatible Worker after approval, then verify all three App event
+   subscriptions and signed deliveries on each installation.
+2. Inventory the 83 copies and the separate `openclaw/openclaw` variant; preserve
+   repository-specific triggers/concurrency while using the canonical filename.
+3. Remove every ClawSweeper secret reference, token action, reusable admission
+   secret handoff, target ack shell step, and relay fallback. Grant only the two
+   documented permissions and send comment locators through OIDC.
+4. For `openclaw/openclaw`, apply the same keyless item/comment POSTs and Worker
+   ownership; retain unrelated activity routing only under its own authorization.
+5. Canary direct-only, App-only, duplicate, edited command, ordinary comment,
+   non-default-base PR, and failure-warning scenarios. Do not disable either route.
+6. Migrate remaining copies, verify acknowledgements converge, and remove target
+   access to the org App-key secret after checking all consumers. Keep the central
+   Worker App credential. Retire legacy receivers only after every copy is migrated.
 
 The ClawSweeper `github-activity` workflow runs the fact-only spam admission
 in-process and dispatches the scanner only for an admitted comment (an

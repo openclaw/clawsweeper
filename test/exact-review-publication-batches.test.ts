@@ -1,3 +1,4 @@
+import { decodeStoredJson } from "../dashboard/stored-json.ts";
 import assert from "node:assert/strict";
 import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import { TestStorage } from "./exact-review-test-storage.ts";
@@ -1630,7 +1631,7 @@ test("batch claims retain lifecycle identity until canonical routing is durable"
       member.revision,
     ),
   )[0] as { projection_json: string };
-  const projection = JSON.parse(row.projection_json) as {
+  const projection = JSON.parse(decodeStoredJson(row.projection_json)) as {
     admission: { deliveryId: string };
     claims: Array<{ claimGeneration: number; runId: string; runAttempt: number }>;
     reviewResults: Array<{
@@ -4103,7 +4104,7 @@ test("queue fetch terminalizes a stale batch revision before dispatch", async (t
       1,
     ),
   )[0] as { projection_json: string };
-  const lifecycle = JSON.parse(lifecycleRow.projection_json) as {
+  const lifecycle = JSON.parse(decodeStoredJson(lifecycleRow.projection_json)) as {
     terminalDisposition: { kind: string } | null;
     reviewResults: Array<{ outcome: string }>;
   };
@@ -5154,7 +5155,10 @@ test("retryable batch completion releases ownership and preserves queue retry po
       member.revision,
     ),
   )[0] as { projection_json: string };
-  assert.equal(JSON.parse(lifecycleRow.projection_json).terminalDisposition?.kind, "requeue");
+  assert.equal(
+    JSON.parse(decodeStoredJson(lifecycleRow.projection_json)).terminalDisposition?.kind,
+    "requeue",
+  );
 
   const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
   assert.equal(stats.lanes.publication.pending, 1);

@@ -33,7 +33,7 @@ runs:
         repositories: ${{ inputs.repository }}
         permission-actions: read
         permission-checks: read
-        permission-contents: write
+        permission-contents: read
         permission-issues: write
         permission-pull-requests: write
         permission-statuses: read

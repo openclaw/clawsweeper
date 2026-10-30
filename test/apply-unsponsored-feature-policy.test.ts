@@ -200,7 +200,11 @@ function runUnsponsoredApply(options: {
   labels?: string[];
   reactions?: Record<string, number>;
   recentHuman?: boolean;
-  closeReason?: "unsponsored_feature_request" | "stale_insufficient_info";
+  closeReason?:
+    | "unsponsored_feature_request"
+    | "stale_insufficient_info"
+    | "clawhub"
+    | "not_actionable_in_repo";
 }) {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -213,8 +217,12 @@ function runUnsponsoredApply(options: {
     mkdirSync(plansDir, { recursive: true });
     const closeReason = options.closeReason ?? "unsponsored_feature_request";
     const report =
-      closeReason === "unsponsored_feature_request"
-        ? unsponsoredCloseReport({ number: 321, title: "Old unsponsored feature request" })
+      closeReason !== "stale_insufficient_info"
+        ? unsponsoredCloseReport({
+            number: 321,
+            title: "Old unsponsored feature request",
+            close_reason: closeReason,
+          })
         : staleInsufficientInfoCloseReport({ number: 321, title: "Old unverifiable bug" });
     const synced = reportWithSyncedReviewComment(report, 321, closeReason);
     const itemPath = join(itemsDir, "321.md");
@@ -244,6 +252,8 @@ function runUnsponsoredApply(options: {
             extraArgs: [
               "--target-repo",
               "openclaw/openclaw",
+              "--apply-close-reasons",
+              "all",
               "--apply-kind",
               "issue",
               "--item-number",
@@ -292,126 +302,46 @@ function runUnsponsoredApply(options: {
   }
 }
 
-test("unsponsored feature apply gate is default-off without consuming the proposal", () => {
-  const result = runUnsponsoredApply({ gateEnabled: false });
-  assert.deepEqual(result.entries, [
-    {
-      number: 321,
-      action: "kept_open",
-      reason: "unsponsored feature-request apply policy is disabled",
-    },
-  ]);
-  assert.match(result.markdown, /^action_taken: proposed_close$/m);
-  assert.equal(result.closedExists, false);
-});
-
-test("unsponsored feature apply accepts an old inactive unsponsored issue", () => {
-  const result = runUnsponsoredApply({ gateEnabled: true });
-  assert.equal(result.entries[0]?.action, "closed");
-  assert.match(
-    result.entries[0]?.reason ?? "",
-    /would close as feature request without maintainer sponsorship/,
-  );
-});
-
-test("unsponsored feature apply blocks a recent human comment", () => {
-  const result = runUnsponsoredApply({ gateEnabled: true, recentHuman: true });
-  assert.deepEqual(result.entries, [
-    {
-      number: 321,
-      action: "kept_open",
-      reason: "issue has a non-bot comment within the last 60 days",
-    },
-  ]);
-  assert.equal(result.closedExists, false);
-});
-
-test("unsponsored feature apply blocks a live security label", () => {
-  const result = runUnsponsoredApply({
-    gateEnabled: true,
-    labels: ["impact:security"],
-  });
-  assert.deepEqual(result.entries, [
-    {
-      number: 321,
-      action: "kept_open",
-      reason: "security-labeled issue requires human triage",
-    },
-  ]);
-  assert.equal(result.closedExists, false);
-});
-
-test("unsponsored feature apply blocks issues with positive community traction", () => {
-  const result = runUnsponsoredApply({
-    gateEnabled: true,
-    reactions: { total_count: 5, "+1": 3, heart: 1, hooray: 1 },
-  });
-  assert.deepEqual(result.entries, [
-    {
-      number: 321,
-      action: "kept_open",
-      reason: "issue has enough positive reactions for maintainer consideration",
-    },
-  ]);
-  assert.equal(result.closedExists, false);
-});
-
-test("unsponsored feature close parks the issue for a maintainer decision", () => {
-  const result = runUnsponsoredApply({ dryRun: false, gateEnabled: true });
-  assert.equal(result.entries[0]?.action, "closed");
-  assert.equal(result.closedExists, true);
-  assert.ok(
-    result.calls.some(
-      (args) =>
-        args[0] === "label" && args[1] === "create" && args[2] === "clawsweeper:idea-archive",
-    ),
-  );
-  assert.ok(
-    result.calls.some(
-      (args) =>
-        args[0] === "issue" &&
-        args[1] === "edit" &&
-        args.includes("--add-label") &&
-        args.includes("clawsweeper:idea-archive"),
-    ),
-  );
-  assert.match(result.reviewComment, /This idea is parked, not rejected\./);
-  assert.match(result.reviewComment, /A maintainer can reopen this issue/);
-  assert.doesNotMatch(result.reviewComment, /automatically|@clawsweeper revive/);
-});
-
-test("unsponsored feature close keeps the archive label after an uncertain close", () => {
-  const result = runUnsponsoredApply({ dryRun: false, gateEnabled: true, closeFails: true });
-  assert.equal(result.applyFailed, true);
-  assert.ok(
-    result.calls.some(
-      (args) =>
-        args[0] === "issue" &&
-        args[1] === "edit" &&
-        args.includes("--add-label") &&
-        args.includes("clawsweeper:idea-archive"),
-    ),
-  );
-  assert.ok(
-    result.calls.some(
-      (args) =>
-        args[0] === "api" &&
-        args[1] === "repos/openclaw/openclaw/issues/321" &&
-        args.includes("--method") &&
-        args.includes("PATCH"),
-    ),
-  );
-  assert.equal(
-    result.calls.some(
-      (args) =>
-        args[0] === "issue" &&
-        args[1] === "edit" &&
-        args.includes("--remove-label") &&
-        args.includes("clawsweeper:idea-archive"),
-    ),
-    false,
-  );
-});
+for (const closeReason of [
+  "unsponsored_feature_request",
+  "clawhub",
+  "not_actionable_in_repo",
+] as const) {
+  for (const gateEnabled of [false, true]) {
+    test(`${closeReason} recommendation stays manual with gate ${gateEnabled} and all allowlist`, () => {
+      const result = runUnsponsoredApply({
+        closeReason,
+        dryRun: false,
+        gateEnabled,
+        closeFails: true,
+      });
+      assert.equal(result.applyFailed, false);
+      if (!gateEnabled && closeReason !== "unsponsored_feature_request") {
+        assert.equal(result.entries[0]?.action, "review_comment_synced");
+      } else {
+        assert.equal(result.entries[0]?.action, "kept_open");
+        assert.match(
+          result.entries[0]?.reason ?? "",
+          gateEnabled
+            ? /maintainer decision required/
+            : /^unsponsored feature-request apply policy is disabled$/,
+        );
+      }
+      assert.match(result.markdown, /^action_taken: proposed_close$/m);
+      assert.equal(result.closedExists, false);
+      assert.equal(
+        result.calls.some(
+          (args) =>
+            (args.includes("PATCH") &&
+              (gateEnabled || !String(args[1]).includes("/issues/comments/"))) ||
+            (args[0] === "issue" && args[1] === "edit") ||
+            args[0] === "label",
+        ),
+        false,
+      );
+    });
+  }
+}
 
 test("stale-insufficient-info apply blocks a recent non-bot comment", () => {
   const result = runUnsponsoredApply({

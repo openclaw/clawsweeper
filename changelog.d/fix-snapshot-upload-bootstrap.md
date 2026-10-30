@@ -1,1 +1,0 @@
-- Allow runner snapshot uploads to bootstrap repositories beyond the cold hydration limit while preserving bounded ordinary hydration and incremental restores.

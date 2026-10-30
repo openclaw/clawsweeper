@@ -42,13 +42,18 @@ runs:
         REPEAT_REVISION: ${{ inputs.repeat-revision }}
       run: |
         set -euo pipefail
-        [[ "$METRICS_PATH" =~ ^\.artifacts/[A-Za-z0-9._/-]+\.jsonl$ ]]
-        [[ "$RATE_LIMIT_PATH" =~ ^\.artifacts/[A-Za-z0-9._/-]+\.jsonl$ ]]
-        [[ "$POOL_CLASS" =~ ^(repository_actions|target_app|public_read_fallback)$ ]]
-        [[ "$STAGE" =~ ^(publication_prepare|publication_apply|publication_router|publication_recovery)$ ]]
-        [[ -z "$SOURCE_ACTION" || "$SOURCE_ACTION" =~ ^[A-Za-z0-9_.:-]{1,80}$ ]] || SOURCE_ACTION=""
-        [[ -z "$CLAIM_GENERATION" || "$CLAIM_GENERATION" =~ ^[0-9]{1,9}$ ]] || CLAIM_GENERATION=""
-        [[ -z "$REPEAT_REVISION" || "$REPEAT_REVISION" =~ ^(true|false)$ ]] || REPEAT_REVISION=""
+        if [[ ! "$METRICS_PATH" =~ ^\.artifacts/[A-Za-z0-9._/-]+\.jsonl$ ]] ||
+          [[ "/$METRICS_PATH/" == */../* ]] ||
+          [[ ! "$RATE_LIMIT_PATH" =~ ^\.artifacts/[A-Za-z0-9._/-]+\.jsonl$ ]] ||
+          [[ "/$RATE_LIMIT_PATH/" == */../* ]] ||
+          [[ ! "$POOL_CLASS" =~ ^(repository_actions|target_app|public_read_fallback)$ ]] ||
+          [[ ! "$STAGE" =~ ^(publication_prepare|publication_apply|publication_router|publication_recovery)$ ]] ||
+          [[ ! "$SOURCE_ACTION" =~ ^[A-Za-z0-9_.:-]{0,80}$ ]] ||
+          [[ ! "$CLAIM_GENERATION" =~ ^[0-9]{0,9}$ ]] ||
+          [[ ! "$REPEAT_REVISION" =~ ^(true|false)?$ ]]; then
+          echo "::error::Invalid GitHub egress observer configuration." >&2
+          exit 1
+        fi
         real_gh="$(command -v gh)"
         test -x "$real_gh"
         observer_bin="$RUNNER_TEMP/clawsweeper-github-egress-observer"

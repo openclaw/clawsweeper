@@ -60,6 +60,7 @@ import { reviewContentCacheHit } from "./scheduler-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
 import { reportWithoutHydrationCache } from "./report-hydration-cache.js";
+import { withLocalPreflightSource } from "./review-preflight-display.js";
 import { createCommitPullResolver } from "./pr-review-provenance.js";
 
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
@@ -228,7 +229,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     const publicationPolicy = process.env.EXACT_REVIEW_DECISION
       ? decisionPublicationPolicy(JSON.parse(process.env.EXACT_REVIEW_DECISION))
       : undefined;
-    const hostReport = (markdown: string): string =>
+    const publicationReport = (markdown: string): string =>
       publicationPolicy
         ? replaceFrontMatterValue(
             reportWithoutHydrationCache(markdown),
@@ -380,12 +381,19 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const writeOutputMetadata = (path: string, content: string): void => {
         writeReviewOutput(outputBudget, path, content);
       };
-      if (suppliedReviewLease && candidates.length !== 1) {
+      // An exact target can close after workflow admission. Leave its empty
+      // selection to the workflow's live terminal check instead of failing
+      // before that check can distinguish a close from a missing open report.
+      const emptyExactSelection =
+        candidates.length === 0 &&
+        shardIndex === 0 &&
+        (itemNumbers ? itemNumbers.length === 1 : itemNumber !== undefined);
+      if (suppliedReviewLease && candidates.length !== 1 && !emptyExactSelection) {
         throw new UserFacingCommandError(
           "A supplied review lease requires exactly one selected item.",
         );
       }
-      if (expectedSourceRevision && candidates.length !== 1) {
+      if (expectedSourceRevision && candidates.length !== 1 && !emptyExactSelection) {
         throw new UserFacingCommandError(
           `--expected-source-revision requires exactly one selected issue; selected ${candidates.length}.`,
         );
@@ -564,6 +572,15 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const pullRequestPayload = item.kind === "pull_request"
           ? prAdmissionInput?.pull ?? asRecord(dependencies.ghJson(["api", `repos/${item.repo}/pulls/${item.number}`]))
           : undefined;
+        // Local-only disables structural probes and hydrates this same raw pull.
+        // Hosted carries strip the advisory rather than project a later snapshot.
+        const hostReport = (markdown: string): string => withLocalPreflightSource(
+          publicationReport(markdown),
+          localOnly && item.kind === "pull_request"
+            ? { repo: item.repo, number: item.number, pull: pullRequestPayload,
+                targetDir: openclawDir }
+            : undefined,
+        );
         if (pullRequestPayload) {
           const admission = oversizedPullRequestAdmission(pullRequestPayload);
           if (!admission.admitted) {
@@ -1307,10 +1324,23 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           (item.kind === "pull_request" && !completePullChecksContext(context.pullChecks))
             ? null
             : cacheEligibleReview;
+        // A carried report keeps the target SHA and digest of its last full review, so
+        // target-only drift is measured against that review, not the latest carry.
+        const reviewedTargetSha =
+          item.kind === "issue" && contentCacheReview
+            ? frontMatterValue(contentCacheReview.markdown, "main_sha")
+            : undefined;
+        const targetDriftContentDigest =
+          reviewedTargetSha &&
+          /^[0-9a-f]{40}$/.test(reviewedTargetSha) &&
+          reviewedTargetSha !== git.mainSha
+            ? itemContentDigest(item, context, { ...git, mainSha: reviewedTargetSha })
+            : null;
         const contentCacheHit = reviewContentCacheHit({
             review: contentCacheReview,
             reviewPolicy,
             contentDigest,
+            targetDriftContentDigest,
             now: Date.now(),
             explicitDispatch,
             maintainerRequest,
@@ -1322,7 +1352,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             context,
           )
         ) {
-          structuralRecord = refreshStructuralRecordForVerdict();
+          // A target-drift carry was not reviewed against the current target. Keep the
+          // prior structural anchor, which names the reviewed target, so the 14-day
+          // structural stage cannot extend the one-day drift window.
+          const targetDriftCarry = contentCacheReview!.contentDigest !== contentDigest;
+          structuralRecord = targetDriftCarry ? null : refreshStructuralRecordForVerdict();
           const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
           let carried = priorReview!.markdown;
           carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());

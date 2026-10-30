@@ -67,7 +67,7 @@ function staleDurableComment(): string {
     "The latest durable ClawSweeper review was for head `oldsha`, but the PR head is now `newsha`.",
     "",
     "**Next step**",
-    "Run or wait for a fresh ClawSweeper review on the current PR head.",
+    "Comment `@clawsweeper re-review` when the current head is ready; pushes after the first review are not reviewed automatically.",
     "",
     "<!-- clawsweeper-review-status:stale item=101 reviewed_sha=oldsha current_sha=newsha reason=stale_head -->",
   ].join("\n");

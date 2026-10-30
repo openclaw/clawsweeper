@@ -220,6 +220,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     git: GitInfo;
     action: Action;
     reviewMode: "propose" | "apply";
+    localRange?: boolean;
     snapshotHash: string;
     contentDigest: string;
     reviewPolicy: string;

@@ -106,7 +106,7 @@ class TargetReadTokenCache {
       throw new Error(`${TARGET_READ_TOKEN_MODE_ENV} must be github-app or actions`);
     }
     this.fallbackToken = String(env.GH_TOKEN || "").trim() || String(env.GITHUB_TOKEN || "").trim();
-    this.tokensByOwner = new Map();
+    this.setupThrottlesByOwner = new Map();
     this.mintsByRepository = new Map();
     if (this.mode === "actions") {
       if (!this.fallbackToken) {
@@ -150,31 +150,25 @@ class TargetReadTokenCache {
     }
     const ownerKey = owner.toLowerCase();
     const repositoryKey = `${owner}/${repo}`.toLowerCase();
-    // Successful tokens and setup throttles are installation-scoped, so they remain owner-cached.
-    // Selected-repository installations still authorize each repo on its own REST/GraphQL read,
-    // whose 403/404 handling fails closed. An installation-missing 404 is repository-specific,
-    // so keep the in-flight/rejected mint under the repository key until its outcome is known.
-    let token = this.tokensByOwner.get(ownerKey);
-    if (token) return token;
-
-    token = this.mintsByRepository.get(repositoryKey);
+    // A setup throttle is installation-wide; successful tokens authorize one repository.
+    const throttled = this.setupThrottlesByOwner.get(ownerKey);
+    if (throttled) return throttled;
+    let token = this.mintsByRepository.get(repositoryKey);
     if (!token) {
-      token = this.mintForOwner(`${owner}/${repo}`);
+      token = this.mintForRepository(`${owner}/${repo}`);
       this.mintsByRepository.set(repositoryKey, token);
     }
     try {
-      const mintedToken = await token;
-      this.tokensByOwner.set(ownerKey, Promise.resolve(mintedToken));
-      return mintedToken;
+      return await token;
     } catch (error) {
       if (error instanceof TargetAppSetupThrottleError) {
-        this.tokensByOwner.set(ownerKey, token);
+        this.setupThrottlesByOwner.set(ownerKey, token);
       }
       throw error;
     }
   }
 
-  async mintForOwner(targetRepo) {
+  async mintForRepository(targetRepo) {
     const [owner] = targetRepo.split("/");
     let installationId;
     try {
@@ -196,7 +190,8 @@ class TargetReadTokenCache {
         appJwt,
         installationId,
         label: targetRepo,
-        permissions: { contents: "read", issues: "read", pull_requests: "read" },
+        repositories: [targetRepo.split("/")[1]],
+        permissions: { issues: "read", pull_requests: "read" },
       });
     } catch (error) {
       if (error instanceof GitHubRequestError && error.status === 404) {
@@ -2012,19 +2007,20 @@ async function inspectCanonicalTargets(groups, maxTargets, targetReadTokens) {
 
   const apiUrl = String(process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
   const inspectedTargets = [];
-  const groupsByOwner = new Map();
+  const groupsByRepository = new Map();
   for (const group of groups) {
-    const { owner } = parseTargetRepository(group.target);
-    const ownerGroups = groupsByOwner.get(owner.toLowerCase()) ?? [];
-    ownerGroups.push(group);
-    groupsByOwner.set(owner.toLowerCase(), ownerGroups);
+    const { owner, repo } = parseTargetRepository(group.target);
+    const repositoryKey = `${owner}/${repo}`.toLowerCase();
+    const repositoryGroups = groupsByRepository.get(repositoryKey) ?? [];
+    repositoryGroups.push(group);
+    groupsByRepository.set(repositoryKey, repositoryGroups);
   }
-  const batches = [...groupsByOwner.values()].flatMap((ownerGroups) => {
-    const ownerBatches = [];
-    for (let offset = 0; offset < ownerGroups.length; offset += GRAPHQL_IDENTITY_BATCH_SIZE) {
-      ownerBatches.push(ownerGroups.slice(offset, offset + GRAPHQL_IDENTITY_BATCH_SIZE));
+  const batches = [...groupsByRepository.values()].flatMap((repositoryGroups) => {
+    const repositoryBatches = [];
+    for (let offset = 0; offset < repositoryGroups.length; offset += GRAPHQL_IDENTITY_BATCH_SIZE) {
+      repositoryBatches.push(repositoryGroups.slice(offset, offset + GRAPHQL_IDENTITY_BATCH_SIZE));
     }
-    return ownerBatches;
+    return repositoryBatches;
   });
   batchLoop: for (const [batchIndex, batch] of batches.entries()) {
     let selected = batch;
@@ -2410,13 +2406,14 @@ async function inspectRecoveryTarget(target, targetReadTokens) {
   if (!canonicalMatch)
     throw new Error(`pull-request target has invalid canonical identity: ${target}`);
   const [, currentOwner, currentRepo, currentNumber] = canonicalMatch;
+  const canonicalToken = await targetReadTokens.tokenFor(canonicalTarget);
   const pullResponse = await fetch(
     `${apiUrl}/repos/${encodeURIComponent(currentOwner)}/${encodeURIComponent(currentRepo)}/pulls/${currentNumber}`,
     {
       headers: {
         accept: "application/vnd.github+json",
         "user-agent": "clawsweeper-dead-letter-operator",
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(canonicalToken ? { authorization: `Bearer ${canonicalToken}` } : {}),
       },
       signal: AbortSignal.timeout(20_000),
     },

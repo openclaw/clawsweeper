@@ -560,7 +560,11 @@ function verifyRegressionProvenance(
   };
 }
 
-const labelMutations = createLabelMutationOperations({ ghJson, ghObservedMutationCommand });
+const labelMutations = createLabelMutationOperations({
+  readLabelCatalogPages: () =>
+    ghJson<unknown>(["api", `repos/${targetRepo()}/labels?per_page=100`, "--paginate", "--slurp"]),
+  ghObservedMutationCommand,
+});
 const labelSyncOperations = createLabelSyncOperations(labelMutations);
 
 export {

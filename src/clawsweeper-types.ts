@@ -20,7 +20,7 @@ export type ItemKind = "issue" | "pull_request";
 export type ApplyKind = ItemKind | "all";
 export type DecisionKind = "close" | "keep_open";
 export type WorkCandidateKind = "none" | "manual_review" | "queue_fix_pr";
-export type NextStepAssessment = { kind: "none" | "required"; text: string };
+export type NextStepAssessment = { kind: "none" | "required" | "maintainer"; text: string };
 export type FailedReviewRetryRevisionKind = "pull_head_sha" | "item_source_revision";
 export interface FailedReviewRetryRevision {
   kind: FailedReviewRetryRevisionKind;
@@ -144,6 +144,7 @@ export type PrStatusLabelKind =
   | "needs_proof"
   | "needs_maintainer_proof_decision"
   | "waiting_on_author"
+  | "waiting_on_maintainer"
   | "ready_for_maintainer_look";
 export type FeatureShowcaseStatus = "showcase" | "none";
 export type ImplementationComplexity = "small" | "medium" | "large" | "unclear" | "not_applicable";
@@ -656,6 +657,7 @@ export interface CompleteActivityContext {
 }
 
 export interface ItemContext {
+  securityReview?: SecurityReview;
   [completeActivityContextSymbol]?: CompleteActivityContext;
   issue: unknown;
   comments: unknown[];
@@ -778,6 +780,7 @@ export interface ReviewContextLedgerEntry {
 }
 
 export interface ReviewPromptRuntimeHints {
+  localRange?: boolean;
   networkCapability?: "allowlisted-proxy" | "unrestricted" | "none";
   hasGitHubToken?: boolean;
   targetDir?: string;
@@ -1373,6 +1376,7 @@ export interface PrCloseCoverageProofGateBlock {
 
 export interface PrCloseCoverageProofCoveringWitness {
   number: number;
+  mainSha?: string;
   provedAtMs: number;
   snapshotSha256: string;
   updatedAt: string | null;
@@ -1396,6 +1400,8 @@ export interface PublicBeforeMergeItem {
   label: string;
   detail: string;
   state: Exclude<PullRequestReviewState, "ready">;
+  /** Explicit routing only; absent ownership must not be inferred from prose. */
+  owner?: "maintainer";
 }
 
 export interface PullRequestReviewReadiness {

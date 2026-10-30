@@ -139,7 +139,10 @@ export interface CreateApplyDecisionWorkflowDependencies {
     actionTaken: string,
     nowMs: number,
   ) => boolean;
-  coveringPrCloseCoveragePullRequestSnapshotSha256: (number: number) => string;
+  coveringPrCloseCoveragePullRequestSnapshotSha256: (
+    number: number,
+    requireCurrentMain?: boolean,
+  ) => string;
   decisionPacketsDirFromArgs: (args: Args, itemsDir: string, closedDir: string) => string;
   discardIssueLabelMutationBatch: (number: number) => void;
   defaultClosedDir: (profile?: RepositoryProfile) => string;

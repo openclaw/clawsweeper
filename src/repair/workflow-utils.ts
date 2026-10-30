@@ -23,6 +23,7 @@ import { repositoryProfileFor, slugForRepo } from "../repository-profiles.js";
 import { recoverReviewShard } from "../review-recovery.js";
 import { exactReviewAdmission } from "./exact-review-admission.js";
 import { exactReviewLiveItemState } from "./exact-review-live-item.js";
+import { requiresPrCloseCoverageProof } from "../clawsweeper-policy.js";
 
 type ApplyAction = {
   action: string;
@@ -1421,7 +1422,7 @@ function selectedProposedItemCandidates(
           if (!selectableClose && !selectablePromotion) return [];
           const prCloseCoverageProofCanRun =
             type === "pull_request" &&
-            ((selectableClose && reason === "duplicate_or_superseded") || selectableProofPromotion);
+            ((selectableClose && requiresPrCloseCoverageProof(reason)) || selectableProofPromotion);
           if (selection === "pr-close-coverage-proof" && !prCloseCoverageProofCanRun) return [];
           if (
             (reason === "stale_insufficient_info" || reason === "mostly_implemented_on_main") &&

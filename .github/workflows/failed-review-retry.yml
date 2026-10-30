@@ -69,6 +69,7 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          actions-permission: ""
 
       - uses: ./.github/actions/setup-state
         with:
@@ -81,7 +82,7 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         with:
-          build-script: build:all
+          build-script: build:node
 
       - name: Plan or dispatch failed-review retries
         id: retry-failed-reviews-run
@@ -97,7 +98,6 @@ jobs:
           CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FAILED_REVIEW_RETRY_CODEX_TIMEOUT_MS || vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}
         run: |
           set -euo pipefail
-          git pull --rebase --autostash
           dry_run_arg=()
           if [ "$DRY_RUN" = "true" ]; then
             dry_run_arg=(--dry-run)

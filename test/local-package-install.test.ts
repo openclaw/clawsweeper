@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { resolveSpawnCommand } from "../dist/command.js";
@@ -60,6 +60,7 @@ test(
       NPM_CONFIG_USERCONFIG: emptyConfig,
       NPM_CONFIG_GLOBALCONFIG: globalConfig,
       NPM_CONFIG_CACHE: join(root, "npm-cache"),
+      NPM_CONFIG_REGISTRY: "https://registry.npmjs.org",
     };
     delete env.NODE_PATH;
     delete env.NODE_OPTIONS;
@@ -82,13 +83,13 @@ test(
       return result.stdout;
     };
     const manifest = await stageLocalPackage(stage);
-    const staged = tree(stage);
-    const sourceBefore = staged.map(({ path }) => {
+    const localStaged = tree(stage);
+    const sourceBefore = localStaged.map(({ path }) => {
       const source = join(sourceRoot, path === "README.md" ? "docs/local-package.md" : path);
       return { source, bytes: readFileSync(source) };
     });
     assert.deepEqual(
-      staged,
+      localStaged,
       manifest.map(({ path, sha256 }) => ({ path, sha256 })),
     );
     const metadata = JSON.parse(readFileSync(join(stage, "package.json"), "utf8"));
@@ -109,38 +110,135 @@ test(
         [...runtimeDependencies].sort().map((name) => [name, sourceMetadata.dependencies[name]]),
       ),
     );
-    assert.equal(metadata.bin["clawsweeper-review"], "dist/clawsweeper-local.js");
-    assert.ok(staged.some(({ path }) => path === "dist/repair/contained-command-worker.js"));
-    assert.ok(!staged.some(({ path }) => /close-coverage|app-server|action-ledger/.test(path)));
+    assert.deepEqual(metadata.bin, { clawsweeper: "dist/clawsweeper-local.js" });
+    assert.ok(localStaged.some(({ path }) => path === "dist/repair/contained-command-worker.js"));
+    assert.ok(
+      !localStaged.some(({ path }) => /close-coverage|app-server|action-ledger/.test(path)),
+    );
 
     const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-    const [packed] = JSON.parse(
-      run(npm, ["pack", stage, "--ignore-scripts", "--json", "--offline"]),
-    );
+    const requestedInput = process.env.CLAWSWEEPER_TEST_PACKAGE_INPUT;
+    const requestedOutput = process.env.CLAWSWEEPER_TEST_PACKAGE_OUTPUT;
+    assert.ok(!requestedInput || !requestedOutput, "consumers must not export a repacked envelope");
+    const input = requestedInput ? realpathSync(requestedInput) : undefined;
+    if (input) assert.ok(lstatSync(join(input, "manifest.json")).isFile());
+    const producer = input
+      ? JSON.parse(readFileSync(join(input, "manifest.json"), "utf8"))
+      : undefined;
+    const inputBefore = input ? tree(input) : undefined;
+    if (input) {
+      assert.deepEqual(readdirSync(input).sort(), [
+        "clawsweeper-local.tgz",
+        "manifest.json",
+        "package-lock.json",
+        "package.json",
+      ]);
+      assert.equal(producer.source, run("git", ["-C", sourceRoot, "rev-parse", "HEAD"]).trim());
+      assert.equal(
+        producer.sourceTree,
+        run("git", ["-C", sourceRoot, "rev-parse", "HEAD^{tree}"]).trim(),
+      );
+      assert.equal(
+        producer.sourceDiffSha256,
+        createHash("sha256")
+          .update(
+            run("git", [
+              "-C",
+              sourceRoot,
+              "diff",
+              "HEAD",
+              "--binary",
+              "--full-index",
+              "--no-ext-diff",
+              "--no-textconv",
+            ]),
+          )
+          .digest("hex"),
+      );
+      assert.deepEqual(producer.files.map(({ path }: { path: string }) => path).sort(), [
+        "clawsweeper-local.tgz",
+        "package-lock.json",
+        "package.json",
+      ]);
+      for (const file of producer.files) {
+        assert.ok(lstatSync(join(input, file.path)).isFile());
+        const bytes = readFileSync(join(input, file.path));
+        assert.equal(bytes.length, file.bytes, `envelope input size mismatch: ${file.path}`);
+        assert.equal(
+          createHash("sha256").update(bytes).digest("hex"),
+          file.sha256,
+          `envelope input hash mismatch: ${file.path}`,
+        );
+      }
+    }
+    const staged: Array<{ path: string; sha256: string }> = producer
+      ? producer.stagedFiles.map(({ path, sha256 }: { path: string; sha256: string }) => ({
+          path,
+          sha256,
+        }))
+      : localStaged;
+    // The payload comes from the producer; local builds remain available only
+    // for source-unit assertions and the rejected-import probes below.
     assert.deepEqual(
-      packed.files.map(({ path }: { path: string }) => path).sort(),
       staged.map(({ path }) => path),
+      localStaged.map(({ path }) => path),
     );
-    const tarball = join(root, packed.filename);
+    const [packed] = input
+      ? [{ filename: "clawsweeper-local.tgz" }]
+      : JSON.parse(run(npm, ["pack", stage, "--ignore-scripts", "--json", "--offline"]));
+    if (!input)
+      assert.deepEqual(
+        packed.files.map(({ path }: { path: string }) => path).sort(),
+        staged.map(({ path }) => path),
+      );
+    const tarball = join(input ?? root, packed.filename);
     const tarballHash = createHash("sha256").update(readFileSync(tarball)).digest("hex");
-    run(npm, [
-      "install",
-      "--prefix",
-      seed,
-      "--ignore-scripts",
-      "--omit=dev",
-      "--no-audit",
-      "--no-fund",
-      tarball,
-    ]);
+    mkdirSync(seed);
+    if (input) {
+      for (const name of ["package.json", "package-lock.json"])
+        copyFileSync(join(input, name), join(seed, name));
+    } else {
+      writeFileSync(
+        join(seed, "package.json"),
+        JSON.stringify(
+          {
+            name: "clawsweeper-local-install",
+            version: "0.0.0",
+            private: true,
+            dependencies: { [metadata.name]: "file:clawsweeper-local.tgz" },
+          },
+          null,
+          2,
+        ) + "\n",
+      );
+    }
+    copyFileSync(tarball, join(seed, "clawsweeper-local.tgz"));
+    run(
+      npm,
+      [
+        input ? "ci" : "install",
+        "--prefix",
+        seed,
+        "--ignore-scripts",
+        "--omit=dev",
+        "--no-audit",
+        "--no-fund",
+      ],
+      { cwd: seed },
+    );
+    if (input)
+      for (const name of ["clawsweeper-local.tgz", "package.json", "package-lock.json"])
+        assert.deepEqual(readFileSync(join(seed, name)), readFileSync(join(input, name)));
     // Seed the isolated cache online, then prove a clean lock-driven offline
     // install. Keeping the original manifest/lock prevents cache warmth from
     // silently changing which package or transitive versions are exercised.
     mkdirSync(prefix);
-    const installInputs = ["package.json", "package-lock.json"].map((name) => {
-      copyFileSync(join(seed, name), join(prefix, name));
-      return { name, bytes: readFileSync(join(prefix, name)) };
-    });
+    const installInputs = ["clawsweeper-local.tgz", "package.json", "package-lock.json"].map(
+      (name) => {
+        copyFileSync(join(seed, name), join(prefix, name));
+        return { name, bytes: readFileSync(join(prefix, name)) };
+      },
+    );
     rmSync(join(seed, "node_modules"), { recursive: true });
     run(npm, [
       "ci",
@@ -158,7 +256,7 @@ test(
     assert.deepEqual(tree(installed), staged);
     const installedPackages = new Map<
       string,
-      { root: string; dependencies: Record<string, string>; declared: string[] }
+      { root: string; version: string; dependencies: Record<string, string>; declared: string[] }
     >();
     type NpmNode = {
       name: string;
@@ -191,6 +289,7 @@ test(
       const declared = Object.keys(packageJson.dependencies ?? {}).sort();
       const entry = installedPackages.get(node.path) ?? {
         root: node.path,
+        version: packageJson.version,
         dependencies: {},
         declared,
       };
@@ -220,7 +319,7 @@ test(
       prefix,
       "node_modules",
       ".bin",
-      process.platform === "win32" ? "clawsweeper-review.cmd" : "clawsweeper-review",
+      process.platform === "win32" ? "clawsweeper.cmd" : "clawsweeper",
     );
 
     // Only installed processes activate this hook. The parity suite's one
@@ -287,7 +386,7 @@ if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify
       assert.match(
         stdout,
         flag === "--help"
-          ? /Local ClawSweeper/
+          ? /^clawsweeper \[review\]/
           : new RegExp(`^${metadata.version.replaceAll(".", "\\.")}`),
       );
     }
@@ -323,8 +422,8 @@ if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify
     );
     const skipped = process.platform === "win32" ? 3 : 0;
     for (const [label, expected] of Object.entries({
-      tests: 18,
-      pass: 18 - skipped,
+      tests: 25,
+      pass: 25 - skipped,
       fail: 0,
       cancelled: 0,
       skipped,
@@ -335,21 +434,115 @@ if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify
     assert.deepEqual(tree(installed), staged, "review must not change the installed package");
     for (const { path, files } of dependencyTrees)
       assert.deepEqual(tree(path), files, "review must not change installed runtime dependencies");
-    assert.deepEqual(tree(stage), staged, "review must not change staged inputs");
+    assert.deepEqual(tree(stage), localStaged, "review must not change staged inputs");
     assert.deepEqual(tree(cwd), targetBefore);
     for (const { source, bytes } of sourceBefore)
       assert.deepEqual(readFileSync(source), bytes, "review must not change source inputs");
+    if (input) assert.deepEqual(tree(input), inputBefore, "consumer must not change its envelope");
+    const lock = JSON.parse(readFileSync(join(prefix, "package-lock.json"), "utf8"));
+    assert.equal(lock.packages[""].dependencies[metadata.name], "file:clawsweeper-local.tgz");
+    assert.equal(lock.packages[""].name, "clawsweeper-local-install");
+    for (const path of Object.keys(lock.packages)) {
+      assert.ok(
+        path === "" || (path.startsWith("node_modules/") && !path.split("/").includes("..")),
+      );
+      assert.ok(
+        path === "" || installedPackages.has(join(prefix, path)),
+        "lock contains unverified package",
+      );
+    }
+    const resolution = [...installedPackages.values()]
+      .map(({ root, version }) => {
+        const path = relative(prefix, root).replaceAll("\\", "/");
+        const entry = lock.packages[path];
+        assert.equal(entry.version, version);
+        assert.match(entry.integrity, /^sha512-[A-Za-z0-9+/]+={0,2}$/);
+        if (root === installed) assert.equal(entry.resolved, "file:clawsweeper-local.tgz");
+        else {
+          const url = new URL(entry.resolved);
+          assert.equal(url.protocol, "https:");
+          assert.equal(url.host, "registry.npmjs.org");
+          assert.equal(url.username + url.password + url.search + url.hash, "");
+        }
+        return { path, version, resolved: entry.resolved, integrity: entry.integrity };
+      })
+      .sort((a, b) => a.path.localeCompare(b.path));
+    if (producer) assert.deepEqual(resolution, producer.resolution);
+    const npmVersion = run(npm, ["--version"]).trim();
+    if (requestedOutput) {
+      assert.ok(isAbsolute(requestedOutput), "package output must be an absolute new directory");
+      const output = join(
+        realpathSync(dirname(resolve(requestedOutput))),
+        basename(requestedOutput),
+      );
+      // Export only the exact inputs that survived the relocated install and
+      // parity checks. The caller owns a new destination, never an existing one.
+      for (const protectedRoot of [sourceRoot, root])
+        assert.ok(output !== protectedRoot && !output.startsWith(protectedRoot + sep));
+      mkdirSync(output);
+      try {
+        for (const { name, bytes } of installInputs) writeFileSync(join(output, name), bytes);
+        const files = installInputs.map(({ name, bytes }) => ({
+          path: name,
+          bytes: bytes.length,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        }));
+        writeFileSync(
+          join(output, "manifest.json"),
+          JSON.stringify(
+            {
+              source: run("git", ["-C", sourceRoot, "rev-parse", "HEAD"]).trim(),
+              sourceTree: run("git", ["-C", sourceRoot, "rev-parse", "HEAD^{tree}"]).trim(),
+              sourceDiffSha256: createHash("sha256")
+                .update(
+                  run("git", [
+                    "-C",
+                    sourceRoot,
+                    "diff",
+                    "HEAD",
+                    "--binary",
+                    "--full-index",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                  ]),
+                )
+                .digest("hex"),
+              node: process.version,
+              npm: npmVersion,
+              platform: process.platform,
+              arch: process.arch,
+              files,
+              stagedFiles: manifest,
+              resolution,
+            },
+            null,
+            2,
+          ) + "\n",
+        );
+      } catch (error) {
+        rmSync(output, { recursive: true, force: true });
+        throw error;
+      }
+    }
     t.diagnostic(
       JSON.stringify({
         node: process.version,
         platform: process.platform,
         arch: process.arch,
         files: staged.length,
-        unpackedBytes: packed.unpackedSize,
-        tarballBytes: packed.size,
+        source: producer?.source,
+        sourceTree: producer?.sourceTree,
+        producerPlatform: producer?.platform,
+        unpackedBytes: producer
+          ? producer.stagedFiles.reduce(
+              (total: number, file: { bytes: number }) => total + file.bytes,
+              0,
+            )
+          : packed.unpackedSize,
+        tarballBytes: readFileSync(tarball).length,
         tarballSha256: tarballHash,
         parity: parity.match(/# tests \d+/)?.[0],
-        npmVersion: run(npm, ["--version"]).trim(),
+        npmVersion,
         runtimePackages: [...installedPackages.keys()].map((path) =>
           relative(join(prefix, "node_modules"), path).replaceAll("\\", "/"),
         ),

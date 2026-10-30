@@ -296,8 +296,9 @@ test("repair comment router workflow preserves repository dispatch target branch
   assert.match(workflow, /target_branch:\n\s+description:/);
   assert.match(
     workflow,
-    /target_branch="\$\{\{ github\.event\.client_payload\.target_branch \|\| '' \}\}"/,
+    /DISPATCH_TARGET_BRANCH: \$\{\{ github\.event\.client_payload\.target_branch \|\| '' \}\}/,
   );
+  assert.match(workflow, /target_branch="\$\{DISPATCH_TARGET_BRANCH\}"/);
   assert.equal(
     [
       ...workflow.matchAll(
@@ -327,10 +328,11 @@ test("sweep workflow preserves one claimed target branch through exact review", 
   const workflow = readText(".github/workflows/sweep.yml");
   const planner = readText(".github/workflows/review-plan.yml");
   const dispatchTargetBranchResolver =
-    /target_branch="\$\{\{ github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.target_branch \|\| github\.event\.client_payload\.target_branch \|\| 'main' \}\}"/g;
+    /DISPATCH_TARGET_BRANCH: \$\{\{ github\.event_name == 'workflow_dispatch' && github\.event\.inputs\.target_branch \|\| github\.event\.client_payload\.target_branch \|\| 'main' \}\}/g;
 
   assert.match(planner, /target_branch:\n\s+description: "Target repository branch to review"/);
   assert.equal([...planner.matchAll(dispatchTargetBranchResolver)].length, 1);
+  assert.match(planner, /target_branch="\$\{DISPATCH_TARGET_BRANCH\}"/);
   assert.match(
     workflow,
     /CLAIM_TARGET_BRANCH: \$\{\{ fromJSON\(steps\.claim-exact-review-queue\.outputs\.decision\)\.targetBranch \}\}/,

@@ -10,6 +10,7 @@ import type {
 } from "./clawsweeper-types.js";
 import type { PrCloseCoverageProofRuntime } from "./pr-close-coverage-proof.js";
 import { reportReviewDecision } from "./report-review-decision.js";
+import { requiresPrCloseCoverageProof } from "./clawsweeper-policy.js";
 
 type ApplyCandidateGuardDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
@@ -132,7 +133,7 @@ export function createApplyCandidateGuards(
     const { closeReason, markdown } = currentDecisionState();
     if (
       reportReviewDecision(markdown).decision !== "close" ||
-      closeReason !== "duplicate_or_superseded"
+      !requiresPrCloseCoverageProof(closeReason)
     ) {
       coverageProofState.cachedPrCloseCoverageProofGateResult = null;
       return null;

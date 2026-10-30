@@ -1,1 +1,0 @@
-- Leave issues closed as completed out of the bulk-filer count: a fixed report no longer pushes its author into `clawsweeper:bulk-filed`, while open, rated, not-planned, and duplicate issues still count (https://github.com/openclaw/clawsweeper/issues/1770). Thanks @holgergruenhagen.

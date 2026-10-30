@@ -77,10 +77,7 @@ test("setup-state supports opting out of canonical record and blob hydration", (
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-setup-state-args-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   writeFileSync(join(root, "node"), `#!/bin/sh\necho "$@"\n`, { mode: 0o755 });
-  const run = steps
-    .find((step) => step.name === "Hydrate generated state")!
-    .run!.replaceAll("${{ inputs.state-path }}", "state")
-    .replaceAll("${{ inputs.worktree-path }}", "code");
+  const run = steps.find((step) => step.name === "Hydrate generated state")!.run!;
   for (const [env, args] of [
     [
       { HYDRATE_RECORDS: "false", HYDRATE_STATE_BLOBS: "false" },
@@ -98,6 +95,8 @@ test("setup-state supports opting out of canonical record and blob hydration", (
         HYDRATE_RECORDS: "true",
         HYDRATE_STATE_BLOBS: "true",
         HYDRATE_GIT_STATE: "true",
+        INPUTS_STATE_PATH: "state",
+        INPUTS_WORKTREE_PATH: "code",
         ...env,
       },
     });

@@ -39,3 +39,20 @@ test("GitHub API URL rejects non-default remote or non-origin overrides", () => 
     assert.throws(() => githubApiBaseUrl({ GITHUB_API_URL: value }), /invalid GITHUB_API_URL/);
   }
 });
+
+test("GitHub App requests reject an empty repository scope and canonicalize sets", async () => {
+  const { githubAppTokenRequest } = await import("../dashboard/github-api.ts");
+  for (const repositories of [[], [""], ["alpha", ""], ["owner/alpha"]]) {
+    assert.throws(
+      () => githubAppTokenRequest(repositories, { issues: "read" }),
+      /explicit repository names/,
+    );
+  }
+  assert.deepEqual(
+    githubAppTokenRequest(["Beta", "alpha", "beta"], { pull_requests: "read", issues: "read" }),
+    {
+      repositories: ["alpha", "beta"],
+      permissions: { issues: "read", pull_requests: "read" },
+    },
+  );
+});

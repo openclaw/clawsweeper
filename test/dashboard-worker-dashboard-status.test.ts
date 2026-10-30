@@ -3982,12 +3982,16 @@ test("status timeout does not cancel shared GitHub App token acquisition", async
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
     if (url.pathname === "/app/installations/456789/access_tokens") {
+      if (JSON.parse(String(init?.body)).permissions.actions !== "read") {
+        return jsonResponse({ token: "synthetic-other-scope" });
+      }
       tokenRequests += 1;
       tokenSignal = init?.signal;
       tokenStarted.release();
       return tokenGate.promise;
     }
-    if (url.pathname === "/auth-probe") return jsonResponse({ ok: true });
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/auth-probe")
+      return jsonResponse({ ok: true });
     if (url.pathname.includes("/actions/")) return jsonResponse({ workflow_runs: [] });
     if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
     if (url.pathname.endsWith("/issues")) return jsonResponse([]);
@@ -4007,7 +4011,7 @@ test("status timeout does not cancel shared GitHub App token acquisition", async
       env,
     );
     await tokenStarted.promise;
-    const unscopedReader = githubJsonForTest(env, "/auth-probe");
+    const unscopedReader = githubJsonForTest(env, "/repos/openclaw/clawsweeper/actions/auth-probe");
     context.mock.timers.tick(STATUS_REFRESH_TIMEOUT_MS);
     const status = await (await statusRequest).json();
     assert.equal(status.public_projection_complete, false);

@@ -31,13 +31,15 @@ Apply additionally verifies live state:
   targeting the current head also resets the clock; missing source-activity
   data keeps the PR open;
 - a dated proof request is visible on the PR — a needs-proof label timeline
-  event or a proof-nudge comment — and that request is at least 14 days old,
+  event or a proof-nudge comment — and the latest dated request is at least 14 days old,
   so the contributor had a real window to respond. The durable review comment
   is edited in place and cannot date the ask, so it does not count;
 - the PR is not a draft (drafts route to `abandoned_pr` instead);
 - no `proof: sufficient` or `proof: override` label is present;
-- no human engagement: no assignee, requested reviewer/team, or
-  maintainer comment/review/inline comment.
+- no assignee, requested reviewer/team, or maintainer comment/review/inline
+  comment, and no ordinary human comment, review, inline-comment edit, or PR
+  body edit within the same 14-day inactivity window. Bot chatter does not
+  reset that window; unreadable identity or dates keep the PR open.
 
 The close comment names the missing proof kind and invites reopening with a
 live run, logs, or a reproducible validation transcript. Historical proof-nudge
@@ -63,7 +65,7 @@ Apply additionally verifies live state:
   to conflicts on its current head
   (combined status failure/error, or a check run concluding
   `failure`/`timed_out`) on its current head;
-- no human engagement, same checks as above.
+- no human engagement, same checks as above using the 30-day window.
 
 The close comment acknowledges the useful part of the work, states the
 observed inactivity window and stalled state, and invites a rebased reopen or

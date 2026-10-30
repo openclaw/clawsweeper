@@ -1,3 +1,9 @@
+import { StoredJsonCorruptionError, encodeStoredJson } from "./stored-json.ts";
+import {
+  ReadModelCompressionStore,
+  ReadModelCompressionConflictError,
+  READ_MODEL_COMPRESSION_KEY,
+} from "./read-model-compression.ts";
 import { CanonicalBodyUnavailableError } from "./canonical-bodies.ts";
 import {
   EXACT_REVIEW_PUBLICATION_REASONS,
@@ -972,7 +978,12 @@ function rethrowQueueFailure(
   throw error;
 }
 
+type CanonicalMaintenanceContext = {
+  phase: "initialize" | "plan" | "prepare" | "commit" | "activate" | "requalify";
+};
+
 export class ExactReviewQueue {
+  private readModelCompressionEnabled = false;
   private state;
   private storage;
   private env;
@@ -1083,7 +1094,15 @@ export class ExactReviewQueue {
       env.STATE_SNAPSHOTS,
     );
     this.stateWriterCoordinator = new StateWriterCoordinator(this.storage);
-    this.lifecycleProjectionStore = new ExactReviewLifecycleProjectionStore(this.storage);
+    this.readModelCompressionEnabled = Boolean(this.storage.kv.get(READ_MODEL_COMPRESSION_KEY));
+    // The first reviewed migration commit is also the write cutover. Reading
+    // both formats works before cutover; no per-row KV polling or config switch.
+    const encodeReadModel = (text: string) =>
+      this.readModelCompressionEnabled ? encodeStoredJson(text) : text;
+    this.lifecycleProjectionStore = new ExactReviewLifecycleProjectionStore(
+      this.storage,
+      encodeReadModel,
+    );
     this.lifecycleTelemetryStore = new ExactReviewLifecycleTelemetryStore(this.storage);
     this.reviewFailureTelemetryStore = new ExactReviewFailureTelemetryStore(this.storage);
     this.reviewLoopStore = new ExactReviewReviewLoopStore(this.storage);
@@ -1093,7 +1112,10 @@ export class ExactReviewQueue {
       this.storage,
       env.STATE_SNAPSHOTS,
     );
-    this.githubWebhookReadModelStore = new GithubWebhookReadModelStore(this.storage);
+    this.githubWebhookReadModelStore = new GithubWebhookReadModelStore(
+      this.storage,
+      encodeReadModel,
+    );
     // Establish lifecycle schemas before requests run; full queue initialization
     // and migration remain deferred.
     if (typeof state.blockConcurrencyWhile === "function") {
@@ -1117,12 +1139,28 @@ export class ExactReviewQueue {
     hostedTargetMetadataToken = exactReviewHostedTargetMetadataTokenSource(this.env),
   ) {
     const mutating = request.method !== "GET";
+    const maintenance: CanonicalMaintenanceContext | null =
+      request.method === "POST" && new URL(request.url).pathname === "/canonical-bodies/maintenance"
+        ? { phase: "initialize" }
+        : null;
     if (mutating) this.invalidateReadCaches();
     try {
-      return await this.handleFetch(request, hostedTargetMetadataToken);
+      return await this.handleFetch(request, hostedTargetMetadataToken, maintenance);
     } catch (error) {
       // A failed transaction may have rolled back the retention pass.
       this.reviewRunTelemetryPrunedAt = null;
+      if (maintenance) {
+        console.error("canonical_tiering_failed", {
+          phase: maintenance.phase,
+          trace_id: exactReviewQueueTraceId(request.headers.get(EXACT_REVIEW_QUEUE_TRACE_HEADER)),
+          failure_category:
+            error instanceof CanonicalBodyUnavailableError
+              ? "body_unavailable"
+              : error instanceof RecordExportConsistencyError
+                ? "record_export_consistency"
+                : "handler_exception",
+        });
+      }
       rethrowQueueFailure(error, "fetch", request);
     } finally {
       // Mutators can yield to a dashboard poll while awaiting external work.
@@ -1133,13 +1171,14 @@ export class ExactReviewQueue {
   private async handleFetch(
     request: Request,
     hostedTargetMetadataToken: HostedTargetMetadataToken,
+    maintenance: CanonicalMaintenanceContext | null,
   ) {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/lifecycle-audit/inventory") {
       return this.readLifecycleAuditInventory(await request.json().catch(() => null));
     }
     // The report handler performs no writes and bypasses ensureReady/legacy cleanup.
-    // Cloudflare reports only the total stored bytes; table content is measured separately.
+    // Cloudflare reports occupied SQLite bytes, excluding free pages; table content is separate.
     if (request.method === "POST" && url.pathname === "/storage/stats") {
       const body = objectValue(await request.json().catch(() => null));
       if (body.census !== undefined) {
@@ -1171,11 +1210,54 @@ export class ExactReviewQueue {
 
     await this.ensureReady();
     this.cleanupLegacyCompatibilitySync();
+    if (request.method === "POST" && url.pathname === "/read-model/compression") {
+      const body = objectValue(await request.json().catch(() => null));
+      const deploymentSha = String(this.env.CLAWSWEEPER_DEPLOY_SHA || "");
+      if (!/^[a-f0-9]{40}$/.test(deploymentSha) || body.expectedDeploymentSha !== deploymentSha)
+        return json({ error: "read_model_compression_deployment_mismatch" }, 409);
+      if (body.action !== "preview" && body.action !== "migrate")
+        return json({ error: "invalid_read_model_compression_action" }, 400);
+      const store = new ReadModelCompressionStore(this.storage);
+      const preview = await store.preview(deploymentSha);
+      if (body.action === "preview") return json({ ok: true, ...preview });
+      if (body.execute !== true || body.reviewedPreviewSha256 !== preview.sha256)
+        return json({ error: "read_model_compression_reviewed_preview_required" }, 409);
+      // The only await precedes preparation. Current code owns both formats;
+      // preparation and the final exact-text CAS have no external side effects.
+      if (String(this.env.CLAWSWEEPER_DEPLOY_SHA || "") !== deploymentSha)
+        return json({ error: "read_model_compression_deployment_mismatch" }, 409);
+      try {
+        const checkpoint = store.commit(store.prepare(), Date.now());
+        this.readModelCompressionEnabled = true;
+        return json({ ok: true, checkpoint });
+      } catch (error) {
+        if (error instanceof ReadModelCompressionConflictError)
+          return json({ error: "read_model_compression_checkpoint_changed" }, 409);
+        throw error;
+      }
+    }
     if (request.method === "POST" && url.pathname === "/canonical-bodies/maintenance") {
+      if (maintenance) maintenance.phase = "plan";
       const body = objectValue(await request.json().catch(() => null));
       const deploymentSha = String(this.env.CLAWSWEEPER_DEPLOY_SHA || "");
       if (body.expectedDeploymentSha !== deploymentSha || !/^[a-f0-9]{40}$/.test(deploymentSha))
         return json({ error: "canonical_tiering_deployment_mismatch" }, 409);
+      if (body.action === "requalify-preview" || body.action === "requalify") {
+        const preview = await this.directPublicationStore.tieringRequalificationPreview(
+          deploymentSha,
+          body.attestation,
+          body.previousPlanSha256,
+        );
+        if (body.action === "requalify-preview") return json({ ok: true, ...preview });
+        if (body.execute !== true || body.reviewedPreviewSha256 !== preview.sha256)
+          return json({ error: "canonical_tiering_reviewed_preview_required" }, 409);
+        if (maintenance) maintenance.phase = "requalify";
+        return json({
+          ok: true,
+          checkpoint: this.directPublicationStore.requalifyTieringSync(preview),
+          nextPlanSha256: preview.packet.nextPlanSha256,
+        });
+      }
       const preview = await this.directPublicationStore.tieringPreview(
         deploymentSha,
         body.attestation,
@@ -1183,15 +1265,19 @@ export class ExactReviewQueue {
       if (body.action === "preview") return json({ ok: true, ...preview });
       if (body.execute !== true || body.reviewedPreviewSha256 !== preview.sha256)
         return json({ error: "canonical_tiering_reviewed_preview_required" }, 409);
-      if (body.action === "activate")
+      if (body.action === "activate") {
+        if (maintenance) maintenance.phase = "activate";
         return json({
           ok: true,
           checkpoint: this.directPublicationStore.activateTieringSync(preview, Date.now()),
         });
+      }
       if (body.action === "migrate") {
+        if (maintenance) maintenance.phase = "prepare";
         const pass = await this.directPublicationStore.prepareTieringPass(preview.progress);
         if (String(this.env.CLAWSWEEPER_DEPLOY_SHA || "") !== deploymentSha)
           return json({ error: "canonical_tiering_deployment_mismatch" }, 409);
+        if (maintenance) maintenance.phase = "commit";
         return json({
           ok: true,
           checkpoint: this.directPublicationStore.commitTieringPassSync(pass, Date.now()),
@@ -2921,8 +3007,8 @@ export class ExactReviewQueue {
       item.reviewBudgetChargeGeneration = item.claimGeneration;
       await this.writeState(state);
       this.recordLifecycleClaim(item, now);
-      // Every newly claimed review run spends one full review; finalizer-only
-      // and publication claims do not.
+      // This alert measures claim pressure, including runs that exit before
+      // generation. Publication and finalizer-only claims are excluded.
       if (!exactReviewQueueIsPublication(item) && !item.terminalFinalization) {
         this.reviewLoopStore.recordReviewGenerationSafely(
           exactReviewLoopItemKey(item.decision),
@@ -4633,7 +4719,8 @@ export class ExactReviewQueue {
       let result;
       try {
         result = this.githubWebhookReadModelStore.ingest(await request.json().catch(() => null));
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_delivery" }, 400);
       }
       await this.scheduleStorageMaintenance();
@@ -4704,10 +4791,11 @@ export class ExactReviewQueue {
       let result;
       try {
         result = this.githubWebhookReadModelStore.repair(await request.json().catch(() => null));
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_repair" }, 400);
       }
-      await this.scheduleStorageMaintenance();
+      if (result.accepted) await this.scheduleStorageMaintenance();
       return json(result, 202);
     }
 
@@ -4716,7 +4804,8 @@ export class ExactReviewQueue {
         return json(
           await this.githubWebhookReadModelStore.readItem(await request.json().catch(() => null)),
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_item_request" }, 400);
       }
     }
@@ -4728,7 +4817,8 @@ export class ExactReviewQueue {
             await request.json().catch(() => null),
           ),
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_comments_request" }, 400);
       }
     }
@@ -4740,7 +4830,8 @@ export class ExactReviewQueue {
             await request.json().catch(() => null),
           ),
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_activity_request" }, 400);
       }
     }
@@ -4752,7 +4843,8 @@ export class ExactReviewQueue {
             await request.json().catch(() => null),
           ),
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_workflows_request" }, 400);
       }
     }
@@ -4764,7 +4856,8 @@ export class ExactReviewQueue {
             await request.json().catch(() => null),
           ),
         );
-      } catch {
+      } catch (error) {
+        if (error instanceof StoredJsonCorruptionError) throw error;
         return json({ error: "invalid_github_webhook_read_model_placeholders_request" }, 400);
       }
     }
@@ -7713,6 +7806,7 @@ export class ExactReviewQueue {
     } catch {
       console.warn("review_runaway_telemetry_unavailable");
       return {
+        counting_basis: "claimed_review_runs",
         status: "unknown",
         reason: "telemetry_unavailable",
         window_hours: 24,

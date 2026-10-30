@@ -109,10 +109,12 @@ jobs:
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          actions-permission: ""
+          contents-permission: ""
 
       - uses: ./.github/actions/setup-pnpm
         with:
-          build-script: build:all
+          build-script: build:node
 
       # The workflow-scoped GITHUB_TOKEN cannot mutate the target repo; stuck
       # escalation labels need an app installation token for the target owner.

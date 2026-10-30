@@ -41,6 +41,15 @@ guidance.
 policies; being a non-core target does not grant contributors or workers
 permission to edit release-owned files.
 
+All profiles share the hidden-payload security guard in
+`src/repair/security-signals.ts`. It checks the raw item body and discussion
+before prompt compaction, inspecting rendered HTML comments for remote shell
+substitution, download-to-shell pipelines, or encoded environment dumps. Visible
+fenced and inline code examples are excluded. A signal becomes a typed security
+review requiring human moderation, P1 (or an existing P0), and `impact:security`;
+it blocks every automatic close reason. Apply also checks current source before
+closing, including paired closes and older proposals without a recorded signal.
+
 OpenClaw’s generated locale PRs are publisher-owned. Automatic apply and repair
 close paths leave PRs open when live GitHub metadata identifies
 `openclaw-mantis[bot]` as author, both head and base repositories as
@@ -161,12 +170,12 @@ workflow and GitHub App installation.
 1. Install the ClawSweeper GitHub App on the target repository.
 2. Add or merge the target dispatcher from
    [`docs/target-dispatcher.md`](target-dispatcher.md).
-3. Ensure the target repo can read the org or repo
-   `CLAWSWEEPER_APP_PRIVATE_KEY` secret.
+3. Verify the App receives Issues, Pull requests, and Issue comments webhooks.
+   The target workflow uses OIDC and needs no ClawSweeper secret.
 4. Open, edit, or comment on a target issue/PR and confirm a dispatcher run
    appears in the target repo.
-5. Confirm the receiver run appears in
-   `https://github.com/openclaw/clawsweeper/actions`.
+5. Confirm direct Worker intake succeeds and the queued review appears in
+   `https://github.com/openclaw/clawsweeper/actions`; no relay run is expected.
 6. Confirm the target item gets one durable ClawSweeper review comment.
 
 Add a `config/target-repositories.json` entry when a repository needs explicit
@@ -193,6 +202,6 @@ Batch rollout should use target fanout:
   close policy
 
 If a target dispatch reaches ClawSweeper but receiver token creation fails, the
-App is usually not installed on that target repo. If the target workflow skips
-before dispatch, the target repo usually cannot access
-`CLAWSWEEPER_APP_PRIVATE_KEY`.
+App is usually not installed on that target repo. If the target workflow warns before intake, check its OIDC permission,
+canonical workflow filename, and default-branch ref. The independent App webhook
+route remains enabled; see [failure semantics](target-dispatcher.md#failure-semantics-and-legacy-receivers).

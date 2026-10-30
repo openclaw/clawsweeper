@@ -2,7 +2,7 @@
 
 - Status: proposed; available in this candidate, not deployed enforcement
 - Owner: ClawSweeper maintainers
-- Source: `src/review-preflight.ts`, `src/review-preflight-contract.ts`, `src/review-preflight-body.ts`
+- Source: `src/review-preflight.ts`, `src/review-preflight-contract.ts`, `src/review-preflight-body.ts`, `src/review-preflight-display.ts`
 - Update when: local output, source checks, block format, or hosted body handling changes
 
 ## Generate a summary
@@ -105,10 +105,31 @@ components must use the same reader before claiming matching semantic hashes.
 This candidate is not a deployment, a hosted-reuse guarantee, or a zero-cost edit
 guarantee.
 
-A future consumer may compare repository, current resolved diff base, and head
-and report source-match, stale, or unknown. That is source identity only: body,
-instructions, configuration, model, policy, and review quality are not certified.
+## Local source comparison
+
+Existing exact-PR local reviews (`review --local-only --item-number <number>`)
+add a **Local preflight source** section to their report/stdout output. It compares
+the PR body's valid summary with the canonical target repository, exact head,
+and actual merge base of the observed PR source snapshot. An advanced target
+branch tip is not itself a changed diff base. A fork's head repository does not
+replace the upstream PR target.
+
+The section reports only `matches`, `stale`, or `unknown`. Missing or invalid
+summaries, unsupported identities, unavailable or ambiguous local ancestry, and
+known source drift produce `unknown`. A valid summary for another target, diff
+base, or head is `stale`. Cached reports replace this section from the current
+observation instead of retaining an earlier match. No extra GitHub request,
+history download, scan, or model call is made for this display.
+
+The comparison is scoped to the observed source snapshot, not a promise that
+the PR stays unchanged afterward. It does not display contributor text, tool
+names, completion values, links, or report digests. Completion remains
+self-reported, and missing report bytes remain unverified. Matching source
+does not certify the body, instructions, configuration, model, policy, tests,
+execution, or review quality. Ordinary review identity checks still apply.
+
 A contributor can edit this block; it grants no trusted execution claim, role,
 review exemption, or permission to bypass hosted review. General attachment,
-second-engine export, source comparison, scheduling suppression, and enforcement
-remain separate work.
+hosted comment/dashboard display, second-engine export, scheduling suppression,
+and enforcement remain separate work. Local display adds no repository write
+and does not copy private payload text to a public surface.

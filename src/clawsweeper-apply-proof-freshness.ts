@@ -346,6 +346,7 @@ export function createApplyProofFreshnessGuards({
     try {
       const currentSnapshotSha256 = coveringPrCloseCoveragePullRequestSnapshotSha256(
         covering.number,
+        Boolean(covering.mainSha),
       );
       if (currentSnapshotSha256 === covering.snapshotSha256) return null;
       return {

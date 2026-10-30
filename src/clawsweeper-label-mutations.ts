@@ -50,7 +50,7 @@ export function labelCapacityError(error: unknown): boolean {
 
 // The gh shell that label writes go through.
 export interface LabelGh {
-  ghJson: <T>(args: string[]) => T;
+  readLabelCatalogPages: () => unknown;
   ghObservedMutationCommand: (options: {
     identity: string;
     args: string[];
@@ -61,7 +61,10 @@ export interface LabelGh {
 }
 
 // One instance owns the pending label batch and the label catalog cache.
-export function createLabelMutationOperations({ ghJson, ghObservedMutationCommand }: LabelGh) {
+export function createLabelMutationOperations({
+  readLabelCatalogPages,
+  ghObservedMutationCommand,
+}: LabelGh) {
   type LabelDefinition = {
     name: string;
     color: string;
@@ -175,17 +178,13 @@ export function createLabelMutationOperations({ ghJson, ghObservedMutationComman
 
   function repositoryLabelCatalog(): Map<string, { color: string; description: string }> {
     if (repositoryLabelCatalogCache) return repositoryLabelCatalogCache;
-    const raw = ghJson<unknown>([
-      "label",
-      "list",
-      "--limit",
-      "1000",
-      "--json",
-      "name,color,description",
-    ]);
-    if (!Array.isArray(raw)) throw new Error("GitHub label catalog was not an array");
+    // Native `gh label list --json` emits no JSON for an empty repository.
+    // REST pages retain that valid empty catalog without accepting malformed reads.
+    const pages = readLabelCatalogPages();
+    if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page)))
+      throw new Error("GitHub label catalog pages were not arrays");
     const catalog = new Map<string, { color: string; description: string }>();
-    for (const value of raw) {
+    for (const value of pages.flat()) {
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
       const label = value as Record<string, unknown>;
       if (typeof label.name !== "string" || typeof label.color !== "string") continue;

@@ -15,7 +15,12 @@ runs:
       shell: bash
       env:
         TARGET_REPOSITORY: ${{ inputs.target-repo }}
-      run: echo "repository=$(printf '%s' "$TARGET_REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      run: |
+        if [[ ! "$TARGET_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+          echo "::error::Invalid target repository: expected owner/repository." >&2
+          exit 1
+        fi
+        echo "repository=$(printf '%s' "$TARGET_REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
     # One cache entry per pinned Codex version. Without a valid base pin there is
     # no key; install.sh still owns that decision.
@@ -46,9 +51,9 @@ runs:
       run: |
         set +e
         "$GITHUB_ACTION_PATH/install.sh" \
-          "${{ steps.target.outputs.repository }}" \
-          "${{ inputs.target-dir }}" \
-          "${{ inputs.target-dir }}-codex-cache.git"
+          "${STEPS_TARGET_OUTPUTS_REPOSITORY}" \
+          "${INPUTS_TARGET_DIR}" \
+          "${INPUTS_TARGET_DIR}-codex-cache.git"
         setup_status=$?
         set -e
         if [ "$setup_status" -eq 80 ]; then
@@ -59,6 +64,9 @@ runs:
           echo "ready=true" >> "$GITHUB_OUTPUT"
         fi
         exit "$setup_status"
+      env:
+        STEPS_TARGET_OUTPUTS_REPOSITORY: ${{ steps.target.outputs.repository }}
+        INPUTS_TARGET_DIR: ${{ inputs.target-dir }}
 
     - name: Save Codex source object cache
       if: ${{ steps.cache-key.outputs.key != '' && steps.cache.outputs.cache-hit != 'true' && steps.materialize.outputs.ready == 'true' }}

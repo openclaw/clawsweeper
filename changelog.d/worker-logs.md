@@ -1,1 +1,0 @@
-- Turn on Workers Logs for the `clawsweeper-status` Worker and its Durable Objects (every invocation, 7-day retention), so queue stalls and HTTP 500s can be traced to the request and exception that caused them.

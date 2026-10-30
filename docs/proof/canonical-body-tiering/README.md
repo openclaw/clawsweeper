@@ -4,6 +4,7 @@
 - Owner: ClawSweeper storage and queue maintainers
 - Source: `worker.ts`, `run-proof.mjs`, and the canonical queue/store owners
 - Frozen persisted baseline: `291ab8a0090a8f76c08e4d0e39ea4cf1fdcbe0c0`
+- Frozen throughput baseline: `ea6d72efc0a2e2c0683ad984b060b5c22008ce57`
 - Update when: representation, publication fences, export/snapshot protocol, or runtime changes
 
 Run from the repository root with pinned Miniflare, Workerd and esbuild available
@@ -16,6 +17,9 @@ PROOF_TOOL_ROOT=/path/to/runtime-tools node docs/proof/canonical-body-tiering/ru
 When the remote checkout has no Git metadata, set `PROOF_BASELINE_ARCHIVE` to a tar
 created by `git archive 291ab8a0090a8f76c08e4d0e39ea4cf1fdcbe0c0 dashboard src config package.json`.
 The runner reports that archive’s SHA-256. It never substitutes a synthetic old schema.
+The serial-throughput comparison also needs an archive of the same paths at
+`ea6d72efc0a2e2c0683ad984b060b5c22008ce57`, supplied as
+`PROOF_THROUGHPUT_BASELINE_ARCHIVE` when Git history is unavailable.
 
 The fixture imports the actual frozen queue and canonical owner, seeds schema 1,
 then restarts the candidate against the same named SQLite Durable Objects and
@@ -31,6 +35,22 @@ Query plans and native rows-read counts compare baseline, dormant candidate, and
 migrated pages, and instrument every actual migration pass. Timings include fixture IPC and R2; host RSS and CPU are not isolate
 memory or CPU measurements and do not qualify production capacity.
 
+The throughput comparison uses the actual frozen serial owner and the candidate
+on identical synthetic records, native SQLite and native R2. Both timed legs use
+prewarmed immutable objects and exercise conditional reuse under equal bucket
+preconditions. A controlled 20 ms delay per operation exposes overlap; full GET streams still
+pass through the production integrity reader. It records wall time, operation
+count and peak concurrency, requiring four concurrent candidate operations and
+identical exported bytes, revisions and tombstones. Failure proof requires all
+started I/O to drain with SQL and checkpoint unchanged and no new PUT pipeline
+after failure. Foreground publication must interleave and win its tuple CAS.
+These timings are a synthetic comparison, not a production throughput estimate.
+
+Requalification proof restarts a partially migrated serial checkpoint under a
+new deployment identity, rejects ordinary preview and the wrong approval hash,
+applies the reviewed envelope, rejects old prepared passes and replays, then
+restarts again and resumes with every progress field preserved.
+
 Focused tests add SQL-commit rollback, concurrent overwrite and deletion capture,
 complete tuple conflict hydration, stale-source answers, coverage parity including
 astral Unicode and SQLite NUL termination, warm format fencing, retention-boundary retries, bounded stream
@@ -39,6 +59,20 @@ canonical/backfill preservation with concurrent export changes and invalid owner
 
 The real bucket lifecycle, deployed identity, approved rollback floor, production
 headroom, and the human production execution confirmations remain separate gates.
+
+Throughput and requalification proof passed on 2026-10-19 through AWS Crabbox
+(`run_ffe608e45de9`), Node `24.19.0`, Workerd `1.20260911.1`, Miniflare
+`5.20260911.0-alpha`, and esbuild `0.28.1`. The frozen serial source archive hash
+was `1a7756c6b4f2ae90da5835fe8f3b0ece2d515c7b842b808b15163b9ab7323dd3`.
+Both timed legs migrated the same 96 records in six passes with prewarmed bodies
+and 20 ms added per R2 operation: serial 2,077 ms / 96 calls / peak 1; candidate
+564 ms / 60 calls / peak 4. The export digest was identical before and after.
+The injected failure drained all eight started operations with no new PUT after
+failure. Foreground publication won its tuple CAS. Requalification retained the
+96-row frontier, cursor 16 and migrated count 16 across restart, rejected the
+wrong approval hash, old prepared pass and replay, then completed all 96 rows.
+The full format-upgrade fixture also passed 253 bounded passes; its maximum
+observed source bytes per pass remained 6,291,878, below the fixed 8 MiB cap.
 
 Observed on 2026-10-16 with Workerd `1.20260911.1`, Wrangler `4.131.1`,
 Node `24.19.0`, and the frozen baseline archive SHA-256
@@ -62,4 +96,4 @@ native R2 and fixture IPC. This small fixture does not establish production
 throughput, an isolate CPU budget, or an isolate memory bound. A single explicit
 CLI invocation can run up to 100,000 passes or 50 minutes and resume the same
 approved plan later. Actual bucket lifecycle inspection, production headroom,
-qualified deployment identity and the three human confirmations remain required.
+qualified deployment identity and explicit operator approval remain required.

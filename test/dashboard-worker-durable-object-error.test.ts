@@ -11,6 +11,57 @@ import { exactReviewQueueEndpointTemplate } from "../dashboard/exact-review-queu
 
 const TRACE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+test("authenticated canonical maintenance exposes only closed platform categories and matching trace", async (t) => {
+  const logs: unknown[][] = [];
+  t.mock.method(console, "error", (...values: unknown[]) => logs.push(values));
+  const secret = "synthetic-secret";
+  const body = JSON.stringify({ action: "migrate" });
+  for (const [failure, category] of [
+    [
+      Object.assign(new Error("private-marker"), { overloaded: true, retryable: true }),
+      "platform_overloaded",
+    ],
+    [Object.assign(new Error("private-marker"), { retryable: true }), "platform_retryable"],
+    [Object.assign(new Error("private-marker"), { remote: true }), "remote_exception"],
+    [{ message: "private-marker", overloaded: "private-marker" }, "request_exception"],
+  ] as const) {
+    logs.length = 0;
+    let trace: string | null = null;
+    const response = await worker.fetch(
+      new Request(
+        "https://clawsweeper.openclaw.ai/internal/exact-review/canonical-bodies/maintenance",
+        {
+          method: "POST",
+          body,
+          headers: {
+            "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+          },
+        },
+      ),
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+          async fetch(request: Request) {
+            trace = request.headers.get("x-clawsweeper-exact-review-trace");
+            throw failure;
+          },
+        }),
+      },
+    );
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), {
+      error: "exact_review_queue_unavailable",
+      failure_category: category,
+    });
+    assert.match(trace!, TRACE_ID_PATTERN);
+    assert.equal(response.headers.get("x-clawsweeper-exact-review-trace"), trace);
+    const metadata = logs[0]?.[1] as Record<string, unknown>;
+    assert.equal(metadata.trace_id, trace);
+    assert.equal(metadata.endpoint, "canonical_bodies_maintenance");
+    assert.doesNotMatch(JSON.stringify(logs), /private-marker/);
+  }
+});
+
 function publicationsListRequest(limit: number) {
   return new Request("https://clawsweeper-exact-review-queue/publications/list", {
     method: "POST",

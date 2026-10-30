@@ -38,5 +38,7 @@ runs:
         private-key: ${{ inputs.private-key }}
         owner: ${{ inputs.owner }}
         repositories: ${{ inputs.repository }}
+        # Keep an explicit downscope when callers omit both optional grants.
+        permission-metadata: read
         permission-actions: ${{ inputs.actions-permission }}
         permission-contents: ${{ inputs.contents-permission }}

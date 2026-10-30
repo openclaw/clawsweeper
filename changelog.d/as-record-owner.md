@@ -1,1 +1,0 @@
-- Import `asRecord` and `login` from `value-coerce` instead of five local copies and dependency-interface injection; arrays now coerce to an empty record everywhere.

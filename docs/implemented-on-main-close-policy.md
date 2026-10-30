@@ -9,6 +9,14 @@
 paths. A review may identify semantic equivalence, but `apply-decisions` closes
 only after fresh GitHub reads prove every required relationship.
 
+Only `implemented_on_main` intentionally has an exception to the generic
+maintainer-author / `maintainer` label close hold. It does not exempt security
+labels, explicit manual holds, locks, outstanding human decisions,
+freshness, or any implementation evidence. Issue-only proposals still require
+current source, history provenance, and release or current-main timing evidence;
+PR and paired-issue proposals additionally require the GitHub relationships
+below. This is not an exception for model-generated product rejection.
+
 ## Required relationship
 
 For a PR and exactly one same-repository linked issue, both independently
@@ -30,7 +38,9 @@ maintainer can evaluate that case through the ordinary review path.
 ## Mutation and visibility boundaries
 
 Before any mutation, apply rechecks report freshness, source state, labels,
-locks, and post-review human activity. The linked issue has its own mutation
+locks, and post-review human activity. The close mutation boundary rereads the
+item's lock last, so an issue a human locks after review stays open. The linked
+issue has its own mutation
 lease and ledger record; it is archived before the parent PR, so an interrupted
 parent close cannot erase an independently completed issue record.
 

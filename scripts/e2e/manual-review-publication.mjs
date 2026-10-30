@@ -195,6 +195,8 @@ const onTerminate = () => interrupt("SIGTERM");
 process.once("SIGINT", onInterrupt);
 process.once("SIGTERM", onTerminate);
 let canonicalFailure = false;
+let canonicalReadFailure = false;
+let preparationItem = null;
 let authorityOutage = null;
 let initialDispatchOutage = true;
 let initialDispatchFailures = 0;
@@ -227,6 +229,24 @@ const server = createServer(async (req, res) => {
           : body,
     });
     if (path.startsWith("/queue/")) {
+      if (preparationItem && path.startsWith("/queue/internal/state/")) {
+        if (path.startsWith("/queue/internal/state/blobs/")) {
+          assert.equal(req.method, "POST");
+          assert.ok(
+            ["/queue/internal/state/blobs/put", "/queue/internal/state/blobs/chunk"].includes(path),
+          );
+          assert.match(String(body.path), /^artifacts\/exact-review\/v1\/[a-f0-9]{64}$/);
+        } else {
+          assert.equal(req.method, "GET");
+          assert.match(
+            path,
+            new RegExp(
+              `^/queue/internal/state/records/openclaw-openclaw/(items|closed|plans|decision-packets)/${preparationItem}$`,
+            ),
+          );
+          if (canonicalReadFailure) return send({ error: "synthetic_canonical_read_denied" }, 403);
+        }
+      }
       if (authorityOutage && path.endsWith("/publication-authority")) {
         if (authorityOutage.allowedChecks > 0) authorityOutage.allowedChecks--;
         else {
@@ -321,6 +341,8 @@ const server = createServer(async (req, res) => {
       return send({}, 204);
     }
     if (path.endsWith("/installation") && req.method === "GET") return send({ id: 999 });
+    if (path === `/repos/${repo}/collaborators/fixture-author/permission` && req.method === "GET")
+      return send({ permission: "read", role_name: "read" });
     if (path === "/app/installations/999/access_tokens" && req.method === "POST")
       return send({
         token: "synthetic-app-token",
@@ -557,6 +579,7 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     GH_NO_EXTENSION_UPDATE_NOTIFIER: "1",
     NODE_OPTIONS: `--import=${transport}`,
     MANUAL_PUBLICATION_LOOPBACK: baseUrl,
+    MANUAL_PUBLICATION_GITHUB_SOCKET: socket,
     CLAWSWEEPER_WEBHOOK_SECRET: secret,
     EXACT_REVIEW_QUEUE_URL: "https://manual-queue.invalid",
     QUEUE_URL: "https://manual-queue.invalid",
@@ -610,6 +633,7 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
       migrations: [{ tag: "v1", new_sqlite_classes: ["ExactReviewQueue", "StatusStore"] }],
       r2_buckets: [{ binding: "STATE_SNAPSHOTS", bucket_name: "synthetic-manual-publication" }],
       vars: {
+        CLAWSWEEPER_DEPLOY_SHA: base,
         CLAWSWEEPER_WEBHOOK_SECRET: secret,
         EXACT_REVIEW_OPERATOR_SECRET: secret,
         CLAWSWEEPER_APP_CLIENT_ID: "Iv23synthetic",
@@ -682,7 +706,38 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     await wait(1000);
   }
   assert.ok(ready, redact(workerLog));
+  // Exercise the same R2-backed canonical reader used by production publishers.
+  const tiering = {
+    expectedDeploymentSha: base,
+    attestation: {
+      operator: "synthetic-proof",
+      rollbackFloor: {
+        sha: base,
+        supportsFormats: [1, 2],
+        proof: "isolated native format-2 publication fixture",
+      },
+      bucketLifecycle: {
+        bucketIdentity: "clawsweeper-state-snapshots",
+        observedAt: new Date().toISOString(),
+        rulesJson: '{"rules":[]}',
+        canonicalBodiesDoNotExpire: true,
+      },
+    },
+  };
+  const preview = await post("exact-review/canonical-bodies/maintenance", {
+    ...tiering,
+    action: "preview",
+  });
+  const activation = await post("exact-review/canonical-bodies/maintenance", {
+    ...tiering,
+    action: "activate",
+    execute: true,
+    reviewedPreviewSha256: preview.sha256,
+  });
+  assert.ok(activation.checkpoint);
+  observations.push({ scenario: "canonical format 2 active", checkpoint: activation.checkpoint });
   const { default: YAML } = await import("yaml");
+  const { withReviewRecord } = await import(pathToFileURL(join(source, "test/helpers.ts")));
   const sweep = YAML.parse(readFileSync(join(source, ".github/workflows/sweep.yml"), "utf8"));
   const planner = YAML.parse(
     readFileSync(join(source, ".github/workflows/review-plan.yml"), "utf8"),
@@ -862,9 +917,9 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     }
     const work = join(root, repeatRunId ? `${number}-${runId}` : String(number));
     mkdirSync(join(work, "artifacts/event"), { recursive: true });
-    // Workflow steps run from a built checkout: scripts and dist sit side by side.
-    symlinkSync(join(source, "scripts"), join(work, "scripts"));
-    symlinkSync(join(source, "dist"), join(work, "dist"));
+    // Workflow steps use both built entrypoints and directly executable TS helpers.
+    for (const name of ["scripts", "src", "dist"])
+      symlinkSync(join(source, name), join(work, name));
     const env = {
       GITHUB_RUN_ID: runId,
       EXACT_REVIEW_ITEM_KEY: tuple.item_key,
@@ -966,11 +1021,27 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
       requires_new_config_option: "false",
       requires_product_decision: "false",
     };
-    const report = `---\n${Object.entries(fields)
-      .map(([k, v]) => `${k}: ${v}`)
-      .join(
-        "\n",
-      )}\n---\n\n## Summary\n\nSynthetic reviewed existing-behavior bug.\n\n## Repair Work Prompt\n\nImplement the focused fix.\n`;
+    const report = withReviewRecord(
+      `---\n${Object.entries(fields)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(
+          "\n",
+        )}\n---\n\n## Summary\n\nSynthetic reviewed existing-behavior bug.\n\n## Repair Work Prompt\n\nImplement the focused fix.\n`,
+      {
+        decision: "keep_open",
+        closeReason: "none",
+        summary: "Synthetic reviewed existing-behavior bug.",
+        localCheckoutAccess: "verified",
+        workCandidate: "queue_fix_pr",
+        workConfidence: "high",
+        workPriority: "medium",
+        workReason: "The reproduced existing-behavior bug needs a focused fix.",
+        workPrompt: "Implement the focused fix.",
+        workValidation: ["pnpm run check"],
+        workLikelyFiles: ["src/clawsweeper.ts"],
+        workClusterRefs: [`${repo}#99`],
+      },
+    );
     reviewCounts.set(number, (reviewCounts.get(number) || 0) + 1);
     requestReviewCounts.set(runId, (requestReviewCounts.get(runId) || 0) + 1);
     const reportPath = join(work, `artifacts/event/${number}.md`);
@@ -1446,7 +1517,6 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
   lostAcknowledgement = 71;
   const workspace = join(root, "batch");
   mkdirSync(workspace);
-  mkdirSync(join(workspace, "records/openclaw-openclaw/items"), { recursive: true });
   // CLI entry guards compare import.meta.url with argv[1]; a symlink is not a checkout.
   cpSync(join(source, "dist"), join(workspace, "dist"), { recursive: true });
   for (const name of ["scripts", "config", "schemas", "prompts"])
@@ -1468,6 +1538,25 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     workspace,
   );
   assert.ok(existsSync(manifestPath), "coordinator did not grant batch claim");
+  preparationItem = JSON.parse(readFileSync(manifestPath, "utf8")).items[0].decision.itemNumber;
+  const beforeDeniedRead = commentWrites();
+  canonicalReadFailure = true;
+  await command(
+    process.execPath,
+    [join(source, "scripts/prepare-exact-review-batch.mjs")],
+    batchEnv,
+    workspace,
+  );
+  canonicalReadFailure = false;
+  const deniedManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const deniedOutcome = JSON.parse(readFileSync(deniedManifest.items[0].outcomePath, "utf8"));
+  assert.equal(deniedOutcome.kind, "retryable_failure");
+  assert.equal(commentWrites(), beforeDeniedRead);
+  assert.deepEqual(readdirSync(join(workspace, ".artifacts/exact-review-batch/workers")), []);
+  observations.push({
+    scenario: "canonical read failure isolated before publication",
+    outcome: deniedOutcome,
+  });
   const batchOutage = { allowedChecks: 0, rejectedChecks: 0 };
   const writesBeforeBatchOutage = commentWrites();
   authorityOutage = batchOutage;
@@ -1491,12 +1580,30 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     reasonCode: outageOutcome.reasonCode,
     commentWrites: 0,
   });
+  const beforeFocusedRead = trace.length;
   await command(
     process.execPath,
     [join(source, "scripts/prepare-exact-review-batch.mjs")],
     batchEnv,
     workspace,
   );
+  const focusedReads = trace
+    .slice(beforeFocusedRead)
+    .filter(
+      (entry) =>
+        entry.method === "GET" &&
+        entry.path.startsWith("/queue/internal/state/") &&
+        entry.status !== undefined,
+    );
+  assert.equal(focusedReads.length, 4, JSON.stringify(focusedReads));
+  assert.ok(focusedReads.every((entry) => [200, 404].includes(entry.status)));
+  assert.equal(existsSync(join(workspace, "records")), false);
+  observations.push({
+    scenario: "focused native canonical hydration",
+    reads: focusedReads.map(({ path, status }) => ({ path, status })),
+    sharedRecordsAbsent: true,
+  });
+  preparationItem = null;
   let manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   assert.equal(manifest.items.length, 1);
   const outcome = JSON.parse(readFileSync(manifest.items[0].outcomePath, "utf8"));
@@ -1634,6 +1741,52 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     JSON.stringify(batchReceipt),
   );
   observations.push({ scenario: "batch canonical acceptance", receipt: batchReceipt });
+  const replayManifestPath = join(
+    workspace,
+    ".artifacts/exact-review-batch/r2-replay-manifest.json",
+  );
+  const replayOutcomePath = join(
+    workspace,
+    ".artifacts/exact-review-batch/outcomes/r2-replay.json",
+  );
+  writeFileSync(
+    replayManifestPath,
+    JSON.stringify({ ...manifest, items: [{ ...member, outcomePath: replayOutcomePath }] }),
+  );
+  preparationItem = member.decision.itemNumber;
+  const beforeR2Replay = trace.length;
+  await command(
+    process.execPath,
+    [join(source, "scripts/prepare-exact-review-batch.mjs")],
+    { ...batchEnv, EXACT_REVIEW_BATCH_MANIFEST: replayManifestPath },
+    workspace,
+  );
+  preparationItem = null;
+  const r2Reads = trace
+    .slice(beforeR2Replay)
+    .filter(
+      (entry) =>
+        entry.method === "GET" &&
+        entry.path.startsWith("/queue/internal/state/") &&
+        entry.status !== undefined,
+    );
+  assert.equal(r2Reads.length, 4);
+  const primaryRead = r2Reads.find((entry) =>
+    entry.path.endsWith(`/items/${member.decision.itemNumber}`),
+  );
+  assert.equal(primaryRead?.status, 200);
+  const r2Record = JSON.parse(primaryRead.response);
+  assert.ok(r2Record.content.length > 0);
+  assert.equal(digest(r2Record.content), r2Record.digest);
+  assert.ok(
+    ["eligible", "superseded"].includes(JSON.parse(readFileSync(replayOutcomePath, "utf8")).kind),
+  );
+  assert.equal(existsSync(join(workspace, "records")), false);
+  observations.push({
+    scenario: "timed worker reads committed format-2 body",
+    canonicalDigest: r2Record.digest,
+    reads: r2Reads.map(({ path, status }) => ({ path, status })),
+  });
   await post("exact-review/lifecycle/router-receipt", {
     canonical_target_key: first.tuple.item_key,
     fence_key: member.itemKey,

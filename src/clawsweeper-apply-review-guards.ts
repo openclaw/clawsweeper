@@ -9,6 +9,10 @@ import type {
   PrCloseCoverageProofGateBlock,
 } from "./clawsweeper-types.js";
 import { replaceFrontMatterValue } from "./report-front-matter.js";
+import {
+  PR_CLOSE_COVERAGE_PROOF_REASONS,
+  requiresPrCloseCoverageProof,
+} from "./clawsweeper-policy.js";
 
 type ApplyReviewGuardDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
@@ -154,7 +158,7 @@ export function createApplyReviewGuards(
     return (
       liveState === "open" &&
       (state.staleCanonicalCommentSyncPending ||
-        (state.closeReason === "duplicate_or_superseded" &&
+        (requiresPrCloseCoverageProof(state.closeReason) &&
           (state.isCloseProposal || (decision === "close" && shouldProbeClosedState))))
     );
   };
@@ -235,11 +239,8 @@ export function createApplyReviewGuards(
     if (!staleCanonicalClosedUnmergedValidated || pendingCanonicalNumber === null)
       return staleReason;
     if (
-      reviewCommentHasCloseVerdictForCanonical(
-        comment,
-        number,
-        "duplicate_or_superseded",
-        pendingCanonicalNumber,
+      PR_CLOSE_COVERAGE_PROOF_REASONS.some((reason) =>
+        reviewCommentHasCloseVerdictForCanonical(comment, number, reason, pendingCanonicalNumber),
       )
     ) {
       return null;

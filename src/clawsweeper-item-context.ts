@@ -1,4 +1,5 @@
 import { reviewBodyWithoutPreflight } from "./review-preflight-body.js";
+import { hiddenPayloadSecurityReview } from "./repair/security-signals.js";
 import { sha256 } from "./content-hash.js";
 import type { ContextHydration, Item, ItemContext } from "./clawsweeper-types.js";
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
@@ -179,6 +180,8 @@ export function createItemContext(relatedContext: ItemContextRelations) {
         timelineTruncated: timelineWindow.truncated,
       },
     };
+    const securityReview = hiddenPayloadSecurityReview(issueRecord.body, sourceRevisionComments);
+    if (securityReview) context.securityReview = securityReview;
     const structuralItemStateDigest = hydratedReviewStructuralItemStateDigest(
       issue,
       sourceRevisionComments,
@@ -259,6 +262,11 @@ export function createItemContext(relatedContext: ItemContextRelations) {
       const pullCommits = pullCommitsWindow.items;
       const pullReviewCommentsWindow = hydration.reviewComments;
       pullReviewComments = pullReviewCommentsWindow.items;
+      const pullSecurity = hiddenPayloadSecurityReview(pullRecord.body, [
+        ...(allReviewComments ?? pullReviewComments),
+        ...readPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/reviews`),
+      ]);
+      if (pullSecurity && !context.securityReview) context.securityReview = pullSecurity;
       filteredPullReviewComments = filterReviewContextComments(pullReviewComments, item.number);
       const fullPullReviewComments =
         options.reviewCacheDigest || options.fullTimelineForRelations

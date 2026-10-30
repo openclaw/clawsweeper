@@ -48,7 +48,7 @@ on:
       - completed
 
 permissions:
-  contents: write
+  contents: read
   actions: read
   issues: read
   pull-requests: read
@@ -65,6 +65,7 @@ jobs:
   notify:
     if: >-
       ${{
+        (github.event_name != 'workflow_run' || (github.event.workflow_run.head_repository.full_name == github.repository && contains(fromJSON('["schedule","workflow_dispatch","repository_dispatch","push"]'), github.event.workflow_run.event))) &&
         !(github.event_name == 'pull_request_target' && github.event.action == 'synchronize') &&
         !(github.event_name == 'repository_dispatch' && github.event.client_payload.activity.type == 'pull_request_target' && github.event.client_payload.activity.action == 'synchronize') &&
         !(github.event_name == 'workflow_run' && contains(fromJSON('["success","neutral","skipped"]'), github.event.workflow_run.conclusion))
@@ -98,13 +99,23 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-pnpm
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: steps.core-budget.outputs.skip != 'true'
+        with:
+          node-version: "24.22.1"
+
+      - name: Classify activity before package setup
+        id: activity
+        if: steps.core-budget.outputs.skip != 'true'
+        run: node src/repair/github-activity-admission.ts
+
+      - uses: ./.github/actions/setup-pnpm
+        if: steps.activity.outputs.admitted == 'true'
         with:
           build-script: build:repair
 
       - name: Feed activity to OpenClaw
-        if: steps.core-budget.outputs.skip != 'true'
+        if: steps.activity.outputs.admitted == 'true'
         env:
           CLAWSWEEPER_OPENCLAW_HOOK_URL: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_URL }}
           CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_TOKEN }}

@@ -1,4 +1,26 @@
-import type { CloseReason } from "./clawsweeper-types.js";
+import type { CloseReason, ItemKind } from "./clawsweeper-types.js";
+
+// Model validation and publication must reject impossible subjects before a
+// completed artifact can enter the immutable publication retry lane.
+export function closeReasonItemKindError(reason: CloseReason, kind: ItemKind): string | null {
+  switch (reason) {
+    case "mostly_implemented_on_main":
+    case "low_signal_unmergeable_pr":
+    case "oversized_pull_request":
+    case "stalled_unproven_pr":
+    case "abandoned_pr":
+    case "unconfirmed_product_direction":
+    case "author_pr_budget_exceeded":
+    case "obsolete_fix_pr":
+      return kind === "pull_request" ? null : `${reason} is allowed only for pull requests`;
+    case "unsponsored_feature_request":
+    case "stale_version_bug":
+    case "stale_insufficient_info":
+      return kind === "issue" ? null : `${reason} is allowed only for issues`;
+    default:
+      return null;
+  }
+}
 
 export function closeReasonText(reason: CloseReason): string {
   switch (reason) {

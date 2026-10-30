@@ -80,7 +80,14 @@ test("payload maintenance preserves an earlier alarm and arms fresh repair deadl
   const earlier = Date.now() + 500;
   await storage.setAlarm(earlier);
   assert.equal(
-    (await queue.fetch(request("github-read-model/ingest", delivery(Date.now(), 1)))).status,
+    (
+      await queue.fetch(
+        request("github-read-model/ingest", {
+          ...delivery(Date.now(), 1),
+          eventClasses: ["issues", "issue_comments"],
+        }),
+      )
+    ).status,
     202,
   );
   assert.equal(await storage.getAlarm(), earlier);
@@ -101,4 +108,29 @@ test("payload maintenance preserves an earlier alarm and arms fresh repair deadl
     202,
   );
   assert.ok((await storage.getAlarm())! >= at + GITHUB_WEBHOOK_READ_MODEL_PAYLOAD_RETENTION_MS);
+});
+
+test("skipped poll-only repairs leave payload maintenance unarmed", async () => {
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(request("admission-capabilities"));
+  assert.equal(await storage.getAlarm(), null);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await queue.fetch(
+      request("github-read-model/repair", {
+        repository,
+        repair_kind: "items",
+        objects: delivery(Date.now(), 1).objects,
+      }),
+    );
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), {
+      accepted: false,
+      reason: "event_class_unavailable",
+      watermark: 0,
+      evicted_workflow_runs: 0,
+    });
+    assert.equal(storage.scalar(`SELECT COUNT(*) AS value FROM ${table}`), 0);
+    assert.equal(await storage.getAlarm(), null);
+  }
 });

@@ -29,6 +29,8 @@ import {
   authenticateTargetDispatchToken,
   TARGET_DISPATCH_MAX_BODY_BYTES,
   targetDispatchQueueIntake,
+  targetDispatchCommentIntake,
+  type TargetDispatchIdentity,
 } from "./target-dispatch-ingress.ts";
 import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts";
 import { commandAckMarker } from "../src/repair/markers.ts";
@@ -55,6 +57,7 @@ import { dashboardSiteResponse, isDashboardSitePath } from "./dashboard-site.ts"
 import { summarizeDashboardHealth } from "./dashboard-health.ts";
 import {
   createGithubAppTokenFor,
+  githubAppTokenRequest,
   githubApiUrl,
   githubAppCredentials,
   githubAppInstallationIdAsPlainError as githubAppInstallationId,
@@ -620,7 +623,14 @@ const PR_PROOF_VIEWS = [
   },
 ];
 
-let githubAppTokenCache = null;
+const githubAppTokenCache = new Map<
+  string,
+  {
+    token: string;
+    expiresAtMs: number;
+    promise?: Promise<string>;
+  }
+>();
 let statusRefresh: { key: string; promise: ReturnType<typeof refreshStatusCaches> } | null = null;
 export const STATUS_REFRESH_TIMEOUT_MS = 18_000;
 type StatusCollectionPhase = "cache" | "refresh" | "github" | "github_auth" | "queue" | "store";
@@ -1022,7 +1032,7 @@ export default {
     if (url.pathname === "/github/webhook" && request.method === "POST")
       return githubWebhook(request, env, ctx);
     if (url.pathname === "/github/target-dispatch" && request.method === "POST")
-      return githubTargetDispatch(request, env);
+      return githubTargetDispatch(request, env, ctx);
     if (url.pathname === "/internal/exact-review/command-intake" && request.method === "POST")
       return authenticatedHostedTargetQueueRequest(request, env, "/command-intake");
     if (
@@ -1066,6 +1076,11 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewQueueRequest(request, env, "/canonical-bodies/maintenance");
+    if (
+      url.pathname === "/internal/exact-review/read-model/compression" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/read-model/compression");
     if (url.pathname === "/internal/exact-review/storage-stats" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/storage/stats");
     if (url.pathname === "/internal/state/records/slugs" && request.method === "POST")
@@ -3859,7 +3874,17 @@ async function githubWebhook(request, env, ctx) {
     return json({ ok: true, ...queued }, 202);
   }
 
-  const commentDecision = decision;
+  return handleGithubCommentCommand(env, ctx, decision, payload, deliveryHeaders.deliveryId);
+}
+
+// Shared by signed App webhooks and OIDC intake after its live GitHub hydration.
+async function handleGithubCommentCommand(
+  env,
+  ctx,
+  commentDecision: GithubWebhookIssueCommentClassification,
+  payload: GithubWebhookPayload,
+  sourceDeliveryId?: string | null,
+) {
   if (
     commentDecision.itemState === "open" &&
     typeof commentDecision.commentBody === "string" &&
@@ -3921,13 +3946,18 @@ async function githubWebhook(request, env, ctx) {
       pull_requests: "write",
     },
   });
-  const statusCommentId = await createFastAckCommentOnce({
-    env,
-    token: targetToken,
-    repo: commentDecision.targetRepo,
-    itemNumber: commentDecision.itemNumber,
-    sourceCommentId: commentDecision.commentId,
-  });
+  const statusCommentId = commentDecision.maintainerAuthorized
+    ? await createFastAckCommentOnce({
+        env,
+        token: targetToken,
+        repo: commentDecision.targetRepo,
+        itemNumber: commentDecision.itemNumber,
+        sourceCommentId: commentDecision.commentId,
+      }).catch(() => {
+        console.warn("ClawSweeper queued command acknowledgement unavailable");
+        return null;
+      })
+    : null;
   await addIssueCommentReaction({
     env,
     token: targetToken,
@@ -3949,7 +3979,7 @@ async function githubWebhook(request, env, ctx) {
           ? payload.comment?.updated_at || payload.comment?.created_at
           : payload.comment?.created_at || payload.comment?.updated_at,
       )
-        ? (deliveryHeaders.deliveryId ?? undefined)
+        ? (sourceDeliveryId ?? undefined)
         : undefined,
   });
   settleFastAckComments({
@@ -4642,9 +4672,9 @@ async function exactReviewQueueFetch(
   path: string,
   request?: Request,
   service: "exact_review_queue" | "github_etag_cache" = "exact_review_queue",
+  traceId = newExactReviewQueueTraceId(),
 ) {
   const body = request ? await request.text() : undefined;
-  const traceId = newExactReviewQueueTraceId();
   const endpoint = exactReviewQueueEndpointTemplate(path);
   const preparedHostedTarget = request?.headers.get(HOSTED_TARGET_ELIGIBILITY_HEADER);
   const authenticatedBodyFingerprint = request?.headers.get(
@@ -4692,34 +4722,49 @@ async function exactReviewQueueFetch(
       return { response, malformedServerResponse: true };
     }
   } catch (error) {
-    const failure = objectValue(error);
-    const remote = failure.remote === true;
-    const retryable = failure.retryable === true;
-    const overloaded = failure.overloaded === true;
     console.error(`${service}_request_failed`, {
       trace_id: traceId,
       endpoint,
       phase: "request",
       transport: "throw",
       upstream_status: null,
-      remote,
-      retryable,
-      overloaded,
-      failure_category: overloaded
-        ? "platform_overloaded"
-        : retryable
-          ? "platform_retryable"
-          : remote
-            ? "remote_exception"
-            : "request_exception",
+      ...queuePlatformFailure(error),
     });
     throw error;
   }
 }
 
+function queuePlatformFailure(error: unknown) {
+  const failure = objectValue(error);
+  const remote = failure.remote === true;
+  const retryable = failure.retryable === true;
+  const overloaded = failure.overloaded === true;
+  return {
+    remote,
+    retryable,
+    overloaded,
+    failure_category: overloaded
+      ? "platform_overloaded"
+      : retryable
+        ? "platform_retryable"
+        : remote
+          ? "remote_exception"
+          : "request_exception",
+  };
+}
+
 async function exactReviewQueueRequest(env, path, request?: Request) {
+  const maintenance =
+    path === "/canonical-bodies/maintenance" || path === "/read-model/compression";
+  const traceId = newExactReviewQueueTraceId();
+  const respond = (response: Response) => {
+    if (!maintenance) return response;
+    const headers = new Headers(response.headers);
+    headers.set(EXACT_REVIEW_QUEUE_TRACE_HEADER, traceId);
+    return new Response(response.body, { status: response.status, headers });
+  };
   const queue = exactReviewQueueStub(env);
-  if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
+  if (!queue) return respond(json({ error: "exact_review_queue_not_configured" }, 503));
   try {
     const { response, malformedServerResponse } = await statusOperation(env, "queue", (signal) =>
       exactReviewQueueFetch(
@@ -4728,13 +4773,35 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
         signal
           ? new Request(request || `https://clawsweeper-exact-review-queue${path}`, { signal })
           : request,
+        "exact_review_queue",
+        traceId,
       ),
     );
-    return malformedServerResponse
-      ? json({ error: "exact_review_queue_unavailable" }, response.status)
-      : response;
-  } catch {
-    return json({ error: "exact_review_queue_unavailable" }, 500);
+    return respond(
+      malformedServerResponse
+        ? json(
+            {
+              error: "exact_review_queue_unavailable",
+              ...(maintenance ? { failure_category: "malformed_server_response" } : {}),
+            },
+            response.status,
+          )
+        : response,
+    );
+  } catch (error) {
+    // Only the authenticated maintenance owner receives closed platform metadata.
+    // Remote/retryable are observations, not instructions to retry a mutation.
+    return respond(
+      json(
+        {
+          error: "exact_review_queue_unavailable",
+          ...(maintenance
+            ? { failure_category: queuePlatformFailure(error).failure_category }
+            : {}),
+        },
+        500,
+      ),
+    );
   }
 }
 
@@ -5067,6 +5134,7 @@ function publicExactReviewFailureHealth(value) {
 function publicExactReviewRunawayHealth(value, allowedRepositories: ReadonlySet<string>) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const source = objectValue(value);
+  const countingBasis = source.counting_basis;
   const status = String(source.status || "");
   const reason = source.reason ?? null;
   const windowHours = publicQueueCount(source.window_hours, 24 * 7);
@@ -5082,6 +5150,7 @@ function publicExactReviewRunawayHealth(value, allowedRepositories: ReadonlySet<
           ? null
           : undefined;
   if (
+    (countingBasis !== undefined && countingBasis !== "claimed_review_runs") ||
     expectedReason === undefined ||
     reason !== expectedReason ||
     windowHours === null ||
@@ -5107,6 +5176,7 @@ function publicExactReviewRunawayHealth(value, allowedRepositories: ReadonlySet<
     if (sample.length >= PUBLIC_RUNAWAY_SAMPLE_LIMIT) break;
   }
   return {
+    ...(countingBasis === undefined ? {} : { counting_basis: countingBasis }),
     status,
     reason,
     window_hours: windowHours,
@@ -5584,15 +5654,110 @@ async function authenticatedHostedTargetQueueRequest(request, env, path: string)
 
 // Target dispatchers enqueue here with their workflow's OIDC identity instead of
 // spending one ClawSweeper Actions relay run per `repository_dispatch`. Any
-// non-2xx answer makes the dispatcher fall back to that unchanged relay.
-async function githubTargetDispatch(request: Request, env) {
+// non-2xx answer leaves delivery to the independent App webhook route.
+async function githubTargetDispatch(request: Request, env, ctx) {
   const text = await boundedTargetDispatchBody(request, TARGET_DISPATCH_MAX_BODY_BYTES);
   if (text === null) return json({ error: "target_dispatch_too_large_or_invalid" }, 413);
-  const identity = await authenticateTargetDispatchToken(bearerToken(request));
-  if (!identity) return json({ error: "target_dispatch_not_authorized" }, 401);
-  const intake = targetDispatchQueueIntake(parseJsonObject(text), identity);
+  const authentication = await authenticateTargetDispatchToken(bearerToken(request));
+  if (authentication.ok === false) {
+    if (authentication.reason === "unavailable") {
+      const response = json({ error: "target_dispatch_verifier_unavailable" }, 503);
+      response.headers.set("retry-after", "30");
+      return response;
+    }
+    return json({ error: "target_dispatch_not_authorized" }, 401);
+  }
+  const { identity } = authentication;
+  const payload = parseJsonObject(text);
+  if (identity.eventName === "issue_comment" || payload?.source_event === "issue_comment") {
+    return githubTargetCommentDispatch(payload, identity, env, ctx);
+  }
+  const intake = targetDispatchQueueIntake(payload, identity);
   if ("error" in intake) return json({ error: intake.error }, intake.status);
   return hostedTargetQueueRequest(env, "/enqueue", JSON.stringify(intake.body));
+}
+
+async function githubTargetCommentDispatch(payload, identity: TargetDispatchIdentity, env, ctx) {
+  const intake = targetDispatchCommentIntake(payload, identity);
+  if (!intake.ok) return json({ error: intake.error }, intake.status);
+  const eligibility = await workerHostedTargetEligibility(env, intake.targetRepo);
+  if (eligibility.outcome !== "eligible") {
+    if (eligibility.outcome === "terminal")
+      return hostedTargetProbeResponse({ outcome: "terminal" });
+    return hostedTargetProbeResponse({ outcome: "retryable" });
+  }
+  const admission = await workerHostedTargetVisibilityAdmission(env, intake.targetRepo);
+  if (admission.outcome !== "public") return hostedTargetProbeResponse(admission);
+  const credentials = githubAppCredentials(env);
+  if (!credentials) return json({ error: "github_app_not_configured" }, 503);
+  try {
+    const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
+    const installationId = await githubAppInstallationId(appJwt, intake.targetRepo, env);
+    const token = await createGithubAppTokenFor({
+      env,
+      appJwt,
+      installationId,
+      label: intake.targetRepo,
+      repositories: [repoName(intake.targetRepo)],
+      permissions: { issues: "read", pull_requests: "read" },
+    });
+    const repository = await githubTokenJson({
+      env,
+      token,
+      path: `/repos/${intake.targetRepo}`,
+      body: undefined,
+      errorLabel: "target dispatch repository",
+    });
+    if (
+      String(repository.full_name || "").toLowerCase() !== intake.targetRepo.toLowerCase() ||
+      !repository.default_branch ||
+      identity.ref !== `refs/heads/${repository.default_branch}` ||
+      repository.private !== false
+    )
+      return json({ error: "target_dispatch_identity_mismatch" }, 403);
+    const comment = await githubTokenJson({
+      env,
+      token,
+      path: `/repos/${intake.targetRepo}/issues/comments/${intake.commentId}`,
+      body: undefined,
+      errorLabel: "target dispatch live comment",
+    });
+    if (
+      comment.id !== intake.commentId ||
+      String(comment.issue_url || "").toLowerCase() !==
+        `https://api.github.com/repos/${intake.targetRepo}/issues/${intake.itemNumber}`.toLowerCase() ||
+      typeof comment.body !== "string" ||
+      !exactWebhookTimestamp(comment.updated_at)
+    )
+      return json({ error: "target_dispatch_comment_mismatch" }, 403);
+    const issue = await githubTokenJson({
+      env,
+      token,
+      path: `/repos/${intake.targetRepo}/issues/${intake.itemNumber}`,
+      body: undefined,
+      errorLabel: "target dispatch live item",
+    });
+    if (issue.number !== intake.itemNumber)
+      return json({ error: "target_dispatch_comment_mismatch" }, 403);
+    const livePayload = {
+      action: intake.sourceAction,
+      repository,
+      issue,
+      comment,
+      installation: { id: installationId },
+    };
+    const decision = classifyGithubIssueCommentWebhook({
+      event: "issue_comment",
+      payload: livePayload,
+      hostedTargetEligible: true,
+    });
+    if (!decision.accepted || decision.type !== "issue_comment") {
+      return json({ ok: true, accepted: false, reason: "not an authorized command" }, 202);
+    }
+    return await handleGithubCommentCommand(env, ctx, decision, livePayload);
+  } catch {
+    return json({ error: "target_dispatch_comment_unavailable" }, 503);
+  }
 }
 
 async function hostedTargetQueueRequest(env, path: string, body: string) {
@@ -9084,7 +9249,7 @@ function createGithubJsonCache(env): GithubJsonReader {
 }
 
 async function githubJson(env, path) {
-  const token = await statusOperation(env, "github_auth", () => githubAuthToken(env));
+  const scope = githubReadScope(env, path);
   const key = githubEtagCacheKey({
     credentialPool: env.GITHUB_TOKEN ? "repository_actions" : "target_app",
     route: path,
@@ -9103,7 +9268,9 @@ async function githubJson(env, path) {
       cachedEntry = null;
     }
   }
-  let response = await githubJsonResponse(env, path, token, String(cachedEntry?.etag || ""));
+  const read = (etag: string) =>
+    githubRequestWithAuth(env, scope, (token) => githubJsonResponse(env, path, token, etag));
+  let response = await read(String(cachedEntry?.etag || ""));
   if (response.status === 304 && etagBrokerEnabled && requestBody && cachedEntry) {
     try {
       const confirmed = await githubEtagCachePost(env, "confirm", {
@@ -9125,7 +9292,7 @@ async function githubJson(env, path) {
     } catch {
       // The final guard may use a 304, but it never consumes an unconfirmed body.
     }
-    response = await githubJsonResponse(env, path, token, "");
+    response = await read("");
   }
   if (!response.ok) throw new Error(`GitHub ${response.status} for ${path}`);
   const body = await response.text();
@@ -9194,19 +9361,27 @@ async function sha256Utf8(value: string): Promise<string> {
 }
 
 async function githubGraphql(env, query, variables) {
-  const token = await statusOperation(env, "github_auth", () => githubAuthToken(env));
-  if (!token) throw new Error("GitHub auth is required for GraphQL");
-  const response = await fetch(githubApiUrl(env, "/graphql"), {
-    method: "POST",
-    signal: statusRequestSignal(env, AbortSignal.timeout(OPTIONAL_SECTION_TIMEOUT_MS)),
-    headers: {
-      Accept: "application/vnd.github+json",
-      "Content-Type": "application/json",
-      "User-Agent": "openclaw-clawsweeper-status",
-      Authorization: `Bearer ${token}`,
+  const response = await githubRequestWithAuth(
+    env,
+    {
+      repos: [`${variables.owner}/${variables.name}`],
+      permissions: { issues: "read", pull_requests: "read" },
     },
-    body: JSON.stringify({ query, variables }),
-  });
+    (token) => {
+      if (!token) throw new Error("GitHub auth is required for GraphQL");
+      return fetch(githubApiUrl(env, "/graphql"), {
+        method: "POST",
+        signal: statusRequestSignal(env, AbortSignal.timeout(OPTIONAL_SECTION_TIMEOUT_MS)),
+        headers: {
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json",
+          "User-Agent": "openclaw-clawsweeper-status",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+    },
+  );
   if (!response.ok) throw new Error(`GitHub GraphQL ${response.status}`);
   const payload = await response.json();
   if (Array.isArray(payload.errors) && payload.errors.length) {
@@ -9215,55 +9390,100 @@ async function githubGraphql(env, query, variables) {
   return payload.data;
 }
 
+export const githubGraphqlForTest = githubGraphql;
+
+async function githubRequestWithAuth(env, scope, request: (token: string) => Promise<Response>) {
+  const tokenForScope = () =>
+    statusOperation(env, "github_auth", () => githubAuthToken(env, scope));
+  let token = await tokenForScope();
+  let response = await request(token);
+  if (response.status !== 401 || env.GITHUB_TOKEN || !token) return response;
+
+  // A delayed 401 must not evict a replacement minted by another request.
+  const evictRejectedToken = () => {
+    for (const [key, entry] of githubAppTokenCache) {
+      if (entry.token === token) githubAppTokenCache.delete(key);
+    }
+  };
+  evictRejectedToken();
+  await response.body?.cancel();
+  token = await tokenForScope();
+  response = await request(token);
+  if (response.status === 401) evictRejectedToken();
+  return response;
+}
+
 function hasGithubAuth(env) {
   return Boolean(env.GITHUB_TOKEN || githubAppCredentials(env));
 }
 
-async function githubAuthToken(env) {
+function githubReadScope(env, path: string) {
+  const match = /^\/repos\/([^/]+\/[^/]+)(?:\/([^/?]+))?/.exec(path);
+  if (match) {
+    const permission = /\/commits\/[^/]+\/check-runs(?:[/?]|$)/.test(path)
+      ? "checks"
+      : {
+          actions: "actions",
+          contents: "contents",
+          pulls: "pull_requests",
+          issues: "issues",
+          labels: "issues",
+          commits: "contents",
+        }[match[2]] || "metadata";
+    return { repos: [match[1]], permissions: { [permission]: "read" } };
+  }
+  const query = new URL(path, "https://api.github.com").searchParams.get("q") || "";
+  // Search builders put scope first; quoted label text must not widen it.
+  const repository = /^repo:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?=\s|$)/.exec(query)?.[1];
+  const itemKind = /^repo:\S+\s+is:(pr|issue)(?=\s|$)/.exec(query)?.[1];
+  const permissions =
+    itemKind === "pr"
+      ? { pull_requests: "read" }
+      : itemKind === "issue"
+        ? { issues: "read" }
+        : { issues: "read", pull_requests: "read" };
+  return { repos: repository ? [repository] : triageTargetRepos(env), permissions };
+}
+
+async function githubAuthToken(env, scope) {
   if (env.GITHUB_TOKEN) return String(env.GITHUB_TOKEN);
   const credentials = githubAppCredentials(env);
   if (!credentials) return "";
 
   const now = Date.now();
-  const repos = triageTargetRepos(env);
-  const cacheKey = [
+  const owners = new Set(scope.repos.map((repo: string) => repo.split("/")[0].toLowerCase()));
+  if (owners.size !== 1) throw new Error("GitHub App token repositories must share an owner");
+  const request = githubAppTokenRequest(scope.repos.map(repoName), scope.permissions);
+  const cacheKey = JSON.stringify([
     credentials.issuer,
-    credentials.installationId || repos[0] || "",
-    repos.join(","),
-  ].join("|");
-  if (
-    githubAppTokenCache?.key === cacheKey &&
-    githubAppTokenCache.expiresAtMs - GITHUB_APP_TOKEN_REFRESH_SKEW_MS > now
-  ) {
-    return githubAppTokenCache.token;
+    credentials.installationId,
+    owners.values().next().value,
+    githubApiUrl(env, "/"),
+    request,
+  ]);
+  for (const [key, entry] of githubAppTokenCache) {
+    if (!entry.promise && entry.expiresAtMs - GITHUB_APP_TOKEN_REFRESH_SKEW_MS <= now) {
+      githubAppTokenCache.delete(key);
+    }
   }
-  if (githubAppTokenCache?.key === cacheKey && githubAppTokenCache.promise) {
-    return githubAppTokenCache.promise;
-  }
+  const cached = githubAppTokenCache.get(cacheKey);
+  if (cached?.expiresAtMs - GITHUB_APP_TOKEN_REFRESH_SKEW_MS > now) return cached.token;
+  if (cached?.promise) return cached.promise;
 
-  const promise = createGithubAppInstallationToken(env, credentials, repos)
+  const promise = createGithubAppInstallationToken(env, credentials, scope.repos, request)
     .then((result) => {
-      githubAppTokenCache = {
-        key: cacheKey,
-        token: result.token,
-        expiresAtMs: result.expiresAtMs,
-      };
+      githubAppTokenCache.set(cacheKey, result);
       return result.token;
     })
     .catch((error) => {
-      githubAppTokenCache = null;
+      githubAppTokenCache.delete(cacheKey);
       throw error;
     });
-  githubAppTokenCache = {
-    key: cacheKey,
-    token: "",
-    expiresAtMs: 0,
-    promise,
-  };
+  githubAppTokenCache.set(cacheKey, { token: "", expiresAtMs: 0, promise });
   return promise;
 }
 
-async function createGithubAppInstallationToken(env, credentials, repos) {
+async function createGithubAppInstallationToken(env, credentials, repos, request) {
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
   const installationId =
     credentials.installationId || (await githubAppInstallationId(appJwt, repos[0], env));
@@ -9272,15 +9492,7 @@ async function createGithubAppInstallationToken(env, credentials, repos) {
     appJwt,
     {
       method: "POST",
-      body: JSON.stringify({
-        permissions: {
-          actions: "read",
-          checks: "read",
-          contents: "read",
-          issues: "read",
-          pull_requests: "read",
-        },
-      }),
+      body: JSON.stringify(request),
       errorLabel: "GitHub App token",
     },
     env,
@@ -9411,7 +9623,7 @@ function isCodexWorkflowFallback(run) {
   ) {
     return false;
   }
-  return /review clawsweeper items|review hot (?:clawsweeper items|target repo)|review target repo|review event items?|retry failed codex reviews|commit review|repair cluster|automerge repair|issue implementation|assist\b/i.test(
+  return /review clawsweeper items|review hot (?:clawsweeper items|target repo)|review target repo|review event items?|review exact item|review scheduled (?:hot|normal) item|retry failed codex reviews|commit review|repair cluster|automerge repair|issue implementation|assist\b/i.test(
     name,
   );
 }

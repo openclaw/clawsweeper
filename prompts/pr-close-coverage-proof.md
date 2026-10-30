@@ -12,7 +12,7 @@ Hard rules:
 - The source report is usually PR A's durable ClawSweeper report. In repair apply, it may be a target-specific repair close action report for PR A.
 - Do not require patch-level equality. A covering PR can address the same work with different code.
 - Return `covered` when PR B clearly carries PR A's core useful intent and is the better/current canonical place to review or land that work.
-- PR B can cover PR A even when it does not copy every incidental doc, changelog, test, comment, or review detail from PR A.
+- PR B can omit incidental presentation or bookkeeping details. A useful independent regression test, unresolved human hold, or remaining behavior is material scope; runtime convergence alone does not cover it.
 - Do not treat a PR A concern as unique when the same concern can be reviewed on PR B or PR B is the better place to resolve it.
 - Return `keep_open` when PR A's durable report says current main still has material behavior, proof, policy, or review work remaining after PR B already exists or merged, unless the current PR B evidence directly carries that exact remaining work.
 - Return `keep_open` when PR B is only a precursor, adjacent refactor, shared-file change, or related policy discussion. PR B must carry PR A's concrete remaining behavior or intent.

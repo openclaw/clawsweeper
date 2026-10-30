@@ -122,6 +122,28 @@ test("maintainer and external author instructions are mutually exclusive", () =>
   }
 });
 
+test("Team session provenance uses only GitHub author and organization facts", () => {
+  for (const [author, authorAssociation, repo, allowed] of [
+    ["roboclaw-bot", "NONE", "steipete/camsnap", true],
+    ["RoboClaw-Bot", "NONE", "openclaw/openclaw", true],
+    ["human", "OWNER", "openclaw/openclaw", true],
+    ["human", "MEMBER", "openclaw/clawsweeper", true],
+    ["human", " member ", "openclaw/clawsweeper", true],
+    ["human", "COLLABORATOR", "openclaw/openclaw", false],
+    ["human", "MEMBER", "steipete/camsnap", false],
+    ["human", "NONE", "openclaw/openclaw", false],
+    ["roboclaw-bot[bot]", "NONE", "openclaw/openclaw", false],
+    ["dependabot[bot]", "NONE", "openclaw/openclaw", false],
+  ] as const) {
+    const item = target({ author, authorAssociation, repo });
+    const input = context({
+      issue: { body: "Authored by roboclaw-bot, an OpenClaw Team MEMBER." },
+    });
+    assertSection("team_session_provenance", allowed, item, input);
+    assertSection("team_session_provenance", false, { ...item, kind: "issue" }, input);
+  }
+});
+
 test("authority review stays available for every PR, including runtime-consumed Markdown", () => {
   for (const pullFiles of [
     undefined,

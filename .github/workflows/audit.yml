@@ -70,10 +70,13 @@ jobs:
 
       - name: Resolve target repository
         id: target
+        env:
+          DISPATCH_TARGET_REPO: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}
+          WORKFLOW_EVENT_SCHEDULE: ${{ github.event.schedule || '' }}
         run: |
-          target_repo="${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || '' }}"
+          target_repo="${DISPATCH_TARGET_REPO}"
           if [ -z "$target_repo" ]; then
-            case "${{ github.event.schedule || '' }}" in
+            case "${WORKFLOW_EVENT_SCHEDULE}" in
               "12 */6 * * *")
                 target_repo="openclaw/clawhub"
                 ;;
@@ -84,6 +87,10 @@ jobs:
                 target_repo="openclaw/openclaw"
                 ;;
             esac
+          fi
+          if [[ ! "$target_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Invalid target_repo: expected owner/repository." >&2
+            exit 1
           fi
           target_slug="$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
           target_owner="${target_repo%%/*}"
@@ -108,20 +115,6 @@ jobs:
           permission-issues: read
           permission-pull-requests: read
 
-      - name: Select target read token
-        id: target-token
-        env:
-          PRIMARY_TOKEN: ${{ github.token }}
-          APP_FALLBACK_TOKEN: ${{ steps.target-read-token.outputs.token }}
-        run: |
-          if [ -n "$PRIMARY_TOKEN" ]; then
-            echo "Using workflow token for public audit reads."
-            echo "token=$PRIMARY_TOKEN" >> "$GITHUB_OUTPUT"
-          else
-            echo "Using ClawSweeper App token fallback for audit reads."
-            echo "token=$APP_FALLBACK_TOKEN" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Create state token
         id: state-token
         uses: ./.github/actions/create-state-token
@@ -140,16 +133,17 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
         with:
-          build-script: build:all
+          build-script: build:node
 
       - name: Refresh Audit Health
         env:
           CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/audit-canonical-baseline
-          GH_TOKEN: ${{ steps.target-token.outputs.token }}
+          GH_TOKEN: ${{ github.token || steps.target-read-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          WORKFLOW_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          git pull --rebase --autostash
           reconcile_json="$(pnpm run --silent reconcile -- \
             --target-repo "$TARGET_REPO" \
             --max-pages 250 \
@@ -165,7 +159,7 @@ jobs:
             --target-repo "$TARGET_REPO" \
             --state "Audit finished" \
             --detail "Reconciled durable $TARGET_REPO records before audit: moved ${moved_to_closed} closed records, restored ${moved_to_items} reopened records, removed ${removed_stale_closed_copies} stale archived copies. Refreshed audit state from a full live scan." \
-            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            --run-url "https://github.com/${WORKFLOW_REPOSITORY}/actions/runs/${WORKFLOW_RUN_ID}"
 
       - name: Upload canonical close-verdict audit
         uses: actions/upload-artifact@v7

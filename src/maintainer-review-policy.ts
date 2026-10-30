@@ -1,3 +1,17 @@
+import type { ReviewAuthority } from "./review-authority.js";
+
+// Inert role projections of caller-bound canonical evidence. Callers still own
+// freshness, admission limits, independent protections, and permission grants.
+export function authorReviewCohort(authorAuthority: ReviewAuthority): "maintainer" | "ordinary" {
+  return authorAuthority.role === "maintainer" ? "maintainer" : "ordinary";
+}
+
+export function requesterHasMaintainerReviewAuthority(
+  requesterAuthority: ReviewAuthority,
+): boolean {
+  return requesterAuthority.role === "maintainer";
+}
+
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
 export function normalizeAuthorAssociation(value: unknown): string {

@@ -898,13 +898,12 @@ export class ExactReviewDirectPublicationStore {
     );
   }
 
-  async tieringPreview(deploymentSha: string, input: unknown) {
+  private async tieringPlan(deploymentSha: string, input: unknown) {
     const gates = canonicalTieringAttestation(input);
     if (!/^[a-f0-9]{40}$/.test(deploymentSha))
       throw new Error("canonical tiering deployment required");
     if (gates.rollbackFloor.sha !== deploymentSha)
       throw new Error("canonical tiering rollback floor must be this qualified deployment");
-    const checkpoint = this.tieringStatusSync();
     const lifecycleSha256 = await sha256Hex(
       new TextEncoder().encode(gates.bucketLifecycle.rulesJson),
     );
@@ -924,12 +923,101 @@ export class ExactReviewDirectPublicationStore {
       limits: { rawIdentities: 64, tuples: 4, sourceBytes: 8 * 1024 * 1024 },
     };
     const serialized = JSON.stringify(packet);
+    const sha256 = await sha256Hex(new TextEncoder().encode(serialized));
+    return { packet, sha256 };
+  }
+
+  async tieringPreview(deploymentSha: string, input: unknown) {
+    const checkpoint = this.tieringStatusSync();
+    const { packet, sha256 } = await this.tieringPlan(deploymentSha, input);
+    const serialized = JSON.stringify(packet);
     if (checkpoint && String(checkpoint.plan_json) !== serialized)
       throw new Error("canonical tiering approved plan changed");
-    const sha256 = await sha256Hex(new TextEncoder().encode(serialized));
     if (checkpoint && checkpoint.preview_sha256 !== sha256)
       throw new Error("canonical tiering plan integrity mismatch");
     return { packet, sha256, progress: checkpoint };
+  }
+
+  async tieringRequalificationPreview(
+    deploymentSha: string,
+    input: unknown,
+    previousPlanSha256: unknown,
+  ) {
+    const checkpoint = this.tieringStatusSync();
+    if (this.storageFormatSync() !== 2 || !checkpoint || checkpoint.completed_at !== null)
+      throw new Error("canonical tiering incomplete checkpoint required");
+    const previousPlanJson = String(checkpoint.plan_json);
+    const previousHash = await sha256Hex(new TextEncoder().encode(previousPlanJson));
+    if (previousHash !== previousPlanSha256 || previousHash !== checkpoint.preview_sha256)
+      throw new Error("canonical tiering previous plan integrity mismatch");
+    const next = await this.tieringPlan(deploymentSha, input);
+    const previous = JSON.parse(previousPlanJson) as typeof next.packet;
+    const previousPlan = await this.tieringPlan(previous.deploymentSha, previous.gates);
+    if (JSON.stringify(previousPlan.packet) !== previousPlanJson)
+      throw new Error("canonical tiering previous plan is not canonical");
+    if (
+      previous.deploymentSha !== checkpoint.deployment_sha ||
+      previous.deploymentSha === deploymentSha ||
+      previous.gates.rollbackFloor.sha !== previous.deploymentSha
+    )
+      throw new Error("canonical tiering requalification deployment mismatch");
+    // Compare the complete plans, changing only deployment qualification and
+    // lifecycle observation time. Scope, policy and resource limits stay bound.
+    const qualified = {
+      ...previous,
+      deploymentSha,
+      gates: {
+        ...previous.gates,
+        rollbackFloor: {
+          ...previous.gates.rollbackFloor,
+          sha: next.packet.gates.rollbackFloor.sha,
+          proof: next.packet.gates.rollbackFloor.proof,
+        },
+        bucketLifecycle: {
+          ...previous.gates.bucketLifecycle,
+          observedAt: next.packet.gates.bucketLifecycle.observedAt,
+        },
+      },
+    };
+    if (JSON.stringify(qualified) !== JSON.stringify(next.packet))
+      throw new Error("canonical tiering requalification scope changed");
+    const packet = {
+      previousPlanSha256: previousHash,
+      checkpointSha256: await sha256Hex(new TextEncoder().encode(JSON.stringify(checkpoint))),
+      nextPlan: next.packet,
+      nextPlanSha256: next.sha256,
+    };
+    return {
+      packet,
+      sha256: await sha256Hex(new TextEncoder().encode(JSON.stringify(packet))),
+      progress: checkpoint,
+    };
+  }
+
+  requalifyTieringSync(
+    preview: Awaited<
+      ReturnType<ExactReviewDirectPublicationStore["tieringRequalificationPreview"]>
+    >,
+  ) {
+    return this.storage.transactionSync(() => {
+      const checkpoint = this.tieringStatusSync();
+      if (
+        this.storageFormatSync() !== 2 ||
+        !checkpoint ||
+        checkpoint.completed_at !== null ||
+        JSON.stringify(checkpoint) !== JSON.stringify(preview.progress)
+      )
+        throw new Error("canonical tiering requalification checkpoint changed");
+      // Preserve the finite frontier and every progress field. Old prepared
+      // passes lose their existing whole-checkpoint CAS after this identity swap.
+      this.storage.sql.exec(
+        `UPDATE ${CANONICAL_TIERING_TABLE} SET deployment_sha=?,preview_sha256=?,plan_json=? WHERE singleton_id=1`,
+        preview.packet.nextPlan.deploymentSha,
+        preview.packet.nextPlanSha256,
+        JSON.stringify(preview.packet.nextPlan),
+      );
+      return this.tieringStatusSync();
+    });
   }
 
   activateTieringSync(
@@ -1001,6 +1089,7 @@ export class ExactReviewDirectPublicationStore {
       bodies: Map<string, string | null>;
     }> = [];
     const seen = new Set<string>();
+    const uniqueBodies = new Map<string, { content: string; bytes: number }>();
     let afterRowid = Number(checkpoint.after_rowid),
       bytes = 0;
     for (const candidate of candidates) {
@@ -1028,20 +1117,43 @@ export class ExactReviewDirectPublicationStore {
           throw new RecordExportConsistencyError("invalid canonical migration source");
         bodies.set(section, captured.content);
       }
-      // All SQL bodies and export facts are captured before the first upload.
       for (const row of legacy) {
         const content = bodies.get(String(row.section))!;
         if (Number(row.deleted) === 0) {
           if (content === null) throw new RecordExportConsistencyError("migration body missing");
-          await this.bodies.prepare(content, {
-            digest: String(row.digest),
-            bytes: Number(row.byte_length),
-          });
+          const digest = String(row.digest),
+            bodyBytes = Number(row.byte_length);
+          const existing = uniqueBodies.get(digest);
+          if (existing && (existing.content !== content || existing.bytes !== bodyBytes))
+            throw new RecordExportConsistencyError("canonical migration digest collision");
+          uniqueBodies.set(digest, { content, bytes: bodyBytes });
         }
       }
       tuples.push({ repoSlug, itemId, snapshot, bodies });
       afterRowid = Number(candidate.rowid);
     }
+    // Capture the entire bounded SQL pass before yielding. Four pipelines each
+    // finish immutable PUT + full GET verification; failure drains in-flight I/O.
+    const pending = [...uniqueBodies];
+    let nextBody = 0,
+      failed = false,
+      failure: unknown;
+    await Promise.all(
+      Array.from({ length: Math.min(4, pending.length) }, async () => {
+        while (!failed && nextBody < pending.length) {
+          const [digest, body] = pending[nextBody++]!;
+          try {
+            await this.bodies.prepare(body.content, { digest, bytes: body.bytes });
+          } catch (error) {
+            if (!failed) {
+              failed = true;
+              failure = error;
+            }
+          }
+        }
+      }),
+    );
+    if (failed) throw failure;
     return {
       checkpoint,
       tuples,

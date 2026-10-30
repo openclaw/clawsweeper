@@ -2953,6 +2953,12 @@ test("multi-owner reconciliation recovers installed targets and reports missing 
   );
   assert.deepEqual(scenario.installationRequests, ["installed-owner/repo", "missing-owner/repo"]);
   assert.deepEqual(scenario.tokenMintRequests, [123]);
+  assert.deepEqual(scenario.tokenMintBodies, [
+    {
+      repositories: ["repo"],
+      permissions: { issues: "read", pull_requests: "read" },
+    },
+  ]);
   assert.deepEqual(
     new Set(scenario.targetReadAuthorizations),
     new Set(["Bearer installed-owner-token"]),
@@ -3273,9 +3279,16 @@ test("batched discovery skips a throttled owner setup and continues with another
   assert.equal(summary.recovered_targets, 10);
   assert.equal(summary.skipped_targets, 1);
   assert.deepEqual(summary.skip_reasons, { github_throttled: 1 });
-  assert.deepEqual(scenario.installationRequests, ["owner-a/repo", "owner-b/repo-1"]);
-  assert.deepEqual(scenario.tokenMintRequests, [601, 602]);
-  assert.equal(scenario.graphqlRequests, 1);
+  assert.deepEqual(scenario.installationRequests, [
+    "owner-a/repo",
+    ...Array.from({ length: 10 }, (_, index) => `owner-b/repo-${index + 1}`),
+  ]);
+  assert.deepEqual(scenario.tokenMintRequests, [601, ...Array(10).fill(602)]);
+  assert.equal(scenario.graphqlRequests, 10);
+  assert.deepEqual(
+    scenario.tokenMintBodies.map((body) => body.repositories),
+    [["repo"], ...Array.from({ length: 10 }, (_, index) => [`repo-${index + 1}`])],
+  );
   assert.deepEqual(new Set(scenario.targetReadAuthorizations), new Set(["Bearer owner-b-token"]));
 });
 
@@ -4191,6 +4204,7 @@ async function automaticReconcileScenario(options) {
   const targetReadAuthorizations = [];
   const installationRequests = [];
   const tokenMintRequests = [];
+  const tokenMintBodies = [];
   const restRequestsByNumber = new Map();
   let duplicateFailurePending = options.failFirstDuplicateCleanup === true;
   let duplicateSkipsRemaining =
@@ -4264,6 +4278,7 @@ async function automaticReconcileScenario(options) {
     if (tokenMatch && options.targetInstallations) {
       const installationId = Number(tokenMatch[1]);
       tokenMintRequests.push(installationId);
+      tokenMintBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       const failure = options.tokenMintFailures?.get(installationId);
       if (failure) {
         response.writeHead(failure.status, {
@@ -4550,6 +4565,7 @@ async function automaticReconcileScenario(options) {
       targetReadAuthorizations,
       installationRequests,
       tokenMintRequests,
+      tokenMintBodies,
     };
   } finally {
     server.close();

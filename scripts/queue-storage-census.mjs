@@ -20,6 +20,10 @@ async function main() {
   let cursor = JSON.parse(process.env.STORAGE_CENSUS_CURSOR || "{}");
   if (!cursor || typeof cursor !== "object" || Array.isArray(cursor))
     throw new Error("invalid census cursor");
+  if (cursor.retention !== undefined && typeof cursor.retention !== "boolean")
+    throw new Error("invalid census retention mode");
+  const retentionRequested = cursor.retention === true;
+  let retention;
   const started = Date.now();
   const columns = Object.create(null);
   let result;
@@ -70,6 +74,26 @@ async function main() {
       )
         throw new Error("invalid census bytes");
     }
+    if (retentionRequested) {
+      const summary = page.retention;
+      if (
+        !summary ||
+        !Number.isSafeInteger(summary.asOf) ||
+        summary.asOf < 0 ||
+        (cursor.asOf !== undefined && summary.asOf !== cursor.asOf) ||
+        (retention && summary.asOf !== retention.asOf) ||
+        page.scannedRows > 64 ||
+        !keys.includes("snapshot_json") ||
+        !Number.isSafeInteger(summary.eligibleRows) ||
+        summary.eligibleRows < 0 ||
+        summary.eligibleRows > page.scannedRows ||
+        !Number.isSafeInteger(summary.eligibleStoredBytes) ||
+        summary.eligibleStoredBytes < 0 ||
+        summary.eligibleStoredBytes > page.columns.snapshot_json ||
+        (summary.eligibleRows === 0 && summary.eligibleStoredBytes !== 0)
+      )
+        throw new Error("invalid census retention");
+    } else if (page.retention !== undefined) throw new Error("unexpected census retention");
     if (
       page.complete
         ? page.nextCursor !== null
@@ -77,10 +101,23 @@ async function main() {
           !Number.isSafeInteger(page.nextCursor.afterRowid) ||
           page.nextCursor.afterRowid <= page.afterRowid ||
           page.nextCursor.afterRowid > page.upperRowid ||
-          page.nextCursor.upperRowid !== page.upperRowid
+          page.nextCursor.upperRowid !== page.upperRowid ||
+          (retentionRequested &&
+            (page.nextCursor.retention !== true || page.nextCursor.asOf !== page.retention.asOf))
     )
       throw new Error("invalid census continuation");
     for (const key of keys) columns[key] = (columns[key] ?? 0) + page.columns[key];
+    if (retentionRequested) {
+      retention ??= {
+        asOf: page.retention.asOf,
+        eligibleRows: 0,
+        eligibleStoredBytes: 0,
+      };
+      // Eligibility is a subset of the validated page totals, so their bounds
+      // also protect these accumulators from overflow.
+      retention.eligibleRows += page.retention.eligibleRows;
+      retention.eligibleStoredBytes += page.retention.eligibleStoredBytes;
+    }
     scannedRows += page.scannedRows;
     pages++;
     result = {
@@ -94,6 +131,7 @@ async function main() {
       nextCursor: page.nextCursor,
       databaseBytes: value.databaseBytes,
       semantics: page.semantics,
+      ...(retention ? { retention } : {}),
     };
     progress = result;
     if (page.complete) break;

@@ -1,5 +1,6 @@
 # Protect ownership and automation rules.
 /.github/CODEOWNERS @openclaw/openclaw-secops
+/.github/release-allowed-signers @openclaw/openclaw-secops
 /.github/actionlint.yaml @openclaw/openclaw-secops
 /.agents/skills/ @openclaw/openclaw-secops
 /.crabbox.yaml @openclaw/openclaw-secops

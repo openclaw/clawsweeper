@@ -1,1 +1,0 @@
-- Verify review publication against unchanged GitHub comment bytes when the CLI sanitizes literal escape examples in its response.

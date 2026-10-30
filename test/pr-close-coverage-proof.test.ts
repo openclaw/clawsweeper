@@ -47,6 +47,43 @@ const proofPullRequest = (number: number) => ({
   commentsTruncated: false,
 });
 
+test("obsolete-fix proof binds current main and preserves useful regression tests", () => {
+  const source = proofPullRequest(10);
+  const covering = { ...proofPullRequest(20), mainSha: "a".repeat(40) };
+  const envelope = createPrCloseCoverageProofEnvelope({
+    targetRepo: "openclaw/openclaw",
+    promptSha256: proofPromptSha256,
+    source,
+    covering,
+    proof: concreteCoverageProof,
+  });
+  assert.throws(
+    () =>
+      validatePrCloseCoverageProofEnvelopeBinding(envelope, {
+        targetRepo: "openclaw/openclaw",
+        promptSha256: proofPromptSha256,
+        source,
+        covering: { ...covering, mainSha: "b".repeat(40) },
+      }),
+    /covering snapshot/,
+  );
+  const prompt = buildPrCloseCoverageProofPrompt({
+    source,
+    covering,
+    reportMarkdown: "Path rewritten after the old head.",
+    relationshipSignalSnippets: [],
+    promptTemplate: "Check coverage.",
+  });
+  assert.match(prompt, new RegExp(covering.mainSha));
+  assert.match(prompt, /regression test.*material/);
+  assert.match(prompt, /missing source|incomplete history/i);
+  const decision = prCloseCoverageProofCloseDecision({
+    ...concreteCoverageProof,
+    uniqueSourceWork: ["The original PR has a useful regression test absent from main."],
+  });
+  assert.equal(decision.close, false);
+});
+
 test("PR close coverage proof rejects blank covered work before closing", () => {
   const decision = prCloseCoverageProofCloseDecision({
     sourceSummary: "PR A fixes the activity route.",

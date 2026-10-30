@@ -147,7 +147,7 @@ export function stalePullRequestReviewComment(options: {
     `The latest durable ClawSweeper review was for head \`${options.stale.reportHeadSha}\`, but the PR head is now \`${options.stale.liveHeadSha}\`. Its old verdict and PR readiness labels are no longer current.`,
     "",
     "**Next step**",
-    "Run or wait for a fresh ClawSweeper review on the current PR head.",
+    "Comment `@clawsweeper re-review` when the current head is ready; pushes after the first review are not reviewed automatically.",
     ...(history ? ["", history] : []),
     "",
     `<!-- clawsweeper-review-status:stale ${attrs} -->`,

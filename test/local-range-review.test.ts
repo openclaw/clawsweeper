@@ -26,6 +26,12 @@ import { buildPullRequestReviewEvidence, readReviewGit } from "../dist/pr-review
 import { createLocalRangeReviewer } from "../dist/clawsweeper-local-review.js";
 import { resolveSpawnCommand, runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "../dist/command.js";
 import { changelogReviewDecision, reviewFinding } from "./helpers.ts";
+import { reviewPromptSections } from "../dist/review-prompt-sections.js";
+import { markdownFor } from "../dist/clawsweeper-report-document.js";
+import { reviewDecisionParser } from "../dist/clawsweeper-decision-parser.js";
+import { reportReviewDecision } from "../dist/report-review-decision.js";
+import { reportRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.js";
+import { AUTHORITY_CHAIN_PROOF_MARKER } from "../dist/clawsweeper-policy.js";
 
 const buildLocalRangeReviewForTest = createLocalRangeReviewer({
   run: (command, args, options = {}) =>
@@ -85,6 +91,105 @@ function initRepo(): string {
   git(dir, "config", "commit.gpgsign", "false");
   return dir;
 }
+
+test("local-range proof policy ignores unverified Git author names", async (t) => {
+  for (const author of ["Range Tester", "Example[bot]", "app/example", "roboclaw-bot", "OWNER"]) {
+    await t.test(author, () => {
+      const dir = initRepo();
+      try {
+        writeFileSync(join(dir, "feature.txt"), "base\n");
+        git(dir, "add", "feature.txt");
+        git(dir, "commit", "-q", "-m", "base");
+        git(dir, "branch", "base-ref");
+        writeFileSync(join(dir, "feature.txt"), "changed\n");
+        git(dir, "add", "feature.txt");
+        git(dir, "commit", "-q", "--author", `${author} <test@example.com>`, "-m", "change");
+        const { item, context, baseSha } = buildLocalRangeReviewForTest(
+          dir,
+          "openclaw/clawsweeper",
+          "base-ref",
+        );
+        assert.equal(item.author, author);
+        assert.equal(item.authorAssociation, "CONTRIBUTOR");
+        const sections = reviewPromptSections(item, context, { localRange: true });
+        assert.equal(sections.external_author, true);
+        assert.equal(sections.maintainer_author, false);
+        assert.equal(sections.team_session_provenance, false);
+
+        for (const status of [
+          "missing",
+          "mock_only",
+          "insufficient",
+          "sufficient",
+          "not_applicable",
+        ] as const) {
+          const realBehaviorProof = {
+            status,
+            evidenceKind: status === "not_applicable" ? "not_applicable" : "live_output",
+            needsContributorAction: !["sufficient", "not_applicable"].includes(status),
+            summary: "The reviewer assessed the supplied behavior evidence.",
+          };
+          const decision = {
+            ...reviewDecisionParser.parseDecision(
+              changelogReviewDecision({ realBehaviorProof }),
+              item,
+            ),
+            localCheckoutAccess: "verified" as const,
+          };
+          const report = markdownFor({
+            item,
+            context,
+            decision,
+            git: { mainSha: baseSha, latestRelease: null },
+            action: { actionTaken: "kept_open" },
+            reviewMode: "propose",
+            localRange: true,
+            snapshotHash: "local-range-fixture",
+            contentDigest: "local-range-fixture",
+            reviewPolicy: "local-range-fixture",
+            runtime: { model: "Codex", reasoningEffort: "medium" },
+          } as Parameters<typeof markdownFor>[0]);
+          assert.deepEqual(reportReviewDecision(report).realBehaviorProof, realBehaviorProof);
+          assert.equal(reportRealBehaviorProofPolicy(report).required, true);
+          assert.equal(
+            reportRealBehaviorProofPolicy(report).blocksMerge,
+            !["sufficient", "not_applicable"].includes(status),
+          );
+          assert.equal(
+            reportRealBehaviorProofPolicy(
+              report.replace("review_status: complete", "review_status: failed"),
+            ).required,
+            false,
+          );
+          const authorityReport = markdownFor({
+            item,
+            context,
+            decision: {
+              ...decision,
+              realBehaviorProof: {
+                ...realBehaviorProof,
+                status: "not_applicable",
+                needsContributorAction: false,
+                summary: `${AUTHORITY_CHAIN_PROOF_MARKER} exercise the changed authority path.`,
+              },
+            },
+            git: { mainSha: baseSha, latestRelease: null },
+            action: { actionTaken: "kept_open" },
+            reviewMode: "propose",
+            localRange: true,
+            snapshotHash: "local-range-fixture",
+            contentDigest: "local-range-fixture",
+            reviewPolicy: "local-range-fixture",
+            runtime: { model: "Codex", reasoningEffort: "medium" },
+          } as Parameters<typeof markdownFor>[0]);
+          assert.equal(reportRealBehaviorProofPolicy(authorityReport).blocksMerge, true);
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+});
 
 test("buildLocalRangeReview synthesizes a PR item + offline diff from the local range", () => {
   const dir = initRepo();
@@ -891,6 +996,7 @@ if (args[0] === "sandbox") {
   process.exit(result.status ?? 1);
 }
 const prompt = fs.readFileSync(0, "utf8");
+if (process.env.LOCAL_REVIEW_PROMPT) fs.writeFileSync(process.env.LOCAL_REVIEW_PROMPT, prompt);
 const captures = fs.existsSync(process.env.LOCAL_REVIEW_CAPTURE)
   ? JSON.parse(fs.readFileSync(process.env.LOCAL_REVIEW_CAPTURE, "utf8"))
   : [];
@@ -908,6 +1014,77 @@ process.stdout.write(fs.readFileSync(process.env.LOCAL_REVIEW_DECISION, "utf8") 
 `,
   );
 }
+
+test("native local-range entrypoints retain contributor proof and unverified identity", (t) => {
+  useFakeScanner(t);
+  const dir = initRepo();
+  const harness = mkdtempSync(join(tmpdir(), "lrr-proof-context-"));
+  try {
+    git(dir, "commit", "--allow-empty", "-qm", "base");
+    git(dir, "branch", "base-ref");
+    writeFileSync(join(dir, "feature.txt"), "changed\n");
+    git(dir, "add", "feature.txt");
+    git(dir, "commit", "-qm", "change");
+    const decisionPath = join(harness, "decision.json");
+    const realBehaviorProof = {
+      status: "missing",
+      evidenceKind: "none",
+      needsContributorAction: true,
+      summary: "The changed behavior has no real setup evidence.",
+    };
+    writeFileSync(decisionPath, JSON.stringify(changelogReviewDecision({ realBehaviorProof })));
+    const promptPath = join(harness, "prompt.md");
+    const fakeCodex = writeLocalReviewCodex(harness);
+    for (const author of ["Example[bot]", "roboclaw-bot"]) {
+      git(dir, "commit", "--amend", "--no-edit", "-q", "--author", `${author} <test@example.com>`);
+      for (const cli of new Set([LOCAL_CLI, CLI])) {
+        const result = spawnReview(
+          cli,
+          [
+            "review",
+            "--local-range",
+            "--base",
+            "base-ref",
+            "--target-repo",
+            "openclaw/clawsweeper",
+            "--target-dir",
+            dir,
+            "--result-format",
+            "json",
+          ],
+          {
+            encoding: "utf8",
+            timeout: 60_000,
+            env: {
+              ...process.env,
+              CODEX_BIN: fakeCodex,
+              LOCAL_REVIEW_DECISION: decisionPath,
+              LOCAL_REVIEW_CAPTURE: join(harness, "capture.json"),
+              LOCAL_REVIEW_PROMPT: promptPath,
+              CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: "1",
+            },
+          },
+        );
+        assert.ifError(result.error);
+        assert.equal(result.status, 0, result.stderr);
+        const report = JSON.parse(result.stdout).reports[0].report;
+        assert.match(report, /^review_origin: local_range$/m);
+        assert.match(report, /unverified local Git display name/);
+        assert.match(report, /synthetic contributor proof context; GitHub role is unverified/);
+        assert.deepEqual(reportReviewDecision(report).realBehaviorProof, realBehaviorProof);
+        assert.equal(reportRealBehaviorProofPolicy(report).blocksMerge, true);
+        const prompt = readFileSync(promptPath, "utf8");
+        assert.ok(prompt.includes("For this external PR, real-behavior proof gates merge"));
+        assert.ok(prompt.includes("unverified local Git display name"));
+        assert.ok(!prompt.includes("Optional Team session provenance:"));
+        assert.equal(git(dir, "status", "--porcelain"), "");
+      }
+    }
+  } finally {
+    rmSync(harness, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("local range provenance runs inside the native GitHub command scope", (t) => {
   useFakeScanner(t);

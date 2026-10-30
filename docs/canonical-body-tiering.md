@@ -1,11 +1,12 @@
 # Canonical record bodies in R2
 
-- Status: proposed architecture, not an execution runbook
+- Status: implemented architecture; production execution requires separate approval
 - Owner: ClawSweeper storage and queue maintainers
 - Source of truth: [canonical record owner](../dashboard/exact-review-direct-publication.ts),
   [queue owner](../dashboard/exact-review-queue.ts), and
   [snapshot owner](../dashboard/record-snapshots.ts)
-- Inspected revision: `291ab8a0090a8f76c08e4d0e39ea4cf1fdcbe0c0`
+- Original inspected baseline: `291ab8a0090a8f76c08e4d0e39ea4cf1fdcbe0c0`
+- Current implementation: the canonical record and queue owners linked above
 - Update when: maintainers accept the representation, implementation changes,
   proof completes, or the deployment and rollback floor change
 
@@ -13,10 +14,10 @@ Keep canonical identity and ordering in SQLite. Store exact canonical bodies in
 an immutable namespace within the existing R2 bucket. Preserve every logical
 record, tombstone, digest, tuple revision, export revision, and publication receipt.
 
-The owner accepted local implementation of this representation and schema transition
-on 2026-10-16. This document still grants no production deployment, activation,
-migration, deletion, or R2 expiration authority. The candidate must pass native
-proof and independent review before a separate production execution packet is approved.
+The representation and schema transition were accepted on 2026-10-16 and are
+implemented. This document grants no production deployment, activation, migration,
+deletion, or R2 expiration authority. Each candidate must pass native proof and
+independent review before its separate production execution packet is approved.
 
 ## Evidence and scope
 
@@ -37,7 +38,7 @@ Plans and referenced decision packets also have supported readers and integrity 
 Age does not establish disposal authority for these records.
 The [existing storage contract](state-storage.md) retains them after receipt expiry.
 
-This proposal covers the four canonical sections: `items`, `closed`, `plans`,
+This implementation covers the four canonical sections: `items`, `closed`, `plans`,
 and `decision-packets`. It preserves all deletion tombstones.
 Commit reports and live imported records remain with the backfill owner.
 Webhook snapshots, lifecycle projections, ledgers, and artifact retention remain
@@ -162,11 +163,19 @@ A cached initialization check alone cannot fence a request already in progress.
 Keep one durable migration checkpoint in the existing SQLite-backed storage.
 Do not create filesystem sidecars.
 
-Each proposed pass inspects at most 64 raw identities and prepares at most four
-tuples, with at most 8 MiB of source bodies. These are proposed caps requiring
-real Workerd proof before they become an execution contract.
+Each pass inspects at most 64 raw identities and prepares at most four tuples,
+with at most 8 MiB of source bodies. Native Workerd proof checks these fixed caps.
 The existing per-file maximum still applies.
-Process R2 writes sequentially so buffers and outstanding requests stay bounded.
+Capture the entire selected pass before the first asynchronous operation.
+Deduplicate bodies by digest only when content and byte length also agree.
+Prepare at most four unique bodies concurrently; each pipeline completes its
+immutable PUT and full verified GET before taking another body. On failure,
+stop launching pipelines and drain all started work before returning the error.
+The source-byte cap and synchronous complete-tuple commit stay unchanged.
+Four pipelines stay below Cloudflare's six simultaneous connections awaiting
+response headers, including R2 calls; full body consumption remains part of each
+pipeline's integrity check. See the official
+[Worker connection limit](https://developers.cloudflare.com/workers/platform/limits/#simultaneous-open-connections).
 
 For each selected tuple:
 
@@ -210,9 +219,8 @@ There are two different decisions:
 1. Accept this representation and the version 1 to version 2 schema transition before implementation.
 2. Approve the proved, exact production plan before any deployment or destructive activation.
 
-The original storage handoff requires three confirmations for each unchanged
-destructive production plan. Earlier approvals covered completed cleanup only.
-This proposal does not consume or count as any of those confirmations.
+Destructive production work requires explicit operator approval of the exact
+execution plan. Source approval alone does not authorize production execution.
 The production packet must identify exact deployment and rollback SHAs, resource
 identity, current capacity, row predicates, batch limits, and stop conditions.
 It must also include reconstruction proof, protected-data checks, and expected usage.
@@ -279,6 +287,25 @@ the approved packet and hash. Every later pass must name the same packet and
 compare its separate captured checkpoint before commit. Ordinary publication and
 migration progress do not require replacement approval packets.
 
+A deployment change requires explicit checkpoint requalification before migration
+can resume. `canonical_action=requalify-preview` (CLI `--action requalify-preview`)
+takes `previous_plan_sha256` (`--previous-plan-sha256`), the new deployment SHA,
+and its qualified attestation. The old stored plan must still be canonical and
+hash to both the stored and supplied previous hash. Only deployment SHA, rollback
+floor SHA/proof, and lifecycle observation time may change. Operator identity,
+formats, lifecycle rules/hash, scope, namespace and limits must stay identical.
+
+The response includes the full checkpoint and an envelope containing
+`previousPlanSha256`, `checkpointSha256`, `nextPlan`, and `nextPlanSha256`.
+Review the envelope and supply its `sha256` as `reviewed_plan_sha256` with
+`canonical_action=requalify` and `execute=true`. The next normal plan hash is
+not the requalification approval hash. Application requires format 2 and an
+incomplete, exactly unchanged checkpoint; it updates only the deployment SHA,
+plan hash and plan JSON. It preserves the frontier, cursor, deferred row,
+counters and timestamps. Stale previews, old prepared passes and replays fail.
+Resume migration with the returned `nextPlanSha256` and the same new attestation.
+No checkpoint reset or implicit deployment adoption is supported.
+
 An explicit migrate invocation runs at most 100,000 bounded passes or 50 minutes,
 whichever comes first, stopping on completion or a full sweep with unresolved
 sources. The workflow allows 60 minutes for that operation. A later invocation
@@ -286,12 +313,40 @@ resumes the persisted cursor using the same approved plan; startup and alarms
 never schedule it. This makes large stores operable without one workflow dispatch
 per four tuples. Throughput from the synthetic fixture is not a production estimate.
 
+If maintenance fails, its final `canonical_tiering_failed` JSON reports the local
+stage, transport reason, HTTP status, known endpoint code, platform failure
+category, `completed_passes`, and `last_observed_checkpoint` (numeric fields only).
+The last observed checkpoint is a lower bound: a lost response can follow a committed pass.
+If a failure reaches the Durable Object request catch, use the returned trace ID
+to correlate its `canonical_tiering_failed` log entry and failing phase.
+Initialization failures that reset the object through `blockConcurrencyWhile`
+instead emit `exact_review_queue_handler_failed` with `phase: initialize` and
+no request trace ID. A client timeout or network error does not guarantee a
+Durable Object log entry or a returned trace ID.
+Unknown exceptions still propagate. Diagnostics never include exception text,
+stacks, request URLs, record identities, plan JSON, or arbitrary server codes.
+These observations do not authorize an automatic retry or a new migration run.
+The [platform error contract](https://developers.cloudflare.com/durable-objects/best-practices/error-handling/)
+defines the reported flags. `remote_exception` does not distinguish application
+exceptions from infrastructure CPU or memory limits.
+
 The same manual maintenance workflow offers `canonical-records-verify` for a
 bounded before/after read check. It requires `execute=true`, the reviewed plan
 hash, expected Worker deployment SHA, repository slug, and a `baseline` or
-`recheck` phase. Recheck takes the baseline JSON emitted by the first run.
-The workflow source SHA is separate from the Worker SHA; changing this operator
-does not require redeploying the Worker.
+`recheck` phase. Recheck takes the baseline JSON emitted by the first run and
+`canonical_verification_baseline_sha256`, the independently reviewed checksum
+from that run. The CLI reads this pin from `EXPECTED_BASELINE_SHA256`.
+Baseline creation rejects a recheck-only checksum. Recheck validates the saved
+producer SHA and hashes the original normalized metadata against both its
+envelope checksum and the independently supplied pin before any request.
+
+The workflow source SHA is separate from the Worker SHA and may differ from the
+saved baseline's producer. Each result reports `executionOperatorSha`,
+`comparedBaselineSha256`, and `comparedBaselineOperatorSha` (the latter two are
+null for baseline creation). Its `baseline` and `sha256` describe the new observed
+snapshot produced by the current operator; they do not replace the saved input
+baseline. Keep the approved input and checksum unchanged for later rechecks.
+Updating the verifier does not require redeploying the Worker.
 
 Each phase verifies the Worker and signed Durable Object identity before and
 after reading one export page per canonical section, at most 32 records each,
@@ -303,7 +358,9 @@ step; no Cloudflare API token is needed.
 
 Failures emit a fixed diagnostic category and recovery action, never raw error
 text or response bodies. Correct invalid inputs using the saved baseline;
-deployment or operator identity drift requires a newly reviewed execution plan.
+repository, deployment or plan mismatch requires a newly reviewed execution plan.
+An updated verifier runs as its actual workflow SHA; it does not impersonate the
+baseline producer or rewrite the baseline to satisfy provenance checks.
 Record mismatches stop migration for investigation. Request or read-limit
 failures preserve the baseline and checkpoint for reviewed recovery.
 

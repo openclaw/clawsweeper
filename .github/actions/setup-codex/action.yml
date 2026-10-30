@@ -3,7 +3,7 @@ description: Cache, install, and authenticate the OpenAI Codex CLI.
 inputs:
   codex-version:
     description: Exact Codex CLI npm package version.
-    default: "0.162.1"
+    default: "0.164.0"
   proxy-version:
     description: Exact Codex Responses proxy npm package version.
     default: "0.159.2"
@@ -26,8 +26,7 @@ runs:
   using: composite
   steps:
     - name: Install trusted review scanner
-      shell: bash
-      run: bash "${{ github.action_path }}/../setup-review-tools/install.sh"
+      uses: ./.github/actions/setup-review-tools
 
     - name: Cache Codex CLI and npm downloads
       uses: actions/cache@v6
@@ -68,10 +67,14 @@ runs:
             --prefer-online --no-audit --no-fund --ignore-scripts
           "${install_env[@]}" node "$GITHUB_ACTION_PATH/validate-install.mjs" "$name" "$version"
         }
-        ensure_installed codex "${{ inputs['codex-version'] }}"
-        if [[ "${{ inputs['auth-mode'] }}" == "proxy" ]]; then
-          ensure_installed codex-responses-api-proxy "${{ inputs['proxy-version'] }}"
+        ensure_installed codex "${INPUTS_CODEX_VERSION}"
+        if [[ "${INPUTS_AUTH_MODE}" == "proxy" ]]; then
+          ensure_installed codex-responses-api-proxy "${INPUTS_PROXY_VERSION}"
         fi
+      env:
+        INPUTS_CODEX_VERSION: ${{ inputs['codex-version'] }}
+        INPUTS_AUTH_MODE: ${{ inputs['auth-mode'] }}
+        INPUTS_PROXY_VERSION: ${{ inputs['proxy-version'] }}
 
     - name: Enable Linux user namespaces for bubblewrap
       if: ${{ runner.os == 'Linux' && runner.environment == 'github-hosted' }}
@@ -99,16 +102,23 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        if [[ -n "${{ inputs['codex-home'] }}" ]]; then
-          codex_home="${{ inputs['codex-home'] }}"
+        if [[ -n "${INPUTS_CODEX_HOME}" ]]; then
+          codex_home="${INPUTS_CODEX_HOME}"
         else
           codex_home="$HOME/.clawsweeper-repair/codex-home/${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+        fi
+        if [[ ! "$codex_home" =~ ^(/|[A-Za-z0-9_.])[^$'\r\n']*$ ]] ||
+          [[ "/$codex_home/" == */../* ]]; then
+          echo "::error::Invalid Codex home: expected an absolute or workspace-relative path without CR/LF or parent traversal." >&2
+          exit 1
         fi
         mkdir -p "$codex_home"
         chmod 700 "$codex_home"
         echo "CODEX_HOME=$codex_home" >> "$GITHUB_ENV"
         export CODEX_HOME="$codex_home"
         echo "Using isolated CODEX_HOME=$CODEX_HOME"
+      env:
+        INPUTS_CODEX_HOME: ${{ inputs['codex-home'] }}
 
     - name: Configure internal Codex model
       if: ${{ inputs['auth-mode'] != 'clawrouter' }}
@@ -124,7 +134,9 @@ runs:
     - name: Configure private ClawRouter inference
       if: ${{ inputs['auth-mode'] == 'clawrouter' }}
       shell: bash
-      run: node "${{ github.action_path }}/configure-clawrouter.mjs"
+      env:
+        WORKFLOW_ACTION_PATH: ${{ github.action_path }}
+      run: node "${WORKFLOW_ACTION_PATH}/configure-clawrouter.mjs"
 
     - name: Authenticate Codex through Responses proxy
       if: ${{ inputs['auth-mode'] == 'proxy' }}
@@ -170,28 +182,39 @@ runs:
         export CODEX_HOME="${CODEX_HOME:?}"
         test -n "${OPENAI_API_KEY:-}"
         printenv OPENAI_API_KEY | codex login --with-api-key >/dev/null
-        if [[ "${{ inputs['login-status'] }}" == "true" ]]; then
+        if [[ "${INPUTS_LOGIN_STATUS}" == "true" ]]; then
           codex login status
         fi
+      env:
+        INPUTS_LOGIN_STATUS: ${{ inputs['login-status'] }}
 
     - name: Configure direct API context
       if: ${{ inputs['auth-mode'] == 'proxy' || inputs['auth-mode'] == 'login' }}
       shell: bash
-      run: node "${{ github.action_path }}/configure-api-context.mjs" "${{ inputs['codex-version'] }}"
+      run: node "${WORKFLOW_ACTION_PATH}/configure-api-context.mjs" "${INPUTS_CODEX_VERSION}"
+      env:
+        INPUTS_CODEX_VERSION: ${{ inputs['codex-version'] }}
+        WORKFLOW_ACTION_PATH: ${{ github.action_path }}
 
     - name: Reject unknown Codex auth mode
       if: ${{ inputs['auth-mode'] != 'proxy' && inputs['auth-mode'] != 'login' && inputs['auth-mode'] != 'clawrouter' }}
       shell: bash
       run: |
-        echo "Unsupported setup-codex auth-mode: ${{ inputs['auth-mode'] }}" >&2
+        echo "Unsupported setup-codex auth-mode: ${INPUTS_AUTH_MODE}" >&2
         exit 1
+      env:
+        INPUTS_AUTH_MODE: ${{ inputs['auth-mode'] }}
 
     - name: Configure review network profile
       if: ${{ inputs['review-network'] == 'true' }}
       shell: bash
-      run: node "${{ github.action_path }}/configure-review-network.mjs"
+      env:
+        WORKFLOW_ACTION_PATH: ${{ github.action_path }}
+      run: node "${WORKFLOW_ACTION_PATH}/configure-review-network.mjs"
 
     - name: Verify review sandbox capabilities
       if: ${{ inputs['review-network'] == 'true' }}
       shell: bash
-      run: bash "${{ github.action_path }}/smoke-review-network.sh"
+      env:
+        WORKFLOW_ACTION_PATH: ${{ github.action_path }}
+      run: bash "${WORKFLOW_ACTION_PATH}/smoke-review-network.sh"

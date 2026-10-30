@@ -59,11 +59,13 @@ test("queue maintenance is explicit, bounded, and non-cancelling", () => {
     "queue_revision",
     "reviewed_plan_sha256",
     "canonical_action",
+    "previous_plan_sha256",
     "expected_deployment_sha",
     "canonical_attestation_json",
     "canonical_verification_phase",
     "canonical_verification_repo_slug",
     "canonical_verification_baseline_json",
+    "canonical_verification_baseline_sha256",
     "usage_deploy_sha",
     "usage_version_id",
     "usage_canary_run_id",
@@ -107,7 +109,23 @@ test("canonical verification is isolated to explicit main-branch dispatch withou
     "${{ inputs.canonical_verification_baseline_json }}",
   );
   assert.equal(step.env?.EXPECTED_DEPLOYMENT_SHA, "${{ inputs.expected_deployment_sha }}");
+  assert.equal(
+    step.env?.EXPECTED_BASELINE_SHA256,
+    "${{ inputs.canonical_verification_baseline_sha256 }}",
+  );
   assert.equal(step.env?.CLOUDFLARE_API_TOKEN, undefined);
+  assert.ok(job.steps.every((entry) => !entry.run?.includes("${{")));
+});
+
+test("read-model compression requires explicit main dispatch and only its HMAC credential", () => {
+  const job = workflow.jobs["read-model-compression"]!;
+  assert.match(job.if!, /inputs.mode == 'read-model-compression'/);
+  assert.match(job.if!, /github.ref == 'refs\/heads\/main'/);
+  assert.equal(job.steps[0]?.with?.["persist-credentials"], false);
+  assert.equal(job.env, undefined);
+  const step = job.steps.at(-1)!;
+  assert.equal(step.env?.CLOUDFLARE_API_TOKEN, undefined);
+  assert.match(step.run!, /--reviewed-plan-sha256 "\$REVIEWED_PLAN_SHA256"/);
   assert.ok(job.steps.every((entry) => !entry.run?.includes("${{")));
 });
 
@@ -357,9 +375,50 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
   let retirementCalls = 0;
   let retirementMode = "success";
   let canonicalCalls = 0;
+  let canonicalMode = "success";
+  let compressionCalls = 0;
+  let compressionFailure = false;
   const server = createServer(
     { key: readFileSync(key), cert: readFileSync(cert) },
     async (request, response) => {
+      if (request.url === "/internal/exact-review/read-model/compression") {
+        let body = "";
+        for await (const chunk of request) body += chunk;
+        compressionCalls++;
+        assert.equal(
+          request.headers["x-clawsweeper-exact-review-signature"],
+          `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+        );
+        assert.deepEqual(JSON.parse(body), {
+          action: "migrate",
+          execute: true,
+          expectedDeploymentSha: "e".repeat(40),
+          reviewedPreviewSha256: "f".repeat(64),
+        });
+        response.setHeader("content-type", "application/json");
+        if (compressionFailure && compressionCalls === 2) {
+          response
+            .writeHead(500)
+            .end(JSON.stringify({ error: "private_marker", message: "private-response-sentinel" }));
+        } else
+          response.end(
+            JSON.stringify({
+              ok: true,
+              checkpoint: {
+                table: 0,
+                afterRowid: compressionCalls * 64,
+                scanned: compressionCalls * 64,
+                converted: compressionCalls * 64,
+                sourceBytes: compressionCalls * 4096,
+                savedBytes: compressionCalls * 3000,
+                oversized: 0,
+                conflicts: 0,
+                completedAt: compressionCalls === 2 ? 1 : null,
+              },
+            }),
+          );
+        return;
+      }
       if (request.url === "/internal/exact-review/canonical-bodies/maintenance") {
         let body = "";
         for await (const chunk of request) body += chunk;
@@ -374,6 +433,44 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
         assert.equal(payload.expectedDeploymentSha, "e".repeat(40));
         assert.equal(payload.reviewedPreviewSha256, "f".repeat(64));
         response.setHeader("content-type", "application/json");
+        if (canonicalCalls === 3 && canonicalMode !== "success") {
+          response.setHeader(
+            "x-clawsweeper-exact-review-trace",
+            "12345678-1234-4123-8123-123456789abc",
+          );
+          response.statusCode =
+            canonicalMode === "conflict"
+              ? 409
+              : ["malformed", "checkpoint", "completion", "failed"].includes(canonicalMode)
+                ? 200
+                : 500;
+          response.end(
+            canonicalMode === "malformed"
+              ? "private-response-sentinel"
+              : ["checkpoint", "completion", "failed"].includes(canonicalMode)
+                ? JSON.stringify({
+                    ok: canonicalMode !== "failed",
+                    checkpoint: {
+                      after_rowid: canonicalMode === "checkpoint" ? -1 : 12,
+                      migrated: 12,
+                      completed_at:
+                        canonicalMode === "completion" ? "private-completion-sentinel" : null,
+                    },
+                  })
+                : JSON.stringify({
+                    error:
+                      canonicalMode === "conflict"
+                        ? "canonical_tiering_deployment_mismatch"
+                        : "private_snake_case_sentinel",
+                    failure_category:
+                      canonicalMode === "platform"
+                        ? "platform_overloaded"
+                        : "private-category-sentinel",
+                    message: "https://private.example.test/token synthetic-policy-token",
+                  }),
+          );
+          return;
+        }
         response.end(
           JSON.stringify({
             ok: true,
@@ -381,6 +478,7 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
               after_rowid: canonicalCalls * 4,
               migrated: canonicalCalls * 4,
               completed_at: canonicalCalls === 3 ? 1 : null,
+              plan_json: "private-plan-sentinel",
             },
           }),
         );
@@ -526,6 +624,46 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
   });
   assert.equal(calls, 3);
   assert.equal(redirectedCalls, 0);
+
+  const compress = () =>
+    promisify(execFile)(
+      process.execPath,
+      [
+        "dist/repair/exact-review-queue-maintenance.js",
+        "read-model-compression",
+        "--apply",
+        "--expected-deployment-sha",
+        "e".repeat(40),
+        "--reviewed-plan-sha256",
+        "f".repeat(64),
+      ],
+      {
+        timeout: 10_000,
+        env: {
+          PATH: process.env.PATH,
+          NODE_EXTRA_CA_CERTS: cert,
+          EXACT_REVIEW_QUEUE_URL: endpoint,
+          CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        },
+      },
+    );
+  const compressed = await compress();
+  assert.equal(compressionCalls, 2);
+  assert.equal(JSON.parse(compressed.stdout).stop, "complete");
+  compressionCalls = 0;
+  compressionFailure = true;
+  await assert.rejects(compress(), (error: Error & { stdout: string; stderr: string }) => {
+    assert.equal(compressionCalls, 2, "failed mutation is never automatically retried");
+    const failure = JSON.parse(error.stderr.split("\n")[0]!);
+    assert.equal(failure.status, "read_model_compression_failed");
+    assert.equal(failure.last_observed_checkpoint.scanned, 64);
+    assert.equal(failure.completed_passes, 1);
+    assert.doesNotMatch(
+      error.stderr,
+      /private_marker|private-response-sentinel|synthetic-maintenance-secret/,
+    );
+    return true;
+  });
 
   const hash = (value: string) => createHash("sha256").update(value).digest("hex");
   const plan = {
@@ -710,7 +848,7 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
   writeFileSync(attestationPath, JSON.stringify(attestation));
   writeFileSync(
     loader,
-    'const original=globalThis.fetch;globalThis.fetch=(input,init)=>String(input).startsWith("https://api.cloudflare.com/")?Promise.resolve(Response.json({success:true,result:{rules:process.env.SYNTHETIC_UNSAFE_POLICY?[{id:"unsafe",enabled:true,conditions:{prefix:""},deleteObjectsTransition:{}}]:[]}})):original(input,init);',
+    'const original=globalThis.fetch;globalThis.fetch=(input,init)=>{if(String(input).startsWith("https://api.cloudflare.com/")){if(process.env.SYNTHETIC_THROW_POLICY)throw new Error("private-policy-sentinel https://private.example.test/token "+process.env.CLOUDFLARE_API_TOKEN);return Promise.resolve(Response.json({success:true,result:{rules:process.env.SYNTHETIC_UNSAFE_POLICY?[{id:"unsafe",enabled:true,conditions:{prefix:""},deleteObjectsTransition:{}}]:[]}}));}return original(input,init);};',
   );
   const canonicalArgs = [
     "--import",
@@ -754,6 +892,77 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
     },
   );
   assert.equal(canonicalCalls, 3);
+  await assert.rejects(
+    promisify(execFile)(process.execPath, canonicalArgs, {
+      ...runtime,
+      env: { ...canonicalEnv, SYNTHETIC_THROW_POLICY: "1" },
+    }),
+    (error: Error & { stdout: string; stderr: string }) => {
+      const failure = JSON.parse(
+        error.stderr.split("\n").find((line) => line.startsWith('{"ok":false'))!,
+      );
+      assert.equal(failure.stage, "lifecycle");
+      assert.equal(failure.reason, "unknown");
+      assert.equal(failure.completed_passes, 0);
+      assert.equal(failure.last_observed_checkpoint, null);
+      assert.doesNotMatch(error.stdout + error.stderr, /private|synthetic-policy-token|https:/);
+      return true;
+    },
+  );
+  assert.equal(canonicalCalls, 3);
+  for (const mode of [
+    "platform",
+    "conflict",
+    "unknown",
+    "malformed",
+    "checkpoint",
+    "completion",
+    "failed",
+  ]) {
+    const localValidation = ["checkpoint", "completion", "failed"].includes(mode);
+    canonicalCalls = 0;
+    canonicalMode = mode;
+    await assert.rejects(
+      promisify(execFile)(process.execPath, canonicalArgs, {
+        ...runtime,
+        env: canonicalEnv,
+      }),
+      (error: Error & { stdout: string; stderr: string }) => {
+        const lines = error.stderr.trim().split("\n");
+        const failure = JSON.parse(lines.find((line) => line.startsWith('{"ok":false'))!);
+        assert.equal(failure.status, "canonical_tiering_failed");
+        assert.equal(failure.stage, localValidation ? "queue_response" : "queue_request");
+        assert.equal(failure.completed_passes, 2);
+        assert.deepEqual(failure.last_observed_checkpoint, {
+          after_rowid: 8,
+          migrated: 8,
+          completed_at: null,
+        });
+        assert.equal(
+          failure.reason,
+          mode === "malformed" || localValidation ? "invalid_response" : "http_error",
+        );
+        assert.equal(
+          failure.http_status,
+          mode === "conflict" ? 409 : mode === "malformed" ? 200 : localValidation ? null : 500,
+        );
+        assert.equal(
+          failure.code,
+          mode === "conflict" ? "canonical_tiering_deployment_mismatch" : null,
+        );
+        assert.equal(failure.failure_category, mode === "platform" ? "platform_overloaded" : null);
+        if (!localValidation)
+          assert.equal(failure.trace_id, "12345678-1234-4123-8123-123456789abc");
+        assert.doesNotMatch(
+          error.stdout + error.stderr,
+          /private[-_]|synthetic-policy-token|synthetic-maintenance-secret|https:/,
+        );
+        assert.equal(lines.at(-1), "[exact-review-queue-maintenance] FAILED (exit 1)");
+        return true;
+      },
+    );
+    assert.equal(canonicalCalls, 3, "the failed pass is never automatically retried");
+  }
 });
 
 test("usage workflow keeps read credentials separate from one authorized canary attempt", () => {
@@ -762,6 +971,7 @@ test("usage workflow keeps read credentials separate from one authorized canary 
     "retire-closed-publication",
     "storage-stats",
     "canonical-bodies",
+    "read-model-compression",
     "canonical-records-verify",
     "operator-read",
     "canary",

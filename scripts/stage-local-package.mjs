@@ -130,7 +130,7 @@ export async function stageLocalPackage(destination, root = ROOT) {
           license: metadata.license,
           type: "module",
           engines: metadata.engines,
-          bin: { "clawsweeper-review": "dist/clawsweeper-local.js" },
+          bin: { clawsweeper: "dist/clawsweeper-local.js" },
           files: [...files.keys()].sort(),
           ...(packages.size ? { dependencies } : {}),
         },

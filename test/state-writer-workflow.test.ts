@@ -21,7 +21,7 @@ const workerUrl =
   "${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}";
 const workerSecret = "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}";
 
-test("state hydration retains canonical defaults with an explicit operational-only publisher", () => {
+test("state hydration retains canonical defaults with explicit publisher modes", () => {
   const setups = setupStateSites();
   assert.ok(setups.length > 0, "no setup-state sites found");
   for (const { site, step } of setups) {
@@ -29,7 +29,11 @@ test("state hydration retains canonical defaults with an explicit operational-on
       assert.equal(step.with?.["records-url"], undefined, site);
       assert.equal(step.with?.["records-secret"], undefined, site);
       assert.equal(step.with?.["hydrate-state-blobs"], "false", site);
-      assert.notEqual(step.with?.["hydrate-git-state"], "false", site);
+      assert.equal(
+        step.with?.["hydrate-git-state"] === "false",
+        site === ".github/workflows/exact-review-batch-publish.yml:publish",
+        site,
+      );
       assert.equal(step.with?.["coordinator-url"], workerUrl, site);
     } else {
       assert.equal(step.with?.["records-url"], workerUrl, site);
@@ -197,6 +201,26 @@ test("retired migration and Git recovery surfaces stay deleted", () => {
     "src/live-proof/publication.ts",
   ]) {
     assert.equal(existsSync(retired), false, retired);
+  }
+});
+
+test("state writers keep the hydrated, installed and built source generation", () => {
+  const documents = new Map(workflows().map(({ file, workflow }) => [file, workflow]));
+  for (const [file, jobName] of [
+    [".github/workflows/audit.yml", "audit-dashboard"],
+    [".github/workflows/failed-review-retry.yml", "retry-failed-reviews"],
+  ] as const) {
+    const steps = documents.get(file)?.jobs?.[jobName]?.steps ?? [];
+    const hydration = steps.findIndex(isSetupState);
+    const build = steps.findIndex((step) => step.uses === "./.github/actions/setup-pnpm");
+    assert.ok(hydration >= 0 && build > hydration, `${file}:${jobName}`);
+    for (const step of steps.slice(build + 1)) {
+      assert.doesNotMatch(
+        String(step.run ?? ""),
+        /^\s*git\s+pull(?:\s|$)/m,
+        `${file}:${step.name}`,
+      );
+    }
   }
 });
 

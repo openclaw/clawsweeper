@@ -33,6 +33,8 @@ export interface PrCloseCoverageProofPullRequestView {
   body: string;
   updatedAt: string | null;
   headSha?: string | null;
+  /** Obsolescence proof must cover this exact current default-branch revision. */
+  mainSha?: string;
   comments: unknown[];
   commentsTruncated: boolean;
 }
@@ -198,6 +200,13 @@ export function buildPrCloseCoverageProofPrompt(options: {
 }): string {
   return [
     options.promptTemplate.trimEnd(),
+    ...(options.covering.mainSha
+      ? [
+          "",
+          `This is an obsolete-fix proposal. Personally inspect PR A's complete diff and the current default-branch source and tests at ${options.covering.mainSha}. PR B must be merged and reachable from that revision.`,
+          "Path changes, deleted filenames, age, a workaround, and fixing a related issue only nominate this check. Return keep_open unless every useful behavior, requested scope, regression test and unresolved human hold is accounted for by current source or an explicit authorized human decision. A useful additional regression test is material even when runtime code converged. Cite the checked source revision, files and invariant coverage in coveredWork. Missing source or incomplete history means keep_open.",
+        ]
+      : []),
     "",
     "Candidate relationship signal snippets:",
     "```json",

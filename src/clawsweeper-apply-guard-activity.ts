@@ -16,11 +16,33 @@ import { quoteGitHubSearchTerm } from "./clawsweeper-related-context.js";
 import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { isOlderThanDays } from "./iso-time.js";
 import { reportReviewDecision } from "./report-review-decision.js";
+import { githubHumanContentEditTimes } from "./github-content-edits.js";
 
 export function maintainerAssociatedEntries(entries: readonly unknown[]): unknown[] {
   return entries.filter((entry) =>
     isMaintainerAuthorAssociation(asRecord(entry).author_association),
   );
+}
+
+export function recentHumanActivityBlockReason(
+  entries: readonly unknown[],
+  days: number,
+  now = Date.now(),
+): string | null {
+  for (const entry of entries) {
+    const record = asRecord(entry);
+    const actor = asRecord(record.user ?? record.actor);
+    if (actor.type === "Bot") continue;
+    // Creation belongs to the author; edits require their own attributed history.
+    if (!login(actor)) return "PR human activity identity is unavailable";
+    const timestamp = Date.parse(
+      nonBlankStringOrUndefined(record.submitted_at ?? record.createdAt ?? record.created_at) ?? "",
+    );
+    if (!Number.isFinite(timestamp) || timestamp > now || now - timestamp <= days * DAY_MS) {
+      return `PR has human comment, review, or edit activity within the last ${days} days`;
+    }
+  }
+  return null;
 }
 
 export function lowSignalUnmergeablePrConflictBlockReason(pullValue: unknown): string | null {
@@ -275,6 +297,7 @@ export function createApplyGuardActivity({ ghJson, ghPaged, targetRepo }: GuardR
       requestedReviewers?: unknown[];
       requestedTeams?: unknown[];
     },
+    inactiveDays?: number,
   ): string | null {
     const issue = known
       ? { assignees: known.assignees }
@@ -301,22 +324,73 @@ export function createApplyGuardActivity({ ghJson, ghPaged, targetRepo }: GuardR
       return "requested reviewers or teams indicate active review signal";
     }
 
-    const maintainerComments = maintainerAssociatedEntries(
-      ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`),
-    );
+    const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`);
+    const maintainerComments = maintainerAssociatedEntries(comments);
     if (maintainerComments.length > 0)
       return "maintainer issue comment blocks inactivity auto-close";
 
-    const maintainerReviews = maintainerAssociatedEntries(
-      ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/reviews`),
-    );
+    const reviews = ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/reviews`);
+    const maintainerReviews = maintainerAssociatedEntries(reviews);
     if (maintainerReviews.length > 0) return "maintainer PR review blocks inactivity auto-close";
 
-    const maintainerInlineComments = maintainerAssociatedEntries(
-      ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`),
-    );
+    const inlineComments = ghPaged<unknown>(`repos/${targetRepo()}/pulls/${number}/comments`);
+    const maintainerInlineComments = maintainerAssociatedEntries(inlineComments);
     if (maintainerInlineComments.length > 0) {
       return "maintainer inline review comment blocks inactivity auto-close";
+    }
+    if (inactiveDays !== undefined) {
+      const block = recentHumanActivityBlockReason(
+        [...comments, ...reviews, ...inlineComments],
+        inactiveDays,
+      );
+      if (block) return block;
+      const [owner, name] = targetRepo().split("/");
+      const response = asRecord(
+        ghJson<unknown>([
+          "api",
+          "graphql",
+          "-f",
+          "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id lastEditedAt}}}",
+          "-f",
+          `owner=${owner}`,
+          "-f",
+          `name=${name}`,
+          "-F",
+          `number=${number}`,
+        ]),
+      );
+      const edited = asRecord(asRecord(asRecord(response.data).repository).pullRequest);
+      if (!("lastEditedAt" in edited)) return "PR body edit activity is unavailable";
+      // Reviews lack REST edit metadata. Bot content also needs history when its
+      // timestamps match: a human can edit a receipt within the creation second.
+      const needsHistory = (value: unknown): boolean => {
+        const record = asRecord(value);
+        const actor = asRecord(record.user);
+        return (
+          actor.type === "Bot" ||
+          (login(actor) ?? "").endsWith("[bot]") ||
+          record.updated_at !== record.created_at
+        );
+      };
+      const ids = [
+        ...(edited.lastEditedAt === null ? [] : [nonBlankStringOrUndefined(edited.id) ?? ""]),
+        ...[
+          ...comments.filter(needsHistory),
+          ...reviews,
+          ...inlineComments.filter(needsHistory),
+        ].map((entry) => nonBlankStringOrUndefined(asRecord(entry).node_id) ?? ""),
+      ];
+      try {
+        if (
+          githubHumanContentEditTimes(ghJson, ids).some(
+            (at) => Date.now() - at <= inactiveDays * DAY_MS,
+          )
+        ) {
+          return `PR has human edit activity within the last ${inactiveDays} days`;
+        }
+      } catch (error) {
+        return `PR attributed edit activity is unavailable: ${error instanceof Error ? error.message : String(error)}`;
+      }
     }
     return null;
   }

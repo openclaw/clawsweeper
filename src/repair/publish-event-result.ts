@@ -15,6 +15,9 @@ import {
   manualPublicationAuthorityTransportErrorFromStderr,
 } from "../manual-publication-authority.js";
 import { errorFingerprint } from "./error-fingerprint.js";
+import { closeReasonItemKindError } from "../clawsweeper-close-reasons.js";
+import { readReviewRecord } from "../review-record.js";
+import { frontMatterValue } from "../report-front-matter.js";
 import {
   applyEventSnapshot,
   applyEventSnapshotIfCurrent,
@@ -183,6 +186,15 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     return;
   }
   const markdown = fs.readFileSync(artifact, "utf8");
+  const reviewedDecision = readReviewRecord(markdown)?.decision;
+  const itemKind = frontMatterValue(markdown, "type");
+  if (
+    reviewedDecision?.decision === "close" &&
+    (itemKind === "issue" || itemKind === "pull_request")
+  ) {
+    const kindError = closeReasonItemKindError(reviewedDecision.closeReason, itemKind);
+    if (kindError) throw new PublicationResultError("policy_invariant", kindError);
+  }
   const policy = reportPublicationPolicy(markdown);
   if (process.env.EXACT_REVIEW_DECISION) assertReportPublicationPolicy(markdown, claimedPolicy);
   if (policy) {

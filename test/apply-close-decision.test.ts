@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { validateCloseDecision } from "../dist/clawsweeper.js";
 import { validateReportClose } from "../dist/clawsweeper-apply-close-decision.js";
+import { executeApplyClose } from "../dist/clawsweeper-apply-close-execution.js";
 import { replaceFrontMatterValue, reportWithoutReviewRecord } from "../dist/report-front-matter.js";
 import type { Decision } from "../src/clawsweeper-types.ts";
 import { implementedCloseReport, withReviewRecord } from "./helpers.ts";
@@ -52,6 +53,42 @@ test("the record decides the close when the report text disagrees", () => {
     actionTaken: "skipped_invalid_decision",
     reason: "implemented_on_main requires fixedSha",
   });
+});
+
+test("apply execution honors a recorded unresolved-security veto", () => {
+  const report = withReviewRecord(implementedCloseReport(), {
+    securityReview: { status: "needs_attention", summary: "Moderation required.", concerns: [] },
+  });
+  const skips: unknown[] = [];
+  const flow = executeApplyClose(
+    {
+      closeReasonEnabled: () => true,
+      implementedOnMainPullRequestProvenanceApplyBlock: () => null,
+      validateCloseDecision,
+    } as never,
+    {
+      item: issue,
+      repo: issue.repo,
+      number: 42,
+      applyKind: "all",
+      closeReason: "implemented_on_main",
+      requiredMaintainerDecision: null,
+      closeLimitReached: false,
+      getMarkdown: () => report,
+      isRetryableSkippedClose: false,
+      markApplySkipped: (action: string, reason: string) => {
+        skips.push({ action, reason });
+        return false;
+      },
+    } as never,
+  );
+  assert.equal(flow, "next");
+  assert.deepEqual(skips, [
+    {
+      action: "kept_open",
+      reason: "security review requires human moderation before automatic close",
+    },
+  ]);
 });
 
 test("a report without a review record blocks the close and asks for a fresh review", () => {

@@ -69,11 +69,10 @@ function publishArgs(cwd: string, run: string, cursorChanged: boolean): string[]
     path.join(cwd, "results", "comment-router-latest.json"),
     JSON.stringify({ routing_cursor_changed: cursorChanged, ledger_claimed: 0, ledger_changed: 0 }),
   );
-  const script = run.replaceAll("${{ steps.target.outputs.target_slug }}", "openclaw-openclaw");
-  const output = execFileSync("bash", ["-eu", "-c", `pnpm() { printf '%s\\n' "$@"; }\n${script}`], {
+  const output = execFileSync("bash", ["-eu", "-c", `pnpm() { printf '%s\\n' "$@"; }\n${run}`], {
     cwd,
     encoding: "utf8",
-    env: { PATH: process.env.PATH },
+    env: { PATH: process.env.PATH, STEPS_TARGET_OUTPUTS_TARGET_SLUG: "openclaw-openclaw" },
   });
   return output.includes("skipping state publication") ? [] : output.trim().split("\n");
 }

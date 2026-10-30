@@ -29,6 +29,17 @@ function unconfirmedProductDirectionCloseReport(overrides = {}) {
     item_category: "feature",
     requires_new_feature: "true",
     requires_product_decision: "true",
+    maintainer_decision: JSON.stringify({
+      required: true,
+      kind: "product_direction",
+      question: "Should a maintainer close this direction?",
+      rationale: "The direction is unconfirmed.",
+      options: [
+        { title: "Keep", body: "Keep for owner review.", recommended: true },
+        { title: "Close", body: "A maintainer may close manually.", recommended: false },
+      ],
+      likelyOwner: { person: "@maintainer", reason: "Product owner.", confidence: "high" },
+    }),
     ...overrides,
   })}
 
@@ -280,6 +291,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?
             "--target-repo",
             "openclaw/openclaw",
             "--dry-run",
+            "--apply-close-reasons",
+            "all",
             "--apply-kind",
             "all",
             "--processed-limit",
@@ -354,6 +367,8 @@ test("default-off product-direction apply preserves the durable close proposal",
           extraArgs: [
             "--target-repo",
             "openclaw/openclaw",
+            "--apply-close-reasons",
+            "all",
             "--apply-kind",
             "pull_request",
             "--item-number",
@@ -431,6 +446,8 @@ test("product-direction apply keeps a PR open when a maintainer comment calibrat
             extraArgs: [
               "--target-repo",
               "openclaw/openclaw",
+              "--apply-close-reasons",
+              "all",
               "--apply-kind",
               "pull_request",
               "--item-number",

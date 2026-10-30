@@ -59,6 +59,46 @@ An idempotent additive column ensure preserves old rows and explicit-column
 writers; replay keeps the first event and its reason. Missing historical reasons
 are not reconstructed from current queue or dead-letter state.
 
+Webhook `snapshot_json` and lifecycle `projection_json` use a shared synchronous
+gzip text envelope when it is smaller than the original UTF-8 text. Raw JSON,
+small values and values above 8 MiB remain readable and unchanged. The envelope
+retains the exact original bytes, including unknown and historical fields; it
+does not parse and reserialize historical JSON. Its literal placeholder marker
+matches the original text's marker presence, preserving SQL retention protection.
+Corrupt envelopes fail as unavailable storage, never as an empty snapshot.
+The two retired lifecycle JSON-expression indexes are removed; current identity
+and ordering indexes remain. Queue schema versions and retention do not change.
+
+Deploy this release and verify its decoder-capable Worker before conversion.
+It initially writes raw JSON. The first reviewed migration commit also enables
+compressed new writes; that existing checkpoint retains the cutover on restart.
+**After the first compressed write, do not deploy a pre-codec Worker.** The reviewed deployed
+codec-capable SHA is the rollback floor. A rollback that writes raw JSON must
+still read this envelope; returning to a pre-codec release would require a
+separately reviewed decompression operation first.
+
+Historical compression is manual: dispatch `exact-review-queue-maintenance.yml`
+with `mode=read-model-compression`, `execute=false`, and the exact
+`expected_deployment_sha`. Review its fixed-table, codec and limits plan. Then
+dispatch the same mode with `execute=true` and `reviewed_plan_sha256` from that
+preview. The approved scope is all five tables through the first committed pass;
+preview maxima are informational. This route uses the existing HMAC credential; it needs no Cloudflare API
+token and does not deploy. Each pass considers at most 64 identities and loads at
+most 8 MiB of source text. Oversized values stay raw and are counted. Prepared
+text is roundtrip-verified before its exact-text CAS and durable checkpoint
+commit. Conflicts stop progress before the changed row; a later invocation
+resumes it. The initial five table upper rowids stay fixed across restarts and
+reviewed deployments; completion is never reset. New inserts already use the
+codec. No background historical sweep, table rebuild or vacuum runs.
+
+One invocation drains bounded passes for at most 50 minutes. Its last observed
+checkpoint may precede a committed pass if a response is lost; rerun from the
+durable checkpoint, using a fresh reviewed preview after a deployment change.
+Counters report rows scanned/converted, source bytes, stored bytes saved,
+oversized rows and conflicts. The field-byte census measures stored envelope
+bytes; webhook retention's `retired_bytes` likewise measures stored bytes
+removed. These are separate from decoded logical bytes and occupied pages.
+
 Report readers share one anchored leading-front-matter parser. A unique header
 value remains authoritative when report prose or a valid fenced example quotes
 the same key. Duplicate header keys and competing unfenced metadata blocks
@@ -116,6 +156,17 @@ run to 1–1,000 pages (100 by default), with a four-minute total deadline. Resu
 an incomplete run by copying `nextCursor` into `storage_cursor`; each result
 reports totals only for that run's scanned range. Failed runs print their last
 completed page's totals and cursor before failing.
+
+For webhook item, comment or activity payloads, use
+`storage_cursor={"retention":true}` to also measure `eligibleRows` and
+`eligibleStoredBytes`: payloads the existing pruner would retire if selected.
+Each page examines at most 64 raw rows and reuses the owner's due-time,
+placeholder-protection and family-idleness checks. It returns no bodies and
+performs no writes. Copy the whole `nextCursor` to preserve the time cutoff
+and upper row identity when resuming. The cutoff is fixed, but concurrent
+writes can change eligibility; this is an observation, not a historical snapshot.
+Eligible bytes count stored bodies, not reclaimed pages; retirement leaves `{}`.
+Production deployment and census execution require separate operator approval.
 
 The census fixes the initial upper row identity; inserts above that bound are excluded.
 Concurrent updates and deletions mean pages are not one atomic snapshot.
@@ -237,8 +288,11 @@ at most 64 raw candidates per pass. Its durable cursor advances past ineligible
 rows and stops at that fixed upper bound. Deletion requires an exact record ID
 and agreement between the canonical record and canonical export pointer on
 revision, deletion state, and digest. Commits, live backfill exports, and missing
-or mismatched owners remain. Progress counts logical payload bytes; SQLite's
-physical database size can stay unchanged while freed pages become reusable.
+or mismatched owners remain. Progress counts logical payload bytes, not reclaimed
+pages. Cloudflare's `sql.databaseSize` reports occupied SQLite bytes, excluding
+free pages. Deleting payloads can leave space within occupied pages; indexes and
+other retained data also contribute to this total. It is not a file-size metric
+or a measure of disposable data.
 
 Git-backed reports, dashboard status, and post-dispatch cursors are best-effort
 after their productive side effect or canonical publication succeeds. Git

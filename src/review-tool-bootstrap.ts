@@ -15,7 +15,7 @@ import { arch, platform } from "node:process";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
 
-export const TRUFFLEHOG_VERSION = "3.97.4";
+export const TRUFFLEHOG_VERSION = "3.99.4";
 const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
 const MAX_TAR_BYTES = 512 * 1024 * 1024;
 const PRIVATE_CACHE_MODE = 0o077;
@@ -84,38 +84,38 @@ const ARTIFACTS: Readonly<Record<string, ReviewToolArtifact>> = {
   "darwin-arm64": {
     platform: "darwin-arm64",
     executable: "trufflehog",
-    url: "https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.4/trufflehog_3.97.4_darwin_arm64.tar.gz",
-    sha256: "57e2a41c1e196cf96cae49ca2151f5e9207be2f5c41349b5ea49cb5dcfc606b7",
+    url: "https://github.com/trufflesecurity/trufflehog/releases/download/v3.99.4/trufflehog_3.99.4_darwin_arm64.tar.gz",
+    sha256: "dc942daecb4a7795fd0a7421c66281bd4cc2ba29a265f3f6c63ecb684a6db291",
   },
   "darwin-x64": {
     platform: "darwin-x64",
     executable: "trufflehog",
-    url: "https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.4/trufflehog_3.97.4_darwin_amd64.tar.gz",
-    sha256: "36799557198a2187e205ed2e8f2a8deb0073c4fe83157f2cd8a04717c1962074",
+    url: "https://github.com/trufflesecurity/trufflehog/releases/download/v3.99.4/trufflehog_3.99.4_darwin_amd64.tar.gz",
+    sha256: "c10e3ec17550e24081b9e045396cf78e494a86616736f0472024519b7416aa37",
   },
   "linux-arm64": {
     platform: "linux-arm64",
     executable: "trufflehog",
-    url: "https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.4/trufflehog_3.97.4_linux_arm64.tar.gz",
-    sha256: "7e65e771d2a247964056aa5edba0f8ae3945895e5dce867fe0ffbc7b0128239a",
+    url: "https://github.com/trufflesecurity/trufflehog/releases/download/v3.99.4/trufflehog_3.99.4_linux_arm64.tar.gz",
+    sha256: "e6285aff62e692131255dca91ad300a62a479330e0b72e4eb1d60ae58908f8d5",
   },
   "linux-x64": {
     platform: "linux-x64",
     executable: "trufflehog",
-    url: "https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.4/trufflehog_3.97.4_linux_amd64.tar.gz",
-    sha256: "dc24007c2f233bd61c05beabeb44aa27ea9b43288166279209abe0458c5ce76b",
+    url: "https://github.com/trufflesecurity/trufflehog/releases/download/v3.99.4/trufflehog_3.99.4_linux_amd64.tar.gz",
+    sha256: "5ae9b313342d1bfa96404064c0f59e77a2cbd1824d797ca7b11e6655aa8fd9d1",
   },
   "win32-arm64": {
     platform: "win32-arm64",
     executable: "trufflehog.exe",
-    url: "https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.4/trufflehog_3.97.4_windows_arm64.tar.gz",
-    sha256: "63c3b7655ef267be7e8dea66d75de35d49e438bfb006b3762e88aeefb8113902",
+    url: "https://github.com/trufflesecurity/trufflehog/releases/download/v3.99.4/trufflehog_3.99.4_windows_arm64.tar.gz",
+    sha256: "e56d8a6c60b69aa4d00753c202b3864a2d045bc1ee8538012b99c8f7352fcbc6",
   },
   "win32-x64": {
     platform: "win32-x64",
     executable: "trufflehog.exe",
-    url: "https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.4/trufflehog_3.97.4_windows_amd64.tar.gz",
-    sha256: "6ce9a957ac62bfb19463048333d9e8481327dbbf5bdc0c43f5ab5327b9631fb9",
+    url: "https://github.com/trufflesecurity/trufflehog/releases/download/v3.99.4/trufflehog_3.99.4_windows_amd64.tar.gz",
+    sha256: "97749c11ec76ef93ca50a3a50bd2a40f25fb92dfee4366d4bff0ba0d951307a8",
   },
 };
 

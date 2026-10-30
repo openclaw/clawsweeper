@@ -23,7 +23,7 @@ const DISPATCH_EVENTS = {
   pull_request_target: { itemKind: "pull_request", sourceEvent: "pull_request" },
 } as const;
 // The copied dispatcher's exact field set. Router, recovery, and command fields
-// stay on the HMAC-authenticated relay; a payload carrying them falls back.
+// stay on the HMAC-authenticated legacy relay and are refused here.
 const PAYLOAD_FIELDS = new Set([
   "target_repo",
   "target_branch",
@@ -48,7 +48,7 @@ const QUEUE_CLAIM_FIELDS = new Set([
 export type TargetDispatchIdentity = {
   repository: string;
   repositoryId: string;
-  eventName: keyof typeof DISPATCH_EVENTS;
+  eventName: keyof typeof DISPATCH_EVENTS | "issue_comment";
   ref: string;
   runId: string;
   runAttempt: string;
@@ -66,7 +66,7 @@ function acceptedClaims(claims: GithubActionsOidcClaims) {
     REPO_PATTERN.test(repository) &&
     typeof claims.repository_id === "string" &&
     /^[1-9][0-9]{0,19}$/.test(claims.repository_id) &&
-    dispatchEventName(claims.event_name) &&
+    (dispatchEventName(claims.event_name) || claims.event_name === "issue_comment") &&
     typeof ref === "string" &&
     ref.startsWith("refs/heads/") &&
     BRANCH_PATTERN.test(ref.slice("refs/heads/".length)) &&
@@ -84,21 +84,27 @@ function acceptedClaims(claims: GithubActionsOidcClaims) {
 export async function authenticateTargetDispatchToken(
   token: string,
   options: GithubActionsOidcOptions = {},
-): Promise<TargetDispatchIdentity | null> {
-  const claims = await verifiedGithubActionsOidcClaims(
+): Promise<
+  { ok: true; identity: TargetDispatchIdentity } | { ok: false; reason: "rejected" | "unavailable" }
+> {
+  const result = await verifiedGithubActionsOidcClaims(
     token,
     TARGET_DISPATCH_ENDPOINT,
     acceptedClaims,
     options,
   );
-  if (!claims || !acceptedClaims(claims) || !dispatchEventName(claims.event_name)) return null;
+  if (result.ok === false) return result;
+  const { claims } = result;
   return {
-    repository: String(claims.repository),
-    repositoryId: String(claims.repository_id),
-    eventName: claims.event_name,
-    ref: String(claims.ref),
-    runId: String(claims.run_id),
-    runAttempt: String(claims.run_attempt),
+    ok: true,
+    identity: {
+      repository: String(claims.repository),
+      repositoryId: String(claims.repository_id),
+      eventName: claims.event_name as TargetDispatchIdentity["eventName"],
+      ref: String(claims.ref),
+      runId: String(claims.run_id),
+      runAttempt: String(claims.run_attempt),
+    },
   };
 }
 
@@ -154,6 +160,9 @@ export function targetDispatchQueueIntake(
       typeof payload.supersedes_in_progress !== "boolean")
   ) {
     return { ok: false, status: 400, error: "invalid_target_dispatch" };
+  }
+  if (!dispatchEventName(identity.eventName)) {
+    return { ok: false, status: 403, error: "target_dispatch_identity_mismatch" };
   }
   const event = DISPATCH_EVENTS[identity.eventName];
   // The signed workflow run, not the payload, decides which repository, event,
@@ -214,5 +223,46 @@ export function targetDispatchQueueIntake(
       },
       ...(ingress ? { ingress } : {}),
     },
+  };
+}
+
+const COMMENT_PAYLOAD_FIELDS = new Set([
+  "target_repo",
+  "item_number",
+  "comment_id",
+  "source_event",
+  "source_action",
+]);
+
+/** Comment payloads supply locators only; all authority comes from live GitHub reads. */
+export function targetDispatchCommentIntake(value: unknown, identity: TargetDispatchIdentity) {
+  const payload = plainObject(value);
+  if (!payload || Object.keys(payload).some((key) => !COMMENT_PAYLOAD_FIELDS.has(key))) {
+    return { ok: false as const, status: 400, error: "unsupported_target_dispatch_field" };
+  }
+  if (
+    typeof payload.target_repo !== "string" ||
+    !REPO_PATTERN.test(payload.target_repo) ||
+    !Number.isSafeInteger(payload.item_number) ||
+    Number(payload.item_number) <= 0 ||
+    !Number.isSafeInteger(payload.comment_id) ||
+    Number(payload.comment_id) <= 0 ||
+    !["created", "edited"].includes(String(payload.source_action))
+  ) {
+    return { ok: false as const, status: 400, error: "invalid_target_dispatch" };
+  }
+  if (
+    identity.eventName !== "issue_comment" ||
+    payload.source_event !== "issue_comment" ||
+    payload.target_repo.toLowerCase() !== identity.repository.toLowerCase()
+  ) {
+    return { ok: false as const, status: 403, error: "target_dispatch_identity_mismatch" };
+  }
+  return {
+    ok: true as const,
+    targetRepo: payload.target_repo,
+    itemNumber: Number(payload.item_number),
+    commentId: Number(payload.comment_id),
+    sourceAction: String(payload.source_action),
   };
 }

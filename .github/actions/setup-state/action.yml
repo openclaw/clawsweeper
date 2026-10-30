@@ -16,7 +16,7 @@ inputs:
   node-version:
     description: Node.js version used to run the TypeScript hydrator.
     required: false
-    default: "24"
+    default: "24.22.1"
   filter:
     description: Git partial clone filter for the generated state repository.
     required: false
@@ -108,12 +108,22 @@ runs:
       shell: bash
       env:
         STATE_COORDINATOR_URL: ${{ inputs.coordinator-url }}
+        INPUTS_STATE_PATH: ${{ inputs.state-path }}
+        INPUTS_COORDINATOR_CLASS: ${{ inputs.coordinator-class }}
       run: |
+        # Preserve spaces while rejecting record separators and parent traversal.
+        if [[ ! "$INPUTS_STATE_PATH" =~ ^[^$'\r\n']+$ ]] ||
+          [[ "/$INPUTS_STATE_PATH/" == */../* ]] ||
+          [[ ! "$STATE_COORDINATOR_URL" =~ ^https?://[^[:space:]]+$ ]] ||
+          [[ ! "$INPUTS_COORDINATOR_CLASS" =~ ^[A-Za-z0-9_-]+$ ]]; then
+          echo "::error::Invalid state configuration." >&2
+          exit 1
+        fi
         {
-          echo "CLAWSWEEPER_STATE_DIR=$GITHUB_WORKSPACE/${{ inputs.state-path }}"
+          echo "CLAWSWEEPER_STATE_DIR=$GITHUB_WORKSPACE/${INPUTS_STATE_PATH}"
           echo "CLAWSWEEPER_STATE_COORDINATOR_ENABLED=1"
           echo "CLAWSWEEPER_STATE_COORDINATOR_URL=$STATE_COORDINATOR_URL"
-          echo "CLAWSWEEPER_STATE_COORDINATOR_CLASS=${{ inputs.coordinator-class }}"
+          echo "CLAWSWEEPER_STATE_COORDINATOR_CLASS=${INPUTS_COORDINATOR_CLASS}"
         } >> "$GITHUB_ENV"
 
     - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -129,7 +139,8 @@ runs:
         CLAWSWEEPER_RECORDS_URL: ${{ inputs.records-url }}
         CLAWSWEEPER_RECORDS_REPO_SLUGS: ${{ inputs.records-repo-slugs }}
         CLAWSWEEPER_RECORDS_SECRET: ${{ inputs.records-secret }}
-      run: node "${{ inputs.worktree-path }}/scripts/prepare-worker-record-cache.ts"
+        INPUTS_WORKTREE_PATH: ${{ inputs.worktree-path }}
+      run: node "${INPUTS_WORKTREE_PATH}/scripts/prepare-worker-record-cache.ts"
 
     - name: Restore canonical record snapshot
       if: ${{ inputs.hydrate-records == 'true' && inputs.records-item-number == '' && steps.records-snapshot.outputs.available == 'true' }}
@@ -160,10 +171,12 @@ runs:
         HYDRATE_STATE_BLOBS: ${{ inputs.hydrate-state-blobs }}
         HYDRATE_RECORDS: ${{ inputs.hydrate-records }}
         HYDRATE_GIT_STATE: ${{ inputs.hydrate-git-state }}
+        INPUTS_STATE_PATH: ${{ inputs.state-path }}
+        INPUTS_WORKTREE_PATH: ${{ inputs.worktree-path }}
       run: |
         hydrate_args=(
-          --state-dir "${{ inputs.state-path }}"
-          --worktree "${{ inputs.worktree-path }}"
+          --state-dir "${INPUTS_STATE_PATH}"
+          --worktree "${INPUTS_WORKTREE_PATH}"
         )
         case "$HYDRATE_RECORDS" in
           true) ;;
@@ -187,4 +200,4 @@ runs:
         # review_record line on every report, openclaw-openclaw passes Node's
         # default ~4 GB heap (#1874). Runners have 16 GB; streaming the export
         # to disk is the follow-up that removes this limit.
-        node --max-old-space-size=12288 "${{ inputs.worktree-path }}/scripts/hydrate-state.ts" "${hydrate_args[@]}"
+        node --max-old-space-size=12288 "${INPUTS_WORKTREE_PATH}/scripts/hydrate-state.ts" "${hydrate_args[@]}"

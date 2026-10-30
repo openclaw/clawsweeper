@@ -1,1 +1,0 @@
-- Stop the scheduled repair self-heal lane from fetching every repository's review records. It never reads them, and since 2026-10-04 every run had failed in setup with `cold_hydration_bound_exceeded` for an unsnapshotted repository. It now hydrates only the Git repair state (jobs and run results) that it uses.

@@ -648,8 +648,8 @@ function classifyCommand(command: LooseRecord): JsonValue {
       ...next,
       status: "ready",
       actions: [
-        ...removeRepairLoopLabelActions,
         { action: "label", label: HUMAN_REVIEW_LABEL, status: execute ? "pending" : "planned" },
+        ...removeRepairLoopLabelActions,
         { action: "comment", status: execute ? "pending" : "planned" },
       ],
     };
@@ -703,7 +703,8 @@ function executeCommand(command: LooseRecord) {
       return;
     }
     if (command.intent === "stop" && command.issue_number && shouldApplyHumanReviewLabel) {
-      if (command.intent === "stop") applyRemoveLabelActions(command);
+      // Add the replacement hold before removing protection; a failed write throws,
+      // so the command stays unprocessed and the next run retries it.
       ensureHumanReviewLabel(command);
       editIssueLabel(command, HUMAN_REVIEW_LABEL, "add");
       command.actions = command.actions.map((action: JsonValue) =>
@@ -711,6 +712,7 @@ function executeCommand(command: LooseRecord) {
           ? { ...action, status: "executed", label: HUMAN_REVIEW_LABEL }
           : action,
       );
+      applyRemoveLabelActions(command);
     }
 
     const commentResult = postComment(command, renderResponse(command, dispatched));
@@ -832,8 +834,9 @@ function githubNotFoundNoMutation(error: unknown) {
   return isGitHubNotFoundError(error);
 }
 
+// Stop's hold and protection writes are required, unlike cosmetic reactions or label creation.
 function editIssueLabel(command: LooseRecord, label: string, operation: "add" | "remove") {
-  runGitHubBestEffortMutation(
+  runGitHubTextMutationOnce(
     command,
     operation === "add" ? "label_add" : "label_remove",
     { repository: command.repo, number: command.issue_number, label },
@@ -846,6 +849,7 @@ function editIssueLabel(command: LooseRecord, label: string, operation: "add" | 
       `--${operation}-label`,
       label,
     ],
+    {},
     operation === "add" ? githubAlreadyExistsNoMutation : githubNotFoundNoMutation,
   );
 }

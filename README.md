@@ -61,7 +61,7 @@ mutation is rechecked against live target state immediately before it happens.
 ### Issue and PR Reviews
 
 Scheduled runs scan open issues and pull requests, while target repositories can
-forward exact issue/PR events with `repository_dispatch` for low-latency
+forward exact issue/PR events through keyless OIDC Worker intake for low-latency
 one-item reviews. Each review writes
 `records/<repo-slug>/items/<number>.md` with the decision, evidence, proposed
 maintainer-facing comment, runtime metadata, and GitHub snapshot hash.
@@ -211,6 +211,9 @@ The canonical comment commands are:
 
 `review` and `re-review` request a fresh read-only issue/PR review; `explain`
 summarizes the current result, and `stop` prevents further automatic handling.
+Stop adds `clawsweeper:human-review` before it removes repair-loop protection
+labels. A failed label write fails the command without a reply, and a later run
+retries it.
 The router checks repository permissions and the command's current source
 comment before accepting work. Contributors may request a review of their own
 items under the configured authorization policy.
@@ -272,8 +275,8 @@ scheduling, capacity, and monitoring behavior is documented in
 
 - hot/new and recently active items are checked hourly, with a 5-minute intake
   schedule for the newest queue edge
-- target repositories can forward issue and PR events with
-  `repository_dispatch`; those exact item runs use a dedicated single job to
+- target repositories can forward issue and PR events through OIDC Worker intake;
+  the queue leases a dedicated executor to
   review one item, sync the durable comment, and apply only safe close
   proposals for that same item
 - pull requests and issues younger than 30 days are checked daily once they
@@ -418,8 +421,12 @@ Clean text-converted checkouts retain both canonical Git and raw working bytes
 in scan coverage. The host never starts a target-bundled autoreview helper or
 second reviewer.
 
-Hosted Codex and OpenClaw setup share the checksum-pinned TruffleHog 3.97.4
-installer in `.github/actions/setup-review-tools/install.sh`. For local review,
+Hosted Codex and OpenClaw setup share `.github/actions/setup-review-tools`, which
+caches only the checksum-pinned release archive. Every setup verifies its bytes,
+extracts a fresh private binary, checks the exact version, and runs the benign
+scan before advertising its path. Cache misses and corrupt archives use the
+pinned download; installed binaries and review data never enter the Actions
+cache. For local review,
 ClawSweeper first qualifies a trusted host executable outside both checkouts; when it
 is absent or reports a different TruffleHog release, it bootstraps the exact checksum-pinned release asset into a
 user-owned cache outside both checkouts. The local bootstrap accepts no URL or
@@ -1020,10 +1027,11 @@ lane-specific exceptions.
 
 Target repositories can opt into event-level latency by installing the
 dispatcher workflow in [docs/target-dispatcher.md](docs/target-dispatcher.md).
-The dispatcher sends `repository_dispatch` events to this repository with the
-target repo and exact item number; ClawSweeper then runs one event job that
+The keyless dispatcher sends the target repo and exact item number to the Worker
+using GitHub Actions OIDC; ClawSweeper then leases one event executor that
 reviews, comments, and checks immediate safe apply instead of waiting for the
-next hot-intake cron or bulk publish lane.
+next hot-intake cron or bulk publish lane. The independent App webhook remains
+enabled; legacy `repository_dispatch` receivers remain during migration.
 
 ## Checks
 

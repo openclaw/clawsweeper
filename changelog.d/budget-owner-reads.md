@@ -1,1 +1,0 @@
-- The repair budget tests and the validation and overall budget proofs now read the expected validation budget from `config/target-repositories.json` and the budget module, so a retuned target budget no longer needs matching edits there.

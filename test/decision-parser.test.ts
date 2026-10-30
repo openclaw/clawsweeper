@@ -9,6 +9,51 @@ import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 import { changelogReviewDecision, closeDecision, item, reviewFinding } from "./helpers.ts";
 import { neutralizeOwnedSectionSpoofing } from "../dist/clawsweeper-report-helpers.js";
 
+test("model close decisions validate subject kind while stored reports remain readable", () => {
+  const parser = createDecisionParser({
+    neutralizeOwnedSectionSpoofing: (value) => value,
+    sanitizeArchitectureDiagram: (value) => value,
+  });
+  const reasons = {
+    pull_request: [
+      "mostly_implemented_on_main",
+      "low_signal_unmergeable_pr",
+      "oversized_pull_request",
+      "stalled_unproven_pr",
+      "abandoned_pr",
+      "unconfirmed_product_direction",
+      "author_pr_budget_exceeded",
+      "obsolete_fix_pr",
+    ],
+    issue: ["unsponsored_feature_request", "stale_version_bug", "stale_insufficient_info"],
+  } as const;
+  for (const [kind, closeReasons] of Object.entries(reasons)) {
+    const expected = kind as "issue" | "pull_request";
+    const wrong = expected === "issue" ? "pull_request" : "issue";
+    for (const closeReason of closeReasons) {
+      const raw = closeDecision({ closeReason });
+      if (raw.maintainerDecision.required) {
+        raw.maintainerDecision.likelyOwner.person = raw.likelyOwners[0]!.person;
+      }
+      assert.throws(() => parser.parseDecision(raw, item({ kind: wrong })), {
+        message: `decision.closeReason: ${closeReason} is allowed only for ${expected === "issue" ? "issues" : "pull requests"}`,
+      });
+      assert.equal(parser.parseDecision(raw, item({ kind: expected })).closeReason, closeReason);
+      assert.equal(
+        parser.parseStoredDecisionFields(raw, item({ kind: wrong })).closeReason,
+        closeReason,
+      );
+    }
+  }
+  assert.equal(
+    parser.parseDecision(
+      closeDecision({ decision: "keep_open", closeReason: "abandoned_pr" }),
+      item(),
+    ).decision,
+    "keep_open",
+  );
+});
+
 test("decision validators preserve exact errors and validation order", () => {
   for (const value of [undefined, null, false, 0, "", [], ["decision"]]) {
     assert.throws(() => parseDecision(value), {
@@ -181,6 +226,7 @@ test("next-step parsing preserves absent legacy intent and validates supplied as
   for (const nextStep of [
     { kind: "none", text: "" },
     { kind: "required", text: "Owner approval." },
+    { kind: "maintainer", text: "Owner approval." },
   ]) {
     assert.deepEqual(parseDecision(closeDecision({ nextStep })).nextStep, nextStep);
   }
@@ -196,6 +242,9 @@ test("next-step parsing preserves absent legacy intent and validates supplied as
     {},
     { kind: "optional", text: "Wait." },
     { kind: "required", text: "" },
+    { kind: "maintainer", text: "" },
+    { kind: "maintainer", text: "   " },
+    { kind: "maintainer", text: 12 },
     { kind: "required", text: " \n " },
     { kind: "none", text: "Repair it." },
     { kind: "none", text: " " },
