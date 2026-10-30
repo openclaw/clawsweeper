@@ -128,6 +128,7 @@ test("OpenClaw process emits isolated config and invocation, joins payloads, and
       agents: {
         defaults: { skipBootstrap: true, sandbox: { mode: "off" }, timeoutSeconds: 13 },
       },
+      plugins: { slots: { memory: "none" } },
       tools: {
         profile: "coding",
         fs: { workspaceOnly: true },
