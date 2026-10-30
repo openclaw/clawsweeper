@@ -48,6 +48,10 @@ const record = {
     CLAWSWEEPER_APP_PRIVATE_KEY: process.env.CLAWSWEEPER_APP_PRIVATE_KEY ?? null,
     KIMI_API_KEY: process.env.KIMI_API_KEY ?? null,
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? null,
+    OPENCLAW_GATEWAY_TOKEN: process.env.OPENCLAW_GATEWAY_TOKEN ?? null,
+    OPENCLAW_GATEWAY_PASSWORD: process.env.OPENCLAW_GATEWAY_PASSWORD ?? null,
+    OPENCLAW_CRON_WEBHOOK_TOKEN: process.env.OPENCLAW_CRON_WEBHOOK_TOKEN ?? null,
+    OPENCLAW_LOG_LEVEL: process.env.OPENCLAW_LOG_LEVEL ?? null,
   },
 };
 fs.writeFileSync(process.env.OPENCLAW_TEST_RECORD, JSON.stringify(record));
@@ -595,6 +599,10 @@ test("OpenClaw subprocess env strips workflow credentials and keeps provider key
       CLAWSWEEPER_WEBHOOK_SECRET: "workflow-webhook",
       CLAWSWEEPER_APP_PRIVATE_KEY: "workflow-app",
       KIMI_API_KEY: "provider-kimi",
+      OPENCLAW_GATEWAY_TOKEN: "gateway-token",
+      OPENCLAW_GATEWAY_PASSWORD: "gateway-password",
+      OPENCLAW_CRON_WEBHOOK_TOKEN: "cron-webhook",
+      OPENCLAW_LOG_LEVEL: "debug",
     };
     const capability = reviewNetworkCapability("clawsweeper-review", {
       ...env,
@@ -617,6 +625,10 @@ test("OpenClaw subprocess env strips workflow credentials and keeps provider key
     assert.equal(record.env.CLAWSWEEPER_WEBHOOK_SECRET, null);
     assert.equal(record.env.CLAWSWEEPER_APP_PRIVATE_KEY, null);
     assert.equal(record.env.KIMI_API_KEY, "provider-kimi");
+    assert.equal(record.env.OPENCLAW_GATEWAY_TOKEN, null);
+    assert.equal(record.env.OPENCLAW_GATEWAY_PASSWORD, null);
+    assert.equal(record.env.OPENCLAW_CRON_WEBHOOK_TOKEN, null);
+    assert.equal(record.env.OPENCLAW_LOG_LEVEL, "debug");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
