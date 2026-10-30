@@ -1935,6 +1935,23 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Link input-scan refusal diagnostics
+        if: ${{ always() && !cancelled() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.review-exact-event-item.outputs.failure_stage == 'agent_input_scan' }}
+        continue-on-error: true
+        env:
+          DIAGNOSTIC_ARTIFACT_URL: ${{ steps.upload-exact-review-failure-diagnostics.outputs.artifact-url }}
+          DIAGNOSTIC_REPO: ${{ steps.target.outputs.target_repo }}
+          DIAGNOSTIC_KIND: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind }}
+          DIAGNOSTIC_NUMBER: ${{ steps.target.outputs.item_number }}
+          DIAGNOSTIC_SHA: ${{ (fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind == 'issue' && fromJSON(steps.claim-exact-review-queue.outputs.decision).expectedSourceRevision) || (fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind == 'pull_request' && fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha) || '' }}
+        run: |
+          if [ -z "$DIAGNOSTIC_ARTIFACT_URL" ] || ! node scripts/inspect-input-scan-diagnostic.mjs --summary \
+            artifacts/event/failure-diagnostics/manifest.json \
+            "$DIAGNOSTIC_REPO" "$DIAGNOSTIC_KIND" "$DIAGNOSTIC_NUMBER" "$DIAGNOSTIC_SHA" \
+            "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"; then
+            echo 'Input-scan diagnostics unavailable: artifact upload or exact identity verification failed. Do not substitute another run or attempt.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Fail unsuccessful exact review generation
         # A held review lease is a successful deferral only after the durable queue
         # accepts retry ownership; queue completion failures must remain visible.
