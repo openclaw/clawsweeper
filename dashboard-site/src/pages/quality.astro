@@ -4,8 +4,8 @@ import Kpi from '../components/Kpi.astro';
 import Card from '../components/Card.astro';
 import BarList from '../components/BarList.astro';
 import SegmentBar from '../components/SegmentBar.astro';
-import ItemTable from '../components/ItemTable.astro';
-import { attentionPriorityOrdered, distributions, entries, lists, recommendedCloseReasons, totals } from '../lib/data';
+import AssessmentAttention from '../components/AssessmentAttention.astro';
+import { assessments, distributions, entries, lists, recommendedCloseReasons, totals } from '../lib/data';
 import { int, pct } from '../lib/format';
 
 const d = distributions;
@@ -23,14 +23,21 @@ const findingTotal = findings.reduce((total, row) => total + row.value, 0);
 
   <p class="mt-2 text-[13px] text-fg-muted"><a href="/agent/" class="underline">Agent performance</a> shows execution speed, failed attempts and repeated claims.</p>
 
+  <div id="maintainer" class="scroll-mt-20">
+    <AssessmentAttention collections={assessments} legacy={lists} limit={20} />
+  </div>
+
+  <h2 class="mt-8 text-[16px] font-semibold">Recorded assessment distributions</h2>
+  <p class="mt-1 text-[12px] text-fg-muted">All latest stored reviews, including historical and unverified states. These totals are not a current-open concern count.</p>
+
   <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
     <Kpi label="Close recommended" value={share(d.decisions.close ?? 0)} sub={`${int(d.decisions.close ?? 0)} items`}
       tip="Share of typed records whose latest review recommends closing. A recommendation, not an executed close." />
     <Kpi label="Reported high confidence" value={share(d.confidence.high ?? 0)} sub={`${int(d.confidence.low ?? 0)} low`}
       tip="Share of typed records where the reviewer reported high confidence." />
-    <Kpi label="Security attention" value={int(d.security.needs_attention ?? 0)} sub={`${share(d.security.needs_attention ?? 0)} of records`}
+    <Kpi label="Recorded security flags" value={int(d.security.needs_attention ?? 0)} sub={`${share(d.security.needs_attention ?? 0)} of records`}
       tip="Latest reviews that marked a security concern as needing attention." />
-    <Kpi label="P0 findings" value={int(d.findings.P0 ?? 0)} sub={`${int(findingTotal)} findings total`}
+    <Kpi label="Recorded P0 findings" value={int(d.findings.P0 ?? 0)} sub={`${int(findingTotal)} findings total`}
       tip="Critical findings across all latest reviews." />
   </div>
 
@@ -78,16 +85,4 @@ const findingTotal = findings.reduce((total, row) => total + row.value, 0);
     </Card>
   </div>
 
-  <div class="mt-3 grid gap-3 xl:grid-cols-2">
-    <div id="maintainer" class="scroll-mt-20">
-      <Card title="Needs a maintainer" flush tip={attentionPriorityOrdered ? "Historical review flags, reviewer priority first then oldest review. Some may already be settled." : "Historical review flags, newest first. A corpus refresh enables priority ordering; some flags may already be settled."}>
-        <ItemTable items={lists.maintainer} meta="maintainer" limit={20} />
-      </Card>
-    </div>
-    <div id="security" class="scroll-mt-20">
-      <Card title="Security attention" flush tip={attentionPriorityOrdered ? "Historical security flags, reviewer priority first then oldest review. Some may already be settled." : "Historical security flags, newest first. A corpus refresh enables priority ordering; some flags may already be settled."}>
-        <ItemTable items={lists.security} meta="security" limit={20} />
-      </Card>
-    </div>
-  </div>
 </Layout>

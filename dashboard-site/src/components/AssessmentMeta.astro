@@ -1,0 +1,20 @@
+---
+import type { Assessment } from '../../scripts/attention.ts';
+import { asOf } from '../lib/data';
+import { assessmentEvidence, assessmentReviewAge } from '../lib/assessment';
+
+interface Props {
+  assessment?: Assessment | null;
+  reviewedAt: string | null;
+}
+const { assessment, reviewedAt } = Astro.props;
+const evidence = assessmentEvidence(assessment);
+const at = assessment?.reviewedAt ?? reviewedAt;
+const date = (value: string) => value.slice(0, 10) + ' UTC';
+---
+<span class="text-[12px] text-fg-muted" data-assessment-evidence>
+  <span>{evidence.state} · {evidence.source}</span>
+  <span> · {at ? <>Reviewed <time datetime={at} title={at}>{date(at)}</time> · {assessmentReviewAge(at, asOf.corpus ?? null)}</> : 'Review date unknown'}</span>
+  {assessment?.lifecycle === 'observed_open' && assessment.stateObservedAt && <span> · State observed <time datetime={assessment.stateObservedAt}>{date(assessment.stateObservedAt)}</time></span>}
+  {assessment?.reviewStatus !== 'complete' && <span> · {evidence.review}</span>}
+</span>

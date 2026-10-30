@@ -286,6 +286,42 @@ alerts count recorded claims, which may end before model execution. The bounded
 public target sample links to GitHub for revision and trigger investigation; it is
 not a ranking or proof of wasted execution.
 
+### Recorded assessment attention
+
+- Owner: ClawSweeper dashboard maintainers
+- Owning sources: `dashboard-site/scripts/attention.ts`,
+  `dashboard-site/scripts/assessment-collections.ts`,
+  `dashboard-site/scripts/records.ts` and `dashboard-site/src/components/AssessmentAttention.astro`
+- Verified source baseline: `2e3e8fdebb537bb0580772afe23cbeb1c1cf39ac`
+- Update when: canonical record state/source fields, classification, collection
+  caps, visibility filtering or attention presentation changes
+
+Overview, Assessments and repository pages distinguish recorded-open flags,
+known source drift, unknown state/completion and historical closed/archived
+flags. These are the latest stored record per item, not a complete review-event
+history or an independently verified unresolved-issue inventory. Security flags
+from old open reviews remain discoverable; age never resolves a concern.
+Reviewer priority remains an assigned judgment, not verified severity.
+
+A completed review with source identities describes its reviewed snapshot.
+Neither missing/equal drift fields nor a generic `apply_checked_at` proves a
+current match. `state_at_review` describes review time; recorded open state
+observations use `current_state` and `reconciled_at`. Archive location or a
+recorded closed/merged state is historical, not proof of resolution. The site
+therefore reports current source-valid attention as unavailable, not zero.
+Absolute review dates and snapshot-relative age accompany the evidence.
+
+The independent `assessments` aggregate counts each concern/group before
+selection, including archived flags. It retains at most 100 rows per group and
+concern globally; `repositoryAssessments` retains 20 per repository/group/concern,
+selected from each repository before global limits. A row can have both a
+security and a maintainer flag. Counts describe stored public records only.
+Legacy/mixed producer generations without classification show unavailable
+semantic totals and preserve any legacy bounded flags as unclassified. A public
+repository dropped by the build visibility check is removed from the new
+collections and counts too. Existing global lists retain their compatibility
+contract; no semantic totals are reconstructed by filtering their capped rows.
+
 The site shows no report bodies, author identities or free-text concerns.
 Local preview: in `dashboard-site/`, install dependencies, run
 `scripts/build-corpus.ts --records <records dir> --out <state dir>` and

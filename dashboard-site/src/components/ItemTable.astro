@@ -1,6 +1,7 @@
 ---
 import Icon from './Icon.astro';
 import Ago from './Ago.astro';
+import AssessmentMeta from './AssessmentMeta.astro';
 import { label } from '../lib/format';
 import { attentionPriorityOrdered, type Item } from '../lib/data';
 
@@ -40,7 +41,7 @@ const metaText = (item: Item) =>
                 <Icon name="external" size={12} class="item-external text-fg-faint" />
               </a>
             </td>
-            {meta !== 'age' && <td class="item-assessment text-fg-muted" role="cell"><span class="item-meta-label">{metaLabel}: </span>{metaText(item)}</td>}
+            {meta !== 'age' && <td class="item-assessment text-fg-muted" role="cell"><span class="item-meta-label">{metaLabel}: </span>{metaText(item)}{(meta === 'maintainer' || meta === 'security') && <span class="block"><AssessmentMeta assessment={item.assessment} reviewedAt={item.reviewedAt} /></span>}</td>}
             <td class="item-review num text-fg-muted" role="cell"><span class="item-meta-label">Last review: </span>{item.reviewedAt ? <Ago at={item.reviewedAt} /> : 'Unknown'}</td>
           </tr>
         ))}

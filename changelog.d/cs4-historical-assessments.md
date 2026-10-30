@@ -1,0 +1,1 @@
+- Separate recorded-open, source-changed, unknown and historical dashboard assessment flags, with explicit review age and current-source limits. Thanks @brokemac79.

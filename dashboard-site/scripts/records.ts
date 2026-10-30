@@ -5,7 +5,19 @@ import { createReadStream } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { isRecord } from "./guards.ts";
-import { compareAttention, reviewerPriority } from "./attention.ts";
+import {
+  classifyAssessment,
+  compareAttention,
+  reviewerPriority,
+  type Assessment,
+} from "./attention.ts";
+import {
+  addAssessmentFlag,
+  boundAssessmentCollections,
+  combineAssessmentCollections,
+  createAssessmentCollections,
+  type AssessmentCollections,
+} from "./assessment-collections.ts";
 import { isMaintainerAuthorAssociation } from "../../src/maintainer-review-policy.ts";
 
 const DAY_MS = 86_400_000;
@@ -29,6 +41,7 @@ type Row = {
   security: string | null;
   maintainerKind: string | null;
   triagePriority?: string | null;
+  assessment?: Assessment;
 };
 type RepoStats = {
   repo: string;
@@ -153,6 +166,7 @@ export type RepoCorpus = {
   };
   closedElsewhere: Counts;
   lists: Record<ListName, Row[]>;
+  assessments?: AssessmentCollections<Row>;
   codexMs: number[];
   createdToReviewHours: number[];
 };
@@ -242,6 +256,7 @@ export async function aggregateRecords(
       closes: { total: 0, byReason: {}, days: {}, recent: [] },
       closedElsewhere: {},
       lists: { maintainer: [], security: [], stale: [] },
+      assessments: createAssessmentCollections<Row>(),
       codexMs: [],
       createdToReviewHours: [],
     };
@@ -290,6 +305,7 @@ export async function aggregateRecords(
           reviewedAt,
           createdAt,
           archived,
+          assessment: classifyAssessment(attrs, archived, nowMs),
           decision: decision?.decision ?? null,
           closeReason: decision?.closeReason ?? null,
           proof: decision?.realBehaviorProof?.status ?? null,
@@ -362,6 +378,10 @@ export async function aggregateRecords(
         bump(distributions.security, decision.securityReview?.status);
         for (const finding of decision.reviewFindings ?? [])
           bump(distributions.findings, `P${finding.priority}`);
+        if (decision.maintainerDecision?.required)
+          addAssessmentFlag(part.assessments!, row, "maintainer");
+        if (decision.securityReview?.status === "needs_attention")
+          addAssessmentFlag(part.assessments!, row, "security");
         if (!archived && decision.maintainerDecision?.required) {
           bump(distributions.maintainerKinds, decision.maintainerDecision.kind);
           keep(part.lists.maintainer, row, LIST_ORDER.maintainer);
@@ -374,6 +394,7 @@ export async function aggregateRecords(
     for (const name of Object.keys(part.lists) as ListName[])
       part.lists[name] = top(part.lists[name], LIST_ORDER[name]);
     part.closes.recent = top(part.closes.recent, newestCloseFirst);
+    part.assessments = boundAssessmentCollections(part.assessments!);
     repositories.push(part);
   }
   return {
@@ -448,6 +469,13 @@ export function combineCorpus(cache: CorpusCache, isKept: (repo: string) => bool
   return {
     generatedAt: cache.generatedAt,
     attentionOrder: cache.attentionOrder ?? null,
+    assessments: combineAssessmentCollections(kept.map((part) => part.assessments)),
+    repositoryAssessments: Object.fromEntries(
+      kept.map((part) => [
+        part.stats.slug,
+        part.assessments?.version === 1 ? boundAssessmentCollections(part.assessments, 20) : null,
+      ]),
+    ),
     totals,
     distributions,
     days: byDate(days).map(([day, count]) => ({ date: day, ...count })),

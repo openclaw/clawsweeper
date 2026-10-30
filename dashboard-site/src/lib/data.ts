@@ -1,4 +1,6 @@
 import raw from "../data/dashboard.json";
+import type { Assessment } from "../../scripts/attention.ts";
+import type { AssessmentCollections } from "../../scripts/assessment-collections.ts";
 import type { Operations, OperationsHour } from "../../scripts/operations.ts";
 import { duration, label } from "./format";
 import { reviewTimingWindow, summarizeRunWindow } from "./run-window.ts";
@@ -22,6 +24,7 @@ export interface Item {
   security: string;
   maintainerKind: string | null;
   triagePriority?: string | null;
+  assessment?: Assessment;
 }
 
 export interface Repo {
@@ -378,6 +381,12 @@ export const closeReasons = entries({ ...corpus.recordedCloses.byReason });
 export const closedElsewhereTotal = corpus.closedElsewhere.total as number;
 export const recommendedCloseReasons = entries({ ...distributions.closeReasons }, ["none"]);
 export const repos: Repo[] = [...corpus.repos].sort((a: Repo, b: Repo) => b.records - a.records);
+
+// Independent semantic collections, selected before caps by the corpus producer.
+// Absent/legacy producer generations are unavailable, never a false zero.
+export const assessments = (corpus.assessments ?? null) as AssessmentCollections<Item> | null;
+export const repositoryAssessments = (slug: string): AssessmentCollections<Item> | null =>
+  corpus.repositoryAssessments?.[slug] ?? null;
 
 export const attentionPriorityOrdered = corpus.attentionOrder === "reviewer-priority-age-v1";
 

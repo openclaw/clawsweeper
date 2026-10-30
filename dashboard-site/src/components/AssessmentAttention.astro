@@ -1,0 +1,82 @@
+---
+import Card from './Card.astro';
+import ItemTable from './ItemTable.astro';
+import type { AssessmentCollections } from '../../scripts/assessment-collections.ts';
+import type { AttentionGroup } from '../../scripts/attention.ts';
+import type { Item } from '../lib/data';
+import { int } from '../lib/format';
+
+interface Props {
+  collections: AssessmentCollections<Item> | null;
+  legacy?: { security: Item[]; maintainer: Item[] };
+  limit?: number;
+  showRepo?: boolean;
+}
+const { collections, legacy, limit = 8, showRepo = true } = Astro.props;
+const concerns = ['security', 'maintainer'] as const;
+const names = { security: 'Security flags', maintainer: 'Maintainer flags' };
+const groups: { key: AttentionGroup; title: string; detail: string }[] = [
+  { key: 'open', title: 'Recorded open flags', detail: 'Open at review or a recorded state observation. Still unresolved in these records, not verified current. Old concerns stay here; review age does not clear them.' },
+  { key: 'changed', title: 'Source changed · re-verification needed', detail: 'The record reports source drift or reopening. The old concern is not a fresh assessment of the changed source.' },
+  { key: 'unknown', title: 'Unverified state or review', detail: 'The item state or review completion cannot be established from the stored evidence. Unknown is not clearance.' },
+];
+const historical = collections?.groups.historical;
+const historicalTotal = historical ? historical.security.total + historical.maintainer.total : null;
+---
+<section class="mt-6" aria-label="Recorded assessment attention" data-assessment-attention>
+  <div class="flex flex-wrap items-end justify-between gap-2">
+    <h2 class="text-[16px] font-semibold">Recorded attention</h2>
+    <a href="/quality/#maintainer" class="text-[12px] text-fg-muted underline">Assessments and history</a>
+  </div>
+  <p class="mt-1 text-[13px] text-fg-muted" data-current-source-status>
+    Current source-valid attention: unavailable. Stored reviews do not independently verify today's source or open state. Reviewer priority and flags are judgments, not verified severity or resolution.
+  </p>
+  {collections ? <>
+    {groups.map(group => (
+      <section class="mt-4" data-attention-group={group.key}>
+        <h3 class="text-[14px] font-medium">{group.title}</h3>
+        <p class="mt-1 text-[12px] text-fg-muted">{group.detail}</p>
+        <div class="mt-2 grid gap-3 xl:grid-cols-2">
+          {concerns.filter(concern => group.key === 'open' || collections.groups[group.key][concern].total > 0).map(concern => {
+            const collection = collections.groups[group.key][concern];
+            const count = Math.min(limit, collection.items.length);
+            return <div data-assessment-concern={concern} data-assessment-total={collection.total}>
+              <Card title={names[concern]} flush tip="Reviewer priority first, then oldest review. Counts cover stored public records, not live unresolved concerns.">
+                <p class="px-4 pb-3 text-[12px] text-fg-muted">Showing {int(count)} of {int(collection.total)} recorded flags{collection.total > count ? ' · bounded selection' : ''}.</p>
+                {count ? <ItemTable items={collection.items} meta={concern} limit={limit} showRepo={showRepo} />
+                  : <p class="px-4 pb-4 text-[13px] text-fg-muted">No recorded flags in this group. Current concerns are not verified.</p>}
+              </Card>
+            </div>;
+          })}
+        </div>
+        {group.key !== 'open' && concerns.every(concern => collections.groups[group.key][concern].total === 0) &&
+          <p class="mt-2 text-[12px] text-fg-muted">No recorded flags in this group; not a live all-clear.</p>}
+      </section>
+    ))}
+    <details class="mt-4" data-attention-group="historical">
+      <summary class="cursor-pointer text-[14px] font-medium">Historical closed/archived flags · {int(historicalTotal ?? 0)} flag entries</summary>
+      <p class="mt-1 text-[12px] text-fg-muted">Past reviewer concerns retained for inspection. Closed or archived does not establish that a concern was resolved. An item can have both kinds of flag.</p>
+      <div class="mt-2 grid gap-3 xl:grid-cols-2">
+        {concerns.map(concern => {
+          const collection = collections.groups.historical[concern];
+          const count = Math.min(limit, collection.items.length);
+          return <div data-assessment-concern={concern} data-assessment-total={collection.total}>
+            <Card title={names[concern]} flush tip="Historical reviewer flags; not current attention or proof of resolution.">
+              <p class="px-4 pb-3 text-[12px] text-fg-muted">Showing {int(count)} of {int(collection.total)} recorded flags{collection.total > count ? ' · bounded selection' : ''}.</p>
+              {count ? <ItemTable items={collection.items} meta={concern} limit={limit} showRepo={showRepo} />
+                : <p class="px-4 pb-4 text-[13px] text-fg-muted">No historical flags recorded in this group.</p>}
+            </Card>
+          </div>;
+        })}
+      </div>
+    </details>
+  </> : <>
+    <p class="mt-3 text-[13px] text-fg-muted" data-assessment-unavailable>Classification and group totals unavailable until a corpus refresh. The retained bounded flags below are unclassified, not a current attention list.</p>
+    {legacy && <div class="mt-2 grid gap-3 xl:grid-cols-2" data-attention-group="legacy">
+      {concerns.map(concern => <Card title={names[concern]} flush tip="Legacy bounded selection. State, source validity, historical coverage and total are unknown.">
+        <ItemTable items={legacy[concern]} meta={concern} limit={limit} showRepo={showRepo} />
+        {!legacy[concern].length && <p class="px-4 pb-4 text-[13px] text-fg-muted">No rows retained; completeness unknown, not an all-clear.</p>}
+      </Card>)}
+    </div>}
+  </>}
+</section>
