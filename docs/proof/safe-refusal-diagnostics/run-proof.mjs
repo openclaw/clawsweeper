@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join, delimiter } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -19,6 +19,7 @@ const oldPath = process.env.PATH;
 try {
   const target = join(scratch, 'target'); const bin = join(scratch, 'bin');
   mkdirSync(target); mkdirSync(bin);
+  symlinkSync(process.execPath, join(bin, 'node'));
   const git = (...args) => execFileSync('git', args, { cwd: target, encoding: 'utf8' }).trim();
   git('init', '-q'); git('config', 'user.name', 'Synthetic proof'); git('config', 'user.email', 'proof@example.invalid');
   git('config', 'commit.gpgsign', 'false');
@@ -73,9 +74,12 @@ process.exit(183);
   writeFileSync(join(scratch, 'artifacts/event/failure-diagnostics/manifest.json'), readFileSync(manifestPath));
   // Keep workflow relative paths intact, while pointing its script entry at this checkout.
   mkdirSync(join(scratch, 'scripts'));
-  writeFileSync(join(scratch, 'scripts/inspect-input-scan-diagnostic.mjs'), `import ${JSON.stringify(pathToFileURL(resolve('scripts/inspect-input-scan-diagnostic.mjs')).href)};`);
-  // Execute the literal workflow body with only its script path made absolute.
-  const shell = step.run.replace('node scripts/inspect-input-scan-diagnostic.mjs', `${JSON.stringify(process.execPath)} ${JSON.stringify(resolve('scripts/inspect-input-scan-diagnostic.mjs'))}`);
+  const inspectorPath = resolve('scripts/inspect-input-scan-diagnostic.mjs');
+  writeFileSync(join(scratch, 'scripts/inspect-input-scan-diagnostic.mjs'),
+    `process.argv[1] = ${JSON.stringify(inspectorPath)};\nawait import(${JSON.stringify(pathToFileURL(inspectorPath).href)});\n`);
+  // Execute the literal workflow body. The PATH entry and import wrapper above
+  // select this Node executable and checkout without interpolating shell source.
+  const shell = step.run;
   const workflow = spawnSync('bash', ['-c', shell], { cwd:scratch, env:stepEnv, encoding:'utf8' });
   assert.equal(workflow.status, 0, workflow.stderr);
   const summary = readFileSync(summaryPath, 'utf8'); assert.match(summary, /artifacts\/456/);
