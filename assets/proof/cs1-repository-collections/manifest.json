@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "kind": "controlled-runtime-proof",
+  "baseline": "6ed9c97007e38b5afb2ec30c305e7c51c2fa4e11",
+  "sourceHeadAtCapture": "70148b5bc3db35bd85a992beab4367792b507569",
+  "candidateDiffSha256": "8b10618353b7672fab1291de22e4f8e69e4a44ed75b7d9333bb9954c0605983b",
+  "sourceStateAtCapture": "implementation committed; proof harness and explanatory note uncommitted at capture; runtime source hashes below match the retained candidate",
+  "fixtureSha256": "fc249aeb04f75383b0fc77352c8b925a19b7077c4dfcbe74213d8493e05925ad",
+  "command": "CHROMIUM_PATH=/usr/bin/google-chrome node scripts/proof-repository-collections.mjs <fresh-output-directory>",
+  "environment": {
+    "provider": "aws",
+    "lease": "cbx_abefc6eed385",
+    "image": "ami-04beed173f1785931",
+    "node": "v24.19.0",
+    "pnpm": "12.15.0",
+    "viewport": {
+      "width": 1440,
+      "height": 1700
+    },
+    "theme": "dark",
+    "fixedTime": "2026-10-30T12:00:00Z"
+  },
+  "assets": [
+    {
+      "stage": "before",
+      "file": "before.png",
+      "bytes": 98335,
+      "sha256": "35e9ec9267d5e487962adf61bd0578a5ce16f2c967418f0b55777e00d84b76d5"
+    },
+    {
+      "stage": "after",
+      "file": "after.png",
+      "bytes": 306523,
+      "sha256": "b0010ec82dbf8b51322190e29956d034dccb985b9dcd393a963bd2c7f8e2ee1c"
+    }
+  ],
+  "results": [
+    {
+      "stage": "before",
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": []
+    },
+    {
+      "stage": "after",
+      "counts": {
+        "Stalest open items": 10,
+        "Needs a maintainer": 10,
+        "Security attention": 10,
+        "Recent closes": 10
+      },
+      "tooltipCompatibility": "focus-escape-click-toggle-and-ordinary-hover passed",
+      "browserErrors": []
+    },
+    {
+      "stage": "legacy",
+      "counts": {
+        "Stalest open items": 10,
+        "Needs a maintainer": 10,
+        "Security attention": 10,
+        "Recent closes": 10
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": []
+    },
+    {
+      "stage": "legacy-snapshot",
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": []
+    },
+    {
+      "stage": "incomplete",
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": []
+    },
+    {
+      "stage": "contradictory",
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": []
+    }
+  ],
+  "runtimeSourceSha256": {
+    "dashboard-site/.gitignore": "f11cb0b802a4587d0bc428aa85fa5f8b481c0df7b0bdd961590540fdaeeed849",
+    "dashboard-site/astro.config.mjs": "0c9ef823747a5ceb31283fd355fbbce69ee5dd9fb1cffe74a7a1a1dad5f5cb56",
+    "dashboard-site/package.json": "0464dcff3e9a72014df2486e0565193841d8c768f31c15e3834c7d518f49ad1f",
+    "dashboard-site/pnpm-lock.yaml": "85064915c463a93084ac0dc2a611a313d566ad28b6da1601952b63164c9ebbd8",
+    "dashboard-site/pnpm-workspace.yaml": "e3a4dbd2849b9155914a2833fbd3530bf1bd41fc3e1f4955e4f73c5d619aa752",
+    "dashboard-site/public/clawsweeper.png": "1c2e5960152d4b4de83d77ba829b2c39a85710418ef74155c070ff7422420d94",
+    "dashboard-site/public/favicon.png": "d9033366d122f74e4a82eea2ad52326b923504361c1ff568e312737396b7671d",
+    "dashboard-site/scripts/actions.ts": "4f97b60035d42dec3fd1557e42d34182eb1a7c9842ea465f659464c3dad9637d",
+    "dashboard-site/scripts/attention.ts": "25bf2cefdb44f48664444e512bc2a025eb7419b987d1d1d7b32d09158d76e489",
+    "dashboard-site/scripts/build-corpus.ts": "4c56db346c90eacdd810bbaffdca5d832fd94af1f3ce23fa68b908375e8e14f4",
+    "dashboard-site/scripts/build-data.ts": "1d0dfa9c256256b4fc59c6c3908a5c8397ef50543996a73879e68211981faca4",
+    "dashboard-site/scripts/guards.ts": "57f20d7c8563654a25535718643a3b6e3c9967acbc5731b0ce24cfea17c16371",
+    "dashboard-site/scripts/operations.ts": "ac2a8f39e63091cbb6829ea55eb6ad10601417c1b7fe76389eb89da6f8b37ba9",
+    "dashboard-site/scripts/records.ts": "74fb5b81a2c172c3380280d7511eddb4e64ecc7820588a50319529b4e9e0ffb9",
+    "dashboard-site/src/components/Ago.astro": "25fd62c5d3cfb4b2207bb2289e6d48b3ede21ca62ef643734233f1a9a7bb476c",
+    "dashboard-site/src/components/BarList.astro": "3822434cec1f0bc00fc53dc97f08af119c5203ebf04bb2e5419958503fe2b945",
+    "dashboard-site/src/components/Card.astro": "e7420242fe94298791ed673ea52017eb9f7f896413602f4e439d64a69a929171",
+    "dashboard-site/src/components/Clear.astro": "aa94eb76a2c21c108a455f820ca105cb919d9268c6377a6a2256e964fb725a45",
+    "dashboard-site/src/components/Icon.astro": "cc2b8557110c2e2cd88abce497280b0177f5fcdce529346a09fe3d4c7d4f56ab",
+    "dashboard-site/src/components/InfoTip.astro": "8093afc685681828d9c803fcdf5ca9b8554e307d3cfcdeb71041e2b9e12ab8fd",
+    "dashboard-site/src/components/ItemTable.astro": "b662ec1305a91cba1c7c648d13d5ccae4b08b8268da960fdb0713b9ae02f9e45",
+    "dashboard-site/src/components/Kpi.astro": "4de9b973c2a721ff695882e869b29e83bdc8b70d83787344180e7ce6ddf4bd6c",
+    "dashboard-site/src/components/Layout.astro": "a986ba000cb48d4f703194958eb73f7819cbe18f657dc3fa581b4db8b842401e",
+    "dashboard-site/src/components/SegmentBar.astro": "2ce4b8a7db158d0789d386e8dbca6e083d369c4151f0ac8ef7d4733fcbd86f4f",
+    "dashboard-site/src/components/Sparkline.astro": "82c5631d30db9df185bb230ca0143b0837ab463b225bdc78b16eb9b057c9771c",
+    "dashboard-site/src/components/StatusStrip.astro": "0be59d3719604845237ac7808401182f813254a1ed0e05ced50ae18d63a919d2",
+    "dashboard-site/src/components/TabCard.astro": "ce7c6958cd982e18f72ad7eda1eb792d58b76e18bb7c9970f04c83bd9b368d57",
+    "dashboard-site/src/components/TimeChart.astro": "d62cea434bad30226293c5f6e8392f54e98710886ca412b23e64ab0c0ae5b126",
+    "dashboard-site/src/lib/chart.ts": "49034decbf2aa37d08e0d55f445cfbf3c980f8ab7e7cbaff65207ec5edee08ce",
+    "dashboard-site/src/lib/data.ts": "5b796488a55b94657d1e2dd1a95a93b10c8dfd6a283ec29c021aee84c85aed40",
+    "dashboard-site/src/lib/format.ts": "707a545ae5d97728c2e17bcf3e410d74dc3928477b9dae5cd1e9f05dad204277",
+    "dashboard-site/src/lib/repository-collections.ts": "2c9c6069fb3394895dd257b9a5fa368ee047b063a6e3189276c7a3ce87566565",
+    "dashboard-site/src/lib/run-window.ts": "12cfbe48b91a60748048a5aa59bafde9849064ed481085a8f08d3ed2a86b667c",
+    "dashboard-site/src/pages/404.astro": "67eb63a1c4054b5c84b90a1ac22fc099a0c01747f11731aed1eef4dda623047c",
+    "dashboard-site/src/pages/agent.astro": "fadcd7dee783e174fe5da14a71e96347c60b430d95515127244e4c63e0779f4f",
+    "dashboard-site/src/pages/coverage.astro": "33a0536ed10e18780185b62e21ff0d7709cc143e0618d80a1008e3d5d5ec53c5",
+    "dashboard-site/src/pages/index.astro": "7560c38d770e2d1ef7c6d022b0681b37b7f3d6ef9cd4f72405a01cd7b69d006f",
+    "dashboard-site/src/pages/operations.astro": "0fc1ec92e6dc6e32d1959ccac77bce9544f4c9738e53d8c4344943616661c16a",
+    "dashboard-site/src/pages/quality.astro": "5bb8ee5ccdaf40e601f5281d45a67fe8c00b2fc7525312a71798e51bee94af6f",
+    "dashboard-site/src/pages/queue.astro": "d45f34b55f4e98ed00b7e48d90e1bdb33c1806291029cbb089d83f6762f6ff29",
+    "dashboard-site/src/pages/repos/[slug].astro": "d18a36384d065ef850ebf5d0ae69e4e48bbc22edc7b9784637bbe2e22e24388e",
+    "dashboard-site/src/pages/repos/index.astro": "2c323f8c8217c52692b066d3adc9c95340f8fcebdbe6e33ea076143ea7f70593",
+    "dashboard-site/src/pages/throughput.astro": "c4865950ebf3a9eebe51c37c467a1b6ec57afabf07790b1efe86e63870579fc5",
+    "dashboard-site/src/styles/global.css": "98f4fc8a2e4eb2a46591ff671e7884d8d5f208379e65f760fcdcbcb9850f28b2",
+    "dashboard-site/tsconfig.json": "98e1484cb0954ac7306a850cdbf03c8140e2fd32e65fa6c213b19343dfdc6d43",
+    "scripts/proof-repository-collections-network.mjs": "64e8ec44cb736e59607c9180bd076c68c9adf77cbd4c221e81c5310e4f3efed6",
+    "scripts/proof-repository-collections.mjs": "2698e2ec431f337f3decc96d2a7f6d39a5060feaf6c82e6617f6a374fd7b439b"
+  },
+  "limits": "Controlled external responses; real corpus/data/production site/browser path. Stored corpus only, no live coverage or deploy claim.",
+  "retention": "Review-time media per docs/README.md. Final committed-head replay and current full source manifest are recorded in the PR body."
+}
