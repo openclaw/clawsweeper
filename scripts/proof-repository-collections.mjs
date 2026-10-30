@@ -9,7 +9,7 @@ import { join, resolve, extname } from "node:path";
 import { chromium } from "playwright-core";
 
 const root = process.cwd();
-const base = "5577656d79ed491486b5e9ab9853df481f9aa8f1";
+const base = "6ed9c97007e38b5afb2ec30c305e7c51c2fa4e11";
 const out = resolve(process.argv[2] ?? ".artifacts/cs1/proof");
 assert(!existsSync(out), "Use a fresh output directory; retained proof is never overwritten");
 mkdirSync(out, { recursive: true });
@@ -276,6 +276,26 @@ try {
         assert.equal(await page.locator("tbody tr").count(), 0);
         assert.equal(await page.getByText(/No .* in the stored corpus\./).count(), 4);
         await page.screenshot({ path: join(out, "zero.png"), animations: "disabled" });
+        // Preserve the landed Coverage help flow and shared ordinary tooltip handling.
+        await page.goto(`${origin}/coverage/`);
+        assert.equal(await page.locator("[data-info-tip]").count(), 5);
+        const help = page.getByRole("button", { name: "About Reviewed recently", exact: true });
+        await help.focus();
+        await page.locator("#tip.on").waitFor();
+        assert.match(
+          await page.locator("#tip").innerText(),
+          /Reviewable items with a completed review/,
+        );
+        await page.keyboard.press("Escape");
+        assert.equal(await page.locator("#tip.on").count(), 0);
+        await help.click();
+        await page.locator("#tip.on").waitFor();
+        await help.click();
+        assert.equal(await page.locator("#tip.on").count(), 0);
+        await page.goto(`${origin}/repos/openclaw-clawsweeper/`);
+        await page.locator("section.card [data-tip]").first().hover();
+        await page.locator("#tip.on").waitFor();
+        assert.match(await page.locator("#tip").innerText(), /Latest review decision/);
       }
       assert(
         requests.every((url) => url.startsWith(origin)),
@@ -284,6 +304,8 @@ try {
       assert.equal(errors.length, 0, errors.join("; "));
       results.push({
         stage,
+        tooltipCompatibility:
+          stage === "after" ? "focus-escape-click-toggle-and-ordinary-hover passed" : null,
         counts,
         requests: requests.length,
         browserErrors: errors,

@@ -2,7 +2,7 @@
 
 - Status: historical controlled proof for this change, not an operational runbook
 - Owner: ClawSweeper maintainers
-- Intended base: `5577656d79ed491486b5e9ab9853df481f9aa8f1`
+- Intended base after integrating landed Coverage help: `6ed9c97007e38b5afb2ec30c305e7c51c2fa4e11`
 - Owning sources: `dashboard-site/scripts/records.ts`,
   `dashboard-site/src/lib/repository-collections.ts`,
   `dashboard-site/src/lib/data.ts`, and the repository Astro page
@@ -75,17 +75,23 @@ every referenced item exists.
 
 Each invocation retains `results.json`, `source-hashes.json`,
 `fixture-hashes.json`, exact subprocess command logs, six browser traces and the
-matched `before.png`/`after.png` plus true-zero capture. Images are inspected
-separately and delivered with the PR; generated binaries are not committed here.
-The pre-commit full-source manifest for the successful six-scenario run is
+matched `before.png`/`after.png` plus true-zero capture. The current inspected
+before/after pair and a compact public-safe manifest are retained under
+`assets/proof/cs1-repository-collections/` during review, per the repository media
+retention policy. The PR embeds these images; traces and full logs remain artifacts.
+The original pre-integration proof used base `5577656d79ed491486b5e9ab9853df481f9aa8f1`
+and committed head `912d7aac8c7fe16cdac297980e974e54f068bb55`. Its evidence is
+historical, not current after integration. Its pre-commit source manifest is
 `c07b53abb080aed115f334db62969fffa8e39dcda980e2a86c6c4879713312b7`;
 it predates this proof note and the explanatory documentation addition. The PR
-body records the final committed-head replay and its current manifest.
+body records the current committed-head replay, provider provenance and manifest.
+The integrated proof also exercises the five landed Coverage help buttons:
+focus, Escape, click toggling, and ordinary repository-tooltip hover remain intact.
 
 Focused regressions:
 
 ```sh
-node --test test/dashboard-repository-collections.test.ts test/dashboard-attention.test.ts
+node --test test/dashboard-repository-collections.test.ts test/dashboard-attention.test.ts test/dashboard-site-tooltips.test.ts
 ```
 
 These cover all four collections past both cap thresholds, true zero, old cache
