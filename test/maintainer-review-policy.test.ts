@@ -69,7 +69,7 @@ test("every canonical unknown reason selects ordinary review without changing ev
   const admin = { permission: "admin", role_name: "admin", user: { login: "author" } };
   const cases = [
     [authority(), "unavailable"],
-    [authority(null), "invalid_evidence"],
+    [authority({ user: { login: "author" } }), "invalid_evidence"],
     [authority({ ...admin, user: { login: "someone-else" } }), "subject_mismatch"],
     [authority(admin, { now: authorityNow + 60_001 }), "stale_evidence"],
     [authority({ ...admin, permission: "write" }), "contradictory_evidence"],
