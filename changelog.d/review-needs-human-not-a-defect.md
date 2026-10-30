@@ -1,0 +1,1 @@
+- Report a PR whose only open item is a maintainer decision as ready and awaiting that decision: the decision renders once under Decision needed instead of as a Before-merge checkbox, the review-state marker stays `blocked` for released readers but adds `hold=maintainer_decision`, and the rating no longer drops for it.

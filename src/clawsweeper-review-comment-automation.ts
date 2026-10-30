@@ -2,7 +2,10 @@ import { reportReviewDecision } from "./report-review-decision.js";
 import { reportAllowsAutomation } from "./manual-publication-policy.js";
 import { validReviewLeaseIdentity, type NeedsHumanHold } from "./review-comment-markers.js";
 import { markerAttributeValue } from "./clawsweeper-review-comment-identity.js";
-import type { PullRequestReviewReadiness } from "./clawsweeper-types.js";
+import type {
+  PullRequestReviewMarkerState,
+  PullRequestReviewReadiness,
+} from "./clawsweeper-types.js";
 import { parseIsoMs } from "./iso-time.js";
 import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
 import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
@@ -101,10 +104,17 @@ export function reviewAutomationMarkersFromReport(
   const hasDurableReviewIdentity =
     Boolean(reviewVersionMarkerFromReport(markdown)) &&
     validReviewLeaseIdentity(reviewLeaseOwner, reviewLeaseCommentId);
+  // The v1 wire contract has three states and released readers fail closed on any
+  // other value. An awaiting-maintainer review therefore publishes `blocked` plus an
+  // additive `hold=maintainer_decision` attribute, which v1 readers ignore.
+  const awaitingMaintainer = reviewReadiness.state === "awaiting-maintainer";
+  const markerState: PullRequestReviewMarkerState =
+    reviewReadiness.state === "awaiting-maintainer" ? "blocked" : reviewReadiness.state;
   const reviewStateMarker =
     hasDurableReviewIdentity && hasExactItemNumber && /^[0-9a-f]{40}$/i.test(headSha)
-      ? `<!-- clawsweeper-review-state:${reviewReadiness.state} ` +
-        `item=${markerAttributeValue(number)} sha=${markerAttributeValue(headSha)} v=1 -->`
+      ? `<!-- clawsweeper-review-state:${markerState} ` +
+        `item=${markerAttributeValue(number)} sha=${markerAttributeValue(headSha)} v=1` +
+        `${awaitingMaintainer ? " hold=maintainer_decision" : ""} -->`
       : "";
   const withReviewState = (...markers: string[]): string =>
     [...markers.filter(Boolean), reviewStateMarker].join("\n");
@@ -135,8 +145,11 @@ export function reviewAutomationMarkersFromReport(
   // Security attention is never waivable.
   const onlyBlocker = reviewReadiness.items.length === 1;
   if (reviewed.maintainerDecision?.required) {
+    // The decision is not a Before-merge item, so it is the only hold when the
+    // checklist is empty.
+    const onlyDecision = reviewReadiness.items.length === 0;
     return humanReviewMarkers(
-      securityNeedsAttention ? "security" : onlyBlocker ? "maintainer_decision" : "blocked",
+      securityNeedsAttention ? "security" : onlyDecision ? "maintainer_decision" : "blocked",
     );
   }
   if (frontMatterValue(markdown, "review_status") === "failed") {

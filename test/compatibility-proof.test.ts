@@ -88,7 +88,10 @@ test("sufficient compatibility preserves an undecided plugin API direction", () 
     reason: "Suggested for follow-up; no historical authorship or introduction is verified.",
     confidence: "low",
   });
-  assert.match(renderReviewCommentFromReport(report, "none"), /Resolve maintainer decision/);
+  const comment = renderReviewCommentFromReport(report, "none");
+  assert.match(comment, /## Decision needed/);
+  assert.match(comment, /⏳ \*\*Ready, awaiting maintainer decision\*\*/);
+  assert.doesNotMatch(comment, /Resolve maintainer decision/);
   assert.doesNotMatch(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
 });
 

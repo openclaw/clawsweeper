@@ -303,11 +303,13 @@ function renderKeepOpenCommentFromReport(
         : "Codex review: blocked before merge."
       : reviewReadiness?.state === "needs-changes"
         ? "Codex review: needs changes before merge."
-        : isRepairLoopPass
-          ? "Codex review: passed."
-          : isPullRequest
-            ? "Codex review: needs maintainer review before merge."
-            : "Codex review: this still needs some work.";
+        : reviewReadiness?.state === "awaiting-maintainer"
+          ? "Codex review: ready, awaiting a maintainer decision."
+          : isRepairLoopPass
+            ? "Codex review: passed."
+            : isPullRequest
+              ? "Codex review: needs maintainer review before merge."
+              : "Codex review: this still needs some work.";
   const reviewHistory = reviewHistoryForRender(markdown, options.previousReviewCommentBody);
   const revision = reviewHistory.totalCompletedCycles + 1;
   const lines = [verdictLine, ""];

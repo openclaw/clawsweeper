@@ -12,6 +12,7 @@ import type {
   AcquiredReviewStartLease,
   CloseReason,
   ItemContext,
+  PullRequestReviewMarkerState,
   ReviewStartStatusCommentOptions,
 } from "./clawsweeper-types.js";
 import {
@@ -549,7 +550,7 @@ export function durableReviewCausalIdentityFromBody(
   sourceRevision: string | null;
   leaseOwner: string;
   leaseCommentId: number;
-  state: "ready" | "blocked" | "needs-changes" | null;
+  state: PullRequestReviewMarkerState | null;
 } | null {
   const identity = reviewCommentMarker(number);
   const identityIndex = body.lastIndexOf(identity);
@@ -585,6 +586,8 @@ export function durableReviewCausalIdentityFromBody(
   );
   if (!stateMatch) return null;
   const state = stateMatch[1];
+  // The v1 contract: three states, fail closed on anything else. Additive attributes
+  // such as `hold=` are ignored here, so a newer producer stays readable.
   if (state !== "ready" && state !== "blocked" && state !== "needs-changes") return null;
   const stateAttributes = stateMatch[2] ?? "";
   const stateAttribute = (name: string) =>

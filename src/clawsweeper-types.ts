@@ -1394,12 +1394,22 @@ export interface PrCloseCoverageRuntimeBudget {
   maxRuntimeMs: number;
 }
 
-export type PullRequestReviewState = "ready" | "blocked" | "needs-changes";
+/**
+ * `awaiting-maintainer`: no Before-merge item remains and the only hold is an
+ * outstanding maintainer decision. The PR is not defective, and it is not ready
+ * either: an owner still has to decide. It is a presentation state only: the
+ * published review-state marker keeps the v1 wire value `blocked` and adds
+ * `hold=maintainer_decision`, so released readers keep recognizing the comment.
+ */
+export type PullRequestReviewState = "ready" | "awaiting-maintainer" | "blocked" | "needs-changes";
+
+/** The v1 review-state marker values. Readers fail closed on anything else. */
+export type PullRequestReviewMarkerState = Exclude<PullRequestReviewState, "awaiting-maintainer">;
 
 export interface PublicBeforeMergeItem {
   label: string;
   detail: string;
-  state: Exclude<PullRequestReviewState, "ready">;
+  state: Exclude<PullRequestReviewState, "ready" | "awaiting-maintainer">;
   /** Explicit routing only; absent ownership must not be inferred from prose. */
   owner?: "maintainer";
 }
@@ -1408,6 +1418,11 @@ export interface PullRequestReviewReadiness {
   headSha: string | null;
   state: PullRequestReviewState;
   items: PublicBeforeMergeItem[];
+  /**
+   * An outstanding maintainer decision packet. It is the owner's work, not the
+   * contributor's, so it is never a Before-merge item and never counts as one.
+   */
+  maintainerDecisionPending: boolean;
   normalizationFailed: boolean;
 }
 
