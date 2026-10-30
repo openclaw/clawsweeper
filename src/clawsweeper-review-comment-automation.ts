@@ -135,8 +135,11 @@ export function reviewAutomationMarkersFromReport(
   // Security attention is never waivable.
   const onlyBlocker = reviewReadiness.items.length === 1;
   if (reviewed.maintainerDecision?.required) {
+    // The decision is not a Before-merge item, so it is the only hold when the
+    // checklist is empty.
+    const onlyDecision = reviewReadiness.items.length === 0;
     return humanReviewMarkers(
-      securityNeedsAttention ? "security" : onlyBlocker ? "maintainer_decision" : "blocked",
+      securityNeedsAttention ? "security" : onlyDecision ? "maintainer_decision" : "blocked",
     );
   }
   if (frontMatterValue(markdown, "review_status") === "failed") {

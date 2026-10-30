@@ -78,11 +78,14 @@ function securityReviewNeedsContributorWork(options: {
 }
 
 // The Before-merge items own merge readiness. The status label only routes them:
-// it is "ready" only when the published comment lists no Before-merge item.
+// it is "ready" only when the published comment lists no Before-merge item and
+// no maintainer decision is outstanding.
 export function prStatusLabelKind(options: {
   reviewFailed: boolean;
   proofPolicy: Pick<RealBehaviorProofPolicy, "blocksMerge" | "needsContributorAction">;
   beforeMergeItems: readonly Pick<PublicBeforeMergeItem, "state" | "owner">[];
+  /** An outstanding maintainer decision packet; it is not a Before-merge item. */
+  maintainerDecisionPending: boolean;
   securityReview: Pick<SecurityReview, "status">;
   mergeRiskOptions: readonly Pick<MergeRiskOption, "category" | "recommended">[];
   hasRepairLoopPauseLabel: boolean;
@@ -100,7 +103,11 @@ export function prStatusLabelKind(options: {
   if (options.proofPolicy.blocksMerge) return "needs_maintainer_proof_decision";
   if (options.reviewFailed) return null;
   if (unresolvedWork) return "waiting_on_author";
-  if (options.beforeMergeItems.length === 0) return "ready_for_maintainer_look";
+  if (options.beforeMergeItems.length === 0) {
+    return options.maintainerDecisionPending
+      ? "waiting_on_maintainer"
+      : "ready_for_maintainer_look";
+  }
   if (options.beforeMergeItems.every((item) => item.owner === "maintainer"))
     return "waiting_on_maintainer";
   return null;
@@ -203,10 +210,12 @@ export function prStatusLabelKindFromReport(
 ): PrStatusLabelKind | null {
   if (frontMatterValue(markdown, "type") !== "pull_request") return null;
   const decision = reportReviewDecision(markdown);
+  const readiness = pullRequestReviewReadinessFromReport(markdown);
   return prStatusLabelKind({
     reviewFailed: frontMatterValue(markdown, "review_status") === "failed",
     proofPolicy: reportRealBehaviorProofPolicy(markdown),
-    beforeMergeItems: pullRequestReviewReadinessFromReport(markdown).items,
+    beforeMergeItems: readiness.items,
+    maintainerDecisionPending: readiness.maintainerDecisionPending,
     securityReview: decision.securityReview,
     mergeRiskOptions: decision.mergeRiskOptions,
     hasRepairLoopPauseLabel: hasRepairLoopPauseLabel(currentLabels),

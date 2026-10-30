@@ -192,9 +192,9 @@ test("a product call with a maintainer decision packet asks the owner once", () 
       likelyOwner: { person: "unknown" },
     },
   });
-  assert.match(result.comment, /Resolve maintainer decision/);
-  assert.doesNotMatch(result.comment, /Product call needed/);
-  assert.equal(result.state, "blocked");
+  assert.match(result.comment, /## Decision needed/);
+  assert.doesNotMatch(result.comment, /Product call needed|Resolve maintainer decision/);
+  assert.equal(result.state, "awaiting-maintainer");
 });
 
 test("an unexplained provenance override needs changes, not a block", () => {

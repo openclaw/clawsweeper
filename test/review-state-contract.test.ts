@@ -8,11 +8,14 @@ import {
   prStatusLabelKindFromReport,
   nextPrStatusLabels,
 } from "../dist/clawsweeper-label-policy.js";
+import { firstBeforeMergeAction, previousReviewStatus } from "../dist/clawsweeper-markdown.js";
+import { durableReviewCausalIdentityFromBody } from "../dist/clawsweeper-review-comment-state.js";
 interface FindingFixture {
   markdown: string;
   record: Record<string, unknown>;
 }
 import {
+  markedReviewCommentForTest,
   prRatingReportSection,
   realBehaviorProofReportSection,
   reportFrontMatter,
@@ -137,7 +140,23 @@ Full review comments:
   };
 }
 
-function assertReadiness(report: string, state: "ready" | "blocked" | "needs-changes"): string {
+// An outstanding owner decision with nothing else left for the author.
+const maintainer_decision = JSON.stringify({
+  required: true,
+  kind: "product_direction",
+  question: "Which compatibility contract should ship?",
+  rationale: "This needs an owner ruling.",
+  options: [
+    { title: "Keep compatibility", body: "Retain the old contract.", recommended: true },
+    { title: "Adopt the new contract", body: "Document the break.", recommended: false },
+  ],
+  likelyOwner: { person: "@owner", reason: "Owns the contract.", confidence: "high" },
+});
+
+function assertReadiness(
+  report: string,
+  state: "ready" | "awaiting-maintainer" | "blocked" | "needs-changes",
+): string {
   const comment = renderReviewCommentFromReport(report, "none");
   const markers = reviewAutomationMarkersFromReport(report);
   for (const value of [comment, markers]) {
@@ -148,6 +167,13 @@ function assertReadiness(report: string, state: "ready" | "blocked" | "needs-cha
   if (state === "ready") {
     assert.match(comment, /## Before merge\n\nNone\./);
     assert.match(comment, /## Merge readiness\n\n✅ \*\*Ready for maintainer review/);
+  } else if (state === "awaiting-maintainer") {
+    // Nothing is wrong with the PR: no checkbox, no ⛔, no remaining-item count.
+    assert.match(comment, /## Before merge\n\nNone\./);
+    assert.match(comment, /## Merge readiness\n\n⏳ \*\*Ready, awaiting maintainer decision\*\*\n/);
+    assert.match(comment, /## Decision needed\n\n- \*\*Question:\*\* /);
+    assert.doesNotMatch(comment, /- \[ \]|⛔|items? remains?|Ready for maintainer review/);
+    assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
   } else {
     assert.match(comment, /- \[ \]/);
     assert.doesNotMatch(comment, /## Before merge\n\nNone\.|Ready for maintainer review/);
@@ -159,12 +185,13 @@ function assertReadiness(report: string, state: "ready" | "blocked" | "needs-cha
 test("the compact v1 fixture matches producer state and identity without snapshotting prose", () => {
   const reports = {
     ready: reviewReport(),
+    "awaiting-maintainer": reviewReport({ maintainer_decision }),
     blocked: reviewReport({
       real_behavior_proof_data_model_compatibility: "insufficient",
     }),
     "needs-changes": reviewReport({ work_candidate: "queue_fix_pr" }, "", finding()),
   } as const;
-  for (const state of ["ready", "blocked", "needs-changes"] as const) {
+  for (const state of ["ready", "awaiting-maintainer", "blocked", "needs-changes"] as const) {
     const comment = assertReadiness(reports[state], state);
     assert.deepEqual(comment.match(/<!-- clawsweeper-review-version[^>]+-->/g), [
       fixture.identityMarker,
@@ -176,6 +203,10 @@ test("the compact v1 fixture matches producer state and identity without snapsho
     /clawsweeper-verdict:needs-human [^>]* hold=not_opted_in findings=0 -->/,
   );
   assert.match(
+    reviewAutomationMarkersFromReport(reports["awaiting-maintainer"]),
+    /clawsweeper-verdict:needs-human [^>]* hold=maintainer_decision findings=0 -->/,
+  );
+  assert.match(
     reviewAutomationMarkersFromReport(reports.blocked),
     /clawsweeper-verdict:needs-human [^>]* hold=blocked findings=0 -->/,
   );
@@ -185,18 +216,105 @@ test("the compact v1 fixture matches producer state and identity without snapsho
   );
 });
 
-test("a maintainer decision is a waivable hold only when it is the one blocker", () => {
-  const maintainer_decision = JSON.stringify({
-    required: true,
-    kind: "product_direction",
-    question: "Which compatibility contract should ship?",
-    rationale: "This needs an owner ruling.",
-    options: [
-      { title: "Keep compatibility", body: "Retain the old contract.", recommended: true },
-      { title: "Adopt the new contract", body: "Document the break.", recommended: false },
-    ],
-    likelyOwner: { person: "@owner", reason: "Owns the contract.", confidence: "high" },
+test("an outstanding maintainer decision alone is awaiting the maintainer, not a defect", () => {
+  const report = reviewReport({ maintainer_decision });
+  const comment = assertReadiness(report, "awaiting-maintainer");
+  assert.match(comment, /^Codex review: ready, awaiting a maintainer decision\./m);
+  assert.equal(previousReviewStatus(comment), "ready, awaiting a maintainer decision.");
+  assert.match(
+    comment,
+    /\*\*Owner decision:\*\* Required\. See \[Decision needed\]\(#decision-needed\)\./,
+  );
+  assert.match(comment, /- \*\*Question:\*\* Which compatibility contract should ship\?/);
+  assert.match(
+    comment,
+    /- \*\*Recommendation:\*\* \*\*Keep compatibility:\*\* Retain the old contract\./,
+  );
+  assert.doesNotMatch(comment, /Resolve maintainer decision|Blocked before merge/);
+  // The decision is the one remaining action for the comment router.
+  assert.match(firstBeforeMergeAction(comment), /Which compatibility contract should ship\?/);
+  // The recorded rating stands: the host neither lowers it nor asks for patch work.
+  assert.match(comment, /\| \*\*Overall readiness\*\* \| 🦞 diamond lobster \*\*\(5\/6\)\*\* \|/);
+  assert.doesNotMatch(comment, /Improve patch quality/);
+  // Only the owner is waited on; the author has nothing to do.
+  const status = prStatusLabelKindFromReport(report, { comments: [], timeline: [] }, []);
+  assert.equal(status, "waiting_on_maintainer");
+  assert.deepEqual(nextPrStatusLabels(["status: 👀 ready for maintainer look"], status), [
+    "status: ⏳ waiting on maintainer",
+  ]);
+  const markers = reviewAutomationMarkersFromReport(report);
+  assert.match(
+    markers,
+    /clawsweeper-verdict:needs-human [^>]* hold=maintainer_decision findings=0 -->/,
+  );
+  assert.doesNotMatch(markers, /clawsweeper-verdict:(?:pass|needs-changes)/);
+  // The durable identity reader accepts the state beside the version marker.
+  const identity = durableReviewCausalIdentityFromBody(
+    markedReviewCommentForTest(fixture.item, comment),
+    fixture.item,
+  );
+  assert.equal(identity?.state, "awaiting-maintainer");
+  assert.equal(identity?.headSha, reviewedHead);
+});
+
+test("a maintainer decision beside remaining work keeps the PR blocked, as before", () => {
+  const withFinding = reviewReport({ maintainer_decision }, "", finding());
+  const comment = assertReadiness(withFinding, "blocked");
+  assert.match(comment, /^Codex review: blocked before merge\./m);
+  // The finding is the one remaining item; the decision renders under its own heading.
+  assert.match(comment, /⛔ \*\*Blocked before merge - 1 item remains\*\*/);
+  assert.match(comment, /- \[ \] \*\*Preserve cleanup ownership \(P1\)\*\* - /);
+  assert.match(comment, /## Decision needed\n\n- \*\*Question:\*\* /);
+  assert.match(comment, /\*\*Owner decision:\*\* Required\./);
+  assert.doesNotMatch(comment, /Resolve maintainer decision|awaiting/i);
+  assert.match(
+    reviewAutomationMarkersFromReport(withFinding),
+    /clawsweeper-verdict:needs-human [^>]* hold=blocked findings=1 -->/,
+  );
+  assert.equal(
+    prStatusLabelKindFromReport(withFinding, { comments: [], timeline: [] }, []),
+    "waiting_on_author",
+  );
+  // An enforced maintainer-only approval beside the decision is still a blocker.
+  const withApproval = reviewReport({ maintainer_decision }, "", cleanFindings, {
+    nextStep: {
+      kind: "maintainer",
+      text: "A maintainer must approve the current-head security change.",
+    },
   });
+  assert.match(assertReadiness(withApproval, "blocked"), /Await maintainer action/);
+  assert.equal(
+    prStatusLabelKindFromReport(withApproval, { comments: [], timeline: [] }, []),
+    "waiting_on_maintainer",
+  );
+  assert.match(
+    reviewAutomationMarkersFromReport(withApproval),
+    /clawsweeper-verdict:needs-human [^>]* hold=blocked findings=0 -->/,
+  );
+});
+
+test("a re-review raises the outstanding decision once, in place", () => {
+  const first = reviewReport({ maintainer_decision });
+  const firstComment = markedReviewCommentForTest(
+    fixture.item,
+    renderReviewCommentFromReport(first, "none"),
+  );
+  const reReview = reviewReport({ maintainer_decision, reviewed_at: "2026-08-09T18:00:00.000Z" });
+  const comment = renderReviewCommentFromReport(reReview, "none", {
+    previousReviewCommentBody: firstComment,
+  });
+  const count = (pattern: RegExp) => (comment.match(pattern) ?? []).length;
+  assert.equal(count(/^## Decision needed$/gm), 1);
+  assert.equal(count(/\*\*Question:\*\*/g), 1);
+  assert.equal(count(/Which compatibility contract should ship\?/g), 1);
+  assert.deepEqual(comment.match(/<!-- clawsweeper-review-state:[^>]+-->/g), [
+    fixture.stateMarkers["awaiting-maintainer"],
+  ]);
+  assert.match(comment, /## Before merge\n\nNone\./);
+  assert.doesNotMatch(comment, /- \[ \]|⛔|items? remains?/);
+});
+
+test("a maintainer decision is a waivable hold only when it is the one blocker", () => {
   assert.match(
     reviewAutomationMarkersFromReport(reviewReport({ maintainer_decision })),
     /clawsweeper-verdict:needs-human [^>]* hold=maintainer_decision findings=0 -->/,

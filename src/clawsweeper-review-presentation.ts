@@ -424,10 +424,18 @@ export function publicMergeReadinessBlock(
   const result =
     reviewState === "ready"
       ? "Ready for maintainer review"
-      : reviewState === "needs-changes"
-        ? "Needs changes before merge"
-        : "Blocked before merge";
-  const icon = reviewState === "ready" && remainingItemCount === 0 && !decisionNeeded ? "✅" : "⛔";
+      : reviewState === "awaiting-maintainer"
+        ? "Ready, awaiting maintainer decision"
+        : reviewState === "needs-changes"
+          ? "Needs changes before merge"
+          : "Blocked before merge";
+  // An outstanding owner decision is a wait, not a defect: it never shows ⛔.
+  const icon =
+    reviewState === "ready" && remainingItemCount === 0 && !decisionNeeded
+      ? "✅"
+      : reviewState === "awaiting-maintainer"
+        ? "⏳"
+        : "⛔";
   const remaining =
     remainingItemCount > 0
       ? ` - ${remainingItemCount} ${remainingItemCount === 1 ? "item remains" : "items remain"}`
