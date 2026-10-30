@@ -224,8 +224,10 @@ merge, and why not yet" in this order:
    `status: ⏳ waiting on maintainer` instead; readiness stays blocked.
    An outstanding maintainer decision is never a Before-merge item and never
    counts toward the remaining items: it renders once under `Decision needed`.
-   When nothing else remains, readiness is `awaiting-maintainer` with
-   `status: ⏳ waiting on maintainer`; beside other items the PR stays blocked.
+   When nothing else remains, readiness presents as awaiting the maintainer with
+   `status: ⏳ waiting on maintainer` while the review-state marker stays
+   `blocked` with `hold=maintainer_decision`; beside other items the PR stays
+   blocked.
    Unknown ownership never implies maintainer-only work. When a duplicate close is kept open because the
    close check did not confirm coverage, the item asks a maintainer to close or
    keep the PR, not the author.
@@ -372,13 +374,21 @@ version:
 <!-- clawsweeper-review-state:ready item=<number> sha=<full-head-sha> v=1 -->
 ```
 
-Its states are `ready`, `awaiting-maintainer`, `blocked`, and `needs-changes`.
-Human-owned blockers take precedence over repairable work. A valid exact item,
-head, review time, and owned lease are required before emitting the marker. Ready
-means no remaining review work; it does not grant merge permission or bypass
-normal maintainer review. `awaiting-maintainer` means no Before-merge item
-remains and only a maintainer decision is outstanding; it is not `blocked`, and it
-is not `ready` either, because an owner still has to decide.
+Its states are `ready`, `blocked`, and `needs-changes`; readers fail closed on any
+other value. Human-owned blockers take precedence over repairable work. A valid
+exact item, head, review time, and owned lease are required before emitting the
+marker. Ready means no remaining review work; it does not grant merge permission
+or bypass normal maintainer review. A review whose only hold is an outstanding
+maintainer decision presents as awaiting the maintainer but keeps the `blocked`
+wire state and adds `hold=maintainer_decision`:
+
+```html
+<!-- clawsweeper-review-state:blocked item=<number> sha=<full-head-sha> v=1 hold=maintainer_decision -->
+```
+
+Readers that do not know the attribute ignore it, so released v1 readers keep
+recognizing the comment; readers that do can tell the owner wait from other
+blocks without parsing prose.
 Consumers must pair it with the matching durable identity, never infer authority
 from a standalone marker or visible prose. The compact producer contract is in
 [`test/fixtures/review-state-contract-v1.json`](../test/fixtures/review-state-contract-v1.json).

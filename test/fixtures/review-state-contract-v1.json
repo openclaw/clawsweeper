@@ -6,7 +6,7 @@
   "identityMarker": "<!-- clawsweeper-review-version item=120232 reviewed_at=2026-08-08T18:00:00.000Z sha=522ac4a03828a827c5c266194459d995b9982ff9 source_revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa lease_owner=fixture lease_comment_id=1059 v=1 -->",
   "stateMarkers": {
     "ready": "<!-- clawsweeper-review-state:ready item=120232 sha=522ac4a03828a827c5c266194459d995b9982ff9 v=1 -->",
-    "awaiting-maintainer": "<!-- clawsweeper-review-state:awaiting-maintainer item=120232 sha=522ac4a03828a827c5c266194459d995b9982ff9 v=1 -->",
+    "awaiting-maintainer": "<!-- clawsweeper-review-state:blocked item=120232 sha=522ac4a03828a827c5c266194459d995b9982ff9 v=1 hold=maintainer_decision -->",
     "blocked": "<!-- clawsweeper-review-state:blocked item=120232 sha=522ac4a03828a827c5c266194459d995b9982ff9 v=1 -->",
     "needs-changes": "<!-- clawsweeper-review-state:needs-changes item=120232 sha=522ac4a03828a827c5c266194459d995b9982ff9 v=1 -->"
   }

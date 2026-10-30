@@ -1397,9 +1397,14 @@ export interface PrCloseCoverageRuntimeBudget {
 /**
  * `awaiting-maintainer`: no Before-merge item remains and the only hold is an
  * outstanding maintainer decision. The PR is not defective, and it is not ready
- * either: an owner still has to decide.
+ * either: an owner still has to decide. It is a presentation state only: the
+ * published review-state marker keeps the v1 wire value `blocked` and adds
+ * `hold=maintainer_decision`, so released readers keep recognizing the comment.
  */
 export type PullRequestReviewState = "ready" | "awaiting-maintainer" | "blocked" | "needs-changes";
+
+/** The v1 review-state marker values. Readers fail closed on anything else. */
+export type PullRequestReviewMarkerState = Exclude<PullRequestReviewState, "awaiting-maintainer">;
 
 export interface PublicBeforeMergeItem {
   label: string;
