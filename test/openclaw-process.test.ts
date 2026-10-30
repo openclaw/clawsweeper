@@ -34,6 +34,7 @@ function fakeOpenclaw(root: string): string {
     binary,
     `#!/usr/bin/env node
 const fs = require("node:fs");
+const path = require("node:path");
 const record = {
   args: process.argv.slice(2),
   stateDir: process.env.OPENCLAW_STATE_DIR,
@@ -51,6 +52,7 @@ const record = {
   },
 };
 fs.writeFileSync(process.env.OPENCLAW_TEST_RECORD, JSON.stringify(record));
+let databaseMessages;
 if (process.env.OPENCLAW_TEST_READ_PATH) {
   const sessionId = record.args[record.args.indexOf("--session-id") + 1];
   const sessionFile = require("node:path").join(record.stateDir, "agents", "main", "sessions", sessionId + ".jsonl");
@@ -78,10 +80,33 @@ if (process.env.OPENCLAW_TEST_READ_PATH) {
   if (process.env.OPENCLAW_TEST_RECEIPT_EXTRA) {
     entries.push(...JSON.parse(process.env.OPENCLAW_TEST_RECEIPT_EXTRA));
   }
-  fs.writeFileSync(sessionFile, entries.map((entry) => JSON.stringify(entry)).join("\\n") + "\\n");
+  if (process.env.OPENCLAW_TEST_TRANSCRIPT_STORE === "database") {
+    // Like current OpenClaw: no session file, only before_message_write hooks
+    // of the enabled plugins see each message before it is stored.
+    databaseMessages = entries.map((entry) => entry.message);
+  } else {
+    fs.writeFileSync(sessionFile, entries.map((entry) => JSON.stringify(entry)).join("\\n") + "\\n");
+  }
 }
-process.stderr.write(process.env.OPENCLAW_TEST_STDERR || "");
-process.stdout.write(process.env.OPENCLAW_TEST_STDOUT || JSON.stringify({ payloads: [{ text: "done" }], meta: { stopReason: "stop" } }));
+const finish = () => {
+  process.stderr.write(process.env.OPENCLAW_TEST_STDERR || "");
+  process.stdout.write(process.env.OPENCLAW_TEST_STDOUT || JSON.stringify({ payloads: [{ text: "done" }], meta: { stopReason: "stop" } }));
+};
+if (databaseMessages) {
+  (async () => {
+    const plugins = record.config.plugins ?? {};
+    for (const pluginPath of plugins.load?.paths ?? []) {
+      if (plugins.entries?.[path.basename(pluginPath, path.extname(pluginPath))]?.enabled !== true) continue;
+      const handlers = [];
+      const plugin = (await import(require("node:url").pathToFileURL(pluginPath).href)).default;
+      plugin.register({ on: (hook, handler) => { if (hook === "before_message_write") handlers.push(handler); } });
+      for (const message of databaseMessages) for (const handler of handlers) handler({ message });
+    }
+    finish();
+  })();
+} else {
+  finish();
+}
 `,
   );
   chmodSync(binary, 0o755);
@@ -340,6 +365,54 @@ test("OpenClaw checkout inspection requires structured read evidence", () => {
       });
       assert.equal(mixedReceipt.status, 1, label);
       assert.match(mixedReceipt.error?.message ?? "", /exact challenged path/);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("OpenClaw checkout inspection reads the receipt plugin when sessions live in the database", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-test-"));
+  const recordPath = join(root, "record.json");
+  const binary = fakeOpenclaw(root);
+  const inspect = (env: Record<string, string>) =>
+    runOpenclawProcess({
+      label: "checkout-inspection",
+      prompt: "Read the challenged line.",
+      model: "openai/test",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: binary,
+        OPENCLAW_TEST_RECORD: recordPath,
+        OPENCLAW_TEST_TRANSCRIPT_STORE: "database",
+        OPENCLAW_TEST_STDOUT: JSON.stringify({
+          payloads: [{ text: "tracked checkout content" }],
+          meta: { stopReason: "stop" },
+        }),
+        ...env,
+      },
+      timeoutMs: 10_000,
+      checkoutInspection: { expectedText: "tracked checkout content", expectedPath: "tracked.txt" },
+    });
+  try {
+    // An absolute path is the shape a model often uses; it must survive as is.
+    const absoluteRead = inspect({ OPENCLAW_TEST_READ_PATH: join(root, "tracked.txt") });
+    assert.equal(absoluteRead.status, 0, absoluteRead.error?.message);
+    assert.equal(absoluteRead.stdout, "");
+    assert.equal(existsSync(JSON.parse(readFileSync(recordPath, "utf8")).stateDir), false);
+
+    const relativeRead = inspect({ OPENCLAW_TEST_READ_PATH: "tracked.txt" });
+    assert.equal(relativeRead.status, 0, relativeRead.error?.message);
+
+    for (const env of [
+      { OPENCLAW_TEST_READ_PATH: "different.txt" },
+      { OPENCLAW_TEST_READ_PATH: "tracked.txt", OPENCLAW_TEST_READ_ERROR: "1" },
+      {},
+    ]) {
+      const rejected = inspect(env);
+      assert.equal(rejected.status, 1, JSON.stringify(env));
+      assert.match(rejected.error?.message ?? "", /exact challenged path/);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });

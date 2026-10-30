@@ -10,6 +10,10 @@ import type { DecisionRepairOptions } from "./review-decision-repair.js";
 
 export type AgentRunner = "codex" | "openclaw";
 
+// The OpenClaw inspection pays a CLI cold start in a fresh state directory, a model
+// turn, and the trajectory export that proves the read; 30 s is too tight on small hosts.
+const OPENCLAW_CHECKOUT_INSPECTION_TIMEOUT_MS = 120_000;
+
 export interface RunAgentProcessOptions {
   label: string;
   prompt: string;
@@ -220,7 +224,7 @@ export function runAgentCheckoutInspection(options: {
       model: openclawModel(env),
       cwd: options.cwd,
       env,
-      timeoutMs: Math.min(remainingMs(), 30_000),
+      timeoutMs: Math.min(remainingMs(), OPENCLAW_CHECKOUT_INSPECTION_TIMEOUT_MS),
       checkoutInspection: { expectedText: challenge.text, expectedPath: challenge.path },
     });
   }

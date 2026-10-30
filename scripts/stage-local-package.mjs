@@ -19,6 +19,8 @@ const ENTRIES = [
   "dist/clawsweeper-local.js",
   "dist/codex-process-worker.js",
   "dist/openclaw-process-worker.js",
+  // Loaded by path into the OpenClaw checkout inspection, not imported.
+  "dist/clawsweeper-read-receipt.js",
   "dist/git-acquisition-worker.js",
   "scripts/setup-review-tools.mjs",
 ];

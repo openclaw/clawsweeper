@@ -101,6 +101,7 @@ test(
       "dist/clawsweeper-local.js",
       "dist/codex-process-worker.js",
       "dist/openclaw-process-worker.js",
+      "dist/clawsweeper-read-receipt.js",
       "dist/git-acquisition-worker.js",
       "scripts/setup-review-tools.mjs",
     ]);
@@ -112,6 +113,7 @@ test(
     );
     assert.deepEqual(metadata.bin, { clawsweeper: "dist/clawsweeper-local.js" });
     assert.ok(localStaged.some(({ path }) => path === "dist/repair/contained-command-worker.js"));
+    assert.ok(localStaged.some(({ path }) => path === "dist/clawsweeper-read-receipt.js"));
     assert.ok(
       !localStaged.some(({ path }) => /close-coverage|app-server|action-ledger/.test(path)),
     );
