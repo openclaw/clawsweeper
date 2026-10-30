@@ -258,7 +258,7 @@ try {
     !requests.some(
       (request) =>
         request.method !== "GET" ||
-        request.url.includes("api.github.com") ||
+        new URL(request.url).hostname === "api.github.com" ||
         /\/(dispatches|enqueue|claim|complete|recover|apply)(\/|\?|$)/.test(request.url),
     ),
     "Observer-only requests",
