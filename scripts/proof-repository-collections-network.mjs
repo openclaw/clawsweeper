@@ -7,6 +7,31 @@ const fixture = JSON.parse(
     "utf8",
   ),
 );
+// Controlled external snapshot for the landed warning-evidence consumer, not live telemetry.
+fixture.queue.warning_evidence = {
+  sample_limit: 10,
+  groups: [
+    {
+      kind: "scanner_refused",
+      total: 1,
+      items: [
+        {
+          repository: "openclaw/clawsweeper",
+          item_number: 1,
+          item_kind: "issue",
+          revision: 1,
+          review_failure_attempts: null,
+          observed_at: "2026-10-30T12:00:00Z",
+          next_retry_at: null,
+          failure: null,
+        },
+      ],
+    },
+    { kind: "review_retry_exhausted", total: 0, items: [] },
+    { kind: "stale_revision", total: 0, items: [] },
+  ],
+  repeated_claims: { total: 0, items: [] },
+};
 const fixed = Date.parse("2026-10-30T12:00:00Z");
 const RealDate = Date;
 globalThis.Date = class extends RealDate {

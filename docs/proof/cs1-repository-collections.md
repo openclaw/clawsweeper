@@ -2,7 +2,7 @@
 
 - Status: historical controlled proof for this change, not an operational runbook
 - Owner: ClawSweeper maintainers
-- Intended base after integrating landed mobile triage: `8f4a4bd62127b2755a16149471f547cb520c866d`
+- Intended base after integrating landed warning evidence: `2e3e8fdebb537bb0580772afe23cbeb1c1cf39ac`
 - Owning sources: `dashboard-site/scripts/records.ts`,
   `dashboard-site/src/lib/repository-collections.ts`,
   `dashboard-site/src/lib/data.ts`, and the repository Astro page
@@ -52,6 +52,15 @@ wrap while `.item-assessment` and `.item-review` remain visible; page-wide
 overflow is rejected. An opaque fixture row extension verifies transport without
 adding or interpreting assessment semantics. Provider/image/lease, exact source
 and current result manifests remain recorded in the PR body.
+
+The final warning-evidence integration keeps the captured shared mobile UI
+unchanged and retains its original image source stamps. A fresh replay against
+`2e3e8fdebb537bb0580772afe23cbeb1c1cf39ac` compares all four retained image bytes
+and exercises the landed `live.warningEvidence` consumer with a bounded public
+external-response fixture on the queue and agent pages. This is compatibility
+proof, not a reimplementation of the warning producer; its focused producer,
+sanitizer and SQLite history tests run separately. The current PR body records
+the exact final-head proof/check/review receipts.
 
 ## Fixture and observed results
 
@@ -107,7 +116,7 @@ rewriting or force-pushing the PR branch.
 Focused regressions:
 
 ```sh
-node --test test/dashboard-repository-collections.test.ts test/dashboard-attention.test.ts test/dashboard-site-tooltips.test.ts
+node --test test/dashboard-repository-collections.test.ts test/dashboard-attention.test.ts test/dashboard-site-tooltips.test.ts test/exact-review-warning-evidence.test.ts
 ```
 
 These cover all four collections past both cap thresholds, true zero, old cache

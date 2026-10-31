@@ -45,10 +45,31 @@ Failure stage counts help locate the failing boundary. They count attempts, not
 distinct targets or a failure rate, because successful attempts are outside this
 projection. Missing telemetry is distinct from a measured zero.
 
-Repeated-claim links use the queue's bounded, verified-public target sample. It
-is not a ranking. Compare revisions and triggers before calling repeated claims
-wasted execution. The page does not turn claims or execution success into a
-correctness score.
+Repeated-claim links use the queue's bounded, verified-public target sample.
+Optional `warning_evidence.repeated_claims` adds each sampled target's observed
+claim count, first/last claim timestamps, and up to five recent claim timestamps
+and workflow attempt numbers in the same 24-hour window. Claims may end before
+model execution. The history does not record source revisions, triggers, model
+execution, or next retries; those remain unknown, not inferred from timestamps.
+Workflow/job links are unavailable in this projection; canonical GitHub item
+links remain inspectable. The page never turns claims into a correctness score.
+
+Queue reason bars for scanner refusal, exhausted review retries, and retained
+superseded publications link to read-only evidence disclosures. Each record
+shows its queue revision (not a Git commit), recorded failed-review count,
+observed scan-hold or record-update time, current closed failure stage/reason,
+and an automatic recovery timestamp only when durably recorded and eligible.
+An absent recovery timestamp means none is reported, not a prediction.
+Retained superseded publications are acknowledgements held out of pending
+demand, not proof of failed delivery.
+
+Evidence is optional for older snapshots: aggregate counts do not supply missing
+record details. Producers retain at most 20 candidates per warning class or
+repeated-claim sample; the public projector filters against the existing
+verified-public repository allowlist and admits at most 10. The UI distinguishes
+a measured zero, missing telemetry, and a nonzero total with no eligible public
+sample. A short sample does not establish how many targets are private or
+withheld. Raw scanner input, diagnostic text and arbitrary URLs are never public.
 
 ## History and missing data
 

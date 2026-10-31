@@ -1,3 +1,4 @@
+import type { WarningEvidence, RepeatedClaimItem } from "./exact-review-warning-evidence.ts";
 import type { DurableStorage } from "./durable-storage.ts";
 import {
   EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION,
@@ -342,6 +343,47 @@ export class ExactReviewReviewLoopStore {
         .map((row) => String(row.item_key || ""))
         .filter((key) => ITEM_KEY_PATTERN.test(key)),
     };
+  }
+
+  /** Same claim window/threshold as health, with observed counts and bounded recent history. */
+  warningClaimEvidenceSync(now: number, threshold: number): WarningEvidence["repeated_claims"] {
+    const health = this.runawayHealthSync(now, threshold);
+    const cutoff = now - EXACT_REVIEW_RUNAWAY_WINDOW_MS;
+    const items: RepeatedClaimItem[] = [];
+    for (const key of health.sample_item_keys) {
+      const rows = Array.from(
+        this.storage.sql.exec(
+          `SELECT COUNT(*) AS claims, MIN(claimed_at) AS first_at, MAX(claimed_at) AS last_at
+           FROM ${EXACT_REVIEW_REVIEW_GENERATION_TABLE} WHERE item_key = ? AND claimed_at > ?`,
+          key,
+          cutoff,
+        ),
+      ) as Array<{ claims: number; first_at: number; last_at: number }>;
+      const summary = rows[0];
+      if (!summary || summary.claims <= threshold) continue;
+      const recent = Array.from(
+        this.storage.sql.exec(
+          `SELECT claimed_at, run_attempt FROM ${EXACT_REVIEW_REVIEW_GENERATION_TABLE}
+          WHERE item_key = ? AND claimed_at > ? ORDER BY claimed_at DESC, run_id DESC, run_attempt DESC LIMIT 5`,
+          key,
+          cutoff,
+        ),
+      ) as Array<{ claimed_at: number; run_attempt: number }>;
+      const [repository, number] = key.split("#");
+      if (!repository || !number) continue;
+      items.push({
+        repository,
+        item_number: Number(number),
+        claims: summary.claims,
+        first_claim_at: new Date(summary.first_at).toISOString(),
+        last_claim_at: new Date(summary.last_at).toISOString(),
+        recent_claims: recent.map((row) => ({
+          claimed_at: new Date(row.claimed_at).toISOString(),
+          run_attempt: row.run_attempt > 0 ? row.run_attempt : null,
+        })),
+      });
+    }
+    return { total: health.runaway_items, items };
   }
 
   private pruneSourceDriftLoopsSync(now: number) {

@@ -47,6 +47,15 @@ breakdown means the breakdown is unavailable; existing outcome totals remain
 valid. These are publication outcome events, not unique reviews or unresolved
 targets. Free-text errors and fingerprints are never public reason labels.
 
+The optional queue `warning_evidence` field adds bounded, allowlisted public
+record evidence for `scanner_refused`, `review_retry_exhausted`, and
+`stale_revision`, plus observed repeated-claim counts/history. It has no new
+route or identifying query parameter. Source candidates are capped at 20 per
+class; public samples at 10, recent claim observations at five per target.
+Every fresh/cache/status projection rechecks repository eligibility and closed
+fields. Missing or malformed evidence is null without changing valid aggregate
+counts. See [agent metrics](agent-performance-metrics.md) for meanings and limits.
+
 Public observer routes are projections, not private-store serializers. Internal
 Durable Object state may retain item keys, repository selectors, workflow/job
 metadata, failure details, run links, revision digests, and sampled records for

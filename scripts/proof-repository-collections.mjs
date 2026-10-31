@@ -9,7 +9,7 @@ import { join, resolve, extname } from "node:path";
 import { chromium } from "playwright-core";
 
 const root = process.cwd();
-const base = "8f4a4bd62127b2755a16149471f547cb520c866d";
+const base = "2e3e8fdebb537bb0580772afe23cbeb1c1cf39ac";
 const out = resolve(process.argv[2] ?? ".artifacts/cs1/proof");
 assert(!existsSync(out), "Use a fresh output directory; retained proof is never overwritten");
 mkdirSync(out, { recursive: true });
@@ -403,6 +403,20 @@ try {
           else await ordinary.hover();
           await page.locator("#tip.on").waitFor();
           assert.match(await page.locator("#tip").innerText(), /Latest review decision/);
+          // The landed operational evidence projection must survive data.ts composition.
+          await page.goto(`${origin}/queue/`);
+          const warning = page.locator("#warning-scanner_refused");
+          await warning.locator("summary").click();
+          assert.match(await warning.innerText(), /Showing 1 of 1 records/);
+          assert.equal(
+            await warning.locator("a").getAttribute("href"),
+            "https://github.com/openclaw/clawsweeper/issues/1",
+          );
+          await page.goto(`${origin}/agent/`);
+          assert.match(
+            await page.locator("[data-claim-evidence]").innerText(),
+            /No targets over the claim threshold/,
+          );
         }
         assert(
           requests.every((url) => url.startsWith(origin)),

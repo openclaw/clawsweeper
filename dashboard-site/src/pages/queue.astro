@@ -1,5 +1,6 @@
 ---
 import Layout from '../components/Layout.astro';
+import WarningEvidence from '../components/WarningEvidence.astro';
 import Kpi from '../components/Kpi.astro';
 import Card from '../components/Card.astro';
 import BarList from '../components/BarList.astro';
@@ -80,15 +81,20 @@ const feedLanes = Object.entries((live.feed?.lanes ?? {}) as Record<string, { ta
 
   <div class="mt-3 grid gap-3 lg:grid-cols-3">
     <Card title="Parked · review" tip="Why review items are parked.">
-      {live.parkedReasons.length ? <BarList rows={live.parkedReasons} /> : <Clear text="Nothing parked." />}
+      {live.parkedReasons.length ? <BarList rows={live.parkedReasons.map(row => ({ ...row, href: live.warningEvidence && ['scanner_refused', 'review_retry_exhausted'].includes(row.key) ? '#warning-' + row.key : undefined }))} /> : <Clear text="Nothing parked." />}
     </Card>
     <Card title="Parked · publication" tip="Held publication records by reason. Stale revision means a superseded revision retained for its command acknowledgement, not claimable publication demand.">
-      {live.publicationParked.length ? <BarList rows={live.publicationParked} /> : <Clear text="Nothing parked." />}
+      {live.publicationParked.length ? <BarList rows={live.publicationParked.map(row => ({ ...row, href: live.warningEvidence && row.key === 'stale_revision' ? '#warning-stale_revision' : undefined }))} /> : <Clear text="Nothing parked." />}
     </Card>
     <Card title="Backoff" tip="Why review items wait before their next attempt.">
       {live.backoffReasons.length ? <BarList rows={live.backoffReasons} /> : <Clear text="Nothing in backoff." />}
     </Card>
   </div>
+
+  <Card title="Warning evidence" class="mt-3" tip="Read-only public records behind selected warning counts. Missing or excluded evidence is never an all-clear.">
+    <WarningEvidence evidence={live.warningEvidence} />
+    <p class="mt-3 text-[11px] text-fg-muted">Queue snapshot {stamp(asOf.queue)}. Queue revision is not a Git commit. No raw logs or scanner input are public.</p>
+  </Card>
 
   <p class="mt-4 text-[13px] text-fg-muted"><a class="underline" href="/agent/">Failed attempts and repeated claims → Agent performance</a></p>
   <div class="mt-3 grid gap-3 lg:grid-cols-2">
@@ -115,4 +121,19 @@ const feedLanes = Object.entries((live.feed?.lanes ?? {}) as Record<string, { ta
       </div>
     </Card>
   )}
+  <script>
+    function revealWarning(id: string) {
+      if (!id.startsWith('warning-')) return;
+      const details = document.getElementById(id);
+      if (details instanceof HTMLDetailsElement) { details.open = true; details.scrollIntoView(); }
+    }
+    window.addEventListener('hashchange', () => revealWarning(window.location.hash.slice(1)));
+    document.addEventListener('click', event => {
+      if (!(event.target instanceof Element)) return;
+      const link = event.target.closest('a[href^="#warning-"]');
+      const href = link?.getAttribute('href');
+      if (href) revealWarning(href.slice(1));
+    });
+    revealWarning(window.location.hash.slice(1));
+  </script>
 </Layout>
