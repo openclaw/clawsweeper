@@ -112,6 +112,42 @@ try {
             route === "queue" ? "[data-warning-evidence]" : "[data-claim-evidence]",
           );
           if (variant === "after") {
+            // Shared shell integration: the warning owner must preserve the current mobile
+            // navigation, repository jump, freshness disclosure and existing tooltip behavior.
+            const freshness = page.locator(".snapshot-freshness");
+            await freshness.locator("summary").click();
+            assert.match(await freshness.innerText(), /Queue:.*UTC/);
+            assert.match(await freshness.innerText(), /Workflow runs through:/);
+            await freshness.locator("summary").click();
+            const nav = width < 768 ? page.locator(".mobile-sections") : page.locator("aside");
+            if (width < 768) await nav.locator("summary").click();
+            const active = nav.locator('nav a[aria-current="page"]');
+            assert.equal(await active.getAttribute("href"), "/" + route + "/");
+            assert.ok(await active.isVisible());
+            if (width < 768) await nav.locator("summary").click();
+            const jump = page.locator("[data-cmd]:visible");
+            await jump.click();
+            assert.ok(await page.getByRole("dialog", { name: "Jump to repository" }).isVisible());
+            await page.getByRole("textbox", { name: "Search repositories" }).fill("clawsweeper");
+            const result = page.locator("#cmd-list a").first();
+            assert.equal(await result.getAttribute("href"), "/repos/openclaw-clawsweeper/");
+            await page.keyboard.press("Escape");
+            assert.equal(await page.locator("#cmd").evaluate((el) => el.open), false);
+            await jump.click();
+            await page.getByRole("textbox", { name: "Search repositories" }).fill("clawsweeper");
+            await page.keyboard.press("Enter");
+            await page.waitForURL(origin + "/repos/openclaw-clawsweeper/");
+            await page.goto(origin + "/" + route + "/");
+            await page.getByRole("button", { name: "Toggle theme" }).click();
+            assert.equal(
+              await page.locator("html").evaluate((el) => el.classList.contains("dark")),
+              theme !== "dark",
+            );
+            await page.getByRole("button", { name: "Toggle theme" }).click();
+            assert.equal(
+              await page.locator("html").evaluate((el) => el.classList.contains("dark")),
+              theme === "dark",
+            );
             if (route === "queue") {
               const link = page.locator('a[href="#warning-scanner_refused"]');
               await link.focus();
@@ -173,6 +209,7 @@ try {
               route,
               evidence_overflow: false,
               page_overflow: pageOverflow,
+              shell_search_navigation_freshness_theme: "passed",
             });
             const links = await scope
               .locator("a")
@@ -225,6 +262,29 @@ try {
               animations: "disabled",
             });
           }
+        }
+        if (variant === "after") {
+          await page.goto(origin + "/coverage/");
+          const info = page.getByRole("button", { name: "About Stale", exact: true });
+          await info.focus();
+          await page.waitForFunction(() =>
+            document.querySelector("#tip")?.classList.contains("on"),
+          );
+          assert.match(await page.locator("#tip").innerText(), /marked stale/);
+          await page.keyboard.press("Escape");
+          assert.equal(
+            await page.locator("#tip").evaluate((el) => el.classList.contains("on")),
+            false,
+          );
+          await info.click();
+          await page.waitForFunction(() =>
+            document.querySelector("#tip")?.classList.contains("on"),
+          );
+          await info.click();
+          assert.equal(
+            await page.locator("#tip").evaluate((el) => el.classList.contains("on")),
+            false,
+          );
         }
         if (variant === "after" && width === 1280 && theme === "dark") {
           await page.goto(origin + "/queue/#warning-stale_revision");

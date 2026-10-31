@@ -1,0 +1,385 @@
+{
+  "status": "Historical execution evidence; not live telemetry",
+  "claim": "Readable full title, identity, assessment and review freshness; reachable repository search, active sections and snapshot times without page-wide overflow",
+  "base": "6ed9c97007e38b5afb2ec30c305e7c51c2fa4e11",
+  "implementationCommit": "a1ecc10ada67a1f2823b084378d9ba252637e1f8",
+  "sourceGitBlobs": {
+    "dashboard-site/src/components/ItemTable.astro": "f7247086db81d1ae261af227a90312d0bfdf0776",
+    "dashboard-site/src/components/Layout.astro": "6ba753229efbdb393b08e42e88df41e89c1e51e6",
+    "dashboard-site/src/styles/global.css": "e403402ee28334acd3cbcd23d9aabb143b1434df",
+    "scripts/dashboard-mobile-fixture.mjs": "75bc1c05b0b5c44bdc94eed8015da4b0c096264d",
+    "scripts/dashboard-mobile-proof.mjs": "0292f6880f3fa3bcc4e5dac537b5978cedf9af9d"
+  },
+  "fixture": "Committed fixture extended by scripts/dashboard-mobile-fixture.mjs; identical default data for Before/After. Separate --edge-cases fixture adds long repository identity and unknown review date.",
+  "clock": "2026-10-12T07:32:00Z",
+  "environment": {
+    "provider": "aws",
+    "lease": "cbx_787c2a38fac0",
+    "image": "ami-04beed173f1785931",
+    "node": "24.19.0",
+    "browser": "154.0.8037.97",
+    "baselineLease": "cbx_d3f6dc6f0929"
+  },
+  "commands": [
+    "node scripts/dashboard-mobile-fixture.mjs <isolated-site>/src/data/dashboard.json",
+    "pnpm --dir <isolated-site> run build",
+    "CHROMIUM_PATH=<installed-chromium> node scripts/dashboard-mobile-proof.mjs <isolated-site> <artifact-directory>",
+    "Repeat with --edge-cases passed to the fixture generator"
+  ],
+  "standard": {
+    "browser": "156.0.8078.79",
+    "results": [
+      {
+        "width": 320,
+        "theme": "light",
+        "geometry": {
+          "titleWidth": 258,
+          "titleHeight": 78,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: 2d ago",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 320,
+        "theme": "dark",
+        "geometry": {
+          "titleWidth": 258,
+          "titleHeight": 78,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: 2d ago",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "geometry": {
+          "titleWidth": 328,
+          "titleHeight": 58.5,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: 2d ago",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 390,
+        "theme": "dark",
+        "geometry": {
+          "titleWidth": 328,
+          "titleHeight": 58.5,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: 2d ago",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 768,
+        "theme": "light",
+        "geometry": {
+          "titleWidth": 446,
+          "titleHeight": 58.5,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: 2d ago",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 768,
+        "theme": "dark",
+        "geometry": {
+          "titleWidth": 446,
+          "titleHeight": 58.5,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: 2d ago",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 1024,
+        "theme": "light",
+        "geometry": {
+          "titleWidth": 328.515625,
+          "titleHeight": 58.5,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: 2d ago",
+          "rowDisplay": "table-row"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 1024,
+        "theme": "dark",
+        "geometry": {
+          "titleWidth": 328.515625,
+          "titleHeight": 58.5,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: 2d ago",
+          "rowDisplay": "table-row"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 1440,
+        "theme": "light",
+        "geometry": {
+          "titleWidth": 536.75,
+          "titleHeight": 39,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: 2d ago",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 1440,
+        "theme": "dark",
+        "geometry": {
+          "titleWidth": 536.75,
+          "titleHeight": 39,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: 2d ago",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      }
+    ]
+  },
+  "edgeCases": {
+    "browser": "156.0.8078.79",
+    "results": [
+      {
+        "width": 320,
+        "theme": "light",
+        "geometry": {
+          "titleWidth": 258,
+          "titleHeight": 78,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: Unknown",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 320,
+        "theme": "dark",
+        "geometry": {
+          "titleWidth": 258,
+          "titleHeight": 78,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: Unknown",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 390,
+        "theme": "light",
+        "geometry": {
+          "titleWidth": 328,
+          "titleHeight": 58.5,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: Unknown",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 390,
+        "theme": "dark",
+        "geometry": {
+          "titleWidth": 328,
+          "titleHeight": 58.5,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: Unknown",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 768,
+        "theme": "light",
+        "geometry": {
+          "titleWidth": 446,
+          "titleHeight": 58.5,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: Unknown",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 768,
+        "theme": "dark",
+        "geometry": {
+          "titleWidth": 446,
+          "titleHeight": 58.5,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: Unknown",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 1024,
+        "theme": "light",
+        "geometry": {
+          "titleWidth": 260.859375,
+          "titleHeight": 78,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: Unknown",
+          "rowDisplay": "table-row"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 1024,
+        "theme": "dark",
+        "geometry": {
+          "titleWidth": 260.859375,
+          "titleHeight": 78,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: Unknown",
+          "rowDisplay": "table-row"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 1440,
+        "theme": "light",
+        "geometry": {
+          "titleWidth": 536.75,
+          "titleHeight": 39,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: Unknown",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      },
+      {
+        "width": 1440,
+        "theme": "dark",
+        "geometry": {
+          "titleWidth": 536.75,
+          "titleHeight": 39,
+          "titleFits": true,
+          "identityFits": true,
+          "assessment": "Decision: Product",
+          "review": "Last review: Unknown",
+          "rowDisplay": "grid"
+        },
+        "result": "passed",
+        "errors": [],
+        "externalRequests": []
+      }
+    ]
+  },
+  "screenshots": {
+    "mobile-before.png": {
+      "sha256": "cf745060af226adda4e9088473454c2c1943ecb51063d1f90fda61c3b7fbbe08",
+      "viewport": "390x844 light",
+      "state": "Assessment rows"
+    },
+    "mobile-after.png": {
+      "sha256": "f54b0bdbeb46140cae09cde7429efa01a321bfe3906427e66fffc57f4b2f7abc",
+      "viewport": "390x844 light",
+      "state": "Item keyboard-focused"
+    },
+    "shell-before.png": {
+      "sha256": "35b28f3ac232e9c99d5c8d33fa077ccc6fa5655cc2999fce9b3b44ea7051a23c",
+      "viewport": "320x844 dark",
+      "state": "Assessment shell"
+    },
+    "shell-after.png": {
+      "sha256": "09d88ac97453a4b51025ef82ace9d9222734bae0783739c89f50a8fd76550ed1",
+      "viewport": "320x844 dark",
+      "state": "Assessment shell"
+    }
+  },
+  "limits": "Controlled static snapshot and Chromium emulation, not physical devices, Safari/Firefox, screen-reader acceptance, production traffic or deployment. Synthetic example repository is public-safe presentation data, not a claim that it exists. GitHub item links retain canonical shape and are not followed. No external browser requests observed. Full traces retained by implementation session.",
+  "baselineSource": "5577656d79ed491486b5e9ab9853df481f9aa8f1",
+  "baselinePreservation": "The original Before captures precede the landed Coverage-tooltip change. Its only Layout diff is the tooltip script; ItemTable, global styles and the captured shell markup are unchanged. New-base After captures were regenerated and are byte-identical to the published images.",
+  "tooltipCompatibility": "Real ordinary KPI touch/hover and landed InfoTip focus/Escape/tap toggling passed in all 20 scenarios. Inner non-bubbling scroll dismissal is additionally checked with an event-only capture-phase regression; this is not a physical-scroll claim."
+}

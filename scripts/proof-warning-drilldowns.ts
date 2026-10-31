@@ -171,6 +171,8 @@ try {
     "dashboard/exact-review-read-model.ts",
     "dashboard-site/src/components/Layout.astro",
     "dashboard-site/src/components/SegmentBar.astro",
+    "dashboard-site/src/components/InfoTip.astro",
+    "dashboard-site/src/styles/global.css",
     "dashboard-site/src/components/Card.astro",
     "dashboard-site/src/components/BarList.astro",
     "dashboard-site/src/lib/format.ts",
