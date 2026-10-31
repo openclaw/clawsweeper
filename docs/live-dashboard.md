@@ -292,7 +292,7 @@ not a ranking or proof of wasted execution.
 - Owning sources: `dashboard-site/scripts/attention.ts`,
   `dashboard-site/scripts/assessment-collections.ts`,
   `dashboard-site/scripts/records.ts` and `dashboard-site/src/components/AssessmentAttention.astro`
-- Verified source baseline: `2e3e8fdebb537bb0580772afe23cbeb1c1cf39ac`
+- Verified source baseline: `c1c4dd7bef083590d0a76b2dfcdf43d3922827ca`
 - Update when: canonical record state/source fields, classification, collection
   caps, visibility filtering or attention presentation changes
 
@@ -321,6 +321,22 @@ semantic totals and preserve any legacy bounded flags as unclassified. A public
 repository dropped by the build visibility check is removed from the new
 collections and counts too. Existing global lists retain their compatibility
 contract; no semantic totals are reconstructed by filtering their capped rows.
+Repository legacy flags use the scoped repository collections rather than
+filtering globally capped lists; semantic classification/totals remain unavailable.
+
+Repository cards select stale, maintainer, security and recent-close matches
+within each kept public repository before applying their ten-row display limit;
+the global lists remain capped at 500. The corpus cache carries optional exact
+`collectionTotals` before truncation, and the public snapshot carries slug-keyed
+`repositoryCollections` envelopes (`items`, `total`, `limit`, `selection`). These
+counts describe stored-corpus matches, not complete live GitHub coverage or source
+validity. Older caches/snapshots retain observed rows with unknown selection
+coverage; missing rows or a nonzero count never establish an all-clear. Only a
+known zero from repository-before-limit selection gets an empty-state flag.
+Non-absence filesystem errors stop aggregation rather than publish partial zeros.
+The source owners are `dashboard-site/scripts/records.ts` and
+`dashboard-site/src/lib/repository-collections.ts`; update this contract when
+selection, limits, visibility filtering or legacy compatibility changes.
 
 The site shows no report bodies, author identities or free-text concerns.
 Local preview: in `dashboard-site/`, install dependencies, run

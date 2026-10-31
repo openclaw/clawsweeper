@@ -113,14 +113,6 @@ export function attentionGroup(assessment?: Assessment | null): AttentionGroup {
   return "unknown";
 }
 
-// Call before bounded collection, never on an already globally capped list.
-export function selectAttention<T extends { assessment?: Assessment | null }>(
-  items: readonly T[],
-  group: AttentionGroup,
-): T[] {
-  return items.filter((item) => attentionGroup(item.assessment) === group);
-}
-
 export function reviewerPriority(value: unknown): string | null {
   return typeof value === "string" && /^P[0-3]$/.test(value) ? value : null;
 }

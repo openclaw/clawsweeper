@@ -1,0 +1,341 @@
+{
+  "version": 2,
+  "kind": "controlled-runtime-proof",
+  "baseline": "8f4a4bd62127b2755a16149471f547cb520c866d",
+  "sourceHeadAtCapture": "87cb1700c2fe8e61588590e7825dea49a853391e",
+  "sourceStateAtCapture": "history-preserving merge candidate, before integration commit; final committed-head replay recorded in PR body",
+  "fixtureSha256": "1d9ac8cc88906b354577731ec2df91692fff125303b33760c976eb64033f6842",
+  "command": "CHROMIUM_PATH=/usr/bin/google-chrome node scripts/proof-repository-collections.mjs <fresh-output-directory>",
+  "environment": {
+    "provider": "aws",
+    "lease": "cbx_4bad7befdf62",
+    "image": "ami-04beed173f1785931",
+    "node": "v24.19.0",
+    "pnpm": "12.15.0",
+    "viewports": [
+      {
+        "width": 1440,
+        "height": 1100
+      },
+      {
+        "width": 390,
+        "height": 1000
+      },
+      {
+        "width": 320,
+        "height": 1000
+      }
+    ],
+    "theme": "dark",
+    "fixedTime": "2026-10-30T12:00:00Z"
+  },
+  "assets": [
+    {
+      "file": "desktop-before.png",
+      "bytes": 93590,
+      "sha256": "17087e8d1c76a5492ae4309067273d151804b2f2142cd8ae9122f84c329d57c5"
+    },
+    {
+      "file": "desktop-after.png",
+      "bytes": 170956,
+      "sha256": "5f45871aedc53f848e8ef0fc9a0681b221fe9f800f57b46088aafe1f2399d635"
+    },
+    {
+      "file": "mobile-before.png",
+      "bytes": 56345,
+      "sha256": "362bb1aa58098356a075c64ae592b7d0cfc6d3476050eba8dd5cce8ef60454c5"
+    },
+    {
+      "file": "mobile-after.png",
+      "bytes": 77398,
+      "sha256": "c4d84be2ec757589c9d528e771eb81b9f51b410c5627f9e3fed02a4d93077e2b"
+    }
+  ],
+  "results": [
+    {
+      "stage": "before",
+      "width": 1440,
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 0
+    },
+    {
+      "stage": "before",
+      "width": 390,
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 0
+    },
+    {
+      "stage": "before",
+      "width": 320,
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 0
+    },
+    {
+      "stage": "after",
+      "width": 1440,
+      "counts": {
+        "Stalest open items": 10,
+        "Needs a maintainer": 10,
+        "Security attention": 10,
+        "Recent closes": 10
+      },
+      "tooltipCompatibility": "focus-escape-click-toggle-and-ordinary-hover passed",
+      "browserErrors": [],
+      "readableRows": 4
+    },
+    {
+      "stage": "after",
+      "width": 390,
+      "counts": {
+        "Stalest open items": 10,
+        "Needs a maintainer": 10,
+        "Security attention": 10,
+        "Recent closes": 10
+      },
+      "tooltipCompatibility": "focus-escape-click-toggle-and-ordinary-hover passed",
+      "browserErrors": [],
+      "readableRows": 4
+    },
+    {
+      "stage": "after",
+      "width": 320,
+      "counts": {
+        "Stalest open items": 10,
+        "Needs a maintainer": 10,
+        "Security attention": 10,
+        "Recent closes": 10
+      },
+      "tooltipCompatibility": "focus-escape-click-toggle-and-ordinary-hover passed",
+      "browserErrors": [],
+      "readableRows": 4
+    },
+    {
+      "stage": "legacy",
+      "width": 1440,
+      "counts": {
+        "Stalest open items": 10,
+        "Needs a maintainer": 10,
+        "Security attention": 10,
+        "Recent closes": 10
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 4
+    },
+    {
+      "stage": "legacy",
+      "width": 390,
+      "counts": {
+        "Stalest open items": 10,
+        "Needs a maintainer": 10,
+        "Security attention": 10,
+        "Recent closes": 10
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 4
+    },
+    {
+      "stage": "legacy",
+      "width": 320,
+      "counts": {
+        "Stalest open items": 10,
+        "Needs a maintainer": 10,
+        "Security attention": 10,
+        "Recent closes": 10
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 4
+    },
+    {
+      "stage": "legacy-snapshot",
+      "width": 1440,
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 0
+    },
+    {
+      "stage": "legacy-snapshot",
+      "width": 390,
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 0
+    },
+    {
+      "stage": "legacy-snapshot",
+      "width": 320,
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 0
+    },
+    {
+      "stage": "incomplete",
+      "width": 1440,
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 0
+    },
+    {
+      "stage": "incomplete",
+      "width": 390,
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 0
+    },
+    {
+      "stage": "incomplete",
+      "width": 320,
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 0
+    },
+    {
+      "stage": "contradictory",
+      "width": 1440,
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 0
+    },
+    {
+      "stage": "contradictory",
+      "width": 390,
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 0
+    },
+    {
+      "stage": "contradictory",
+      "width": 320,
+      "counts": {
+        "Stalest open items": 0,
+        "Needs a maintainer": 0,
+        "Security attention": 0,
+        "Recent closes": 0
+      },
+      "tooltipCompatibility": null,
+      "browserErrors": [],
+      "readableRows": 0
+    }
+  ],
+  "runtimeSourceSha256": {
+    "dashboard-site/.gitignore": "f11cb0b802a4587d0bc428aa85fa5f8b481c0df7b0bdd961590540fdaeeed849",
+    "dashboard-site/astro.config.mjs": "0c9ef823747a5ceb31283fd355fbbce69ee5dd9fb1cffe74a7a1a1dad5f5cb56",
+    "dashboard-site/package.json": "0464dcff3e9a72014df2486e0565193841d8c768f31c15e3834c7d518f49ad1f",
+    "dashboard-site/pnpm-lock.yaml": "85064915c463a93084ac0dc2a611a313d566ad28b6da1601952b63164c9ebbd8",
+    "dashboard-site/pnpm-workspace.yaml": "e3a4dbd2849b9155914a2833fbd3530bf1bd41fc3e1f4955e4f73c5d619aa752",
+    "dashboard-site/public/clawsweeper.png": "1c2e5960152d4b4de83d77ba829b2c39a85710418ef74155c070ff7422420d94",
+    "dashboard-site/public/favicon.png": "d9033366d122f74e4a82eea2ad52326b923504361c1ff568e312737396b7671d",
+    "dashboard-site/scripts/actions.ts": "4f97b60035d42dec3fd1557e42d34182eb1a7c9842ea465f659464c3dad9637d",
+    "dashboard-site/scripts/attention.ts": "25bf2cefdb44f48664444e512bc2a025eb7419b987d1d1d7b32d09158d76e489",
+    "dashboard-site/scripts/build-corpus.ts": "4c56db346c90eacdd810bbaffdca5d832fd94af1f3ce23fa68b908375e8e14f4",
+    "dashboard-site/scripts/build-data.ts": "1d0dfa9c256256b4fc59c6c3908a5c8397ef50543996a73879e68211981faca4",
+    "dashboard-site/scripts/guards.ts": "57f20d7c8563654a25535718643a3b6e3c9967acbc5731b0ce24cfea17c16371",
+    "dashboard-site/scripts/operations.ts": "ac2a8f39e63091cbb6829ea55eb6ad10601417c1b7fe76389eb89da6f8b37ba9",
+    "dashboard-site/scripts/records.ts": "74fb5b81a2c172c3380280d7511eddb4e64ecc7820588a50319529b4e9e0ffb9",
+    "dashboard-site/src/components/Ago.astro": "25fd62c5d3cfb4b2207bb2289e6d48b3ede21ca62ef643734233f1a9a7bb476c",
+    "dashboard-site/src/components/BarList.astro": "3822434cec1f0bc00fc53dc97f08af119c5203ebf04bb2e5419958503fe2b945",
+    "dashboard-site/src/components/Card.astro": "e7420242fe94298791ed673ea52017eb9f7f896413602f4e439d64a69a929171",
+    "dashboard-site/src/components/Clear.astro": "aa94eb76a2c21c108a455f820ca105cb919d9268c6377a6a2256e964fb725a45",
+    "dashboard-site/src/components/Icon.astro": "cc2b8557110c2e2cd88abce497280b0177f5fcdce529346a09fe3d4c7d4f56ab",
+    "dashboard-site/src/components/InfoTip.astro": "8093afc685681828d9c803fcdf5ca9b8554e307d3cfcdeb71041e2b9e12ab8fd",
+    "dashboard-site/src/components/ItemTable.astro": "76f6573bd256dffab16d373d5ed5050640ae105fa7719b3ced9d5cc890caf5ae",
+    "dashboard-site/src/components/Kpi.astro": "4de9b973c2a721ff695882e869b29e83bdc8b70d83787344180e7ce6ddf4bd6c",
+    "dashboard-site/src/components/Layout.astro": "9a409c72404620efbbe9df5c404e1f13b665aca02b1df76fc2299208c826bc3e",
+    "dashboard-site/src/components/SegmentBar.astro": "2ce4b8a7db158d0789d386e8dbca6e083d369c4151f0ac8ef7d4733fcbd86f4f",
+    "dashboard-site/src/components/Sparkline.astro": "82c5631d30db9df185bb230ca0143b0837ab463b225bdc78b16eb9b057c9771c",
+    "dashboard-site/src/components/StatusStrip.astro": "0be59d3719604845237ac7808401182f813254a1ed0e05ced50ae18d63a919d2",
+    "dashboard-site/src/components/TabCard.astro": "ce7c6958cd982e18f72ad7eda1eb792d58b76e18bb7c9970f04c83bd9b368d57",
+    "dashboard-site/src/components/TimeChart.astro": "d62cea434bad30226293c5f6e8392f54e98710886ca412b23e64ab0c0ae5b126",
+    "dashboard-site/src/lib/chart.ts": "49034decbf2aa37d08e0d55f445cfbf3c980f8ab7e7cbaff65207ec5edee08ce",
+    "dashboard-site/src/lib/data.ts": "5b796488a55b94657d1e2dd1a95a93b10c8dfd6a283ec29c021aee84c85aed40",
+    "dashboard-site/src/lib/format.ts": "707a545ae5d97728c2e17bcf3e410d74dc3928477b9dae5cd1e9f05dad204277",
+    "dashboard-site/src/lib/repository-collections.ts": "2c9c6069fb3394895dd257b9a5fa368ee047b063a6e3189276c7a3ce87566565",
+    "dashboard-site/src/lib/run-window.ts": "12cfbe48b91a60748048a5aa59bafde9849064ed481085a8f08d3ed2a86b667c",
+    "dashboard-site/src/pages/404.astro": "67eb63a1c4054b5c84b90a1ac22fc099a0c01747f11731aed1eef4dda623047c",
+    "dashboard-site/src/pages/agent.astro": "fadcd7dee783e174fe5da14a71e96347c60b430d95515127244e4c63e0779f4f",
+    "dashboard-site/src/pages/coverage.astro": "33a0536ed10e18780185b62e21ff0d7709cc143e0618d80a1008e3d5d5ec53c5",
+    "dashboard-site/src/pages/index.astro": "7560c38d770e2d1ef7c6d022b0681b37b7f3d6ef9cd4f72405a01cd7b69d006f",
+    "dashboard-site/src/pages/operations.astro": "0fc1ec92e6dc6e32d1959ccac77bce9544f4c9738e53d8c4344943616661c16a",
+    "dashboard-site/src/pages/quality.astro": "5bb8ee5ccdaf40e601f5281d45a67fe8c00b2fc7525312a71798e51bee94af6f",
+    "dashboard-site/src/pages/queue.astro": "d45f34b55f4e98ed00b7e48d90e1bdb33c1806291029cbb089d83f6762f6ff29",
+    "dashboard-site/src/pages/repos/[slug].astro": "d18a36384d065ef850ebf5d0ae69e4e48bbc22edc7b9784637bbe2e22e24388e",
+    "dashboard-site/src/pages/repos/index.astro": "2c323f8c8217c52692b066d3adc9c95340f8fcebdbe6e33ea076143ea7f70593",
+    "dashboard-site/src/pages/throughput.astro": "c4865950ebf3a9eebe51c37c467a1b6ec57afabf07790b1efe86e63870579fc5",
+    "dashboard-site/src/styles/global.css": "b14e39bf00a061fa5e81072474d3e8708ad16f2afa1bfdf2d2d7c56036412353",
+    "dashboard-site/tsconfig.json": "98e1484cb0954ac7306a850cdbf03c8140e2fd32e65fa6c213b19343dfdc6d43",
+    "scripts/proof-repository-collections-network.mjs": "64e8ec44cb736e59607c9180bd076c68c9adf77cbd4c221e81c5310e4f3efed6",
+    "scripts/proof-repository-collections.mjs": "3517c206f04a356f9d8dc37dbbf0cc8c261b77a250105051c0457271dcf81dd7"
+  },
+  "limits": "Controlled external responses; real corpus/data/production site/browser path. Stored corpus only, no live coverage or deploy claim.",
+  "retention": "Review-time media per docs/README.md. Previous pre-CS3 images remain in Git history, not current UI evidence."
+}

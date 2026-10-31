@@ -13,7 +13,7 @@ import { writeAssessmentScenario } from '../../../dashboard-site/fixtures/assess
 const root = process.cwd();
 const output = resolve(process.env.PROOF_OUTPUT_DIR ?? '.artifacts/historical-assessments');
 mkdirSync(output, { recursive: true });
-const base = process.env.PROOF_BASE ?? '2e3e8fdebb537bb0580772afe23cbeb1c1cf39ac';
+const base = process.env.PROOF_BASE ?? 'c1c4dd7bef083590d0a76b2dfcdf43d3922827ca';
 const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 const sourceFiles = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard',
   'dashboard-site', 'docs/proof/historical-assessments', 'scripts/dashboard-corpus.ts'], { encoding: 'utf8' })
@@ -69,6 +69,13 @@ const legacyCache = await candidateProducer.aggregateRecords(records, visibility
 for (const part of legacyCache.repositories) delete part.assessments;
 snapshots.legacy = { ...envelope, generatedAt: date, corpus: candidateProducer.combineCorpus(legacyCache, () => true) };
 assert.equal(snapshots.legacy.corpus.assessments, null);
+// An older classifier can coexist with the landed scoped collection transport.
+// Hide the primary repo from legacy global flags only: scoped fallback must win.
+snapshots.scoped = structuredClone(snapshots.legacy);
+for (const concern of ['security', 'maintainer'])
+  snapshots.scoped.corpus.lists[concern] = snapshots.scoped.corpus.lists[concern].filter(row => row.repo !== 'fixture/assessments');
+assert(snapshots.scoped.corpus.repositoryCollections['fixture-assessments'].security.items.some(row => row.number === 2));
+assert(!snapshots.scoped.corpus.lists.security.some(row => row.repo === 'fixture/assessments'));
 
 const savedData = existsSync('dashboard-site/src/data/dashboard.json')
   ? readFileSync('dashboard-site/src/data/dashboard.json') : null;
@@ -83,7 +90,7 @@ async function build(name, source) {
 }
 try {
   await build('before', baseline);
-  for (const name of ['after', 'empty', 'legacy']) await build(name, root);
+  for (const name of ['after', 'empty', 'legacy', 'scoped']) await build(name, root);
 } finally {
   if (savedData) writeFileSync('dashboard-site/src/data/dashboard.json', savedData);
 }
@@ -91,7 +98,7 @@ const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/cs
 const server = createServer((request, response) => {
   const pathname = new URL(request.url, 'http://localhost').pathname;
   const [name, ...parts] = pathname.slice(1).split('/');
-  if (!['before', 'after', 'empty', 'legacy'].includes(name)) { response.writeHead(404).end(); return; }
+  if (!['before', 'after', 'empty', 'legacy', 'scoped'].includes(name)) { response.writeHead(404).end(); return; }
   // Astro assets and root links resolve at /, so referer selects the active build.
   let relative = parts.join('/');
   if (!relative || relative.endsWith('/')) relative += 'index.html';
@@ -120,13 +127,13 @@ const requests = [];
 const results = [];
 let tooltipCompatibility = false;
 try {
-  for (const theme of ['dark', 'light']) for (const width of [320, 390, 768, 1440]) for (const name of ['before', 'after', 'empty', 'legacy']) {
+  for (const theme of ['dark', 'light']) for (const width of [320, 390, 768, 1440]) for (const name of ['before', 'after', 'empty', 'legacy', 'scoped']) {
     const context = await browser.newContext({ viewport: { width, height: 1000 }, colorScheme: theme, hasTouch: width < 768, isMobile: width < 768 });
     await context.addInitScript(({ theme, now }) => { localStorage.setItem('clawsweeper-theme', theme); Date.now = () => now; }, { theme, now });
     // Root-relative site navigation/assets retain the selected real static build.
     await context.route(origin + '/**', async route => {
       const url = new URL(route.request().url());
-      if (!/^\/(before|after|empty|legacy)\//.test(url.pathname))
+      if (!/^\/(before|after|empty|legacy|scoped)\//.test(url.pathname))
         url.pathname = '/' + name + url.pathname;
       const response = await route.fetch({ url: url.href });
       await route.fulfill({ response });
@@ -135,7 +142,7 @@ try {
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    for (const route of ['/', '/quality/', '/repos/fixture-assessments/']) {
+    for (const route of name === 'scoped' ? ['/repos/fixture-assessments/'] : ['/', '/quality/', '/repos/fixture-assessments/']) {
       await page.goto(origin + '/' + name + route, { waitUntil: 'networkidle' });
       await page.evaluate(() => document.fonts.ready);
       const text = await page.locator('main').innerText();
@@ -180,7 +187,7 @@ try {
           if (width === 1440 && theme === 'dark') await page.screenshot({ path: join(output, 'after.png'), animations: 'disabled' });
           if (width === 390 && theme === 'dark') await page.screenshot({ path: join(output, 'after-mobile.png'), animations: 'disabled' });
         }
-      } else if (name === 'legacy') {
+      } else if ((name === 'legacy' || name === 'scoped')) {
         assert(text.includes('Classification and group totals unavailable'));
         assert(text.includes('old unresolved security concern'), 'Legacy recorded flags must remain visible on every scope');
         assert.equal(await page.locator('[data-attention-group="open"]').count(), 0);
@@ -193,6 +200,11 @@ try {
         await page.locator('#maintainer').evaluate(el => window.scrollTo(0, window.scrollY + el.getBoundingClientRect().top - document.querySelector('.site-header').getBoundingClientRect().height - 16));
         await page.screenshot({ path: join(output, 'before-' + width + '-' + theme + '.png'), animations: 'disabled' });
         if (width === 1440 && theme === 'dark') await page.screenshot({ path: join(output, 'before.png'), animations: 'disabled' });
+      }
+      if (name === 'scoped') {
+        assert.equal(await page.locator('[data-attention-group="legacy"] a[href="https://github.com/fixture/assessments/pull/2"]').count(), 2, 'Both scoped legacy concern cards retain the old flag');
+        assert(text.includes('No recorded closes in the stored corpus.'));
+        assert(!text.includes('No stale open items in the stored corpus.'));
       }
       results.push({ build: name, route, width, theme, passed: true });
     }

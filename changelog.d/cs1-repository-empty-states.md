@@ -1,0 +1,1 @@
+- Show repository-specific dashboard matches before applying list limits, and distinguish missing selection data from genuinely empty stored-corpus results. Thanks @brokemac79.

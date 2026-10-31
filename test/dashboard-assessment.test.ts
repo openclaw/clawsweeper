@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  attentionGroup,
-  classifyAssessment,
-  selectAttention,
-} from "../dashboard-site/scripts/attention.ts";
+import { attentionGroup, classifyAssessment } from "../dashboard-site/scripts/attention.ts";
 import { assessmentEvidence, assessmentReviewAge } from "../dashboard-site/src/lib/assessment.ts";
 
 const now = Date.parse("2026-10-30T23:00:00Z");
@@ -132,35 +128,6 @@ test("only validated SHA values leave the classifier; no raw metadata leaks", ()
   assert.equal(result.reviewedHead, null);
   assert(!JSON.stringify(result).includes("private"));
   assert.equal(classify({ pull_head_sha: head.toUpperCase() }).reviewedHead, head);
-});
-
-test("group selection is mutually exclusive, stable and does not mutate inputs", () => {
-  const items = [
-    { number: 1, assessment: classify() },
-    { number: 2, assessment: classify({ current_pull_head_sha: "d".repeat(40) }) },
-    { number: 3, assessment: classify({}, true) },
-    { number: 4, assessment: undefined },
-  ];
-  assert.deepEqual(
-    selectAttention(items, "open").map((item) => item.number),
-    [1],
-  );
-  assert.deepEqual(
-    selectAttention(items, "changed").map((item) => item.number),
-    [2],
-  );
-  assert.deepEqual(
-    selectAttention(items, "historical").map((item) => item.number),
-    [3],
-  );
-  assert.deepEqual(
-    selectAttention(items, "unknown").map((item) => item.number),
-    [4],
-  );
-  assert.deepEqual(
-    items.map((item) => item.number),
-    [1, 2, 3, 4],
-  );
 });
 
 test("review age is snapshot-relative and never a resolution/freshness claim", () => {

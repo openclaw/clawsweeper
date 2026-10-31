@@ -5,7 +5,7 @@
 - Owning source: `dashboard-site/scripts/attention.ts`,
   `dashboard-site/scripts/assessment-collections.ts`,
   `dashboard-site/scripts/records.ts` and the real Astro consumers
-- Verified baseline: `2e3e8fdebb537bb0580772afe23cbeb1c1cf39ac`
+- Verified baseline: `c1c4dd7bef083590d0a76b2dfcdf43d3922827ca`
 - Update when: record evidence semantics, attention groups/caps, privacy filtering
   or rendered assessment metadata changes
 
@@ -41,9 +41,11 @@ pnpm run check
 
 The harness exports the pinned baseline's source into ignored proof scratch,
 uses the same fixture data/viewport/theme, builds both real sites and also builds
-legacy and recorded-zero variants. Chromium checks 104 route/compatibility cases: Overview,
+legacy and recorded-zero variants. Chromium checks 112 route/compatibility cases: Overview,
 Assessments and repository scope, before/after/legacy/recorded-zero variants, both
-themes and 320/390/768/1440px widths. It checks full title/identity and assessment
+themes and 320/390/768/1440px widths. Eight additional repository cases remove
+that repository from the legacy global flag lists while preserving the landed
+scoped collections; the old concern must remain visible and unclassified. It checks full title/identity and assessment
 metadata fit, no page-wide overflow, explicit unknown review dates, snapshot
 expansion, repository search/Escape, reachable active mobile navigation, and
 opens history with the keyboard, verifies the landed Coverage help buttons by
@@ -64,7 +66,7 @@ walk counts 243 recorded-open flags while keeping 100 global and 20 per-reposito
 rows. These are pre-cap group totals, not counts filtered from the old lists.
 
 `receipt.json` records the exercised head/base, source-content digest, source file
-list, browser/Node, 104 route/compatibility results, requests, screenshot hashes and limits.
+list, browser/Node, 112 route/compatibility results, requests, screenshot hashes and limits.
 `before-corpus.json`, `after-corpus.json`, `bounded-corpus.json` and per-build logs
 retain the producer/build trace. Final execution environment, provider, image,
 lease, command outcome and curated media belong in the PR's Real Behavior Proof
