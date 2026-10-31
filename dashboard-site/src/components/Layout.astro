@@ -69,10 +69,11 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
           <span>Jump to repo…</span>
           <kbd class="ml-auto rounded border border-line px-1 font-mono text-[11px] text-fg-faint">⌘K</kbd>
         </button>
-        <nav class="flex flex-col gap-px px-3">
+        <nav aria-label="Main navigation" class="flex flex-col gap-px px-3">
           {nav.map(item => (
             <a
               href={item.href}
+              aria-current={item.id === section ? 'page' : undefined}
               class:list={[
                 'flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] font-medium transition-colors',
                 item.id === section ? 'bg-bg-muted text-fg' : 'text-fg-muted hover:bg-bg-muted/60 hover:text-fg',
@@ -97,10 +98,10 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
       </aside>
 
       <div class="flex min-w-0 flex-1 flex-col md:pl-[232px]">
-        <header class="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-line bg-bg-subtle/80 px-4 backdrop-blur md:px-8">
+        <header class="site-header sticky top-0 z-20 border-b border-line bg-bg-subtle/95 px-4 py-2 backdrop-blur md:px-8">
           <div class="flex min-w-0 items-center gap-1.5 text-[13px]">
             <img src="/clawsweeper.png" alt="" width="20" height="20" class="size-5 rounded md:hidden" />
-            <span class="text-fg-muted md:hidden">ClawSweeper</span>
+            <span class="hidden text-fg-muted min-[390px]:inline md:hidden">ClawSweeper</span>
             <Icon name="chevronRight" size={14} class="text-fg-faint md:hidden" />
             <a href={current.href} class:list={[crumb ? 'text-fg-muted hover:text-fg' : 'font-medium']}>{current.label}</a>
             {crumb && (
@@ -110,22 +111,36 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
               </>
             )}
           </div>
-          <div class="ml-auto flex items-center gap-2">
-            <span class="hidden text-[12px] text-fg-muted sm:inline" data-tip={`Built ${stamp(asOf.build)}\nQueue ${stamp(asOf.queue)}\nWorkflow runs through ${stamp(asOf.actions)}\nReview totals, quality and closes ${stamp(asOf.corpus)}: refreshed twice a day, near 00:00 and 12:00 UTC`}>
-              Updated {stamp(asOf.build)} · review totals {stamp(asOf.corpus)}
-            </span>
-            <button data-theme class="grid size-8 place-items-center rounded-md text-fg-muted transition-colors hover:bg-bg-muted hover:text-fg" aria-label="Toggle theme">
+          <div class="ml-auto flex shrink-0 items-center gap-2">
+            <button data-cmd class="grid size-[44px] place-items-center rounded-md text-fg-muted hover:bg-bg-muted md:hidden" aria-label="Jump to repository">
+              <Icon name="search" size={16} />
+            </button>
+            <button data-theme class="grid size-8 max-md:size-[44px] place-items-center rounded-md text-fg-muted transition-colors hover:bg-bg-muted hover:text-fg" aria-label="Toggle theme">
               <Icon name="moon" size={15} class="dark:hidden" />
               <Icon name="sun" size={15} class="hidden dark:block" />
             </button>
           </div>
+          <details class="snapshot-freshness text-[12px] text-fg-muted">
+            <summary>Snapshot <time datetime={asOf.build}>{stamp(asOf.build)}</time><span> · Reviews <time datetime={asOf.corpus}>{stamp(asOf.corpus)}</time></span></summary>
+            <div class="mt-2 grid gap-1 pb-1">
+              <div>Queue: <time datetime={asOf.queue}>{stamp(asOf.queue)}</time></div>
+              <div>Workflow runs through: <time datetime={asOf.actions}>{stamp(asOf.actions)}</time></div>
+              <div>Review totals, assessments and closes refresh twice a day, near 00:00 and 12:00 UTC.</div>
+            </div>
+          </details>
         </header>
 
-        <nav class="flex gap-1 overflow-x-auto border-b border-line bg-bg-subtle px-4 py-2 md:hidden">
-          {nav.map(item => (
-            <a href={item.href} class:list={['shrink-0 rounded-md px-2.5 py-1 text-[13px] font-medium', item.id === section ? 'bg-bg-muted text-fg' : 'text-fg-muted']}>{item.label}</a>
-          ))}
-        </nav>
+        <details class="mobile-sections border-b border-line bg-bg-subtle px-4 md:hidden">
+          <summary class="flex min-h-[44px] cursor-pointer items-center justify-between gap-2 text-[13px] font-medium">
+            <span class="flex items-center gap-2"><Icon name={current.icon} size={15} class="text-claw" />{current.label}</span>
+            <span class="text-fg-muted">Sections <span aria-hidden="true">⌄</span></span>
+          </summary>
+          <nav aria-label="Main navigation" class="grid grid-cols-2 gap-1 pb-2">
+            {nav.map(item => (
+              <a href={item.href} aria-current={item.id === section ? 'page' : undefined} class:list={['flex min-h-[44px] items-center rounded-md px-2.5 py-2 text-[13px] font-medium', item.id === section ? 'bg-bg-muted text-fg' : 'text-fg-muted hover:bg-bg-muted']}>{item.label}</a>
+            ))}
+          </nav>
+        </details>
 
         <main class="relative mx-auto w-full max-w-[1280px] px-4 pb-16 pt-6 md:px-8 md:pt-8">
           <div class="tiles" aria-hidden="true"></div>
@@ -138,10 +153,10 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
 
     <div id="tip" role="tooltip"></div>
 
-    <dialog id="cmd" class="m-auto mt-[12vh] w-[min(560px,92vw)] rounded-xl border border-line bg-bg p-0 text-fg shadow-2xl backdrop:bg-black/30 backdrop:backdrop-blur-[2px]">
+    <dialog id="cmd" aria-label="Jump to repository" class="m-auto mt-[12vh] w-[min(560px,92vw)] rounded-xl border border-line bg-bg p-0 text-fg shadow-2xl backdrop:bg-black/30 backdrop:backdrop-blur-[2px]">
       <div class="flex items-center gap-2 border-b border-line px-3">
         <Icon name="search" size={15} class="text-fg-muted" />
-        <input id="cmd-q" class="h-11 flex-1 bg-transparent text-[14px] outline-none placeholder:text-fg-faint" placeholder={`Search ${repos.length} repositories…`} autocomplete="off" />
+        <input id="cmd-q" aria-label="Search repositories" class="h-11 min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-fg-faint" placeholder={`Search ${repos.length} repositories…`} autocomplete="off" />
         <kbd class="rounded border border-line px-1 font-mono text-[11px] text-fg-faint">esc</kbd>
       </div>
       <ul id="cmd-list" class="max-h-[340px] overflow-y-auto p-1.5"></ul>
@@ -274,14 +289,15 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
         const rows = jump.filter(item => item.r.toLowerCase().includes(q)).slice(0, 40);
         active = Math.min(active, Math.max(0, rows.length - 1));
         list.innerHTML = rows.length
-          ? rows.map((item, i) => `<li><a href="/repos/${item.s}/" data-i="${i}" class="flex items-center justify-between rounded-md px-2.5 py-2 text-[13px] ${i === active ? 'bg-bg-muted' : ''}"><span>${item.r}</span><span class="num text-fg-faint">${item.n.toLocaleString('en-US')}</span></a></li>`).join('')
+          ? rows.map((item, i) => `<li><a href="/repos/${item.s}/" data-i="${i}" class="flex min-h-[44px] items-center justify-between gap-3 rounded-md px-2.5 py-2 text-[13px] ${i === active ? 'bg-bg-muted' : ''}"><span class="min-w-0 [overflow-wrap:anywhere]">${item.r}</span><span class="num shrink-0 text-fg-faint">${item.n.toLocaleString('en-US')}</span></a></li>`).join('')
           : '<li class="px-2.5 py-6 text-center text-[13px] text-fg-muted">No repositories match.</li>';
+        if (dialog.open) list.querySelector(`[data-i="${active}"]`)?.scrollIntoView({ block: 'nearest' });
       };
       const open = () => { input.value = ''; active = 0; render(); dialog.showModal(); input.focus(); };
-      document.querySelector('[data-cmd]').addEventListener('click', open);
+      document.querySelectorAll('[data-cmd]').forEach(button => button.addEventListener('click', open));
       document.addEventListener('keydown', event => {
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); dialog.open ? dialog.close() : open(); }
-        if (!dialog.open) return;
+        if (!dialog.open || event.target !== input) return;
         const links = list.querySelectorAll('a');
         if (event.key === 'ArrowDown') { event.preventDefault(); active = Math.min(active + 1, links.length - 1); render(); }
         if (event.key === 'ArrowUp') { event.preventDefault(); active = Math.max(active - 1, 0); render(); }

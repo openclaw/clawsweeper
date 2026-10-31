@@ -9,7 +9,7 @@ import { join, resolve, extname } from "node:path";
 import { chromium } from "playwright-core";
 
 const root = process.cwd();
-const base = "6ed9c97007e38b5afb2ec30c305e7c51c2fa4e11";
+const base = "8f4a4bd62127b2755a16149471f547cb520c866d";
 const out = resolve(process.argv[2] ?? ".artifacts/cs1/proof");
 assert(!existsSync(out), "Use a fresh output directory; retained proof is never overwritten");
 mkdirSync(out, { recursive: true });
@@ -65,7 +65,7 @@ for (const [repo, count] of [
         `repository: ${repo}`,
         `number: ${number}`,
         "type: issue",
-        `title: ${JSON.stringify(`${area === "items" ? "Review" : "Archived"} stored-corpus fixture ${n}`)}`,
+        `title: ${JSON.stringify(`${area === "items" ? "Review" : "Archived"} stored-corpus fixture ${n}${repo === "openclaw/clawsweeper" && n === 1 ? " — preserve the entire long repository item title alongside identity, historical assessment metadata and last-review freshness on a narrow screen without clipping" : ""}`)}`,
         `reviewed_at: ${reviewed}T00:00:00Z`,
         ...(area === "closed"
           ? [
@@ -163,6 +163,11 @@ try {
       part.closes.recent = [];
       if (stage === "contradictory") part.collectionTotals.stale = 0;
     }
+    // A future row extension stays opaque transport, not assessment classification.
+    for (const part of cache.repositories)
+      for (const rows of [...Object.values(part.lists), part.closes.recent])
+        for (const row of rows)
+          row.fixtureExtension = { version: 1, marker: "forwarded unchanged" };
     writeFileSync(cachePath, JSON.stringify(cache));
     run(
       process.execPath,
@@ -192,6 +197,11 @@ try {
       if (stage === "after") {
         assert.equal(collections[name].total, 10);
         assert.equal(collections[name].items.length, 10);
+        assert(
+          collections[name].items.every(
+            (row) => row.fixtureExtension?.marker === "forwarded unchanged",
+          ),
+        );
       }
     }
     run("pnpm", ["run", "build"], join(source, "dashboard-site"));
@@ -209,120 +219,220 @@ try {
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const origin = `http://127.0.0.1:${server.address().port}`;
-    const context = await browser.newContext({
-      viewport: { width: 1440, height: 1700 },
-      colorScheme: "dark",
-      timezoneId: "UTC",
-      locale: "en-US",
-      reducedMotion: "reduce",
-    });
-    await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
-    const page = await context.newPage();
-    const requests = [];
-    const errors = [];
-    page.on("request", (request) => requests.push(request.url()));
-    page.on("pageerror", (error) => errors.push(error.message));
-    await context.route("**/*", (route) =>
-      route.request().url().startsWith(origin) ? route.continue() : route.abort(),
-    );
-    await page.clock.setFixedTime(new Date("2026-10-30T12:00:00Z"));
-    try {
-      await page.goto(`${origin}/repos/openclaw-clawsweeper/`);
-      await page.evaluate(() => document.fonts.ready);
-      const cards = page.locator("section.card").filter({ has: page.locator("h2") });
-      const counts = {};
-      for (const title of [
-        "Stalest open items",
-        "Needs a maintainer",
-        "Security attention",
-        "Recent closes",
-      ]) {
-        const card = cards.filter({ has: page.getByRole("heading", { name: title, exact: true }) });
-        counts[title] = await card.locator("tbody tr").count();
-        assert.equal(counts[title], stage === "after" || stage === "legacy" ? 10 : 0);
-        const text = await card.innerText();
-        if (stage === "after") assert.match(text, /Showing 10 of 10 stored-corpus matches/);
-        if (stage === "legacy" || stage === "legacy-snapshot") {
-          assert.match(text, /Selection coverage is unknown/);
-          assert(
-            !/No stale open items|No maintainer flags|No security flags|No recorded closes/.test(
-              text,
-            ),
-          );
-        }
-        if (stage === "incomplete" || stage === "contradictory") {
-          assert.match(text, /10 stored-corpus matches recorded; rows are unavailable/);
-          assert(
-            !/No stale open items|No maintainer flags|No security flags|No recorded closes/.test(
-              text,
-            ),
-          );
-        }
-      }
-      if (stage === "before")
-        assert.match(await page.locator("body").innerText(), /No stale open items/);
-      if (stage === "before" || stage === "after")
-        await page.screenshot({ path: join(out, `${stage}.png`), animations: "disabled" });
-      const links = await page
-        .locator("table a")
-        .evaluateAll((elements) => elements.map((element) => element.href));
-      assert(
-        links.every((url) =>
-          /^https:\/\/github\.com\/openclaw\/clawsweeper\/issues\/\d+$/.test(url),
-        ),
-      );
-      if (stage === "after") {
-        await page.goto(`${origin}/repos/openclaw-clawhub/`);
-        assert.equal(await page.locator("tbody tr").count(), 0);
-        assert.equal(await page.getByText(/No .* in the stored corpus\./).count(), 4);
-        await page.screenshot({ path: join(out, "zero.png"), animations: "disabled" });
-        // Preserve the landed Coverage help flow and shared ordinary tooltip handling.
-        await page.goto(`${origin}/coverage/`);
-        assert.equal(await page.locator("[data-info-tip]").count(), 5);
-        const help = page.getByRole("button", { name: "About Reviewed recently", exact: true });
-        await help.focus();
-        await page.locator("#tip.on").waitFor();
-        assert.match(
-          await page.locator("#tip").innerText(),
-          /Reviewable items with a completed review/,
-        );
-        await page.keyboard.press("Escape");
-        assert.equal(await page.locator("#tip.on").count(), 0);
-        await help.click();
-        await page.locator("#tip.on").waitFor();
-        await help.click();
-        assert.equal(await page.locator("#tip.on").count(), 0);
-        await page.goto(`${origin}/repos/openclaw-clawsweeper/`);
-        await page.locator("section.card [data-tip]").first().hover();
-        await page.locator("#tip.on").waitFor();
-        assert.match(await page.locator("#tip").innerText(), /Latest review decision/);
-      }
-      assert(
-        requests.every((url) => url.startsWith(origin)),
-        "browser must not call GitHub or mutation endpoints",
-      );
-      assert.equal(errors.length, 0, errors.join("; "));
-      results.push({
-        stage,
-        tooltipCompatibility:
-          stage === "after" ? "focus-escape-click-toggle-and-ordinary-hover passed" : null,
-        counts,
-        requests: requests.length,
-        browserErrors: errors,
-        collections: collections
-          ? Object.fromEntries(
-              Object.entries(collections).map(([key, value]) => [
-                key,
-                { total: value.total, rows: value.items.length, selection: value.selection },
-              ]),
-            )
-          : null,
+    for (const viewport of [
+      { width: 1440, height: 1100 },
+      { width: 390, height: 1000 },
+      { width: 320, height: 1000 },
+    ]) {
+      const context = await browser.newContext({
+        viewport,
+        hasTouch: viewport.width < 768,
+        colorScheme: "dark",
+        timezoneId: "UTC",
+        locale: "en-US",
+        reducedMotion: "reduce",
       });
-    } finally {
-      await context.tracing.stop({ path: join(out, `${stage}-trace.zip`) });
-      await context.close();
-      await new Promise((resolve) => server.close(resolve));
+      await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+      const page = await context.newPage();
+      const requests = [];
+      const errors = [];
+      page.on("request", (request) => requests.push(request.url()));
+      page.on("pageerror", (error) => errors.push(error.message));
+      await context.route("**/*", (route) =>
+        route.request().url().startsWith(origin) ? route.continue() : route.abort(),
+      );
+      await page.clock.setFixedTime(new Date("2026-10-30T12:00:00Z"));
+      try {
+        await page.goto(`${origin}/repos/openclaw-clawsweeper/`);
+        await page.evaluate(() => document.fonts.ready);
+        const cards = page.locator("section.card").filter({ has: page.locator("h2") });
+        const counts = {};
+        for (const title of [
+          "Stalest open items",
+          "Needs a maintainer",
+          "Security attention",
+          "Recent closes",
+        ]) {
+          const card = cards.filter({
+            has: page.getByRole("heading", { name: title, exact: true }),
+          });
+          counts[title] = await card.locator("tbody tr").count();
+          assert.equal(counts[title], stage === "after" || stage === "legacy" ? 10 : 0);
+          const text = await card.innerText();
+          if (stage === "after") assert.match(text, /Showing 10 of 10 stored-corpus matches/);
+          if (stage === "legacy" || stage === "legacy-snapshot") {
+            assert.match(text, /Selection coverage is unknown/);
+            assert(
+              !/No stale open items|No maintainer flags|No security flags|No recorded closes/.test(
+                text,
+              ),
+            );
+          }
+          if (stage === "incomplete" || stage === "contradictory") {
+            assert.match(text, /10 stored-corpus matches recorded; rows are unavailable/);
+            assert(
+              !/No stale open items|No maintainer flags|No security flags|No recorded closes/.test(
+                text,
+              ),
+            );
+          }
+        }
+        if (stage === "before")
+          assert.match(await page.locator("body").innerText(), /No stale open items/);
+        assert(
+          await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+          "no page-wide overflow",
+        );
+        const rowGeometry = [];
+        if (stage === "after" || stage === "legacy") {
+          for (const title of [
+            "Stalest open items",
+            "Needs a maintainer",
+            "Security attention",
+            "Recent closes",
+          ]) {
+            const card = cards.filter({
+              has: page.getByRole("heading", { name: title, exact: true }),
+            });
+            const row = card.locator("tbody tr").first();
+            await row.scrollIntoViewIfNeeded();
+            const geometry = await row.evaluate((node) => {
+              const title = node.querySelector(".item-title");
+              const identity = node.querySelector(".item-identity");
+              const assessment = node.querySelector(".item-assessment");
+              const review = node.querySelector(".item-review");
+              const box = title.getBoundingClientRect();
+              return {
+                titleWidth: box.width,
+                titleFits: title.scrollWidth <= title.clientWidth + 1,
+                identityFits: identity.scrollWidth <= identity.clientWidth + 1,
+                assessment: assessment?.textContent ?? null,
+                review: review?.textContent ?? null,
+              };
+            });
+            assert(
+              geometry.titleWidth >= 100 && geometry.titleFits && geometry.identityFits,
+              JSON.stringify(geometry),
+            );
+            assert.match(geometry.review, /ago|Unknown/);
+            if (title !== "Stalest open items") {
+              assert(await row.locator(".item-assessment").isVisible());
+              assert.match(geometry.assessment, /Manual review|Needs attention|Inactive/);
+            }
+            rowGeometry.push({ collection: title, ...geometry });
+          }
+        }
+        await page.evaluate(() => scrollTo(0, 0));
+        const freshness = page.locator(".snapshot-freshness summary");
+        assert(await freshness.isVisible());
+        assert.match(await freshness.innerText(), /Snapshot.*Reviews/);
+        await freshness.click();
+        assert(
+          await page.locator(".snapshot-freshness").getByText("Workflow runs through:").isVisible(),
+        );
+        await freshness.click();
+        if (stage === "before" || stage === "after")
+          await page.screenshot({
+            path: join(out, `${stage}-${viewport.width}.png`),
+            animations: "disabled",
+          });
+        if ((stage === "before" || stage === "after") && viewport.width === 390) {
+          const detail = cards.filter({
+            has: page.getByRole("heading", { name: "Needs a maintainer", exact: true }),
+          });
+          await detail.evaluate((node) =>
+            scrollTo(0, scrollY + node.getBoundingClientRect().top - 160),
+          );
+          await page.screenshot({
+            path: join(out, `${stage}-390-detail.png`),
+            animations: "disabled",
+          });
+        }
+        const links = await page
+          .locator("table a")
+          .evaluateAll((elements) => elements.map((element) => element.href));
+        assert(
+          links.every((url) =>
+            /^https:\/\/github\.com\/openclaw\/clawsweeper\/issues\/\d+$/.test(url),
+          ),
+        );
+        if (stage === "after") {
+          await page.goto(`${origin}/repos/openclaw-clawhub/`);
+          assert.equal(await page.locator("tbody tr").count(), 0);
+          assert.equal(await page.getByText(/No .* in the stored corpus\./).count(), 4);
+          if (viewport.width === 1440)
+            await page.screenshot({ path: join(out, "zero.png"), animations: "disabled" });
+          await page.goto(`${origin}/repos/openclaw-clawsweeper/`);
+          const search = page.locator("[data-cmd]:visible").first();
+          await search.click();
+          await page.locator("#cmd[open]").waitFor();
+          await page.locator("#cmd-q").fill("clawsweeper");
+          assert.equal(await page.locator("#cmd-list a").count(), 1);
+          await page.keyboard.press("Escape");
+          assert(await search.evaluate((node) => node === document.activeElement));
+          if (viewport.width < 768) {
+            await page.locator(".mobile-sections summary").click();
+            const active = page.locator(".mobile-sections [aria-current=page]");
+            assert(await active.isVisible());
+            const box = await active.boundingBox();
+            assert(box.x >= 0 && box.x + box.width <= viewport.width + 1 && box.height >= 44);
+            await page.locator(".mobile-sections a[href='/coverage/']").click();
+            assert.match(await page.locator(".mobile-sections summary").innerText(), /Coverage/);
+          }
+          // Preserve the landed Coverage help flow and shared ordinary tooltip handling.
+          await page.goto(`${origin}/coverage/`);
+          assert.equal(await page.locator("[data-info-tip]").count(), 5);
+          const help = page.getByRole("button", { name: "About Reviewed recently", exact: true });
+          await help.focus();
+          await page.locator("#tip.on").waitFor();
+          assert.match(
+            await page.locator("#tip").innerText(),
+            /Reviewable items with a completed review/,
+          );
+          await page.keyboard.press("Escape");
+          assert.equal(await page.locator("#tip.on").count(), 0);
+          if (viewport.width < 768) await help.tap();
+          else await help.click();
+          await page.locator("#tip.on").waitFor();
+          if (viewport.width < 768) await help.tap();
+          else await help.click();
+          assert.equal(await page.locator("#tip.on").count(), 0);
+          await page.goto(`${origin}/repos/openclaw-clawsweeper/`);
+          const ordinary = page.locator("section.card [data-tip]").first();
+          if (viewport.width < 768) await ordinary.tap();
+          else await ordinary.hover();
+          await page.locator("#tip.on").waitFor();
+          assert.match(await page.locator("#tip").innerText(), /Latest review decision/);
+        }
+        assert(
+          requests.every((url) => url.startsWith(origin)),
+          "browser must not call GitHub or mutation endpoints",
+        );
+        assert.equal(errors.length, 0, errors.join("; "));
+        results.push({
+          stage,
+          viewport,
+          rowGeometry,
+          tooltipCompatibility:
+            stage === "after" ? "focus-escape-click-toggle-and-ordinary-hover passed" : null,
+          counts,
+          requests: requests.length,
+          browserErrors: errors,
+          collections: collections
+            ? Object.fromEntries(
+                Object.entries(collections).map(([key, value]) => [
+                  key,
+                  { total: value.total, rows: value.items.length, selection: value.selection },
+                ]),
+              )
+            : null,
+        });
+      } finally {
+        await context.tracing.stop({ path: join(out, `${stage}-${viewport.width}-trace.zip`) });
+        await context.close();
+      }
     }
+    await new Promise((resolve) => server.close(resolve));
   }
 } finally {
   await browser.close();
@@ -348,7 +458,11 @@ const report = {
   node: process.version,
   chromium: process.env.CHROMIUM_PATH || "/usr/bin/chromium",
   fixtureSha256: createHash("sha256").update(JSON.stringify(fixtureHashes)).digest("hex"),
-  viewport: { width: 1440, height: 1700 },
+  viewports: [
+    { width: 1440, height: 1100 },
+    { width: 390, height: 1000 },
+    { width: 320, height: 1000 },
+  ],
   theme: "dark",
   results,
   limits:

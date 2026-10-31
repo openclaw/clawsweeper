@@ -2,7 +2,7 @@
 
 - Status: historical controlled proof for this change, not an operational runbook
 - Owner: ClawSweeper maintainers
-- Intended base after integrating landed Coverage help: `6ed9c97007e38b5afb2ec30c305e7c51c2fa4e11`
+- Intended base after integrating landed mobile triage: `8f4a4bd62127b2755a16149471f547cb520c866d`
 - Owning sources: `dashboard-site/scripts/records.ts`,
   `dashboard-site/src/lib/repository-collections.ts`,
   `dashboard-site/src/lib/data.ts`, and the repository Astro page
@@ -37,12 +37,21 @@ source without changing the current checkout, and independently runs the actual
 producer/data/site flow for baseline, patched, legacy-cache, legacy-snapshot,
 missing-row and contradictory-count cases.
 
-Executed on 30 October 2026 through Crabbox, provider `aws`, lease
+Historical pre-mobile-integration execution on 30 October 2026 used Crabbox, provider `aws`, lease
 `cbx_f0cc58caa192`, promoted image `ami-04beed173f1785931` in `eu-west-1`, Linux
 amd64, Node `v24.19.0`, pnpm `12.15.0`, system Google Chrome. The matched captures
 use 1440×1700 CSS pixels, dark theme, UTC, fixed 30 October 2026 noon time and
 reduced motion. No workflow dispatch, deployment or live GitHub/Worker call is
 part of this proof.
+
+The 31 October shared-UI integration repeats the actual producer/data/site path
+against the pinned mobile-triage base at widths 1440, 390 and 320, dark theme,
+UTC and the same fixed clock. It exercises all six scenarios at every width,
+plus true zero and search/navigation/freshness/tooltip compatibility. Long titles
+wrap while `.item-assessment` and `.item-review` remain visible; page-wide
+overflow is rejected. An opaque fixture row extension verifies transport without
+adding or interpreting assessment semantics. Provider/image/lease, exact source
+and current result manifests remain recorded in the PR body.
 
 ## Fixture and observed results
 
@@ -51,7 +60,11 @@ records, ten open plus ten closed small-repository records, one fresh unflagged
 record, and synthetic visibility-exclusion records. The small repository sorts
 outside each global first 500. Fixture manifest SHA-256:
 
-`fc249aeb04f75383b0fc77352c8b925a19b7077c4dfcbe74213d8493e05925ad`
+`1d9ac8cc88906b354577731ec2df91692fff125303b33760c976eb64033f6842`
+
+This current fixture adds one realistic long title in each small-repository
+collection. The previous short-title fixture hash was
+`fc249aeb04f75383b0fc77352c8b925a19b7077c4dfcbe74213d8493e05925ad`.
 
 | Scenario | Stale | Maintainer | Security | Recorded closes | Observed rendering |
 | --- | ---: | ---: | ---: | ---: | --- |
@@ -74,8 +87,8 @@ every referenced item exists.
 ## Retained evidence and supporting tests
 
 Each invocation retains `results.json`, `source-hashes.json`,
-`fixture-hashes.json`, exact subprocess command logs, six browser traces and the
-matched `before.png`/`after.png` plus true-zero capture. The current inspected
+`fixture-hashes.json`, exact subprocess command logs, eighteen browser traces and
+matched desktop/mobile before/after captures plus true-zero capture. The current inspected
 before/after pair and a compact public-safe manifest are retained under
 `assets/proof/cs1-repository-collections/` during review, per the repository media
 retention policy. The PR embeds these images; traces and full logs remain artifacts.
@@ -86,7 +99,10 @@ historical, not current after integration. Its pre-commit source manifest is
 it predates this proof note and the explanatory documentation addition. The PR
 body records the current committed-head replay, provider provenance and manifest.
 The integrated proof also exercises the five landed Coverage help buttons:
-focus, Escape, click toggling, and ordinary repository-tooltip hover remain intact.
+focus, Escape, click/tap toggling, and ordinary repository-tooltip hover/tap remain intact.
+The landed mobile ItemTable, Layout and styles are unchanged by CS1. The existing
+published source history is preserved by merging the landed main commit, not
+rewriting or force-pushing the PR branch.
 
 Focused regressions:
 
