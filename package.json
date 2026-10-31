@@ -25,6 +25,7 @@
     "reconcile": "node dist/clawsweeper.js reconcile",
     "status": "node dist/clawsweeper.js status",
     "local-review": "node dist/commit-sweeper.js local-review",
+    "review-authority:observe": "node scripts/review-authority-observer.mjs",
     "repair:containment-smoke": "node dist/repair/containment-preflight.js",
     "repair:comment-router": "node scripts/comment-router-runner.mjs",
     "repair:comment-webhook": "node dist/repair/comment-webhook.js",

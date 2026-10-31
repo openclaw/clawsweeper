@@ -1,4 +1,4 @@
-import { asRecord } from "./value-coerce.js";
+import { asRecord } from "./value-coerce.ts";
 
 export type ReviewAuthoritySubject = { repository: string; actor: string };
 

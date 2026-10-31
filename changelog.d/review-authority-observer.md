@@ -1,0 +1,1 @@
+- Add an explicit private operator command for fresh review-authority observations without changing review admission.
