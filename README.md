@@ -690,8 +690,10 @@ or unqualified patch material remain blocking, as do other findings, verified
 findings, and incomplete scans. Unverified findings alone never qualify: every finding must
 match the exact bytes, source association, and strict detector contract. This
 classification does not expand TruffleHog's detection coverage.
-The classification is pinned to TruffleHog 3.97.4's output contract; scanner
-upgrades require requalification. See `src/agent-input-scan-fixtures.ts`.
+The classification follows the output contract of the
+[checksum-pinned TruffleHog release](src/review-tool-bootstrap.ts); scanner
+upgrades require requalification. Historical native proof records name the scanner
+version used for each observation. See `src/agent-input-scan-fixtures.ts`.
 After successful cleanup and final source fences, each accepted fixture/source
 pair emits a host-side structured stderr notice with `event`, `fixtureSha256`,
 `source`, `detector`, and `findings` entries containing `blob`, `decoder`, and
