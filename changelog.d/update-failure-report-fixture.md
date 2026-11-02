@@ -1,0 +1,1 @@
+- Qualify the existing synthetic credential URL in OpenClaw's update failure report redaction test, so reviews of PRs touching `update-failure-report-config.test.ts` are no longer refused.

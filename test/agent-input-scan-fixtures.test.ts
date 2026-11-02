@@ -657,6 +657,12 @@ function browserSessionFixture(variable = "cdpUrl"): ReturnType<typeof autorevie
   };
 }
 
+function updateFailureReportFixture(): ReturnType<typeof autoreviewFixtures>[number] {
+  const raw = ["https://", "user", ":", "password", "@", "private.example"].join("");
+  const rawV2 = raw + "/config";
+  return { raw, rawV2, line: '  "' + rawV2 + '",', decoders: ["PLAIN", "HTML"] };
+}
+
 function exactUriFixtureTests(
   name: string,
   source: string,
@@ -2106,3 +2112,9 @@ for (const config of [false, true]) {
     });
   }
 }
+
+exactUriFixtureTests(
+  "update failure report",
+  "src/infra/update-failure-report-config.test.ts",
+  updateFailureReportFixture,
+);
