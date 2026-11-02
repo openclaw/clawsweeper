@@ -269,11 +269,11 @@ test("CI runs the fast gates once and the full suite as coverage shards", () => 
     ),
   );
 
-  // The report maps profiles onto compiled sources, so both jobs build the same outputs.
+  // Both jobs need the same Node output; check-fast owns the no-emit dashboard check.
   const buildScript = (job: Job) =>
     job.steps.find((step) => step.uses === "./.github/actions/setup-pnpm")?.with?.["build-script"];
-  assert.equal(buildScript(shards), "build:all");
-  assert.equal(buildScript(coverage), "build:all");
+  assert.equal(buildScript(shards), "build:node");
+  assert.equal(buildScript(coverage), "build:node");
 });
 
 test("release and CI share one qualification whose output requires every consumer", () => {
