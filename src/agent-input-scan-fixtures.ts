@@ -458,6 +458,8 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   [17, "URI", "HTML", "f6729932bd0216a9ced489911667e48ede49c4c0c9886343567e8abee5e4a2b6", "245d7408cf9309f13d71c800c1bea998316a44557319d3d9e25c27af5d1286b6", "a6f4875b345810baafb9140823570f1a2792cab59e1328393d86e2675d2f88f6", "src/worker/native-runtime-transport.test.ts", "100644"],
   [17, "URI", "PLAIN", "3ba4b9eb95fbafcb38a3dd4bc9886809ca70168cc4a8e552ed23d894cbb07df3", "3ba4b9eb95fbafcb38a3dd4bc9886809ca70168cc4a8e552ed23d894cbb07df3", "b832b4b17c9898d6604bb73c764f82f2eec8bb3e86e06791d70c1f55b4d8435e", "src/worker/native-runtime.test.ts", "100644"],
   [17, "URI", "HTML", "3ba4b9eb95fbafcb38a3dd4bc9886809ca70168cc4a8e552ed23d894cbb07df3", "3ba4b9eb95fbafcb38a3dd4bc9886809ca70168cc4a8e552ed23d894cbb07df3", "b832b4b17c9898d6604bb73c764f82f2eec8bb3e86e06791d70c1f55b4d8435e", "src/worker/native-runtime.test.ts", "100644"],
+  // OpenClaw #190911: native 3.99.4 PLAIN URI finding, exact rejection line and committed file.
+  [17, "URI", "PLAIN", "e26a1ab8bea9e595632020487f494a373085d4ece58f72dcb9c9d72aae3c1353", "91f8a02c4831296a6adc1d02eaf52ebaa563e1593b759677c284a23c4874e948", "d70f1b47aeda919b3c0c195b6e5df95fa6af2329760734508ab87bbbcbf456ef", "src/gateway/server-methods/projects-identity.test.ts", "100644", ["1441fca2a24daa08e02e82f032601729277b1334d3b996c2346d55ac6adabe90"]],
   ...CRABBOX_POSTGRES_DOC_ATTRIBUTIONS,
 ];
 
@@ -491,6 +493,14 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           lines.length === 1 &&
           Array.isArray(sourceSha256s) &&
           sourceSha256s.length > 0 &&
+          sourceSha256s.every((digest) => sha256Pattern.test(digest))) ||
+        (source === "src/gateway/server-methods/projects-identity.test.ts" &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          decoder === "PLAIN" &&
+          lines.length === 1 &&
+          Array.isArray(sourceSha256s) &&
+          sourceSha256s.length === 1 &&
           sourceSha256s.every((digest) => sha256Pattern.test(digest))) ||
         (source === "src/plugin-sdk/browser-subpaths.test.ts" &&
           detectorType === 17 &&
