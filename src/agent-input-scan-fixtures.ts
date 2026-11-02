@@ -281,6 +281,9 @@ const OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Synthetic endpoint-argument rejection fixture introduced by OpenClaw 3d7ef2108d94.
+  [17, "URI", "PLAIN", "5246f92cf855756f5fd7d561ea1b3679cd4957183af46ffb4a5d43968ba25254", "5246f92cf855756f5fd7d561ea1b3679cd4957183af46ffb4a5d43968ba25254", "6c2a04670bb977828ba872ddf7b3b119521afca0ef0846aeb4aea7b255476b45", "extensions/browser/src/browser/chrome-mcp.test.ts", "100644"],
+  [17, "URI", "HTML", "5246f92cf855756f5fd7d561ea1b3679cd4957183af46ffb4a5d43968ba25254", "5246f92cf855756f5fd7d561ea1b3679cd4957183af46ffb4a5d43968ba25254", "6c2a04670bb977828ba872ddf7b3b119521afca0ef0846aeb4aea7b255476b45", "extensions/browser/src/browser/chrome-mcp.test.ts", "100644"],
   // Ship #19: CLI-generated event_id; Privacy's keyword window crosses the reason field.
   // Bind the reviewed occurrence and complete blob, never arbitrary event IDs.
   [938, "Privacy", "PLAIN", "6e31751daf97832583d6877d6f79a17eb9b74188d3916d1668d136af36a9ea45", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "ed7bda1f092e8919442f3acb5c403917f2f0decbf3e7b50d1b7ce3d67bc0ddc7", ".grilltrack/events.jsonl", "100644", ["e9b2c64042139b1ed6400eac42b95796d10ad9782120cb88227c6f0655835d1c"]],
@@ -537,6 +540,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           source === "extensions/browser/src/browser/routes/basic.existing-session.test.ts" ||
           source === "extensions/typesafe/src/local.transport.test.ts" ||
           source === "extensions/browser/src/browser/config.test.ts" ||
+          source === "extensions/browser/src/browser/chrome-mcp.test.ts" ||
           source === "extensions/browser/src/browser/pw-session.connections.test.ts" ||
           source === "extensions/github/src/detail-checks.test.ts" ||
           source === "ui/src/pages/custodian/custodian-session-store.test.ts" ||
