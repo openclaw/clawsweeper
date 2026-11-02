@@ -264,11 +264,28 @@ def input_manifest(root):
     return sorted(result)
 
 
+def admit_workload(root, receipt_path):
+    workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+    declared = Path(os.environ["EXPERIMENT_WORKLOAD"])
+    slot = workspace / "workload"
+    facts = {"workspace": str(workspace), "declared": str(declared),
+             "argument": str(root), "resolved": str(root.resolve()), "expectedSlot": str(slot)}
+    write(receipt_path, facts)
+    assert declared == slot and root == declared and root.resolve() == slot, \
+        "Not the declared task workload checkout"
+    top, head = command(["git", "rev-parse", "--show-toplevel", "HEAD"], root).stdout.splitlines()
+    clean = command(["git", "diff", "--exit-code", "HEAD", "--"], root, check=False).returncode
+    facts.update(gitTopLevel=top, gitHead=head, trackedDiffExitCode=clean)
+    write(receipt_path, facts)
+    assert Path(top).resolve() == slot and head == SOURCE and clean == 0, \
+        "Workload Git identity or tracked inputs changed"
+
+
 def restore_generated_outputs(root, baseline, after, trial):
     started = time.monotonic()
     receipt = {"removed": [], "status": "incomplete"}
     try:
-        assert root == Path(os.environ["GITHUB_WORKSPACE"]).resolve(), "Not the task workload checkout"
+        admit_workload(root, trial / "workload-admission.json")
         original = {item[0]: item for item in baseline}
         observed = {item[0]: item for item in after}
         assert all(observed.get(name) == item for name, item in original.items()), "Prepared input changed"
@@ -373,7 +390,7 @@ console.log(JSON.stringify({arguments:args,
 
 
 def main(root, output):
-    root, output = root.resolve(), output.resolve()
+    output = output.resolve()
     output.mkdir(exist_ok=False)
     summary = {"source": SOURCE, "purpose": "same-host-concurrency-comparison",
                "order": ORDER, "trials": [], "status": "incomplete"}
@@ -381,10 +398,8 @@ def main(root, output):
         if not __debug__:
             raise RuntimeError("Python assertion checks must remain enabled")
         assert os.environ.get("GITHUB_ACTIONS") == "true" and sys.platform == "linux"
-        assert root == Path(os.environ["GITHUB_WORKSPACE"]).resolve(), "Not the task workload checkout"
+        admit_workload(root, output / "workload-admission.json")
         assert not any(os.path.lexists(root / name) for name in OUTPUT_ROOTS), "Output root already exists"
-        assert command(["git", "rev-parse", "HEAD"], root).stdout.strip() == SOURCE
-        command(["git", "diff", "--exit-code", "HEAD", "--"], root)
         assert hashlib.sha256((root / "pnpm-lock.yaml").read_bytes()).hexdigest() == LOCK
         assert command(["node", "--version"]).stdout.strip() == "v24.22.1"
         assert command(["pnpm", "--version"]).stdout.strip() == "12.15.0"

@@ -43,9 +43,9 @@ jobs:
 
       - name: Compare the unchanged critical shard on one host
         env:
-          GITHUB_WORKSPACE: ${{ github.workspace }}/workload
+          EXPERIMENT_WORKLOAD: ${{ github.workspace }}/workload
           EXPERIMENT_OUTPUT: ${{ runner.temp }}/shard-concurrency-experiment
-        run: python3 "$RUNNER_TEMP/shard-concurrency-driver.py" workload "$EXPERIMENT_OUTPUT"
+        run: python3 "$RUNNER_TEMP/shard-concurrency-driver.py" "$EXPERIMENT_WORKLOAD" "$EXPERIMENT_OUTPUT"
 
       - name: Retain bounded experiment receipts
         if: always()
