@@ -1,0 +1,1 @@
+- Qualify the exact existing OpenClaw channels.status redaction fixture so unrelated changes to its test helper can receive reviews without weakening source or scanner checks.
