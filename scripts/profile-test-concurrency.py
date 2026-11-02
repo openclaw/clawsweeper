@@ -65,10 +65,28 @@ def scope_empty(unit, cgroup):
     return state
 
 
+def pid_limits(cgroup):
+    ancestors = []
+    for parent in [cgroup, *cgroup.parents]:
+        if parent == Path("/sys/fs/cgroup"):
+            break
+        maximum = parent / "pids.max"
+        if maximum.exists():
+            value = maximum.read_text().strip()
+            events = parent / "pids.events"
+            ancestors.append({"path": str(parent), "inode": parent.stat().st_ino,
+                              "max": None if value == "max" else int(value),
+                              "current": int((parent / "pids.current").read_text()),
+                              "events": dict(line.split() for line in events.read_text().splitlines())
+                              if events.exists() else None})
+    finite = [item["max"] for item in ancestors if item["max"] is not None]
+    return {"configuredCeiling": min(finite) if finite else None, "ancestors": ancestors}
+
+
 def resources():
     relative = Path("/proc/self/cgroup").read_text().strip().removeprefix("0::/")
     cgroup = Path("/sys/fs/cgroup") / relative
-    limits = {"cpu.max": [], "memory.max": [], "memory.high": [], "pids.max": []}
+    limits = {"cpu.max": [], "memory.max": [], "memory.high": []}
     for parent in [cgroup, *cgroup.parents]:
         if parent == Path("/sys/fs/cgroup"):
             break
@@ -79,7 +97,27 @@ def resources():
                 if not value.startswith("max"):
                     limits[name].append(value)
     return {"affinity": sorted(os.sched_getaffinity(0)), "nice": os.getpriority(os.PRIO_PROCESS, 0),
-            "limits": {key: sorted(set(value)) for key, value in limits.items()}}
+            "limits": {key: sorted(set(value)) for key, value in limits.items()},
+            "pids": pid_limits(cgroup)}
+
+
+def admit_resources(actual, expected):
+    assert all(actual[key] == expected[key] for key in ["affinity", "nice", "limits"]), \
+        "Scope changed CPU/memory/affinity/nice controls"
+    # PID limits are hierarchical: an extra looser ancestor does not change
+    # the configured ceiling. This does not assert equal shared headroom.
+    assert actual["pids"]["configuredCeiling"] == expected["pids"]["configuredCeiling"], \
+        "Scope changed the configured PID ceiling"
+
+
+def admit_pid_events(before, after):
+    assert before["configuredCeiling"] == after["configuredCeiling"], "PID ceiling drifted"
+    assert len(before["ancestors"]) == len(after["ancestors"]), "PID ancestry drifted"
+    for initial, final in zip(before["ancestors"], after["ancestors"]):
+        assert all(initial[key] == final[key] for key in ["path", "inode", "max"]), "PID ancestry drifted"
+        assert initial["events"] is not None and final["events"] is not None, "PID event evidence unavailable"
+        assert int(initial["events"]["max"]) >= 0 and int(final["events"]["max"]) >= 0
+        assert initial["events"] == final["events"], "PID limit interference"
 
 
 def worker(directory, argv):
@@ -125,15 +163,17 @@ def scoped_run(root, directory, argv, label):
                 sys.executable, str(Path(__file__).resolve()), "--worker", str(directory), *argv,
             ], cwd=root, env=env, stdout=stdout, stderr=stderr)
             ready = wait_file(directory / "ready.json", process, 15)
-            assert ready["uid"] == os.getuid() and ready["gid"] == os.getgid(), ready
-            assert ready["cwd"] == str(root), ready
-            assert ready["resources"] == resources(), "Scope changed effective resource controls"
             state = scope_properties(unit)
             assert state["ActiveState"] == "active" and state["ControlGroup"].startswith("/"), state
             cgroup = Path("/sys/fs/cgroup") / state["ControlGroup"].lstrip("/")
             assert str(cgroup.resolve()).startswith("/sys/fs/cgroup/"), state
             assert str(ready["pid"]) in (cgroup / "cgroup.procs").read_text().split(), ready
             receipt.update(ready=ready, initialScope=state, cgroupInode=cgroup.stat().st_ino)
+            assert ready["uid"] == os.getuid() and ready["gid"] == os.getgid(), ready
+            assert ready["cwd"] == str(root), ready
+            receipt["parentResources"] = resources()
+            admit_resources(ready["resources"], receipt["parentResources"])
+            admit_pid_events(ready["resources"]["pids"], ready["resources"]["pids"])
             (directory / "start").touch()
             result = wait_file(directory / "result.json", process, 615)
             receipt.update(result)
@@ -146,6 +186,8 @@ def scoped_run(root, directory, argv, label):
                              for pid in path.read_text().split())
             assert members == [ready["pid"]], {"unexpectedScopeMembers": members}
             receipt.update(frozenScope=state, terminalMembers=members)
+            receipt["finalPids"] = pid_limits(cgroup)
+            admit_pid_events(ready["resources"]["pids"], receipt["finalPids"])
             command(["systemctl", "--user", "thaw", unit])
             (directory / "release").touch()
             assert process.wait(timeout=15) == 0, "Scope launcher failed"
