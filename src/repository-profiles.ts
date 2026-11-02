@@ -40,6 +40,8 @@ export interface RepositoryProfile {
   promptNote: string;
   /** Repository policy that applies to one item kind only. */
   kindPromptNotes?: Partial<Record<RepositoryItemKind, string>>;
+  /** Opt in only after accepting this repository's issue-rating stability. */
+  bulkFilerExcludeHighRatedIssues?: boolean;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
 }
 
@@ -97,6 +99,7 @@ export const DEFAULT_TARGET_REPO = "openclaw/openclaw";
 
 const CORE_OPENCLAW_PROFILE: RepositoryProfile = {
   targetRepo: DEFAULT_TARGET_REPO,
+  bulkFilerExcludeHighRatedIssues: true,
   slug: "openclaw-openclaw",
   displayName: "OpenClaw",
   checkoutDir: "openclaw",

@@ -1,5 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { withGitHubRun } from "../dist/clawsweeper-github-runtime.js";
+import {
+  repositoryProfileFor,
+  targetRepo,
+  withTargetProfile,
+} from "../dist/repository-profiles.js";
+import {
+  BULK_FILER_UNCOUNTED_ISSUE_RATING_LABELS,
+  ISSUE_ADVISORY_LABELS,
+} from "../dist/clawsweeper-policy.js";
+import {
+  issueAdvisoryLabelState,
+  issueRatingLabelForState,
+} from "../dist/clawsweeper-label-selection.js";
 
 import {
   bulkFilerThreshold,
@@ -8,12 +24,14 @@ import {
 } from "../dist/clawsweeper.js";
 import {
   detectBulkFiler,
+  authorIssueCountInBulkFilerWindow,
+  bulkFilerIssueSearchQuery,
   bulkFilerPolicyInvalidatesCachedReview,
   updateBulkFilerDetectedFrontMatter,
 } from "../dist/clawsweeper-context-hydration.js";
 import { createLabelMutationOperations } from "../dist/clawsweeper-label-mutations.js";
 import { createLabelSyncOperations } from "../dist/clawsweeper-label-operations.js";
-import { item } from "./helpers.ts";
+import { closeDecision, item, withMockGh } from "./helpers.ts";
 
 test("bulk-filer defaults and positive env overrides are bounded", () => {
   assert.equal(bulkFilerThreshold({}), 10);
@@ -388,4 +406,221 @@ test("a newly exempt maintainer bypasses a cached bulk-filer review", () => {
     ),
     false,
   );
+});
+
+test("bulk-filer query excludes only completed and high-confidence reproduced reports", () => {
+  const query = bulkFilerIssueSearchQuery(
+    'reporter"quoted',
+    "2026-10-01T12:00:00.000Z",
+    "2026-10-08T12:00:00.000Z",
+  );
+  assert.ok(query.includes("repo:" + targetRepo()));
+  assert.ok(query.includes("type:issue"));
+  assert.ok(query.includes('author:"reporterquoted"'));
+  assert.ok(query.includes("created:2026-10-01T12:00:00.001Z..2026-10-08T12:00:00.000Z"));
+  assert.ok(query.includes("-reason:completed"));
+  const reproducedLabels = ["reproduced", "source_reproducible"].map((reproductionStatus) =>
+    issueRatingLabelForState(
+      issueAdvisoryLabelState(
+        "---\ntype: issue\n---\n",
+        closeDecision({
+          reproductionStatus,
+          reproductionConfidence: "high",
+        }),
+      ),
+    ),
+  );
+  assert.deepEqual([...BULK_FILER_UNCOUNTED_ISSUE_RATING_LABELS], reproducedLabels);
+  for (const { name } of ISSUE_ADVISORY_LABELS) {
+    assert.equal(query.includes('-label:"' + name + '"'), reproducedLabels.includes(name), name);
+  }
+  for (const term of [
+    "-reason:not_planned",
+    "-reason:duplicate",
+    "is:open",
+    "-label:P0",
+    "-label:P1",
+  ]) {
+    assert.equal(query.includes(term), false, term);
+  }
+});
+
+type BulkCountFixture = { labels: string[]; reason?: string };
+
+function withBulkCountFixture(reports: BulkCountFixture[], run: () => void): void {
+  mkdirSync(".artifacts", { recursive: true });
+  const root = mkdtempSync(join(".artifacts", "bulk-filer-"));
+  writeFileSync(join(root, "package.json"), JSON.stringify({ type: "commonjs" }));
+  // The transport boundary interprets the production query, not a prefiltered count.
+  const script = [
+    'const assert = require("node:assert/strict");',
+    "const args = process.argv.slice(2);",
+    'assert.deepEqual(args.slice(0, 4), ["api", "search/issues", "--method", "GET"]);',
+    'assert.equal(args.at(-1), "per_page=1");',
+    'const query = args.find((arg) => arg.startsWith("q=")).slice(2);',
+    'const excluded = [...query.matchAll(/-label:"([^"]+)"/g)].map((match) => match[1]);',
+    "const reports = " + JSON.stringify(reports) + ";",
+    'const count = reports.filter((report) => !(query.includes("-reason:completed") && report.reason === "completed") && !report.labels.some((label) => excluded.includes(label))).length;',
+    "console.log(JSON.stringify({ total_count: count, incomplete_results: false }));",
+  ].join("\n");
+  try {
+    withMockGh(root, script, () => withGitHubRun(run));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function detectWithProductionCount(labels: string[] = [], failOnError = true) {
+  return detectBulkFiler({
+    item: item({ repo: targetRepo(), createdAt: "2026-10-08T12:00:00Z", labels }),
+    cache: new Map(),
+    onSearchError: (error) => {
+      if (failOnError) throw error;
+    },
+    now: Date.parse("2026-10-08T12:01:00Z"),
+    searchCount: ({ author, windowStart, windowEnd }) =>
+      authorIssueCountInBulkFilerWindow(author, windowStart, windowEnd),
+  });
+}
+
+test("proven reports lower the count without exempting an author's unproven reports", () => {
+  const reports: BulkCountFixture[] = [
+    { labels: ["issue-rating: 🦀 challenger crab"] },
+    { labels: ["issue-rating: 🦞 diamond lobster"] },
+    { labels: [], reason: "completed" },
+    ...Array.from({ length: 8 }, () => ({ labels: [] })),
+    { labels: ["issue-rating: 🦪 silver shellfish"], reason: "not_planned" },
+    { labels: [], reason: "duplicate" },
+  ];
+  withBulkCountFixture(reports, () => {
+    // Even a highly rated target is not personally exempt if ten other reports count.
+    const result = detectWithProductionCount(["issue-rating: 🦞 diamond lobster"]);
+    assert.equal(result.context?.issueCount, 10);
+    assert.equal(result.labelPending, true);
+  });
+  reports[3].labels = ["issue-rating: 🦞 diamond lobster"];
+  withBulkCountFixture(reports, () => {
+    const result = detectWithProductionCount(["clawsweeper:bulk-filed"]);
+    assert.equal(result.context, null);
+    assert.equal(result.belowThreshold, true);
+    assert.equal(result.labelPending, false);
+    assert.equal(
+      bulkFilerPolicyInvalidatesCachedReview(
+        "---\nlast_full_review_bulk_filer_detected: true\n---\n",
+        false,
+        result.belowThreshold,
+      ),
+      true,
+    );
+  });
+});
+
+test("sixteen templated unrated or lower-rated reports still trigger bulk filing", () => {
+  const lowerRatings = ISSUE_ADVISORY_LABELS.map(({ name }) => name).filter(
+    (name) =>
+      name.startsWith("issue-rating:") &&
+      !BULK_FILER_UNCOUNTED_ISSUE_RATING_LABELS.some((excluded) => excluded === name),
+  );
+  for (const labels of [[], ...lowerRatings.map((name) => [name]), ["P0", "P1", "P2"]]) {
+    withBulkCountFixture(
+      Array.from({ length: 16 }, () => ({ labels })),
+      () => {
+        const result = detectWithProductionCount();
+        assert.equal(result.context?.issueCount, 16);
+        assert.equal(result.labelPending, true);
+      },
+    );
+  }
+});
+
+test("production count failures never certify a below-threshold removal", () => {
+  mkdirSync(".artifacts", { recursive: true });
+  const root = mkdtempSync(join(".artifacts", "bulk-count-failure-"));
+  try {
+    for (const response of [
+      { total_count: 0, incomplete_results: true },
+      {},
+      { total_count: -1 },
+      { total_count: 1.5 },
+    ]) {
+      withMockGh(root, "console.log(" + JSON.stringify(JSON.stringify(response)) + ");", () =>
+        withGitHubRun(() => {
+          assert.throws(
+            () =>
+              authorIssueCountInBulkFilerWindow(
+                "reporter",
+                "2026-10-01T12:00:00Z",
+                "2026-10-08T12:00:00Z",
+              ),
+            /GitHub bulk-filer search/,
+          );
+          const result = detectWithProductionCount(["clawsweeper:bulk-filed"], false);
+          assert.equal(result.context, null);
+          assert.equal(result.belowThreshold, undefined);
+          assert.equal(result.labelPending, false);
+        }),
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bulk-filer rating exclusions opt in only for the core OpenClaw repository", () => {
+  for (const repo of [
+    "OpenClaw/OpenClaw",
+    "openclaw/clawhub",
+    "openclaw/clawsweeper",
+    "openclaw/openclaw-enterprise",
+    "openclaw/bulk-filer-policy-fixture",
+  ]) {
+    const profile = repositoryProfileFor(repo);
+    const enabled = profile.targetRepo === "openclaw/openclaw";
+    assert.equal(profile.bulkFilerExcludeHighRatedIssues === true, enabled);
+    withTargetProfile(profile, () => {
+      const query = bulkFilerIssueSearchQuery(
+        "same-reporter",
+        "2026-10-01T12:00:00Z",
+        "2026-10-08T12:00:00Z",
+      );
+      assert.ok(query.includes("repo:" + profile.targetRepo));
+      assert.ok(query.includes("-reason:completed"));
+      for (const label of BULK_FILER_UNCOUNTED_ISSUE_RATING_LABELS) {
+        assert.equal(query.includes('-label:"' + label + '"'), enabled, repo);
+      }
+      withBulkCountFixture(
+        [
+          ...Array.from({ length: 16 }, (_, i) => ({
+            labels: [BULK_FILER_UNCOUNTED_ISSUE_RATING_LABELS[i % 2]],
+          })),
+          { labels: [], reason: "completed" },
+        ],
+        () => {
+          const result = detectWithProductionCount();
+          assert.equal(result.context?.issueCount ?? 0, enabled ? 0 : 16, repo);
+          assert.equal(result.belowThreshold === true, enabled, repo);
+          assert.equal(result.labelPending, !enabled, repo);
+        },
+      );
+    });
+  }
+});
+
+test("unrated and lower-rated bursts retain detection in core OpenClaw and ClawHub", () => {
+  const previousRepo = targetRepo();
+  for (const repo of ["openclaw/openclaw", "openclaw/clawhub"]) {
+    withTargetProfile(repositoryProfileFor(repo), () => {
+      for (const labels of [[], ["issue-rating: 🐚 platinum hermit"]]) {
+        withBulkCountFixture(
+          Array.from({ length: 16 }, () => ({ labels })),
+          () => {
+            const result = detectWithProductionCount();
+            assert.equal(result.context?.issueCount, 16, repo);
+            assert.equal(result.labelPending, true, repo);
+          },
+        );
+      }
+    });
+    assert.equal(targetRepo(), previousRepo);
+  }
 });
