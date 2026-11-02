@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Disposable one-baseline input diagnostic; not part of normal CI."""
+"""Disposable four-trial experiment; not part of the workload or normal CI."""
 
 import collections
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -18,7 +19,19 @@ SOURCE = "e312d173d51876ee8e061d55e81d8cd9650edcaf"
 ALL_FILES = "b6ba845fc554616f08d869ac52fcefa202cc9d0bdd49369b2486409a76de888b"
 SHARD_FILES = "b83ba8088134fae28625836401c4ef3c135e2154457cf1f4406730261b7470c1"
 LOCK = "197a392e96a81c6c7d017a6ada1b7c95dd741ac9b49417b7f95e821c75f82274"
-ORDER = [4]
+COVERAGE_OWNER = "0b0cb4db9f27afe295cbe77cc3a6ba206f9c260b129f175b5799202e53b5b287"
+ORDER = [4, 2, 2, 4]
+OUTPUT_ROOTS = (".artifacts", "artifacts", "records", "apply-report.json")
+OUTPUT_DIRS = {".artifacts", ".artifacts/exact-review-dlq", "artifacts", "artifacts/apply",
+               "artifacts/apply/pr-close-coverage-proof", "records",
+               "records/openclaw-clawsweeper", "records/openclaw-clawsweeper/plans"}
+# Frozen owners write these generated payloads/reports, not prepared inputs.
+# No other addition is removable, even beneath an otherwise known output root.
+OUTPUT_FILE = re.compile(
+    r"(?:\.artifacts/comment-[1-9][0-9]*-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.(?:md|json)"
+    r"|\.artifacts/close-[1-9][0-9]*\.json|\.artifacts/exact-review-dlq/inventory\.json"
+    r"|artifacts/apply/pr-close-coverage-proof/[1-9][0-9]*-[1-9][0-9]*\.proof\.json"
+    r"|apply-report\.json)")
 
 
 def digest(value):
@@ -31,9 +44,9 @@ def write(path, value):
     temporary.replace(path)
 
 
-def command(args, cwd=None, check=True):
+def command(args, cwd=None, check=True, stdin=None):
     return subprocess.run(args, cwd=cwd, text=True, capture_output=True,
-                          timeout=30, check=check)
+                          timeout=30, check=check, input=stdin)
 
 
 def wait_file(path, process, seconds):
@@ -251,6 +264,43 @@ def input_manifest(root):
     return sorted(result)
 
 
+def restore_generated_outputs(root, baseline, after, trial):
+    started = time.monotonic()
+    receipt = {"removed": [], "status": "incomplete"}
+    try:
+        assert root == Path(os.environ["GITHUB_WORKSPACE"]).resolve(), "Not the task workload checkout"
+        original = {item[0]: item for item in baseline}
+        observed = {item[0]: item for item in after}
+        assert all(observed.get(name) == item for name, item in original.items()), "Prepared input changed"
+        added = [item for item in after if item[0] not in original]
+        for item in added:
+            assert (item[1] == "directory" and item[0] in OUTPUT_DIRS) or (
+                isinstance(item[1], int) and OUTPUT_FILE.fullmatch(item[0])), "Unrecognized generated output"
+        assert input_manifest(root) == after, "Outputs changed after capture"
+        # The exact scope is already empty. Unlink only recorded new files;
+        # rmdir refuses any unrecorded child instead of recursively deleting it.
+        for item in sorted(added, key=lambda value: (
+                value[1] == "directory", -value[0].count("/"), value[0])):
+            target = root / item[0]
+            if item[1] == "directory":
+                target.rmdir()
+            else:
+                assert stat.S_ISREG(target.lstat().st_mode), "Output type changed"
+                target.unlink()
+            receipt["removed"].append(item[0])
+        restored = input_manifest(root)
+        receipt["restoredInputsSha256"] = digest(restored)
+        assert restored == baseline, "Prepared baseline was not restored"
+        receipt["status"] = "complete"
+    except Exception as error:
+        receipt["error"] = f"{type(error).__name__}: {error}"
+        raise
+    finally:
+        receipt["seconds"] = time.monotonic() - started
+        write(trial / "output-cleanup.json", receipt)
+    return receipt
+
+
 def outcomes(path, root):
     document = ET.parse(path).getroot()
     assert document.tag == "testsuites", "Incomplete JUnit document"
@@ -290,15 +340,49 @@ def coverage(directory, root):
         name: sorted(blocks) for name, blocks in sorted(scripts.items())}}
 
 
+def coverage_gate(measured, root):
+    # Raw V8 profiles include dashboard/test TS outside the canonical CI gate.
+    # Ask the pinned Node coverage owner to apply the frozen exported policy.
+    script = """import {coverageArguments} from './scripts/run-node-tests.mjs';
+import {createRequire} from 'node:module';
+import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {pathToFileURL} from 'node:url';
+import {sep} from 'node:path';
+const {TestCoverage}=createRequire(import.meta.url)('internal/test_runner/coverage');
+const args=coverageArguments('all');
+const globs=prefix=>args.filter(arg=>arg.startsWith(prefix)).map(arg=>arg.slice(prefix.length));
+const owner=new TestCoverage(null,null,{cwd:process.cwd(),
+  coverageIncludeGlobs:globs('--test-coverage-include='),
+  coverageExcludeGlobs:globs('--test-coverage-exclude=')});
+const prefix=pathToFileURL(process.cwd()+sep).href;
+const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+console.log(JSON.stringify({arguments:args,
+  ownerSha256:sha(readFileSync('./scripts/run-node-tests.mjs')),
+  nodeVersion:process.version,nodeSha256:sha(readFileSync(process.execPath)),
+  sources:JSON.parse(readFileSync(0,'utf8')).filter(name=>!owner.shouldSkipFileCoverage(prefix+name))}));"""
+    gate = json.loads(command(["node", "--expose-internals", "--input-type=module", "-e", script],
+                              cwd=root, stdin=json.dumps(list(measured["coveredBlocks"]))).stdout)
+    assert gate["ownerSha256"] == COVERAGE_OWNER and gate["nodeVersion"] == "v24.22.1", \
+        "Coverage policy/runtime changed"
+    assert gate["sources"], "No sources inside the canonical CI coverage policy"
+    gate["sourcesSha256"] = digest(gate["sources"])
+    gate["coveredBlocksSha256"] = digest({
+        name: measured["coveredBlocks"][name] for name in gate["sources"]})
+    return gate
+
+
 def main(root, output):
     root, output = root.resolve(), output.resolve()
     output.mkdir(exist_ok=False)
-    summary = {"source": SOURCE, "purpose": "input-mutation-diagnostic",
+    summary = {"source": SOURCE, "purpose": "same-host-concurrency-comparison",
                "order": ORDER, "trials": [], "status": "incomplete"}
     try:
         if not __debug__:
             raise RuntimeError("Python assertion checks must remain enabled")
         assert os.environ.get("GITHUB_ACTIONS") == "true" and sys.platform == "linux"
+        assert root == Path(os.environ["GITHUB_WORKSPACE"]).resolve(), "Not the task workload checkout"
+        assert not any(os.path.lexists(root / name) for name in OUTPUT_ROOTS), "Output root already exists"
         assert command(["git", "rev-parse", "HEAD"], root).stdout.strip() == SOURCE
         command(["git", "diff", "--exit-code", "HEAD", "--"], root)
         assert hashlib.sha256((root / "pnpm-lock.yaml").read_bytes()).hexdigest() == LOCK
@@ -317,6 +401,12 @@ def main(root, output):
         baseline = input_manifest(root)
         write(output / "inputs.json", baseline)
         summary["inputsSha256"] = digest(baseline)
+        synthetic_sources = ["dist/coverage-policy-preflight.js",
+                             "dist/repair/coverage-policy-preflight.test.js",
+                             "dashboard/coverage-policy-preflight.ts"]
+        policy_probe = coverage_gate({"coveredBlocks": {name: [] for name in synthetic_sources}}, root)
+        write(output / "coverage-policy-preflight.json", dict(policy_probe, syntheticSources=synthetic_sources))
+        assert policy_probe["sources"] == synthetic_sources[:1], "Native coverage filter preflight failed"
         preflight = output / "scope-preflight"
         preflight.mkdir()
         scoped_run(root, preflight, ["node", "-e", "if(process.getuid()!==Number(process.env.UID_CHECK))process.exit(1)"], "preflight")
@@ -327,7 +417,7 @@ def main(root, output):
             observed = {"index": index, "concurrency": concurrency, "status": "started"}
             summary["trials"].append(observed)
             write(output / "summary.json", summary)
-            print(f"Diagnostic baseline: concurrency {concurrency}, unchanged shard 1/4", flush=True)
+            print(f"Trial {index}/4: concurrency {concurrency}, unchanged shard 1/4", flush=True)
             argv = ["node", "scripts/run-node-tests.mjs", "all", "--shard", "1/4",
                     "--test-concurrency", str(concurrency), "--coverage-out", str(trial / "coverage"),
                     "--", "--test-reporter=spec", "--test-reporter-destination=stdout",
@@ -347,14 +437,27 @@ def main(root, output):
                              "after": after_by_path.get(name)}
                             for name in sorted(before_by_path.keys() | after_by_path.keys())
                             if before_by_path.get(name) != after_by_path.get(name)]})
-            assert after == baseline, "Trial mutated shared inputs"
+            gated_coverage = coverage_gate(measured_coverage, root)
+            write(trial / "coverage-gate.json", gated_coverage)
+            if index == 1:
+                expected_cases, expected_coverage = cases, gated_coverage
+            else:
+                assert cases == expected_cases, "Case identities or outcomes changed"
+                assert gated_coverage == expected_coverage, "Canonical CI covered source blocks changed"
+            cleanup = restore_generated_outputs(root, baseline, after, trial)
             observed.update(status="complete", seconds=receipt["seconds"],
-                            cases=len(cases), outcomesSha256=digest(cases))
+                            cases=len(cases), outcomesSha256=digest(cases),
+                            outputCleanupSeconds=cleanup["seconds"])
             print(json.dumps(observed), flush=True)
             # Retain normalized coverage evidence, not duplicate raw V8 payloads.
             shutil.rmtree(trial / "coverage")
             write(output / "summary.json", summary)
-        summary["status"] = "complete"
+        times = [trial["seconds"] for trial in summary["trials"]]
+        pairs = [(times[0], times[1]), (times[3], times[2])]
+        summary.update(status="complete",
+                       gainDemonstrated=all(b <= a * 0.9 and a - b >= 30 for a, b in pairs),
+                       pairs=[{"baseline": a, "candidate": b, "savedSeconds": a - b,
+                               "ratio": b / a} for a, b in pairs])
     except Exception as error:
         summary["error"] = f"{type(error).__name__}: {error}"
         raise

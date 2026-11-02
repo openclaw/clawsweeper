@@ -1,4 +1,4 @@
-name: Shard input mutation diagnostic
+name: Shard concurrency experiment
 
 on:
   workflow_dispatch:
@@ -41,7 +41,7 @@ jobs:
           working-directory: workload
           build-script: build:all
 
-      - name: Diagnose input changes after one baseline shard
+      - name: Compare the unchanged critical shard on one host
         env:
           GITHUB_WORKSPACE: ${{ github.workspace }}/workload
           EXPERIMENT_OUTPUT: ${{ runner.temp }}/shard-concurrency-experiment
