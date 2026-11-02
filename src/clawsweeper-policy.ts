@@ -513,6 +513,10 @@ export const ISSUE_ADVISORY_LABELS = [
 export const ISSUE_ADVISORY_LABEL_NAMES = new Set(
   ISSUE_ADVISORY_LABELS.map((label) => label.name.toLowerCase()),
 );
+export const BULK_FILER_UNCOUNTED_ISSUE_RATING_LABELS = [
+  "issue-rating: 🦀 challenger crab",
+  "issue-rating: 🦞 diamond lobster",
+] as const satisfies readonly (typeof ISSUE_ADVISORY_LABELS)[number]["name"][];
 export const STALE_LABEL = "stale";
 export const NO_STALE_LABEL = "no-stale";
 export const ISSUE_STALE_PROTECTION_LABEL = {

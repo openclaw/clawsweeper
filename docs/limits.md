@@ -30,16 +30,24 @@ budget:
 | `CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED`      | `false` | Enables live per-author budget closes.               |
 | `CLAWSWEEPER_AUTHOR_PR_BUDGET`                    |      15 | Allowed open PRs per external author and repository. |
 | `CLAWSWEEPER_AUTHOR_PR_BUDGET_MAX_CLOSES_PER_RUN` |       5 | Gradual trim cap per author in one apply run.        |
-| `CLAWSWEEPER_BULK_FILER_THRESHOLD`                |      10 | Recent authored issues not closed as completed.      |
+| `CLAWSWEEPER_BULK_FILER_THRESHOLD`                |      10 | Recent authored issues after profile exclusions.    |
 | `CLAWSWEEPER_BULK_FILER_WINDOW_DAYS`              |       7 | Lookback window ending at the issue's creation.      |
 | `CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED`     | `false` | Enables stale-version bug closes after 120 days.     |
 | `CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED`       | `false` | Enables obsolete small-fix PR closes after 90 days.  |
 
-The bulk-filer count leaves out issues closed as completed. Every other issue
-in the window counts, including open, rated, not-planned, and duplicate
-issues. Rating labels and priority labels do not change the count: a rating can
-still change between reviews of an unchanged issue, so it is not yet a stable
-signal (https://github.com/openclaw/clawsweeper/issues/1752).
+The bulk-filer count leaves out issues closed as completed in every repository.
+Only `openclaw/openclaw` also excludes issues currently rated
+`issue-rating: 🦀 challenger crab` or `issue-rating: 🦞 diamond lobster`.
+This opt-in is owned by `src/repository-profiles.ts`; ClawHub and all other
+repository profiles retain completed-only counting while rating stability is
+assessed separately. There is no cross-repository author exemption or shared count.
+Unrated and lower-rated issues still count, including not-planned and duplicate
+issues without either excluded rating. Priority labels do not affect the count.
+This is a per-report exclusion, not an author exemption: a burst of ten unproven
+reports still reaches the threshold. Counts use current ratings and close reasons
+within the fixed filing-time window; a rating crossing the exclusion boundary can
+change the count on a later review. Existing labels are reconciled on that issue's
+next review, not immediately across all of the author's reports.
 
 See [`author-pr-budget-close-policy.md`](author-pr-budget-close-policy.md) for
 the rating, proof, inactivity, engagement, and fail-closed gates.
