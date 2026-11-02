@@ -342,6 +342,9 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   // Maintainer-qualified Gateway readiness error privacy fixture from OpenClaw #152309.
   [17,"URI","PLAIN","630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb","630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb","135365663033f668caf9d6e3fc27b905e8ffaef8ad43bc587e43fceb055bad59","test/helpers/openclaw-test-instance.test.ts","100644"],
   [17,"URI","HTML","630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb","630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb","135365663033f668caf9d6e3fc27b905e8ffaef8ad43bc587e43fceb055bad59","test/helpers/openclaw-test-instance.test.ts","100644"],
+  // Maintainer-qualified update failure report redaction fixture from OpenClaw #190365.
+  [17, "URI", "PLAIN", "1b950d6c665b182a7aa7a553add23364cedb3ea08771873aea9547b3fd3dcb11", "a844b0f4456fddf3bf5e3d3e62391e29458c00c54fadd3ea087242f09889fae9", "81a1d346e39e01ea480079631e8bcd5ba2cc2f9b597a91f2c87036f4ac7f68a9", "src/infra/update-failure-report-config.test.ts", "100644"],
+  [17, "URI", "HTML", "1b950d6c665b182a7aa7a553add23364cedb3ea08771873aea9547b3fd3dcb11", "a844b0f4456fddf3bf5e3d3e62391e29458c00c54fadd3ea087242f09889fae9", "81a1d346e39e01ea480079631e8bcd5ba2cc2f9b597a91f2c87036f4ac7f68a9", "src/infra/update-failure-report-config.test.ts", "100644"],
   // Gateway sibling of the reviewed question URL-rejection fixture; exact source bytes differ.
   [17, "URI", "PLAIN", "2c45f25f2626ac90554ac699f6b285846faf497f796f3d1c05acb7fef231d0a9", "c914cd0ca5fb29af5f36f2e92ac43bf9fa59e1a729049dcbdd5b09cee50d4b28", "61b6dd9a49e1ba2bbbb38735e6227c34642f606603cf41999cd99be24a1fa011", "src/gateway/server-methods/question.test.ts", "100644"],
   [17, "URI", "HTML", "2c45f25f2626ac90554ac699f6b285846faf497f796f3d1c05acb7fef231d0a9", "c914cd0ca5fb29af5f36f2e92ac43bf9fa59e1a729049dcbdd5b09cee50d4b28", "61b6dd9a49e1ba2bbbb38735e6227c34642f606603cf41999cd99be24a1fa011", "src/gateway/server-methods/question.test.ts", "100644"],
@@ -542,6 +545,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           source === "src/gateway/server-methods/question.test.ts" ||
           source === "src/gateway/server.config-patch.test.ts" ||
           source === "test/helpers/openclaw-test-instance.test.ts" ||
+          source === "src/infra/update-failure-report-config.test.ts" ||
           source === "skills/autoreview/tests/test_autoreview_hardening.py" ||
           source === ".agents/skills/autoreview/tests/test_autoreview_hardening.py") &&
           detectorType === 17 &&
