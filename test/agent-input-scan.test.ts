@@ -3595,6 +3595,17 @@ for (const {
     lines: (value: string) => [`      expect(profile?.cdpUrl).toBe("${value}");`],
   },
   {
+    name: "Chrome MCP endpoint argument redaction",
+    protocol: "https:",
+    host: "browser.example",
+    username: "fixture-user",
+    password: ["fixture", "password"].join("-"),
+    path: "",
+    suffix: "/?token=fixture-token",
+    source: "extensions/browser/src/browser/chrome-mcp.test.ts",
+    lines: (value: string) => [`    "${value}";`],
+  },
+  {
     name: "plugin setting draft redaction",
     protocol: "https:",
     host: "example.invalid",
