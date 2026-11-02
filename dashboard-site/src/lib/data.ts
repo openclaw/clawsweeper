@@ -1,4 +1,5 @@
 import raw from "../data/dashboard.json";
+import { liveCoverage } from "./live-coverage.ts";
 import type { Assessment } from "../../scripts/attention.ts";
 import type { AssessmentCollections } from "../../scripts/assessment-collections.ts";
 import type { Operations, OperationsHour } from "../../scripts/operations.ts";
@@ -325,53 +326,31 @@ export const status = (() => {
   } as const;
 })();
 
-// The coverage projection splits reviewable items into disjoint parts:
-// reviewed_recent + stale + failed + expired + unreviewed_records + untracked_open.
-const coverageTotals = coverage.totals;
+// All coverage consumers share the explicit live cohort; corpus never fills gaps.
+export const liveCover = liveCoverage(coverage);
 export const cover = {
-  percent:
-    typeof coverageTotals.coverage_percent === "number"
-      ? (coverageTotals.coverage_percent as number)
-      : null,
-  reviewable: coverageTotals.reviewable_records as number,
-  reviewed: coverageTotals.reviewed_recent as number,
-  stale: coverageTotals.stale as number,
-  pending: coverageTotals.pending as number,
-  windowDays: coverage.window_days as number,
-  segments: [
-    {
-      label: "Reviewed recently",
-      value: coverageTotals.reviewed_recent as number,
-      color: "var(--ok)",
-      tip: `Reviewable items with a completed review dated within the last ${coverage.window_days} days.`,
-    },
-    {
-      label: "Stale",
-      value: coverageTotals.stale as number,
-      color: "var(--warn)",
-      tip: "Items whose recorded review status is marked stale. This is separate from completed reviews that have aged out.",
-    },
-    {
-      label: "Expired",
-      value: coverageTotals.expired as number,
-      color: "var(--accent)",
-      tip: `Completed reviews whose recorded date is outside the current ${coverage.window_days}-day freshness window.`,
-    },
-    {
-      label: "Failed",
-      value: coverageTotals.failed as number,
-      color: "var(--bad)",
-      tip: "Items whose latest recorded review attempt failed.",
-    },
-    {
-      label: "Never reviewed",
-      value: (coverageTotals.unreviewed_records + coverageTotals.untracked_open) as number,
-      color: "var(--fg-faint)",
-      tip: "Items with no usable review status recorded, plus open items not yet tracked in the review inventory. Earlier review attempts may exist.",
-    },
-  ],
+  known: liveCover.known,
+  percent: liveCover.percent,
+  reviewed: liveCover.reviewed_recent,
+  reviewable: liveCover.reviewable_records,
+  windowDays: liveCover.windowDays,
+  segments: liveCover.known
+    ? [
+        { label: "Fresh", value: liveCover.reviewed_recent ?? 0, color: "var(--ok)" },
+        { label: "Marked stale / changed", value: liveCover.stale ?? 0, color: "var(--warn)" },
+        { label: "Expired", value: liveCover.expired ?? 0, color: "var(--accent)" },
+        { label: "Failed", value: liveCover.failed ?? 0, color: "var(--bad)" },
+        {
+          label: "Missing usable evidence",
+          value: (liveCover.unreviewed_records ?? 0) + (liveCover.untracked_open ?? 0),
+          color: "var(--fg-faint)",
+        },
+      ]
+    : [],
 };
-export const coverText = cover.percent === null ? "–" : `${cover.percent.toFixed(1)}%`;
+export const coverText =
+  cover.percent === null ? (cover.known ? "N/A" : "Unknown") : `${cover.percent.toFixed(1)}%`;
+export const coverageRepositoryStates = (snapshot.repositoryStates ?? {}) as Record<string, string>;
 
 export const totals = corpus.totals as {
   records: number;

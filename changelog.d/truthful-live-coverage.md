@@ -1,0 +1,1 @@
+- Join Coverage to source-timestamped live-open identities, show uncertain censuses as unknown, and separate stored review history from live review evidence.

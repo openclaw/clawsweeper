@@ -749,9 +749,51 @@ for the same `untracked_open` boundary as the coverage endpoint. A hydrated
 legacy backfill report remains review context, but it does not count as coverage
 or yield a planner slot to a canonical re-review until a modern tuple exists.
 
-The six-hour audit fanout also writes a GitHub Actions summary with canonical
-open-item reports reviewed in the trailing seven days versus batched live open
-issue and PR totals across the complete dynamic inventory.
+The six-hour audit fanout also writes a GitHub Actions coverage summary.
+Coverage joins canonical records to a bounded live-open identity census; it
+never clamps historical record counts to live totals. Each repository must
+finish pagination with stable counts, unique identities, complete live labels
+and measured PR heads. The observer-only census has a serial 25-request budget,
+a 10-page limit per issue/PR connection, and the existing payload/storage bounds;
+exhaustion or read/count/pagination failures produce explicit unknown evidence,
+not a partial denominator. This does not change review admission, scheduling
+rates, queue capacity, concurrency or publication ownership.
+
+The public Coverage page uses public-attested observations and rechecks
+repository visibility during the static build. Open is a separately timestamped
+GitHub count witness: a large repository retains its trusted as-of Open count
+even when the bounded identity scan cannot finish. Missing, older-than-12-hour
+or future count witnesses are unknown, never observed zero. Reviewable,
+exclusions and categories require complete qualified identity evidence; their
+conservation checks are not relaxed for a partial census. Public observations
+of unverified eligibility and archived/fork/alias/history references are explicit,
+not silently inserted into an active review denominator.
+
+Missing/stale/future identity observations and older-than-15-minute or future
+record scans make affected review evidence unknown without erasing trusted
+count witnesses. A once-per-build read awaits an expired scan's coalesced
+refresh for at most5seconds; it does not publish the expired cache while that
+refresh finishes after the build. Failure/timeout reports absent scan evidence,
+never copied stale categories with a fabricated fresh date. Existing page yields
+and work/rate limits remain unchanged. The existing canonical-body store automatically materializes
+missing/stale-bound v2 coverage facts on a coverage read-model refresh, capped
+at32verified body reads/4MiB. Conditional digest/revision guards update only
+coverage_facts; bodies, placement, canonical/export revisions, timestamps, tuple
+receipts and admission/answer history are untouched. Existing one-review PRs
+need no new review or publication. Unavailable bodies remain unknown, never
+cache-poisoned; later current revisions always win. A review must match item kind and PR head,
+have verified local checkout completion and a valid non-future review date,
+and not predate the latest observed reopen event. The bounded census reads
+only the latest reopen event; generic `updated_at` can include automation and
+is not treated as semantic source drift. These fields do not establish current
+issue body/comment semantic freshness. Explicit stale states/head/reopen
+changes are separate from age expiry. These observations do not grant
+permission for another review. Stored 7/30-day review history, archived/fork/alias
+rows and absent historical repositories remain separate; an absent row is not
+zero live work or proof that the GitHub App is installed. Private/inaccessible
+repository names are withheld by the existing fail-closed visibility checks.
+See the local proof contract at `docs/proof/ui-live-coverage/README.md` for
+scenarios, provenance and provider limits.
 
 Exact event review also starts Codex before generated-state hydration. The
 single-item review only needs the target repository and live GitHub item state;

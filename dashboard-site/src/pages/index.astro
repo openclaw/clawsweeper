@@ -22,7 +22,7 @@ const success7 = kpis.runSuccess7d;
       <img src="/clawsweeper.png" alt="ClawSweeper" width="52" height="52" class="size-13 rounded-xl shadow-sm ring-1 ring-line" />
       <div>
         <h1 class="text-[22px] font-semibold tracking-tight">Overview</h1>
-        <p class="mt-1 text-[13px] text-fg-muted">Sweeping {int(cover.reviewable)} reviewable items across {totals.repositories} repositories.</p>
+        <p class="mt-1 text-[13px] text-fg-muted">{cover.known ? int(cover.reviewable) + " reviewable live-open items in the public census." : "Live-open coverage is unknown; see Coverage for source evidence."}</p>
       </div>
     </div>
     <a href="/queue/" class:list={['pill h-auto max-w-full whitespace-normal py-1', status.level === 'ok' ? 'bg-ok-soft text-ok' : 'bg-warn-soft text-warn']} data-tip={`Live queue snapshot\n${stamp(asOf.queue)}`}>
@@ -40,7 +40,7 @@ const success7 = kpis.runSuccess7d;
       tip="Items ClawSweeper closed in the last 7 complete days. Delta compares with the prior 7 days. PRs that were merged and items that a maintainer or another bot closed are counted apart." />
     <Kpi label="Sweep run success" value={pct(success7.current)} sub={`${int(success7.success)}/${int(success7.total)} runs · ${success7.recordedDays}/7 days recorded`} delta={success7.current !== null && success7.previous ? (success7.current - success7.previous) / success7.previous : null}
       spark={runs.days.slice(-14).map(day => (day.total ? day.success / day.total : null))} tip="Successful workflow runs divided by all recorded sweep runs in the last 7 complete UTC days. Missing days are not assumed healthy. Cancelled runs count as not successful. This measures execution, not review correctness." />
-    <Kpi label="Coverage" value={coverText} sub={`${int(cover.reviewed)} of ${int(cover.reviewable)}`}
+    <Kpi label="Coverage" value={coverText} sub={cover.known ? `${int(cover.reviewed)} of ${int(cover.reviewable)}` : "No complete live-open denominator"}
       tip={`Reviewable open items with a review in the last ${cover.windowDays} days.\nSnapshot ${stamp(asOf.coverage)}`} />
     <Kpi label="Review queue" value={int(live.pending)} sub={live.oldestPendingSeconds ? `oldest ${duration(live.oldestPendingSeconds)}` : 'nothing waiting'}
       tip={`Items waiting for a review slot. ${live.active} of ${live.capacity} slots busy.\nSnapshot ${stamp(asOf.queue)}`} />
@@ -85,6 +85,7 @@ const success7 = kpis.runSuccess7d;
     <Card title="Backlog" tip={`Open items, latest coverage snapshot.\n${stamp(asOf.coverage)}`}>
       <a slot="action" href="/coverage" class="flex items-center text-[12px] text-fg-muted hover:text-fg">Coverage<Icon name="chevronRight" size={14} /></a>
       <dl class="grid gap-3 text-[13px]">
+        {!cover.known && <p class="text-fg-muted">Unknown — no complete live-open identity census.</p>}
         {cover.segments.map(({ label: name, value, color }) => (
           <div class="flex items-center justify-between">
             <dt class="flex items-center gap-2 text-fg-muted"><span class="size-2 rounded-[3px]" style={`background:${color}`}></span>{name}</dt>

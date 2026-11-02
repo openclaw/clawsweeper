@@ -102,6 +102,7 @@ function reviewCoverageFixture() {
     window_days: 7,
     inventory_generated_at: "2026-08-15T11:55:00Z",
     inventory_status: "current",
+    coverage_status: "complete",
     fleets: [
       {
         repo: PRIVATE_MARKERS.repository,
@@ -144,6 +145,18 @@ test("review coverage retains only fleet-wide aggregate counts", () => {
   const malformed = reviewCoverageFixture();
   malformed.totals.reviewed_recent = -1;
   assert.equal(publicReviewCoverageProjection(malformed), null);
+});
+
+test("review coverage preserves explicit unknown status without deriving a percentage", () => {
+  const fixture = {
+    ...reviewCoverageFixture(),
+    coverage_status: "unknown",
+    totals: { ...reviewCoverageFixture().totals, coverage_percent: null },
+  };
+  const result = publicReviewCoverageProjection(fixture);
+  assert.equal(result?.coverage_status, "unknown");
+  assert.equal(result?.totals.coverage_percent, null);
+  assert.equal(publicReviewCoverageProjection({ ...fixture, coverage_status: "complete" }), null);
 });
 
 function applyAggregate(arrivals: number) {
