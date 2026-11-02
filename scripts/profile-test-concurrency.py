@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disposable four-trial experiment; not part of the workload or normal CI."""
+"""Disposable one-baseline input diagnostic; not part of normal CI."""
 
 import collections
 import hashlib
@@ -18,7 +18,7 @@ SOURCE = "e312d173d51876ee8e061d55e81d8cd9650edcaf"
 ALL_FILES = "b6ba845fc554616f08d869ac52fcefa202cc9d0bdd49369b2486409a76de888b"
 SHARD_FILES = "b83ba8088134fae28625836401c4ef3c135e2154457cf1f4406730261b7470c1"
 LOCK = "197a392e96a81c6c7d017a6ada1b7c95dd741ac9b49417b7f95e821c75f82274"
-ORDER = [4, 2, 2, 4]
+ORDER = [4]
 
 
 def digest(value):
@@ -293,7 +293,8 @@ def coverage(directory, root):
 def main(root, output):
     root, output = root.resolve(), output.resolve()
     output.mkdir(exist_ok=False)
-    summary = {"source": SOURCE, "order": ORDER, "trials": [], "status": "incomplete"}
+    summary = {"source": SOURCE, "purpose": "input-mutation-diagnostic",
+               "order": ORDER, "trials": [], "status": "incomplete"}
     try:
         if not __debug__:
             raise RuntimeError("Python assertion checks must remain enabled")
@@ -326,7 +327,7 @@ def main(root, output):
             observed = {"index": index, "concurrency": concurrency, "status": "started"}
             summary["trials"].append(observed)
             write(output / "summary.json", summary)
-            print(f"Trial {index}/4: concurrency {concurrency}, unchanged shard 1/4", flush=True)
+            print(f"Diagnostic baseline: concurrency {concurrency}, unchanged shard 1/4", flush=True)
             argv = ["node", "scripts/run-node-tests.mjs", "all", "--shard", "1/4",
                     "--test-concurrency", str(concurrency), "--coverage-out", str(trial / "coverage"),
                     "--", "--test-reporter=spec", "--test-reporter-destination=stdout",
@@ -336,24 +337,24 @@ def main(root, output):
             measured_coverage = coverage(trial / "coverage", root)
             write(trial / "outcomes.json", cases)
             write(trial / "coverage.json", measured_coverage)
-            assert input_manifest(root) == baseline, "Trial mutated shared inputs"
-            if index == 1:
-                expected_cases, expected_coverage = cases, measured_coverage["coveredBlocks"]
-            else:
-                assert cases == expected_cases, "Case identities or outcomes changed"
-                assert measured_coverage["coveredBlocks"] == expected_coverage, "Covered source blocks changed"
+            after = input_manifest(root)
+            write(trial / "inputs-after.json", after)
+            before_by_path = {item[0]: item for item in baseline}
+            after_by_path = {item[0]: item for item in after}
+            write(trial / "input-changes.json", {
+                "beforeSha256": digest(baseline), "afterSha256": digest(after),
+                "changes": [{"path": name, "before": before_by_path.get(name),
+                             "after": after_by_path.get(name)}
+                            for name in sorted(before_by_path.keys() | after_by_path.keys())
+                            if before_by_path.get(name) != after_by_path.get(name)]})
+            assert after == baseline, "Trial mutated shared inputs"
             observed.update(status="complete", seconds=receipt["seconds"],
                             cases=len(cases), outcomesSha256=digest(cases))
             print(json.dumps(observed), flush=True)
             # Retain normalized coverage evidence, not duplicate raw V8 payloads.
             shutil.rmtree(trial / "coverage")
             write(output / "summary.json", summary)
-        times = [trial["seconds"] for trial in summary["trials"]]
-        pairs = [(times[0], times[1]), (times[3], times[2])]
-        summary.update(status="complete",
-                       gainDemonstrated=all(b <= a * 0.9 and a - b >= 30 for a, b in pairs),
-                       pairs=[{"baseline": a, "candidate": b, "savedSeconds": a - b,
-                               "ratio": b / a} for a, b in pairs])
+        summary["status"] = "complete"
     except Exception as error:
         summary["error"] = f"{type(error).__name__}: {error}"
         raise
