@@ -12,9 +12,10 @@ const file = "/scanner/e5c6bfd8c9785047f6ee0123257dbd1cf23b7bdd";
 // Follow the existing policy-test fixture builder; the published source stays unchanged.
 const uri = new URL("https://ghe.example.test/acme/private.git");
 uri.username = "user";
-uri.password = "placeholder";
+const fixturePassword = "placeholder";
+uri.password = fixturePassword;
 uri.searchParams.set("secret", "placeholder");
-const raw = [uri.protocol, "//", uri.username, ":", uri.password, "@", uri.host].join("");
+const raw = [uri.protocol, "//", uri.username, ":", fixturePassword, "@", uri.host].join("");
 // Native 3.99.4 stops before the suffix; the full-line and file pins retain it.
 const rawV2 = raw + "/acme/private";
 const content = `import { expect, test, vi } from "vitest";
