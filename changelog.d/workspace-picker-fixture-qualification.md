@@ -1,0 +1,1 @@
+- Qualify the exact synthetic workspace-picker URI rejection fixture with pinned native scanner identities and complete source witnesses, while continuing to refuse altered inputs.
