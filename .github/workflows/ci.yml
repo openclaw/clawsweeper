@@ -1,332 +1,61 @@
-name: CI
+name: Shard concurrency experiment
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "apply-report.json"
-      - "repair-apply-report.json"
-      - "jobs/**"
-      - "records/**"
-      - "results/**"
-  pull_request:
   workflow_dispatch:
-    inputs:
-      codex_auth_mode:
-        description: "Inference route for the hosted canary; configured uses the repository setting"
-        type: choice
-        default: configured
-        options:
-          - configured
-          - clawrouter
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: shard-concurrency-experiment-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  review-network-smoke:
-    name: review-network-smoke
-    runs-on: ubuntu-24.04
-    timeout-minutes: 3
+  experiment:
+    if: github.repository == 'openclaw/clawsweeper'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out experiment control
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+          path: control
+          sparse-checkout: |
+            .github/workflows/ci.yml
+            scripts/profile-test-concurrency.py
+          sparse-checkout-cone-mode: false
+
+      - name: Stage disposable driver outside the workload
+        run: cp control/scripts/profile-test-concurrency.py "$RUNNER_TEMP/shard-concurrency-driver.py"
+
+      - name: Check out unchanged workload
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: "24.22.1"
-          cache: npm
-          cache-dependency-path: .github/actions/setup-codex/action.yml
-      - name: Install pinned Codex and prove Linux review sandbox
-        shell: bash
-        run: |
-          set -euo pipefail
-          codex_version="$(node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            const action = readFileSync(".github/actions/setup-codex/action.yml", "utf8");
-            const version = action.match(
-              /^  codex-version:\n(?:    [^\n]*\n)*?    default: "(\d+\.\d+\.\d+(?:-[\w.-]+)?)"$/m,
-            )?.[1];
-            if (!version) throw new Error("Missing exact setup-codex version pin");
-            process.stdout.write(version);
-          ')"
-          codex_prefix="$(mktemp -d "$RUNNER_TEMP/review-codex.XXXXXX")"
-          npm install --global --prefix "$codex_prefix" "@openai/codex@$codex_version" \
-            --no-audit --no-fund --ignore-scripts
-          export PATH="$codex_prefix/bin:$PATH"
-
-          # Match setup-codex's hosted Linux bubblewrap prerequisites.
-          current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
-          if [[ -n "$current_userns" && "$current_userns" != "1" ]]; then
-            sudo sysctl -w kernel.unprivileged_userns_clone=1
-          fi
-          current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
-          if [[ -n "$current_apparmor" && "$current_apparmor" != "0" ]]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-
-          CODEX_HOME="$(mktemp -d "$RUNNER_TEMP/review-codex-home.XXXXXX")"
-          export CODEX_HOME
-          printf 'model = "gpt-5.4"\n' > "$CODEX_HOME/config.toml"
-          export GITHUB_WORKSPACE="$PWD"
-          node .github/actions/setup-codex/configure-review-network.mjs
-          bash .github/actions/setup-codex/smoke-review-network.sh
-
-  hosted-review-scan:
-    name: Hosted native review scan smoke
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-        with:
+          ref: e312d173d51876ee8e061d55e81d8cd9650edcaf
           persist-credentials: false
-      - uses: ./.github/actions/setup-pnpm
+          path: workload
+
+      - uses: ./workload/.github/actions/setup-pnpm
         with:
-          build-script: build
-      - uses: ./.github/actions/setup-codex
-        env:
-          OPENAI_API_KEY: ${{ inputs.codex_auth_mode != 'clawrouter' && vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ inputs.codex_auth_mode != 'clawrouter' && vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
-          CLAWSWEEPER_CLAWROUTER_CONFIG: ${{ secrets.CLAWSWEEPER_CLAWROUTER_CONFIG }}
-        with:
-          auth-mode: ${{ inputs.codex_auth_mode == 'clawrouter' && 'clawrouter' || vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
-      - name: Prove refusal then clean structured review
-        run: node scripts/hosted-review-scan-smoke.mjs "$RUNNER_TEMP/hosted-review-scan-proof.json"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: hosted-review-scan-proof
-          path: ${{ runner.temp }}/hosted-review-scan-proof.json
-          if-no-files-found: error
-
-  check-fast:
-    name: check fast gates
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 2
-
-      - name: Validate workflow semantics
-        env:
-          ACTIONLINT_VERSION: "1.7.12"
-          ACTIONLINT_LINUX_AMD64_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
-        run: |
-          actionlint_archive="${RUNNER_TEMP}/actionlint.tar.gz"
-          curl --fail --show-error --silent --location \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
-            --output "$actionlint_archive"
-          printf '%s  %s\n' "$ACTIONLINT_LINUX_AMD64_SHA256" "$actionlint_archive" | sha256sum --check -
-          tar -xzf "$actionlint_archive" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint" \
-            -shellcheck= \
-            -ignore 'unexpected key "queue" for "concurrency" section' \
-            .github/workflows/*.yml
-
-      - uses: ./.github/actions/setup-pnpm
-
-      # Everything in `pnpm run check` except the full suite, which the shards run.
-      - name: Run static checks, build, lint, and changed-surface coverage
-        run: pnpm run check:fast
-
-      - name: Admit changed scanner archive proof
-        id: scanner-proof
-        if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          # The PR merge's first parent is the base; depth two supplies both trees.
-          if git diff --quiet HEAD^1 HEAD -- \
-            .github/actions/setup-review-tools \
-            .github/actions/setup-codex/action.yml .github/actions/setup-openclaw/action.yml \
-            .github/workflows/ci.yml src/review-tool-bootstrap.ts \
-            test/setup-review-tools-action.test.ts test/setup-codex-action.test.ts \
-            test/backlog-reliability-proof.test.ts; then
-            exit 0
-          else
-            status=$?
-          fi
-          test "$status" -eq 1
-          echo 'run=true' >> "$GITHUB_OUTPUT"
-
-      - name: Install first real scanner and save its verified archive
-        id: scanner-first
-        if: steps.scanner-proof.outputs.run == 'true'
-        uses: ./.github/actions/setup-review-tools
-
-      - name: Record first scanner and remove only archive transport
-        id: scanner-reset
-        if: steps.scanner-proof.outputs.run == 'true'
-        shell: bash
-        env:
-          ARCHIVE: ${{ steps.scanner-first.outputs.archive-path }}
-        run: |
-          node .github/actions/setup-review-tools/archive-cache.mjs --validate "$ARCHIVE"
-          scanner="$(command -v trufflehog)"
-          {
-            echo "bin=$scanner"
-            echo "sha256=$(sha256sum "$ARCHIVE" | cut -d ' ' -f 1)"
-            echo "version=$(env -i HOME="${scanner%/bin/trufflehog}" "$scanner" --version)"
-          } >> "$GITHUB_OUTPUT"
-          rm -- "$ARCHIVE"
-          test ! -e "$ARCHIVE"
-
-      - name: Restore archive through Actions and install another fresh scanner
-        id: scanner-second
-        if: steps.scanner-proof.outputs.run == 'true'
-        uses: ./.github/actions/setup-review-tools
-
-      - name: Require real archive round-trip and fresh scanner
-        if: steps.scanner-proof.outputs.run == 'true'
-        shell: bash
-        env:
-          FIRST_HIT: ${{ steps.scanner-first.outputs.cache-hit }}
-          SECOND_HIT: ${{ steps.scanner-second.outputs.cache-hit }}
-          ARCHIVE: ${{ steps.scanner-second.outputs.archive-path }}
-          FIRST_BIN: ${{ steps.scanner-reset.outputs.bin }}
-          FIRST_SHA256: ${{ steps.scanner-reset.outputs.sha256 }}
-          FIRST_VERSION: ${{ steps.scanner-reset.outputs.version }}
-        run: |
-          test "$SECOND_HIT" = true
-          node .github/actions/setup-review-tools/archive-cache.mjs --validate "$ARCHIVE"
-          scanner="$(command -v trufflehog)"
-          test "$scanner" != "$FIRST_BIN"
-          printf '%s  %s\n' "$FIRST_SHA256" "$ARCHIVE" | sha256sum --check -
-          test "$(env -i HOME="${scanner%/bin/trufflehog}" "$scanner" --version)" = "$FIRST_VERSION"
-          printf 'review archive round-trip: first-hit=%s second-hit=%s sha256=%s version=%s distinct-binaries=true\n' \
-            "${FIRST_HIT:-false}" "$SECOND_HIT" "$FIRST_SHA256" "$FIRST_VERSION"
-
-  check-tests:
-    name: check tests (${{ matrix.shard }}/${{ strategy.job-total }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      # Finish every shard so one run reports all failures, like the unsharded suite.
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    steps:
-      - uses: actions/checkout@v7
-
-      # Compiling takes seconds, cheaper than a serial build job plus artifact hop.
-      - uses: ./.github/actions/setup-pnpm
-        with:
+          working-directory: workload
           build-script: build:all
 
-      - name: Run test shard with raw V8 coverage
+      - name: Compare the unchanged critical shard on one host
         env:
-          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
-        run: node scripts/run-node-tests.mjs all --shard "$SHARD" --coverage-out "$RUNNER_TEMP/coverage"
+          GITHUB_WORKSPACE: ${{ github.workspace }}/workload
+          EXPERIMENT_OUTPUT: ${{ runner.temp }}/shard-concurrency-experiment
+        run: python3 "$RUNNER_TEMP/shard-concurrency-driver.py" workload "$EXPERIMENT_OUTPUT"
 
-      - uses: actions/upload-artifact@v7
+      - name: Retain bounded experiment receipts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: coverage-shard-${{ matrix.shard }}
-          path: ${{ runner.temp }}/coverage
+          name: shard-concurrency-experiment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/shard-concurrency-experiment/*.json
+            ${{ runner.temp }}/shard-concurrency-experiment/*/*.json
+            ${{ runner.temp }}/shard-concurrency-experiment/*/*.xml
+            ${{ runner.temp }}/shard-concurrency-experiment/*/*.log
           if-no-files-found: error
           retention-days: 1
-          overwrite: true
-
-  check-coverage:
-    name: check coverage
-    needs: check-tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-
-      # Node's coverage report reads the compiled sources the shards executed.
-      - uses: ./.github/actions/setup-pnpm
-        with:
-          build-script: build:all
-
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: coverage-shard-*
-          path: ${{ runner.temp }}/coverage
-
-      - name: Enforce coverage thresholds over every shard
-        run: node scripts/run-node-tests.mjs all --coverage-from "$RUNNER_TEMP/coverage"
-
-  package-admission:
-    name: Classify local package qualification
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    outputs:
-      package-required: ${{ steps.classify.outputs.package-required }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 2
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24.22.1"
-      - id: classify
-        run: node scripts/local-package-admission.mjs
-
-  local-package:
-    needs: package-admission
-    # Failed/missing admission keeps the full path; the producer emits lowercase booleans.
-    if: ${{ !cancelled() && !(needs.package-admission.result == 'success' && needs.package-admission.outputs.package-required == 'false') }}
-    uses: ./.github/workflows/local-package-qualification.yml
-    permissions:
-      contents: read
-
-  # Single required status: every required gate must pass. `always()`
-  # keeps it from being skipped (which would read as success) when a gate fails.
-  check:
-    name: pnpm check
-    if: always()
-    needs: [check-fast, check-tests, check-coverage, package-admission, local-package]
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: Require every check job to pass
-        env:
-          NEEDS: ${{ toJSON(needs) }}
-        run: |
-          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
-          jq -e '
-            .["package-admission"].outputs["package-required"] as $required
-            | ($required == "true" or $required == "false")
-            and (. as $jobs | all(["check-fast", "check-tests", "check-coverage", "package-admission"][]; $jobs[.].result == "success"))
-            and (.["local-package"].result == "success" or ($required == "false" and .["local-package"].result == "skipped"))
-          ' <<<"$NEEDS" >/dev/null
-
-  sparse-repair-builds:
-    name: sparse repair build smoke
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: ./.github/actions/setup-pnpm
-
-      - name: Build each sparse repair checkout
-        run: pnpm run test:workflow-sparse-checkout
-
-  windows-codex-launch:
-    name: Windows Codex launcher
-    runs-on: windows-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: ./.github/actions/setup-pnpm
-
-      - name: Build process workers
-        run: |
-          pnpm run build
-          pnpm run build:repair
-
-      - name: Verify native Windows launcher
-        run: >
-          node --test --test-name-pattern
-          "escaped Windows launchers|extensionless Windows node shebang shims|CODEX_BIN and preserves argv|timeout errors"
-          test/codex-process.test.ts
