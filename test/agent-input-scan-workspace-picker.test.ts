@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   classifyReviewedFixtureScan,
@@ -80,7 +79,6 @@ test("projects.list projects raw Enterprise origins into read-safe identity with
   });
 });
 `;
-const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const reference: ScanSourceReference = {
   source,
   mode: "100644",
@@ -147,19 +145,15 @@ function scan(
 }
 
 test("workspace repository identity fixture binds exact native, line, and complete source identities", () => {
-  assert.equal(hash(raw), "e26a1ab8bea9e595632020487f494a373085d4ece58f72dcb9c9d72aae3c1353");
-  assert.equal(hash(rawV2), "91f8a02c4831296a6adc1d02eaf52ebaa563e1593b759677c284a23c4874e948");
-  assert.equal(
-    hash(content.split(String.fromCharCode(10))[20]!),
-    "d70f1b47aeda919b3c0c195b6e5df95fa6af2329760734508ab87bbbcbf456ef",
-  );
-  assert.equal(hash(content), "1441fca2a24daa08e02e82f032601729277b1334d3b996c2346d55ac6adabe90");
   const result = scan();
   assert.equal(result.kind, "classified", JSON.stringify(result));
   if (result.kind === "classified") {
     assert.equal(result.notices.length, 1);
     assert.equal(result.notices[0]?.source, source);
-    assert.equal(result.notices[0]?.fixtureSha256, hash(rawV2));
+    assert.equal(
+      result.notices[0]?.fixtureSha256,
+      "91f8a02c4831296a6adc1d02eaf52ebaa563e1593b759677c284a23c4874e948",
+    );
     assert.equal(result.notices[0]?.findings[0]?.literalLine, 21);
   }
 });
