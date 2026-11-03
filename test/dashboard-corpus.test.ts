@@ -542,9 +542,182 @@ test("refresh planning", () => {
   assert.equal(plan({ event: "workflow_dispatch", hasState: false }), "full");
 });
 
-test("only the sealed tree and the public aggregate are cached; the site holds no records secret", () => {
+// Test-only policy: remove one exact approved env key/value,never a whole
+// step/env block. Any residual secret name/reference must still be rejected.
+function assertSiteCoverageSecretScope(input: Record<string, any>) {
+  const site = structuredClone(input);
+  assert.deepEqual(site.on.pull_request.paths, [
+    "dashboard-site/**",
+    ".github/workflows/dashboard-site.yml",
+  ]);
+  assert.equal(site.jobs.publish.if, "${{ github.event_name != 'pull_request' }}");
+  const pr = site.jobs["build-check"];
+  assert.equal(pr.if, "${{ github.event_name == 'pull_request' }}");
+  assert.doesNotMatch(JSON.stringify(pr), /secrets|CLAWSWEEPER_WEBHOOK_SECRET/i);
+  const fixtures = pr.steps.filter(
+    (step: any) => step.name === "Build the site from the fixture snapshot",
+  );
+  assert.equal(fixtures.length, 1);
+  assert.equal(fixtures[0]["working-directory"], "dashboard-site");
+  assert.match(fixtures[0].run, /^\s*cp fixtures\/dashboard\.json src\/data\/dashboard\.json$/m);
+  const steps = site.jobs.publish.steps.filter((step: any) => step.name === "Build dashboard data");
+  assert.equal(steps.length, 1);
+  const data = steps[0];
+  assert.equal(data["working-directory"], "dashboard-site");
+  assert.equal(data.if, "${{ steps.corpus.outputs.ready == 'true' }}");
+  assert.equal(
+    data.run,
+    'node scripts/build-data.ts --state ../.dashboard-state --backfill-days "$BACKFILL_DAYS"',
+  );
+  assert.equal(data.env?.CLAWSWEEPER_WEBHOOK_SECRET, "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}");
+  delete data.env.CLAWSWEEPER_WEBHOOK_SECRET;
+  assert.doesNotMatch(JSON.stringify(site), /CLAWSWEEPER_WEBHOOK_SECRET/i);
+}
+
+test("site signing-secret scope rejects every extra reference or altered approved read step", () => {
+  const site = YAML.parse(readFileSync(".github/workflows/dashboard-site.yml", "utf8"));
+  const before = structuredClone(site);
+  assertSiteCoverageSecretScope(site);
+  assert.deepEqual(site, before, "allowance check never mutates the parsed source");
+  const secret = "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}";
+  const data = (workflow: any) =>
+    workflow.jobs.publish.steps.find((step: any) => step.name === "Build dashboard data");
+  const mutations: Array<[string, (workflow: any) => void]> = [
+    [
+      "global env",
+      (w) => {
+        w.env = { SIGNING_ALIAS: secret };
+      },
+    ],
+    [
+      "job env",
+      (w) => {
+        w.jobs.publish.env.SIGNING_ALIAS = secret;
+      },
+    ],
+    [
+      "PR env",
+      (w) => {
+        w.jobs["build-check"].env = { CLAWSWEEPER_WEBHOOK_SECRET: secret };
+      },
+    ],
+    [
+      "other step alias",
+      (w) => {
+        w.jobs.publish.steps.push({ name: "Other", env: { HIDDEN_ALIAS: secret } });
+      },
+    ],
+    [
+      "approved step hidden alias",
+      (w) => {
+        data(w).env.EXTRA = secret;
+      },
+    ],
+    [
+      "lowercase reference",
+      (w) => {
+        data(w).env.EXTRA = "${{ secrets.clawsweeper_webhook_secret }}";
+      },
+    ],
+    [
+      "other command",
+      (w) => {
+        w.jobs.publish.steps.push({ run: "echo $CLAWSWEEPER_WEBHOOK_SECRET" });
+      },
+    ],
+    [
+      "publish command",
+      (w) => {
+        w.jobs.publish.steps.find((step: any) => step.name === "Publish to Cloudflare Pages").run +=
+          "\necho " + secret;
+      },
+    ],
+    [
+      "outputs",
+      (w) => {
+        w.jobs.publish.outputs = { leaked: secret };
+      },
+    ],
+    [
+      "cache path",
+      (w) => {
+        w.jobs.publish.steps.push({ uses: "actions/cache/save@v6", with: { path: secret } });
+      },
+    ],
+    [
+      "artifact path",
+      (w) => {
+        w.jobs.publish.steps.push({ uses: "actions/upload-artifact@v4", with: { path: secret } });
+      },
+    ],
+    [
+      "missing secret",
+      (w) => {
+        delete data(w).env.CLAWSWEEPER_WEBHOOK_SECRET;
+      },
+    ],
+    [
+      "wrong secret",
+      (w) => {
+        data(w).env.CLAWSWEEPER_WEBHOOK_SECRET = "${{ secrets.OTHER }}";
+      },
+    ],
+    [
+      "right name wrong command",
+      (w) => {
+        data(w).run = "node scripts/other.ts";
+      },
+    ],
+    [
+      "wrong working directory",
+      (w) => {
+        data(w)["working-directory"] = ".";
+      },
+    ],
+    [
+      "wrong conditional",
+      (w) => {
+        data(w).if = "always()";
+      },
+    ],
+    [
+      "wrong publish guard",
+      (w) => {
+        w.jobs.publish.if = "always()";
+      },
+    ],
+    [
+      "wrong PR guard",
+      (w) => {
+        w.jobs["build-check"].if = "always()";
+      },
+    ],
+    [
+      "wrong PR fixture",
+      (w) => {
+        w.jobs["build-check"].steps.find(
+          (step: any) => step.name === "Build the site from the fixture snapshot",
+        ).run = "pnpm run build";
+      },
+    ],
+    [
+      "duplicate data step",
+      (w) => {
+        w.jobs.publish.steps.push(structuredClone(data(w)));
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    const copy = structuredClone(site);
+    mutate(copy);
+    assert.throws(() => assertSiteCoverageSecretScope(copy), name);
+  }
+});
+
+test("only the sealed tree and public aggregate are cached; site signing secret is confined to the private coverage read", () => {
   const site = readFileSync(".github/workflows/dashboard-site.yml", "utf8");
-  assert.doesNotMatch(site, /hydrate-state|dashboard-corpus\.ts|CLAWSWEEPER_WEBHOOK_SECRET/);
+  assert.doesNotMatch(site, /hydrate-state|dashboard-corpus\.ts/);
+  assertSiteCoverageSecretScope(YAML.parse(site));
   const corpus = YAML.parse(readFileSync(".github/workflows/dashboard-corpus.yml", "utf8")) as {
     on: { schedule: Array<{ cron: string }> };
     jobs: { refresh: { steps: Array<{ uses?: string; with?: { path?: string } }> } };
