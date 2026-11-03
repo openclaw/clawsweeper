@@ -2,7 +2,7 @@
 // fetches exactly once each 15m+1 cycle. Synthetic clock/data, no live operations.
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { spawnSync, execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -15,6 +15,7 @@ import {
 import { createServer } from "node:http";
 import { dirname, extname, join, resolve } from "node:path";
 import { chromium } from "playwright-core";
+import { captureProofSource, proofEnvironment } from "./proof-provenance.mjs";
 import worker, { ExactReviewQueue } from "../../../dashboard/worker.ts";
 import {
   ExactReviewDirectPublicationStore,
@@ -25,6 +26,7 @@ import { CANONICAL_BODY_PREFIX } from "../../../dashboard/canonical-bodies.ts";
 import { TestStorage } from "../../../test/exact-review-test-storage.ts";
 const root = resolve(import.meta.dirname, "../../.."),
   output = join(root, ".artifacts/ui-live-coverage/refresh-cadence");
+const environment = proofEnvironment();
 mkdirSync(output, { recursive: true });
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const realDateNow = Date.now,
@@ -348,8 +350,8 @@ try {
   ];
   const receipt = {
     ok: true,
-    qualification: "supporting host, synthetic controlled clock/state",
-    head: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
+    ...environment,
+    ...captureProofSource(root),
     sourceBinding: Object.fromEntries(
       files.map((file) => [file, hash(readFileSync(join(root, file)))]),
     ),
@@ -372,7 +374,7 @@ try {
     limits: [
       "Explicitly synthetic existing canonical state, not real fleet review results",
       "Real timers bound timeout; only Date.now is controlled and restored before Astro/browser",
-      "No live GitHub/model calls or container qualification",
+      "No live GitHub/model calls; containment requires external wrapper/runtime evidence",
     ],
   };
   writeFileSync(join(output, "receipt.json"), JSON.stringify(receipt, null, 2));

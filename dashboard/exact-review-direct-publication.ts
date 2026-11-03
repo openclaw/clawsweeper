@@ -896,7 +896,7 @@ export class ExactReviewDirectPublicationStore {
       Number.isFinite(reviewedAt) ? reviewedAt : null,
       Number(reviewCoverageRecordExcluded(fields.labels)),
       JSON.stringify({
-        ...reviewCoverageRecord(content ?? ""),
+        ...canonicalReviewCoverageRecord(content ?? "", Number(row.byte_length)),
         sourceDigest: row.digest,
         sourceRevision: Number(row.revision),
       }),
@@ -1476,7 +1476,7 @@ export class ExactReviewDirectPublicationStore {
           try {
             const content = await this.bodies.read({ digest: String(row.digest), bytes });
             const facts = JSON.stringify({
-              ...reviewCoverageRecord(content),
+              ...canonicalReviewCoverageRecord(content, bytes),
               sourceDigest: String(row.digest),
               sourceRevision: Number(row.revision),
             });
@@ -3794,6 +3794,15 @@ export function normalizeReviewCoverageInventory(
   return { generated_at: new Date(generatedAtMs).toISOString(), repositories };
 }
 
+// Preserve SQLite inline-text NUL semantics across v1 detachment. This does not
+// reintroduce the clipped 4KiB header limit: ordinary long verified bodies still
+// provide their complete header. Chunked v1 prefixes decode base64 and do not
+// have SQLite TEXT NUL termination. Canonical bytes and fences are unchanged.
+function canonicalReviewCoverageRecord(content: string, bytes: number): ReviewCoverageRecord {
+  const nul = bytes <= EXACT_REVIEW_CANONICAL_INLINE_BYTES ? content.indexOf("\0") : -1;
+  return reviewCoverageRecord(nul < 0 ? content : content.slice(0, nul));
+}
+
 function storedCoverageFacts(
   value: string,
   digest: unknown,
@@ -3809,7 +3818,12 @@ function storedCoverageFacts(
       facts.sourceRevision === revision &&
       typeof facts.status === "string"
     )
-      return facts;
+      return {
+        kind: facts.kind,
+        headSha: facts.headSha,
+        status: facts.status,
+        reviewedAt: facts.reviewedAt,
+      };
   } catch {
     /* A malformed read-model cache is unavailable, never source evidence. */
   }

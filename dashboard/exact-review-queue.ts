@@ -1083,26 +1083,19 @@ export class ExactReviewQueue {
     )
       return cached;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const readTimeout = new Error("coverage_scan_read_timeout");
     try {
       // refreshReviewCoverageScan coalesces every waiter and yields between
       // pages, so awaiting it does not hold claims/heartbeats behind a scan.
       return await Promise.race([
         this.refreshReviewCoverageScan(),
         new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new Error("coverage_scan_read_timeout")),
-            REVIEW_COVERAGE_READ_WAIT_MS,
-          );
+          timer = setTimeout(() => reject(readTimeout), REVIEW_COVERAGE_READ_WAIT_MS);
         }),
       ]);
     } catch (error: unknown) {
-      console.warn("exact_review_coverage_scan_unavailable", {
-        error: error instanceof Error ? error.name : "unknown",
-        reason:
-          error instanceof Error && error.message === "coverage_scan_read_timeout"
-            ? "read_timeout"
-            : "refresh_failed",
-      });
+      if (error === readTimeout) console.warn("exact_review_coverage_scan_read_timeout");
+      else console.warn("exact_review_coverage_scan_refresh_failed");
       // Never relabel or copy expired evidence as fresh. Count witnesses can
       // still be projected independently; this response has no current scan.
       return null;

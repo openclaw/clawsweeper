@@ -94,43 +94,38 @@ test("ordinary pointer tips retain hover and pointer-follow behavior", () => {
 });
 
 test("coverage explanations preserve the five ordered counts and colors", () => {
-  const data = readFileSync("dashboard-site/src/lib/data.ts", "utf8");
-  const definition = data.slice(
-    data.indexOf("const coverageTotals ="),
-    data.indexOf("export const coverText"),
-  );
-  const coverage = {
-    window_days: 30,
-    totals: {
-      coverage_percent: 10,
-      reviewable_records: 100,
-      reviewed_recent: 10,
-      stale: 20,
-      expired: 30,
-      failed: 5,
-      unreviewed_records: 15,
-      untracked_open: 20,
-      pending: 65,
-    },
+  // Read the actual Coverage presentation owner, not its removed legacy model.
+  const page = readFileSync("dashboard-site/src/pages/coverage.astro", "utf8");
+  const start = page.indexOf("const segments =");
+  assert.ok(start >= 0, "locate the actual segment presentation owner");
+  const definition = page.slice(start, page.indexOf("];", start) + 2);
+  const cover = {
+    reviewed_recent: 10,
+    stale: 20,
+    expired: 30,
+    failed: 5,
+    unreviewed_records: 15,
+    untracked_open: 20,
   };
-  const cover = runInNewContext(
-    stripTypeScriptTypes(definition.replace("export const cover =", "const cover =")) + "; cover;",
-    { coverage },
+  const segments = JSON.parse(
+    JSON.stringify(runInNewContext(stripTypeScriptTypes(definition) + "; segments;", { cover })),
   );
-  const segments = JSON.parse(JSON.stringify(cover.segments));
   assert.deepEqual(
     segments.map((s: any) => [s.label, s.value, s.color]),
     [
-      ["Reviewed recently", 10, "var(--ok)"],
-      ["Stale", 20, "var(--warn)"],
+      ["Fresh", 10, "var(--ok)"],
+      ["Marked stale / changed", 20, "var(--warn)"],
       ["Expired", 30, "var(--accent)"],
       ["Failed", 5, "var(--bad)"],
-      ["Never reviewed", 35, "var(--fg-faint)"],
+      ["Missing usable evidence", 35, "var(--fg-faint)"],
     ],
   );
-  assert.match(segments[0].tip, /last 30 days/);
-  assert.match(segments[1].tip, /status is marked stale/);
-  assert.match(segments[2].tip, /30-day freshness window/);
+  assert.match(segments[0].tip, /Matching live identity and PR head/);
+  assert.match(segments[0].tip, /valid review date within the window/);
+  assert.match(segments[0].tip, /no later observed reopen/);
+  assert.doesNotMatch(segments[0].tip, /no later observed activity/);
+  assert.match(segments[1].tip, /Not the same as age expiry/);
+  assert.match(segments[2].tip, /outside the freshness window/);
   assert.match(segments[3].tip, /attempt failed/);
-  assert.match(segments[4].tip, /Earlier review attempts may exist/);
+  assert.match(segments[4].tip, /Earlier attempts may exist/);
 });

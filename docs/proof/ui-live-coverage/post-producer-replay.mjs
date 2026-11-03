@@ -1,3 +1,5 @@
+import { captureProofSource, proofEnvironment } from "./proof-provenance.mjs";
+import { replayCaption, withReplayClock } from "./replay-clock.mjs";
 // Same frozen bundle, actual baseline/candidate producer stages and signed local
 // Worker intake. No labels, reopen events, or canonical statuses are invented.
 import assert from "node:assert/strict";
@@ -20,6 +22,8 @@ import { chromium } from "playwright-core";
 import candidateWorker, { ExactReviewQueue } from "../../../dashboard/worker.ts";
 import { TestStorage } from "../../../test/exact-review-test-storage.ts";
 import * as candidateProducer from "../../../dist/repair/target-fanout.js";
+const executionStartedAt = new Date().toISOString();
+const environment = proofEnvironment();
 const root = resolve(import.meta.dirname, "../../..");
 const base = "96869eede468afe433994130d62edd50884ef43a";
 const scratch = join(root, ".openclaw/tmp/ui-live-coverage/post-producer-replay");
@@ -37,6 +41,9 @@ const htmlBytes = readFileSync(join(frozenDir, "coverage-.html")),
   apiBytes = readFileSync(join(frozenDir, "api-review-coverage.json"));
 const legacyCoverage = JSON.parse(apiBytes);
 const sourceNow = Date.parse(reference.completedAt);
+assert.ok(Number.isFinite(sourceNow), "Captured evaluation time must be valid");
+const evaluationAt = new Date(sourceNow).toISOString();
+const caption = replayCaption(sourceNow, executionStartedAt);
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const boundary = [];
 let forbidden = 0;
@@ -208,7 +215,10 @@ function localRuntime(module, Queue, unavailableCanonical = false) {
       }),
     },
   };
-  const fetchImpl = (url, init) => module.fetch(new Request(String(url), init), env);
+  // Only this socket-free in-process Worker call sees historical wall time.
+  // It restores before browser/server work; native request timers stay real.
+  const fetchImpl = (url, init) =>
+    withReplayClock(sourceNow, () => module.fetch(new Request(String(url), init), env));
   return { storage, queue, requests, fetchImpl, unavailableCanonical };
 }
 let browser, context, server;
@@ -391,12 +401,26 @@ try {
     mkdirSync(join(directory, "src/data"), { recursive: true });
     const snapshot = { ...common, coverage };
     writeFileSync(join(directory, "src/data/dashboard.json"), JSON.stringify(snapshot));
-    const run = spawnSync(process.execPath, [astroBin, "build"], {
-      cwd: directory,
-      encoding: "utf8",
-      timeout: 120000,
-      env: { PATH: process.env.PATH, HOME: process.env.HOME, ASTRO_TELEMETRY_DISABLED: "1" },
-    });
+    const run = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        join(root, "docs/proof/ui-live-coverage/replay-clock-preload.mjs"),
+        astroBin,
+        "build",
+      ],
+      {
+        cwd: directory,
+        encoding: "utf8",
+        timeout: 120000,
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          ASTRO_TELEMETRY_DISABLED: "1",
+          CLAWSWEEPER_PROOF_EVALUATION_AT: evaluationAt,
+        },
+      },
+    );
     writeFileSync(join(output, name + "-build.log"), run.stdout + run.stderr);
     assert.equal(run.status, 0, run.stdout + run.stderr);
     cpSync(join(directory, "dist"), join(output, name + "-site"), { recursive: true });
@@ -445,7 +469,22 @@ try {
   for (const name of ["baseline", "candidate"]) {
     active = join(output, name + "-site");
     await page.goto(origin + "/coverage/", { waitUntil: "networkidle" });
+    // Add a clearly labeled proof caption, never alter production count nodes.
+    // The browser and its snapshot-age banner deliberately retain REAL time.
+    await page.locator("main").evaluate((main, text) => {
+      const note = document.createElement("aside");
+      note.dataset.proofReplayClock = "true";
+      note.setAttribute("role", "note");
+      note.style.cssText =
+        "padding:12px;margin-bottom:16px;border:2px solid #a87500;font-size:13px";
+      note.textContent = text;
+      main.prepend(note);
+    }, caption);
+    const captionedHtml = await page.content();
+    writeFileSync(join(output, name + "-captioned.html"), captionedHtml);
     visible[name] = {
+      captionedHtmlSha256: hash(captionedHtml),
+      browserWallTime: await page.evaluate(() => new Date().toISOString()),
       text: await page.locator("body").innerText(),
       kpis: await page
         .locator("main .card")
@@ -523,7 +562,8 @@ try {
     ok: true,
     procedureSourceSha256: hash(readFileSync(import.meta.filename)),
     sourceBase: base,
-    qualification: "supporting host; provider approval/runtime receipt separate",
+    ...environment,
+    ...captureProofSource(root, base),
     frozenBundle: {
       html: hash(htmlBytes),
       repositoryHtml: hash(repoBytes),
@@ -532,6 +572,27 @@ try {
       observedFrom: reference.startedAt,
       observedThrough: reference.completedAt,
     },
+    clock: {
+      evaluationAt,
+      executionStartedAt,
+      executionCompletedAt: new Date().toISOString(),
+      controlledScopes: [
+        "in-process local Worker calls",
+        "baseline and candidate Astro build children",
+      ],
+      nativeTimersAndPerformance: "unchanged",
+      browserClock: "real; snapshot-age banner explicitly qualified by proof caption",
+    },
+    proofCaption: caption,
+    captionedHtml: Object.fromEntries(
+      Object.entries(visible).map(([name, value]) => [
+        name,
+        {
+          sha256: value.captionedHtmlSha256,
+          browserWallTime: value.browserWallTime,
+        },
+      ]),
+    ),
     sameBundleForBothVariants: true,
     baselineBuildReused: reuseBaseline,
     producerStages: {
@@ -576,6 +637,8 @@ try {
     "# Same-bundle post-producer UI comparison",
     "",
     "Both actual producer stages consume the SAME frozen public corpus, legacy aggregate and GitHub responses. No later live reads occur. The original legacy-only preview is preserved separately.",
+    "",
+    caption,
     "",
     "Candidate observed Open is " +
       candidateCoverage.totals.open_records +

@@ -21,22 +21,12 @@ import { ExactReviewDirectPublicationStore } from "../../../dashboard/exact-revi
 import { TestStorage } from "../../../test/exact-review-test-storage.ts";
 import { loadReviewCoverageInventory } from "../../../dist/repair/target-fanout.js";
 import { chromium } from "playwright-core";
+import { captureProofSource, proofEnvironment } from "./proof-provenance.mjs";
 
 const root = resolve(import.meta.dirname, "../../..");
 const output = join(root, ".artifacts/ui-live-coverage");
 mkdirSync(output, { recursive: true });
-const hostOnly = process.argv.includes("--host-supporting");
-if (
-  !hostOnly &&
-  !(
-    process.env.CRABBOX_PROOF_PROVIDER === "local-container" &&
-    process.env.CRABBOX_PROOF_LEASE &&
-    process.env.CRABBOX_PROOF_IMAGE
-  )
-)
-  throw new Error(
-    "Run in admitted Crabbox local-container with recorded provider/lease/image, or explicitly use --host-supporting (not qualifying proof).",
-  );
+const environment = proofEnvironment();
 const timestamp = new Date().toISOString();
 const now = Date.parse(timestamp);
 const old = new Date(now - 10 * 86400000).toISOString();
@@ -662,46 +652,15 @@ try {
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
   }
-  const files = [
-    ...new Set(
-      (
-        execFileSync("git", ["diff", "--name-only", "HEAD"], { cwd: root, encoding: "utf8" }) +
-        execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
-          cwd: root,
-          encoding: "utf8",
-        })
-      )
-        .trim()
-        .split("\n"),
-    ),
-  ]
-    .sort()
-    .filter((path) => existsSync(join(root, path)) && statSync(join(root, path)).isFile());
-  const digests = Object.fromEntries(
-    files.map((path) => [
-      path,
-      createHash("sha256")
-        .update(readFileSync(join(root, path)))
-        .digest("hex"),
-    ]),
-  );
   const receipt = {
     ok: true,
-    qualification: hostOnly
-      ? "supporting-host-only; required Crabbox proof blocked"
-      : "local-container-run; verify attached provider receipt",
-    provider: hostOnly ? "host" : process.env.CRABBOX_PROOF_PROVIDER,
-    image: hostOnly ? null : process.env.CRABBOX_PROOF_IMAGE,
-    lease: hostOnly ? null : process.env.CRABBOX_PROOF_LEASE,
+    ...environment,
+    ...captureProofSource(root),
+    procedureSourceSha256: createHash("sha256")
+      .update(readFileSync(import.meta.filename))
+      .digest("hex"),
     node: process.version,
     pnpm: execFileSync("pnpm", ["--version"], { encoding: "utf8" }).trim(),
-    base: "96869eede468afe433994130d62edd50884ef43a",
-    head: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
-    patch_sha256: createHash("sha256")
-      .update(execFileSync("git", ["diff", "--binary", "HEAD"], { cwd: root }))
-      .digest("hex"),
-    source_tree_digest: createHash("sha256").update(JSON.stringify(digests)).digest("hex"),
-    files: digests,
     forbidden_network_calls: forbiddenNetwork,
     cases,
     builds: builds.map(({ name }) => name),

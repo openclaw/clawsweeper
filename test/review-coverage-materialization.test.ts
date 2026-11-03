@@ -189,6 +189,23 @@ test("legacy long headers are extracted from verified full bodies, not clipped s
   assert.equal(facts.kind, "issue");
 });
 
+test("legacy inline NUL prefixes cannot acquire later body facts during automatic materialization", async () => {
+  const f = setup();
+  const digest = f.seed(1, "---\n\0\n" + markdown().slice(4));
+  const result = await f.store.materializeReviewCoverageFacts(f.inventory([1]));
+  assert.equal(result.materialized, 1);
+  const facts = JSON.parse(String(f.row(1).coverage_facts));
+  assert.equal(facts.status, "unknown");
+  assert.equal(facts.kind, undefined);
+  assert.equal(facts.reviewedAt, undefined);
+  assert.equal(facts.sourceDigest, digest);
+  assert.equal(facts.sourceRevision, 7);
+  assert.equal(
+    f.storage.scalar("SELECT COUNT(*) AS value FROM canonical_record_tuple_receipts"),
+    0,
+  );
+});
+
 test("invalid or exhausted fact budgets never become unbounded reads", async () => {
   const f = setup();
   f.seed(1);
