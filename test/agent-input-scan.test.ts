@@ -3031,7 +3031,8 @@ test("patch admission keeps legacy duplicate records and rejects coherent non-co
     if (result.kind === "refused")
       assert.equal(
         result.diagnostic.reason,
-        name === "unapproved source" ? "source_not_reviewed" : "material_not_reviewed",
+        // The shared URI's exact policy rejects this synthetic line before source attribution.
+        name === "unapproved source" ? "literal_mismatch" : "material_not_reviewed",
         name,
       );
   }
