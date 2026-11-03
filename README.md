@@ -437,6 +437,10 @@ review. The scan stages at most 256 MiB in private external temporary files and
 uses the remaining review deadline; it never silently truncates or bypasses.
 Diagnostics omit scanner output and source values. Restore prerequisites or
 remove sensitive input before retrying a refusal.
+Managed scanner setup failures also emit one bounded stderr diagnostic with a
+fixed phase and category, and the observed HTTP status when a download is
+rejected. Raw network errors, response bodies, and local paths remain omitted;
+the review still refuses with `scanner_unavailable` before starting a provider.
 Exact-review failure manifests distinguish a native output/scan-contract failure
 from an unclassified finding. The latter records the first blocking finding's
 bounded detector metadata and host-staged material identity: prompt, schema,

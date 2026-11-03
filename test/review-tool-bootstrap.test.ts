@@ -15,16 +15,160 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
+import { fileURLToPath } from "node:url";
 
 import {
   extractTarExecutable,
   darwinAclAllowsUnsafeWriter,
   ensureManagedTruffleHog,
+  formatReviewToolBootstrapDiagnostic,
+  parseReviewToolBootstrapDiagnostic,
+  ReviewToolBootstrapError,
   posixCacheAncestorIsUnsafe,
   reviewToolCacheRoot,
   reviewToolArtifact,
   TRUFFLEHOG_VERSION,
 } from "../dist/review-tool-bootstrap.js";
+
+function bootstrapFailure(phase: string, category: string) {
+  return (error: unknown) =>
+    error instanceof ReviewToolBootstrapError &&
+    error.diagnostic.phase === phase &&
+    error.diagnostic.category === category;
+}
+
+test("bootstrap HTTP failures retain only the observed status", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-tools-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const status of [403, 404, 429, 500]) {
+    await assert.rejects(
+      ensureManagedTruffleHog({
+        timeoutMs: 30_000,
+        env: { CLAWSWEEPER_REVIEW_TOOLS_DIR: root },
+        runtimePlatform: "linux",
+        runtimeArch: "x64",
+        fetchImpl: async (url, options) => {
+          assert.equal(url, reviewToolArtifact("linux", "x64")!.url);
+          assert.equal([...new Headers(options?.headers)].length, 0);
+          return new Response("private response body", {
+            status,
+            statusText: "private status text",
+          });
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ReviewToolBootstrapError);
+        assert.deepEqual(error.diagnostic, {
+          phase: "download",
+          category: "http",
+          http_status: status,
+        });
+        assert.equal(
+          formatReviewToolBootstrapDiagnostic(error.diagnostic),
+          `{"event":"review_tool_bootstrap_failed","phase":"download","category":"http","http_status":${status}}`,
+        );
+        assert.equal(error.cause, undefined);
+        assert.equal(error.message.includes("private"), false);
+        return true;
+      },
+    );
+  }
+});
+
+test("bootstrap transport failures neither expose text nor infer a cause", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-tools-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const error = Object.assign(new Error("private proxy credentials /private/operator/cache TLS"), {
+    name: "TimeoutError",
+    code: "ETIMEDOUT",
+    cause: new Error("private underlying cause"),
+  });
+  await assert.rejects(
+    ensureManagedTruffleHog({
+      timeoutMs: 30_000,
+      env: { CLAWSWEEPER_REVIEW_TOOLS_DIR: root },
+      runtimePlatform: "linux",
+      runtimeArch: "x64",
+      fetchImpl: async () => {
+        throw error;
+      },
+    }),
+    (caught: unknown) => {
+      assert.ok(caught instanceof ReviewToolBootstrapError);
+      assert.deepEqual(caught.diagnostic, { phase: "download", category: "failed" });
+      assert.equal(caught.cause, undefined);
+      assert.equal(
+        formatReviewToolBootstrapDiagnostic(caught.diagnostic),
+        '{"event":"review_tool_bootstrap_failed","phase":"download","category":"failed"}',
+      );
+      return true;
+    },
+  );
+});
+
+test("bootstrap rejects changed download bytes with a checksum diagnostic", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-tools-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  await assert.rejects(
+    ensureManagedTruffleHog({
+      timeoutMs: 30_000,
+      env: { CLAWSWEEPER_REVIEW_TOOLS_DIR: root },
+      runtimePlatform: "linux",
+      runtimeArch: "x64",
+      fetchImpl: async () => new Response("private untrusted archive bytes"),
+    }),
+    bootstrapFailure("download", "checksum"),
+  );
+});
+
+test("bootstrap diagnostics accept one bounded record and reject extra data", () => {
+  const fact = { phase: "download", category: "http", http_status: 403 } as const;
+  const line = formatReviewToolBootstrapDiagnostic(fact) + "\n";
+  assert.deepEqual(parseReviewToolBootstrapDiagnostic(line), fact);
+  assert.equal(Buffer.byteLength(line) <= 256, true);
+  const record = JSON.parse(line);
+  for (const text of [
+    "",
+    line.trimEnd(),
+    line + line,
+    "private loader error\n" + line,
+    line + "private extra output\n",
+    " ".repeat(256) + line,
+    JSON.stringify({ ...record, private: "secret" }) + "\n",
+    JSON.stringify({ ...record, event: "other" }) + "\n",
+    JSON.stringify({ ...record, phase: "private path" }) + "\n",
+    JSON.stringify({ ...record, category: "private message" }) + "\n",
+    JSON.stringify({ ...record, phase: "cache" }) + "\n",
+    JSON.stringify({ event: record.event, phase: "cache", category: "http" }) + "\n",
+    ...[0, 600, 403.5, "403", null].map(
+      (status) => JSON.stringify({ ...record, http_status: status }) + "\n",
+    ),
+  ])
+    assert.equal(parseReviewToolBootstrapDiagnostic(text), undefined);
+});
+
+test("the real setup script refuses an invalid cache without outputting private text", () => {
+  const result = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL("../scripts/setup-review-tools.mjs", import.meta.url))],
+    {
+      encoding: "utf8",
+      timeout: 5000,
+      env: {
+        SystemRoot: process.env.SystemRoot,
+        CLAWSWEEPER_REVIEW_TOOLS_DIR: "private-relative-cache",
+      },
+    },
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.deepEqual(parseReviewToolBootstrapDiagnostic(result.stderr), {
+    phase: "setup",
+    category: "failed",
+  });
+  assert.equal(result.stderr.includes("private-relative-cache"), false);
+});
 
 function tarEntry(name: string, contents: Buffer): Buffer {
   const header = Buffer.alloc(512);
@@ -148,7 +292,7 @@ test("review-tool bootstrap rejects an oversized response before reading its bod
       runtimePlatform: "linux",
       runtimeArch: "x64",
     }),
-    /exceeds the archive limit/,
+    bootstrapFailure("download", "limit"),
   );
 });
 
@@ -173,7 +317,7 @@ test("review-tool bootstrap refuses symlinked managed-cache directories before d
       runtimePlatform: "linux",
       runtimeArch: "x64",
     }),
-    /unsafe directory entry/,
+    bootstrapFailure("cache", "failed"),
   );
   assert.equal(fetched, false);
   assert.deepEqual(readdirSync(target), []);
@@ -200,7 +344,7 @@ test("review-tool bootstrap refuses a symlinked cache root before download", asy
       runtimePlatform: "linux",
       runtimeArch: "x64",
     }),
-    /unsafe directory (?:entry|ancestor)/,
+    bootstrapFailure("cache", "failed"),
   );
   assert.equal(fetched, false);
   assert.deepEqual(readdirSync(target), []);
@@ -229,7 +373,7 @@ test(
         runtimePlatform: "linux",
         runtimeArch: "x64",
       }),
-      /exceeds the archive limit/,
+      bootstrapFailure("download", "limit"),
     );
     assert.equal(existsSync(join(target, "cache")), true);
   },
@@ -260,7 +404,7 @@ test("review-tool bootstrap refuses a cache root writable by another principal",
       runtimePlatform: "linux",
       runtimeArch: "x64",
     }),
-    /not private to the current user/,
+    bootstrapFailure("cache", "failed"),
   );
   assert.equal(fetched, false);
   assert.equal(existsSync(marker), false);

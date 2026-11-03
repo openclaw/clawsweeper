@@ -197,6 +197,80 @@ test("malformed PATH scanner version output refuses instead of falling through",
   );
 });
 
+test("failed scanner bootstrap exposes only validated facts and never starts a provider", (t) => {
+  const f = fixture(t);
+  const bin = useFakeScanner(t);
+  const scanner = realpathSync(
+    join(bin, process.platform === "win32" ? "trufflehog.exe" : "trufflehog"),
+  );
+  const originalCache = process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
+  process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = join(f.root, "managed-cache");
+  const line =
+    '{"event":"review_tool_bootstrap_failed","phase":"download","category":"http","http_status":403}\n';
+  let stderr = "";
+  let installs = 0;
+  const messages: string[] = [];
+  const nativeSpawn = childProcess.spawnSync;
+  t.mock.method(console, "error", (...args) => {
+    messages.push(args.join(" "));
+  });
+  t.mock.method(childProcess, "spawnSync", (...args: Parameters<typeof nativeSpawn>) => {
+    if (args[0] === scanner && args[1]?.[0] === "--version") {
+      return nativeSpawn(process.execPath, ["-e", "console.log('trufflehog 3.97.1');"], args[2]);
+    }
+    if (args[0] === process.execPath && args[1]?.[0]?.endsWith("setup-review-tools.mjs")) {
+      installs++;
+      return nativeSpawn(
+        process.execPath,
+        [
+          "-e",
+          `process.stdout.write('private failed path'); process.stderr.write(${JSON.stringify(stderr)}); process.exitCode = 1;`,
+        ],
+        args[2],
+      );
+    }
+    return nativeSpawn(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    if (originalCache === undefined) delete process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
+    else process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = originalCache;
+  });
+  const cases = [
+    line,
+    ' { "http_status":403, "category":"http", "phase":"download", "event":"review_tool_bootstrap_failed" }\n',
+    "",
+    "private provider/loader error\n",
+    line + line,
+    line + "private extra data\n",
+    " ".repeat(256) + line,
+    line.replace('"phase":"download"', '"phase":"cache"'),
+    line.replace('"http_status":403', '"http_status":403,"private":"secret"'),
+  ];
+  for (const [index, text] of cases.entries()) {
+    stderr = text;
+    messages.length = 0;
+    assert.throws(
+      () => f.run({ kind: "prompt" }),
+      (error: unknown) => {
+        assert.ok(error instanceof AgentInputScanError);
+        assert.equal(error.reason, "scanner_unavailable");
+        assert.equal(error.retryable, false);
+        assert.equal(agentInputScanFailureExitCode(error), null);
+        assert.equal(error.message.includes("403"), false);
+        assert.equal(error.message.includes("private"), false);
+        return true;
+      },
+    );
+    assert.deepEqual(messages, index < 2 ? [line.trimEnd()] : []);
+    assert.equal(existsSync(f.calls), false);
+    assert.equal(existsSync(f.diagnosticPromptPath), false);
+  }
+  assert.equal(installs, cases.length);
+});
+
 test("scanner bounds Git process growth while preserving complete binary inputs in both scans", (t) => {
   const f = fixture(t);
   const expected = new Map<string, string>();

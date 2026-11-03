@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
-import { ensureManagedTruffleHog } from "../dist/review-tool-bootstrap.js";
+import {
+  ensureManagedTruffleHog,
+  formatReviewToolBootstrapDiagnostic,
+  ReviewToolBootstrapError,
+} from "../dist/review-tool-bootstrap.js";
 import { managedScannerCacheRoot } from "../dist/agent-input-scan.js";
 
 const args = process.argv.slice(2);
@@ -16,8 +20,13 @@ try {
     env: { ...process.env, CLAWSWEEPER_REVIEW_TOOLS_DIR: cacheRoot },
   });
   process.stdout.write(`${scanner}\n`);
-} catch {
-  // Scanner diagnostics can include network or platform details. The admission
-  // boundary intentionally exposes only the fail-closed reason to callers.
+} catch (error) {
+  console.error(
+    formatReviewToolBootstrapDiagnostic(
+      error instanceof ReviewToolBootstrapError
+        ? error.diagnostic
+        : { phase: "setup", category: "failed" },
+    ),
+  );
   process.exitCode = 1;
 }
