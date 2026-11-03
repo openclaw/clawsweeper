@@ -142,6 +142,37 @@ test("public status projection is fail-closed for nested identity-bearing metada
   });
 });
 
+test("public status retains bounded producer failure codes through repeated projection", () => {
+  const projected = publicStatusProjection({
+    diagnostics: {
+      errors: [
+        "worker_health_unavailable",
+        "recent_closed_unavailable",
+        "private upstream error https://example.invalid/private",
+      ],
+      error_count: 4,
+    },
+  });
+  const expected = {
+    errors: [
+      "worker_health_unavailable",
+      "recent_closed_unavailable",
+      "telemetry_unavailable",
+      "telemetry_unavailable",
+    ],
+    error_count: 4,
+  };
+  assert.deepEqual(projected.diagnostics, expected);
+  assert.deepEqual(strictPublicStatusProjection(projected).diagnostics, expected);
+  assert.equal(JSON.stringify(projected).includes("example.invalid"), false);
+
+  const bounded = publicStatusProjection({
+    diagnostics: { errors: Array.from({ length: 25 }, () => "events_unavailable") },
+  });
+  assert.equal(bounded.diagnostics.error_count, 20);
+  assert.equal(bounded.diagnostics.errors.length, 20);
+});
+
 test("public status projection drops over-depth values and retains closed health enums", () => {
   const overDepth = { token: "synthetic-over-depth-token" };
   let nested = overDepth;

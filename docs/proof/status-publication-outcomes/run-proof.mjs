@@ -27,6 +27,7 @@ const lifetime = process.argv.includes("--lifetime");
 const publicationOrder = process.argv.includes("--publication-order");
 const publicationReasons = process.argv.includes("--publication-reasons");
 const cachePaths = process.argv.includes("--cache-paths");
+const telemetryFailures = process.argv.includes("--telemetry-failures");
 const serveBrowser = process.argv.includes("--serve-browser");
 const workerOnly = serveBrowser || cachePaths || process.argv.includes("--worker-only");
 assert.ok(
@@ -135,6 +136,7 @@ if (capsule) {
 const scratch = await mkdtemp(path.join(tmpdir(), "publication-proof-"));
 const beforeRoot = path.join(scratch, "base");
 const children = [];
+let githubFixture;
 const now = Date.now() - 1_000;
 const head = capsule?.candidate_head ?? git(["rev-parse", "HEAD"]).trim();
 const dirty = capsule?.candidate_dirty ?? git(["status", "--porcelain"]).trim() !== "";
@@ -170,11 +172,28 @@ try {
   );
   const results = [];
   const browserResults = [];
+  if (telemetryFailures) {
+    const { startGithubFixture } = await import("./telemetry-failure-proof.mjs");
+    githubFixture = await startGithubFixture();
+  }
   for (const [label, source] of [
     ["base", beforeRoot],
     ["candidate", root],
   ]) {
     const preview = await startWorker(label, source);
+    if (telemetryFailures) {
+      const { proveTelemetryFailures } = await import("./telemetry-failure-proof.mjs");
+      let current = preview;
+      results.push(
+        await proveTelemetryFailures(preview, label, githubFixture, async () => {
+          await stopWorker(current);
+          current = await startWorker(label, source);
+          return current;
+        }),
+      );
+      await stopWorker(current);
+      continue;
+    }
     if (publicationReasons) {
       const { provePublicationReasons } = await import("./publication-reasons-proof.mjs");
       const result = await provePublicationReasons(preview.origin, label);
@@ -274,13 +293,15 @@ try {
   }
   if (capsule) await verifyFiles(root, capsule.candidate_files);
   const summary = {
-    schema: publicationReasons
-      ? "publication-reasons-proof/v1"
-      : publicationOrder
-        ? "status-publication-order-proof/v1"
-        : lifetime
-          ? "status-refresh-lifetime-proof/v1"
-          : "status-publication-outcomes-proof/v1",
+    schema: telemetryFailures
+      ? "status-telemetry-failures-proof/v1"
+      : publicationReasons
+        ? "publication-reasons-proof/v1"
+        : publicationOrder
+          ? "status-publication-order-proof/v1"
+          : lifetime
+            ? "status-refresh-lifetime-proof/v1"
+            : "status-publication-outcomes-proof/v1",
     base,
     candidate_head: head,
     candidate_dirty: dirty,
@@ -312,39 +333,48 @@ try {
     runs: results.length,
     results,
     production_mutations: 0,
-    worker_outbound_network: "denied by fixture",
+    worker_outbound_network: telemetryFailures
+      ? "loopback GitHub fixture only"
+      : "denied by fixture",
     browser_proof: browserResults,
-    limits: publicationReasons
+    limits: telemetryFailures
       ? [
-          "Real queue completion, Workerd SQLite and public aggregate route with synthetic leases; no production state or GitHub writes.",
-          "Dedicated API and restart persistence only; no browser, composed-cache or production incident-cause claim.",
+          "Real status collection, loopback HTTP and SQLite cache reuse/restart with synthetic GitHub responses; no credentials or production mutations.",
+          "Proves failure attribution and retention, not the cause or resolution of the production collection stall.",
         ]
-      : publicationOrder
+      : publicationReasons
         ? [
-            "Synthetic delayed binding writes and edge bodies; real SQLite owner and HTTP status route.",
-            "Does not attribute production staleness, order overlapping HTTP responses, or cover regional clock skew.",
+            "Real queue completion, Workerd SQLite and public aggregate route with synthetic leases; no production state or GitHub writes.",
+            "Dedicated API and restart persistence only; no browser, composed-cache or production incident-cause claim.",
           ]
-        : lifetime
+        : publicationOrder
           ? [
-              "Synthetic held binding and body; the production stalled dependency remains unknown.",
-              "Both served clients use the real Worker route and their ordinary timers.",
+              "Synthetic delayed binding writes and edge bodies; real SQLite owner and HTTP status route.",
+              "Does not attribute production staleness, order overlapping HTTP responses, or cover regional clock skew.",
             ]
-          : [
-              "Synthetic inputs; no production state or timing claim.",
-              "Corrected-input browser cases isolate browser ingestion using a fixture status route.",
-              "Worker-route browser cases fetch the real Worker status route; cached reload uses a controlled HTTP 503.",
-            ],
+          : lifetime
+            ? [
+                "Synthetic held binding and body; the production stalled dependency remains unknown.",
+                "Both served clients use the real Worker route and their ordinary timers.",
+              ]
+            : [
+                "Synthetic inputs; no production state or timing claim.",
+                "Corrected-input browser cases isolate browser ingestion using a fixture status route.",
+                "Worker-route browser cases fetch the real Worker status route; cached reload uses a controlled HTTP 503.",
+              ],
   };
   await writeFile(
     path.join(
       artifacts,
-      publicationReasons
-        ? "publication-reasons-summary.json"
-        : publicationOrder
-          ? "publication-order-summary.json"
-          : lifetime
-            ? "lifetime-summary.json"
-            : "worker-summary.json",
+      telemetryFailures
+        ? "telemetry-failures-summary.json"
+        : publicationReasons
+          ? "publication-reasons-summary.json"
+          : publicationOrder
+            ? "publication-order-summary.json"
+            : lifetime
+              ? "lifetime-summary.json"
+              : "worker-summary.json",
     ),
     JSON.stringify(summary, null, 2) + "\n",
   );
@@ -375,6 +405,7 @@ try {
   throw error;
 } finally {
   for (const child of children) await stopWorker(child);
+  await githubFixture?.close();
   await rm(scratch, { recursive: true, force: true });
 }
 

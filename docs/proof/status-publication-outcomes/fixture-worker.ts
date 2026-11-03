@@ -39,6 +39,8 @@ let snapshotPublications = 0;
 let snapshotSettled = 0;
 let lifetimeWorkers = 17;
 let lifetimeTtl = 3600;
+let telemetryOrigin = "";
+const nativeFetch = globalThis.fetch.bind(globalThis);
 
 function lifetimeSnapshot() {
   const snapshot = statusFixture("empty", Date.parse(events.captured_at));
@@ -55,7 +57,9 @@ function lifetimeSnapshot() {
   };
 }
 
-globalThis.fetch = async () => {
+globalThis.fetch = async (input, init) => {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  if (telemetryOrigin && url.origin === telemetryOrigin) return nativeFetch(input, init);
   blockedRequests += 1;
   throw new Error("external network denied by publication proof");
 };
@@ -64,6 +68,14 @@ export default {
   async fetch(request, bindings, ctx) {
     const url = new URL(request.url);
     if (url.hostname !== "127.0.0.1") return new Response(null, { status: 403 });
+    if (url.pathname === "/__proof/telemetry" && request.method === "POST") {
+      const { origin } = await request.json();
+      const upstream = new URL(origin);
+      if (upstream.protocol !== "http:" || upstream.hostname !== "127.0.0.1" || !upstream.port)
+        return new Response(null, { status: 400 });
+      telemetryOrigin = upstream.origin;
+      return Response.json({ configured: true });
+    }
     if (url.pathname.startsWith("/__proof/reasons/")) {
       const queue = bindings.LOCAL_REASON_QUEUE.get(
         bindings.LOCAL_REASON_QUEUE.idFromName("proof"),
@@ -319,6 +331,14 @@ export default {
     if (url.pathname === "/api/status" && browserSnapshot)
       return Response.json(browserSnapshot, { headers: { "x-clawsweeper-cache": "fresh" } });
     const env = {
+      ...(telemetryOrigin
+        ? {
+            GITHUB_API_URL: telemetryOrigin,
+            CACHE_TTL_SECONDS: "1",
+            STALE_CACHE_TTL_SECONDS: "1",
+            WORKER_HEALTH_CACHE_TTL_SECONDS: "10",
+          }
+        : {}),
       ...(lifetimeMode ? { CACHE_TTL_SECONDS: String(lifetimeTtl) } : {}),
       STATUS_STORE: cacheOwner === "durable" ? store : undefined,
       EXACT_REVIEW_QUEUE: {

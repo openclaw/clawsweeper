@@ -1,0 +1,1 @@
+- Identify unavailable dashboard telemetry sections and retain worker-health failure signals when reusing cached samples.
