@@ -226,7 +226,8 @@ affected behavior/UI proof and whole-branch review for the final committed sourc
 The offline Git seed must include every local ancestor commit needed from the
 final checkpoint through the pinned base, plus their trees/blobs; no GitHub
 fetch, credential helper or shared Git config is needed. No source, receipt or
-historical preview is rewritten to pretend an old run exercised new code. No deployment, push/PR or live review request is authorized.
+historical preview is rewritten to pretend an old run exercised new code. This
+procedure itself grants no deployment, publication or live review-request authority.
 
 The unchanged docs guard inventories indexed paths. For new uncommitted helper
 files, static validation may use a separate scratch --info-only candidate index;

@@ -1,0 +1,1 @@
+- Exclude challenger-crab and diamond-lobster issue ratings from the openclaw/openclaw bulk-filer count only; retain completed-only counting elsewhere and burst protection for unrated and lower-rated reports (https://github.com/openclaw/clawsweeper/issues/1770). Thanks @holgergruenhagen.
