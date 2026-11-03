@@ -3,7 +3,7 @@ import {
   type ReviewAuthority,
   type ReviewAuthorityObservation,
   type ReviewAuthoritySubject,
-} from "./review-authority.js";
+} from "./review-authority.ts";
 
 type JsonGet = (path: string) => unknown;
 

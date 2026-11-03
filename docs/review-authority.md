@@ -1,6 +1,6 @@
 # Review authority contract
 
-- Status: accepted role projections; proposed integration with no active caller
+- Status: accepted role projections; explicit operator; proposed admission integration
 - Owner: ClawSweeper permission and review-policy maintainers
 - Source: [`src/review-authority.ts`](../src/review-authority.ts),
   [`src/review-authority-acquisition.ts`](../src/review-authority-acquisition.ts),
@@ -98,6 +98,45 @@ failure handling separate from a canonical unknown result.
 
 ## Caller migration map
 
+### Private operator observation
+
+`scripts/review-authority-observer.mjs` is an explicit Node 24+ operational
+consumer, separate from review admission and the distributable local package.
+It imports the canonical acquisition and classifier directly from source and
+uses the existing dashboard App HTTP owner for two fresh GETs. The caller must
+supply a scoped installation token as `GITHUB_TOKEN`, the target repository,
+actor, and an explicit `--max-age-ms`. There is no human-token or Actions-token
+fallback, cached response, retry, token mint, label, queue, or review dispatch.
+
+The private operator launcher owns App identity, installation and repository
+binding, credential custody, and the private output root. This consumer requires
+an empty regular stdout file owned by its user with mode `0600` and one link
+before requesting either endpoint. That descriptor check does not establish
+directory privacy or deployed readership: the launcher and deployment owner must
+qualify those separately. A terminal or pipe is refused. Do not run this command
+in public Actions logs or send its output to a gist.
+
+The output contains only the canonical authority plus classifier-relevant fields
+in the existing observation envelopes. It is a private diagnostic, not an
+attestation or admission protocol. A selected 403/404 fails acquisition, emits
+only a fixed phase and HTTP status, and produces no partial authority. The
+launcher must remove failed partial output. Successful output is capped at
+64 KiB; this is not a cap on the existing HTTP owner's response body. Its normal
+request timeout still applies.
+
+Configuration refusals keep `phase: configuration` and add a fixed `reason`
+(`private_output`, `arguments`, or `credentials`) and an actionable `hint`.
+These explain the private stdout, command arguments, or scoped-token requirement
+without echoing supplied values. Selected HTTP failures retain only their phase
+and status; configuration hints do not describe transport or permission failures.
+
+Source, executable, App, private-sink and real API qualification remain deployment
+gates. Secretless subprocess fixtures do not prove private-membership access,
+live revocation, or router/direct-hosted policy parity. No automatic caller or
+production activation is added by this operator capability.
+
+### Admission callers
+
 These paths retain their current behavior. None imports the acquisition adapter.
 
 | Owner | Current observation and cache | Separate integration work |
@@ -135,7 +174,7 @@ accepted ordinary author cohort is an availability decision, not a privileged
 grant. Existing October 15 first-review cadence and independent protections stay
 unchanged until their owning callers are deliberately migrated.
 
-The classifier and acquisition binding remain unconsumed by production callers.
+The classifier and acquisition binding remain unconsumed by production admission callers.
 Integration fixtures cover full-role payload parity, target and actor binding,
 completion-time freshness, selected errors and repeated fresh reads after a
 simulated revocation. These do not activate an admission rule. Future caller
