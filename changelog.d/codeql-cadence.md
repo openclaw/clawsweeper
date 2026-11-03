@@ -1,0 +1,1 @@
+- Batch main CodeQL analysis every six hours while preserving pull request and manual scans.
