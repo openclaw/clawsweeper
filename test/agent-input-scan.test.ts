@@ -3606,6 +3606,20 @@ for (const {
     lines: (value: string) => [`    "${value}";`],
   },
   {
+    name: "existing-session loopback CDP endpoint",
+    protocol: "http:",
+    host: "127.0.0.1:9222",
+    username: "openclaw",
+    password: ["relay", "token"].join("-"),
+    path: "",
+    suffix: "",
+    source: "extensions/browser/src/browser/server-context.existing-session.test.ts",
+    lines: (value: string) => [
+      `        cdpUrl: "${value}",`,
+      `      expect.objectContaining({ cdpUrl: "${value}" }),`,
+    ],
+  },
+  {
     name: "plugin setting draft redaction",
     protocol: "https:",
     host: "example.invalid",

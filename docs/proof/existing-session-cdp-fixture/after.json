@@ -1,0 +1,36 @@
+{
+  "baseSha": "70243cfd580764701b57321f03c29b322bb505d2",
+  "headSha": "d3a9b11d11d21a6b51b7e4004c0e9a781f8452bd",
+  "scanner": "3.99.4",
+  "node": "v24.20.0",
+  "platform": "linux",
+  "result": "admitted",
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0",
+      "source": "extensions/browser/src/browser/server-context.existing-session.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "17be4520261010f3a9e1aef5669594a10b548709",
+          "scannerLine": 131,
+          "literalLine": 131,
+          "decoder": "PLAIN",
+          "role": "base",
+          "occurrences": 1
+        },
+        {
+          "blob": "38e2b8f6dcc23b6fef22663d14c2846d999d4e74",
+          "scannerLine": 145,
+          "literalLine": 145,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1
+        }
+      ]
+    }
+  ],
+  "limits": "Complete committed source range with a controlled prompt; no model execution. Hosted review must scan its own prompt, schema and source."
+}
