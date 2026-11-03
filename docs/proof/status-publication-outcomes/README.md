@@ -79,6 +79,23 @@ Named follow-up: `publicationSource` may accept null bucket counts in an
 otherwise complete zero-count source. That preexisting server-validator issue
 is not changed or certified by this composition repair.
 
+## Status telemetry failure retention
+
+Run the paired cold collection, warm snapshot, health-cache reuse, SQLite
+restart, and recovery scenarios without production credentials:
+
+```sh
+node docs/proof/status-publication-outcomes/run-proof.mjs 91fb0b1e719356ead3a763026e3519cdd18e7acc --telemetry-failures
+```
+
+The native Worker uses its real status route and SQLite owner against an
+isolated loopback GitHub fixture. The baseline masks worker-health errors on
+cache reuse; the candidate retains the fixed public section code until a new
+healthy sample replaces it. Upstream error text must never appear in responses.
+The receipt is `telemetry-failures-summary.json` in the existing artifact
+directory. This proves failure retention, not the cause or resolution of a
+production collection stall. The same source capsule mechanism below applies.
+
 ## Status collection lifetime
 
 The lifetime mode compares the frozen pre-repair source against the candidate:

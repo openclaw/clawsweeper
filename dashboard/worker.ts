@@ -451,6 +451,19 @@ class FastAckLookupLimitError extends Error {
 const inFlightFastAcks = new Map();
 const CLAWSWEEPER_WEBHOOK_DENY_REPOS = new Set(["openclaw/clawsweeper-state", "openclaw/.github"]);
 const OPTIONAL_SECTION_TIMEOUT_MS = 6000;
+// Record the failing owner before projection; upstream messages can contain
+// private routes and must never enter the public status cache.
+const PUBLIC_STATUS_TELEMETRY_ERRORS = new Set([
+  "workflow_runs_unavailable",
+  "completed_workflow_runs_unavailable",
+  "active_runs_unavailable",
+  "active_jobs_unavailable",
+  "worker_health_unavailable",
+  "pipeline_unavailable",
+  "apply_health_unavailable",
+  "recent_closed_unavailable",
+  "events_unavailable",
+]);
 const STALE_CACHE_TTL_SECONDS = 900;
 const CI_STATUS_TTL_SECONDS = 7200;
 const WORKER_JOB_CACHE_TTL_SECONDS = 60;
@@ -3197,8 +3210,12 @@ export function publicStatusProjection(
   const errorCount = Math.max(declaredErrorCount, Math.min(sourceErrors.length, 20));
   document.diagnostics = {
     ...diagnostics,
-    // Keep a bounded incomplete-telemetry signal without retaining upstream text.
-    errors: Array.from({ length: Math.min(errorCount, 20) }, () => "telemetry_unavailable"),
+    // Only producer-owned codes survive repeated projection and durable caching.
+    errors: Array.from({ length: errorCount }, (_, index) =>
+      PUBLIC_STATUS_TELEMETRY_ERRORS.has(sourceErrors[index])
+        ? sourceErrors[index]
+        : "telemetry_unavailable",
+    ),
     error_count: errorCount,
   };
   if (hasExactReviewQueueObject) {
@@ -6706,18 +6723,18 @@ async function statusSnapshot(env) {
   const budget = numberFrom(env.WORKER_BUDGET, 32);
   const activeRunErrors = [];
   const [runs, completedRuns, activeRunCandidates] = await Promise.all([
-    github(`/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
-      errors.push(`workflow runs: ${error.message}`);
+    github(`/repos/${repo}/actions/runs?per_page=100`).catch(() => {
+      errors.push("workflow_runs_unavailable");
       return null;
     }),
-    github(`/repos/${repo}/actions/runs?status=completed&per_page=100`).catch((error) => {
-      errors.push(`workflow runs completed: ${error.message}`);
+    github(`/repos/${repo}/actions/runs?status=completed&per_page=100`).catch(() => {
+      errors.push("completed_workflow_runs_unavailable");
       return null;
     }),
     activeWorkflowRunCandidates(env, repo, activeRunErrors, github),
   ]);
   const operationalRunCandidates = activeRunCandidates;
-  errors.push(...activeRunErrors);
+  errors.push(...activeRunErrors.map(() => "active_runs_unavailable"));
   const workflowRuns = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
   const completedWorkflowRuns = uniqueWorkflowRuns([
     ...(Array.isArray(completedRuns?.workflow_runs) ? completedRuns.workflow_runs : []),
@@ -6758,41 +6775,41 @@ async function statusSnapshot(env) {
         env.WORKER_HEALTH_SECTION_TIMEOUT_MS,
       ),
       "worker health",
-    ).catch((error) => {
-      errors.push(error.message);
+    ).catch(() => {
+      errors.push("worker_health_unavailable");
       return emptyWorkerHealth(generatedAt);
     }),
     withTimeout(
       pipelineItems(env, workerRuns.slice(0, 30), github),
       OPTIONAL_SECTION_TIMEOUT_MS,
       "pipeline",
-    ).catch((error) => {
-      errors.push(error.message);
+    ).catch(() => {
+      errors.push("pipeline_unavailable");
       return workerRuns.slice(0, 30).map((run) => classifyRun(run));
     }),
     withTimeout(
       applyHealthStatus(env, targetRepos, github),
       OPTIONAL_SECTION_TIMEOUT_MS,
       "apply health",
-    ).catch((error) => {
-      errors.push(error.message);
+    ).catch(() => {
+      errors.push("apply_health_unavailable");
       return emptyApplyHealthStatus(targetRepos);
     }),
     withTimeout(
       recentClawsweeperClosed(env, targetRepos, github),
       OPTIONAL_SECTION_TIMEOUT_MS,
       "recent closed",
-    ).catch((error) => {
-      errors.push(error.message);
+    ).catch(() => {
+      errors.push("recent_closed_unavailable");
       return { items: [], stats: emptyClosedStats(generatedAt) };
     }),
-    readEvents(env).catch((error) => {
-      errors.push(`events: ${error.message}`);
+    readEvents(env).catch(() => {
+      errors.push("events_unavailable");
       return [];
     }),
   ]);
-  errors.push(...activeJobs.errors);
-  errors.push(...workerHealth.errors);
+  errors.push(...activeJobs.errors.map(() => "active_jobs_unavailable"));
+  errors.push(...workerHealth.errors.map(() => "worker_health_unavailable"));
   statusCollections.get(env)?.check();
   const { recent_attempts: _recentAttempts, ...publicWorkerHealth } = workerHealth;
 
@@ -7831,7 +7848,8 @@ function workerHealthStorageProjection(health) {
     // the in-memory status projection for the current request.
     recent_attempts: [],
     failures: publicStatusValue(health.failures, "failures", 0),
-    errors: [],
+    // A cached partial sample must retain the same failure signal as its first read.
+    errors: health.errors.slice(0, 10).map(() => "worker_health_unavailable"),
     updated_at: health.updated_at,
   };
 }

@@ -1409,6 +1409,59 @@ test("dashboard reports worker health without treating worker jobs as lifecycle 
   }
 });
 
+test("dashboard retains worker-health failure codes when its aggregate is cached", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  const run = completedReviewRun(101, 42, "success", 60_000);
+  let jobRequests = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+      return jsonResponse({
+        total_count: url.searchParams.get("status") === "completed" ? 1 : 0,
+        workflow_runs: url.searchParams.get("status") === "completed" ? [run] : [],
+      });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/101/jobs") {
+      jobRequests += 1;
+      return new Response("synthetic private upstream detail", { status: 503 });
+    }
+    if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+    if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
+    if (url.pathname.includes("/actions/workflows/")) return jsonResponse({ workflow_runs: [] });
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  try {
+    const store = new MemoryKv();
+    const env = { STATUS_STORE: store };
+    const background: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (promise: Promise<unknown>) => background.push(promise) };
+    const request = new Request("https://clawsweeper.openclaw.ai/api/status");
+    const first = await (await worker.fetch(request, env, ctx)).json();
+    await Promise.allSettled(background);
+    assert.deepEqual(first.diagnostics.errors, ["worker_health_unavailable"]);
+    assert.equal(first.diagnostics.error_count, 1);
+    assert.equal(JSON.stringify(first).includes("synthetic private upstream detail"), false);
+
+    // Expire the composed snapshot while leaving its younger health aggregate cached.
+    await store.put(
+      "snapshot:bay-scope:v2:_",
+      JSON.stringify({ ...first, generated_at: new Date(Date.now() - 901_000).toISOString() }),
+    );
+    const second = await (await worker.fetch(request, env, ctx)).json();
+    await Promise.allSettled(background);
+    assert.deepEqual(second.diagnostics, first.diagnostics);
+    assert.equal(jobRequests, 1, "the failure must survive reuse without a new GitHub request");
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
 test("dashboard cold-cache status bounds a stalled forty-run worker-health refresh", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;

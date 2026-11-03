@@ -111,6 +111,14 @@ text, timestamps, and diagnostic error messages.
 These are observed fields; an unavailable projection does not identify which
 upstream request or cache entry caused it. The smoke adds no status retry.
 
+Status collection records fixed section codes in `diagnostics.errors`, including
+`worker_health_unavailable`, `active_jobs_unavailable`, and
+`recent_closed_unavailable`. These codes survive snapshot projection and caching;
+a partial worker-health sample retains its failure signal on cache reuse.
+Unrecognized or historical error text remains `telemetry_unavailable`. Codes name
+the failed section, not the upstream HTTP status or failure cause. Public status
+never includes upstream messages, request paths, or private identifiers.
+
 When a change updates both the Worker and a GitHub Actions workflow, keep the
 cross-component protocol compatible in both deployment orders. The exact-review
 v2 rollout dispatches the immutable lease tuple under `queue_claim` plus a bounded v1 snapshot; the
