@@ -61,6 +61,14 @@ export async function startGithubFixture() {
       body = { total_count: 0, items: [] };
     } else if (url.pathname === "/repos/openclaw/openclaw/issues") {
       body = [];
+    } else if (
+      url.pathname ===
+        "/repos/openclaw/clawsweeper-state/contents/results/sweep-status/openclaw-openclaw.json" &&
+      url.searchParams.get("ref") === "state"
+    ) {
+      body = {
+        content: Buffer.from('{"apply_health":{"status":"healthy"}}').toString("base64"),
+      };
     } else {
       unexpected += 1;
       response.writeHead(500);
