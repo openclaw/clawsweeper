@@ -151,6 +151,8 @@ export async function authorityFixture() {
   const example = JSON.parse(
     readFileSync(new URL("../../../dashboard-site/fixtures/dashboard.json", import.meta.url)),
   ).corpus.repos[0];
+  const itemNumber = (repo) =>
+    repo === "privacy/revocable" ? 102 : repo === "privacy/steady" ? 202 : 401;
   const part = (repo, n) => ({
     stats: {
       ...example,
@@ -173,9 +175,18 @@ export async function authorityFixture() {
       stale: [
         {
           repo,
-          number: repo === "privacy/revocable" ? 102 : repo === "privacy/steady" ? 202 : 401,
+          number: itemNumber(repo),
+          kind: "issue",
+          url: "https://github.com/" + repo + "/issues/" + itemNumber(repo),
           title: repo === "privacy/revocable" ? "revoked-title-needle" : "public fixture",
           reviewedAt: at,
+          createdAt: null,
+          archived: false,
+          decision: null,
+          closeReason: null,
+          proof: null,
+          security: null,
+          maintainerKind: null,
         },
       ],
     },

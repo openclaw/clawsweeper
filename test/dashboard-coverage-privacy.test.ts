@@ -9,6 +9,7 @@ import {
   readCoverageForBuild,
   verifyPublicRepositories,
 } from "../dashboard-site/scripts/coverage.ts";
+import { label } from "../dashboard-site/src/lib/format.ts";
 import { withReplayClock } from "../docs/proof/ui-live-coverage/replay-clock.mjs";
 
 const purpose = '{"purpose":"dashboard-site-coverage-v1"}';
@@ -17,6 +18,69 @@ const absent = (value: unknown) =>
     JSON.stringify(value),
     /privacy[/-]revocable|revoked-title-needle|"repo_slug"|"needs_refresh"/,
   );
+
+test("every authority fixture corpus row satisfies the production item schema and actual kind formatter", async () => {
+  const f = await authorityFixture();
+  const expected = new Map([
+    ["privacy/revocable", 102],
+    ["privacy/steady", 202],
+    ["privacy/history-only", 401],
+  ]);
+  assert.deepEqual(
+    new Set(f.cache.repositories.map((part: any) => part.stats.repo)),
+    new Set(expected.keys()),
+  );
+  const required = [
+    "repo",
+    "number",
+    "kind",
+    "title",
+    "url",
+    "reviewedAt",
+    "createdAt",
+    "archived",
+    "decision",
+    "closeReason",
+    "proof",
+    "security",
+    "maintainerKind",
+  ];
+  const identities: string[] = [];
+  for (const part of f.cache.repositories) {
+    const rows = [...Object.values(part.lists).flat(), ...part.closes.recent] as any[];
+    assert.equal(rows.length, 1, "retain one explicit stale marker row per corpus repository");
+    for (const row of rows) {
+      assert.doesNotThrow(
+        () => label(row.kind),
+        "actual production kind formatter must render synthetic rows",
+      );
+      for (const key of required)
+        assert.ok(Object.hasOwn(row, key), "required production Row field: " + key);
+      assert.equal(row.repo, part.stats.repo);
+      assert.equal(row.number, expected.get(row.repo));
+      assert.equal(row.kind, "issue");
+      assert.equal(label(row.kind), "Issue");
+      assert.equal(row.url, "https://github.com/" + row.repo + "/issues/" + row.number);
+      assert.equal(typeof row.title, "string");
+      assert.equal(
+        row.title,
+        row.repo === "privacy/revocable" ? "revoked-title-needle" : "public fixture",
+      );
+      assert.equal(row.reviewedAt, f.cache.generatedAt);
+      assert.ok(Number.isFinite(Date.parse(row.reviewedAt)));
+      assert.equal(row.createdAt, null);
+      assert.equal(row.archived, false);
+      for (const key of ["decision", "closeReason", "proof", "security", "maintainerKind"])
+        assert.equal(row[key], null);
+      identities.push(row.repo);
+    }
+  }
+  assert.deepEqual(new Set(identities), new Set(expected.keys()));
+  assert.ok(
+    !identities.includes("privacy/coverage-only"),
+    "coverage-only population stays outside historical corpus",
+  );
+});
 
 test("anonymous actual Worker coverage is aggregate-only even before/after visibility revocation,with no GitHub fanout", async () => {
   const f = await authorityFixture();
