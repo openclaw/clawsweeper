@@ -281,6 +281,9 @@ const OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Existing synthetic loopback CDP endpoint in the mocked profile-status test.
+  [17, "URI", "PLAIN", "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0", "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0", ["246be528bbd0812126ba9e5aae3b9d61d60430c352cbd41d69c066c38fee4882", "9a313b5e628ff1390c50c9616bc95c8eb25c2c93050cafe481190930722103b9"], "extensions/browser/src/browser/server-context.existing-session.test.ts", "100644"],
+  [17, "URI", "HTML", "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0", "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0", ["246be528bbd0812126ba9e5aae3b9d61d60430c352cbd41d69c066c38fee4882", "9a313b5e628ff1390c50c9616bc95c8eb25c2c93050cafe481190930722103b9"], "extensions/browser/src/browser/server-context.existing-session.test.ts", "100644"],
   // Synthetic endpoint-argument rejection fixture introduced by OpenClaw 3d7ef2108d94.
   [17, "URI", "PLAIN", "5246f92cf855756f5fd7d561ea1b3679cd4957183af46ffb4a5d43968ba25254", "5246f92cf855756f5fd7d561ea1b3679cd4957183af46ffb4a5d43968ba25254", "6c2a04670bb977828ba872ddf7b3b119521afca0ef0846aeb4aea7b255476b45", "extensions/browser/src/browser/chrome-mcp.test.ts", "100644"],
   [17, "URI", "HTML", "5246f92cf855756f5fd7d561ea1b3679cd4957183af46ffb4a5d43968ba25254", "5246f92cf855756f5fd7d561ea1b3679cd4957183af46ffb4a5d43968ba25254", "6c2a04670bb977828ba872ddf7b3b119521afca0ef0846aeb4aea7b255476b45", "extensions/browser/src/browser/chrome-mcp.test.ts", "100644"],
@@ -548,6 +551,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           source === "src/secrets/model-egress.test.ts" ||
           source === "src/cli/proxy-cli.runtime.test.ts" ||
           source === "extensions/browser/src/browser/routes/basic.existing-session.test.ts" ||
+          source === "extensions/browser/src/browser/server-context.existing-session.test.ts" ||
           source === "extensions/typesafe/src/local.transport.test.ts" ||
           source === "extensions/browser/src/browser/config.test.ts" ||
           source === "extensions/browser/src/browser/chrome-mcp.test.ts" ||

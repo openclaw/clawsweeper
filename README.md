@@ -620,6 +620,13 @@ URI identity, complete source line, regular-file mode, and committed base/head
 references. Native 3.97.4 scans observed only `PLAIN` and `HTML` attribution;
 the policy accepts those two variants.
 
+The existing-session profile-status fixture in
+`extensions/browser/src/browser/server-context.existing-session.test.ts` binds
+its synthetic loopback CDP URI to both complete source lines in order, exact
+raw digests, committed base/head references, and regular-file mode. Only the
+native-observed PLAIN and HTML URI-17 variants qualify. See
+[the native before/after proof](docs/proof/existing-session-cdp-fixture/README.md).
+
 The plugin settings redaction fixtures in OpenClaw's
 `ui/src/pages/custodian/custodian-session-store.test.ts` and
 `ui/src/e2e/plugins-help.e2e.test.ts` bind their exact synthetic URI, ordered

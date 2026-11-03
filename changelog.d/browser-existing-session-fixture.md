@@ -1,0 +1,1 @@
+- Admit the exact synthetic loopback CDP fixture in existing-session profile tests without weakening other input-scanner checks.

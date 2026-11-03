@@ -1,0 +1,36 @@
+{
+  "baseSha": "70243cfd580764701b57321f03c29b322bb505d2",
+  "headSha": "d3a9b11d11d21a6b51b7e4004c0e9a781f8452bd",
+  "scanner": "3.99.4",
+  "node": "v24.20.0",
+  "platform": "linux",
+  "result": "refused",
+  "notices": [],
+  "limits": "Complete committed source range with a controlled prompt; no model execution. Hosted review must scan its own prompt, schema and source.",
+  "failure": {
+    "reason": "findings",
+    "diagnostic": {
+      "kind": "unclassified_finding",
+      "reason": "source_not_reviewed",
+      "findingCount": 2,
+      "findingIndex": 0,
+      "detectorType": 17,
+      "decoder": "PLAIN",
+      "verified": false,
+      "scannerLine": 145,
+      "material": {
+        "kind": "blob",
+        "id": "38e2b8f6dcc23b6fef22663d14c2846d999d4e74",
+        "referenceCount": 1,
+        "references": [
+          {
+            "revision": "d3a9b11d11d21a6b51b7e4004c0e9a781f8452bd",
+            "pathSha256": "3147777167885de67064966c04ca0e6694c9b2518e285448893d497a6fac8188",
+            "mode": "100644",
+            "role": "head"
+          }
+        ]
+      }
+    }
+  }
+}
