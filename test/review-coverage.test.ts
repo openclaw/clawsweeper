@@ -16,7 +16,11 @@ import {
   loadReviewCoverageInventory,
   reviewCoverageInventorySnapshot,
 } from "../dist/repair/target-fanout.js";
-import { publicReviewCoverageProjection } from "../dashboard/public-observability.ts";
+import {
+  publicReviewCoverageProjection,
+  privateReviewCoverageProjection,
+} from "../dashboard/public-observability.ts";
+import { publicCoverageForBuild } from "../dashboard-site/scripts/coverage.ts";
 import { liveCoverage } from "../dashboard-site/src/lib/live-coverage.ts";
 
 const now = Date.parse("2026-10-15T12:00:00Z");
@@ -253,7 +257,16 @@ test("more than ten pages retains trusted Open while identity categories remain 
   assert.equal(projected.totals.excluded, null);
   assert.equal(projected.totals.reviewable_records, null);
   assert.equal(projected.totals.coverage_percent, null);
-  const model = liveCoverage(projected, now);
+  assert.equal(Object.hasOwn(projected, "fleets"), false);
+  const build = publicCoverageForBuild(
+    privateReviewCoverageProjection({
+      ok: true,
+      generated_at: new Date(now).toISOString(),
+      ...summary,
+    })!,
+    new Set(["sample/repo"]),
+  );
+  const model = liveCoverage(build, now);
   assert.equal(model.open_records, 1001);
   assert.equal(model.rows[0].open_records, 1001);
   assert.equal(model.rows[0].percent, null);

@@ -1,5 +1,9 @@
 import { captureProofSource, proofEnvironment } from "./proof-provenance.mjs";
 import { replayCaption, withReplayClock } from "./replay-clock.mjs";
+import {
+  readCoverageForBuild,
+  publicDashboardInputs,
+} from "../../../dashboard-site/scripts/coverage.ts";
 // Same frozen bundle, actual baseline/candidate producer stages and signed local
 // Worker intake. No labels, reopen events, or canonical statuses are invented.
 import assert from "node:assert/strict";
@@ -258,7 +262,17 @@ try {
   candidate.storage.failNextSqlMatching(/SELECT MIN\(repo_slug\)/);
   const response = await candidate.fetchImpl("https://local.invalid/api/review-coverage");
   assert.equal(response.status, 200, await response.clone().text());
-  const candidateCoverage = await response.json();
+  const anonymousCoverage = await response.json();
+  assert.equal(Object.hasOwn(anonymousCoverage, "fleets"), false);
+  for (const repo of repositories)
+    assert.ok(!JSON.stringify(anonymousCoverage).includes(repo.targetRepo));
+  candidate.storage.failNextSqlMatching(/SELECT MIN\(repo_slug\)/);
+  let candidateCoverage = await readCoverageForBuild(
+    secret,
+    candidate.fetchImpl,
+    "https://local.invalid",
+  );
+  const privateCandidates = candidateCoverage;
   assert.equal(candidateCoverage.fleets.find((row) => row.repo === "openclaw/ocm").open_records, 7);
   assert.equal(
     candidateCoverage.fleets.find((row) => row.repo === "steipete/codexbar").open_records,
@@ -291,7 +305,11 @@ try {
   );
   writeFileSync(
     join(output, "candidate-public-api.json"),
-    JSON.stringify(candidateCoverage, null, 2),
+    JSON.stringify(anonymousCoverage, null, 2),
+  );
+  writeFileSync(
+    join(output, "candidate-private-build-read.json"),
+    JSON.stringify(privateCandidates, null, 2),
   );
   writeFileSync(join(output, "replayed-github-boundary.json"), JSON.stringify(boundary, null, 2));
   const cache = join(process.env.HOME, ".cache/ms-playwright");
@@ -387,6 +405,72 @@ try {
         repo.coverageScope + " — captured metadata, outside qualified review scope",
       ]),
   );
+  // Replay CURRENT metadata at the SAME historical evaluation point. Aliases
+  // and uncaptured historical identities are withheld, never invented public.
+  const publicMetadata = new Map();
+  for (const captured of reference.repositories)
+    if (captured.visibility === "PUBLIC" && captured.canonical)
+      publicMetadata.set(captured.canonical.toLowerCase(), {
+        full_name: captured.canonical,
+        visibility: "public",
+        archived: captured.archived,
+        fork: captured.fork,
+      });
+  const metadataRequests = [];
+  const githubVisibility = async (path) => {
+    metadataRequests.push(path);
+    if (path.startsWith("users/"))
+      return Response.json(
+        [...publicMetadata.values()].filter(
+          (value) => value.full_name.split("/")[0].toLowerCase() === path.split("/")[1],
+        ),
+      );
+    const captured = referenceByName.get(path.slice("repos/".length).toLowerCase());
+    return captured?.visibility === "PUBLIC"
+      ? Response.json({
+          full_name: captured.canonical,
+          visibility: "public",
+          archived: captured.archived,
+          fork: captured.fork,
+        })
+      : new Response(null, { status: 404 });
+  };
+  // Captured per-repository counters only. No uncaptured review status/body
+  // is reconstructed; unobserved corpus analytics remain unavailable.
+  const historyCache = {
+    version: 2,
+    generatedAt: common.corpus.generatedAt,
+    excludedRepositories: 0,
+    repositories: common.corpus.repos.map((row) => ({
+      stats: row,
+      totals: { records: row.records, open: row.open, typed: 0, missingTyped: 0, archived: 0 },
+      distributions: {},
+      days: {},
+      closes: { total: 0, byReason: {}, days: {}, recent: [] },
+      closedElsewhere: {},
+      lists: {
+        stale: common.corpus.lists.stale.filter((item) => item.repo === row.repo),
+        maintainer: [],
+        security: [],
+      },
+      codexMs: [],
+      createdToReviewHours: [],
+    })),
+  };
+  const selected = await publicDashboardInputs(historyCache, privateCandidates, githubVisibility);
+  candidateCoverage = selected.coverage;
+  const candidateCommon = { ...common, ...selected };
+  candidateCommon.corpus.totals.typed = null;
+  candidateCommon.corpus.totals.missingTyped = null;
+  candidateCommon.corpus.totals.archived = null;
+  writeFileSync(
+    join(output, "candidate-build-coverage.json"),
+    JSON.stringify(candidateCoverage, null, 2),
+  );
+  writeFileSync(
+    join(output, "visibility-requests.json"),
+    JSON.stringify(metadataRequests, null, 2),
+  );
   const site = join(root, "dashboard-site"),
     baseSite = join(baseSource, "dashboard-site"),
     deps = join(site, "node_modules");
@@ -399,7 +483,7 @@ try {
     : null;
   function build(name, directory, coverage) {
     mkdirSync(join(directory, "src/data"), { recursive: true });
-    const snapshot = { ...common, coverage };
+    const snapshot = { ...(name === "candidate" ? candidateCommon : common), coverage };
     writeFileSync(join(directory, "src/data/dashboard.json"), JSON.stringify(snapshot));
     const run = spawnSync(
       process.execPath,
@@ -493,7 +577,10 @@ try {
     writeFileSync(join(output, name + "-visible.txt"), visible[name].text);
     await page.screenshot({ path: join(output, name + ".png"), fullPage: true });
     if (name === "candidate") {
-      assert.equal(await page.locator("[data-coverage-repo]").count(), 137);
+      assert.equal(
+        await page.locator("[data-coverage-repo]").count(),
+        candidateCoverage.fleets.length,
+      );
       assert.equal(
         await page.locator('[data-coverage-repo="openclaw/ocm"] td').nth(1).innerText(),
         "7",
@@ -535,6 +622,7 @@ try {
       fresh: observed?.coverage_percent ?? null,
     };
   });
+  assert.equal(matrix.length, 137);
   writeFileSync(join(output, "all-137.json"), JSON.stringify(matrix, null, 2));
   const keys = Object.keys(matrix[0]);
   writeFileSync(
@@ -621,6 +709,11 @@ try {
       browser: browserRequests,
     },
     allRows: matrix.length,
+    identifyingBuildRows: candidateCoverage.fleets.length,
+    withheldRows: matrix.filter((row) => row.scope === "withheld").map((row) => row.repo),
+    authorityPath:
+      "Anonymous API is aggregate-only; signed private candidates plus captured-time current visibility permit the built identifying page",
+    metadataRequests,
     fleetKpis: { baseline: legacyCoverage.totals, candidate: candidateCoverage.totals },
     visibleKpis: { baseline: visible.baseline.kpis, candidate: visible.candidate.kpis },
     missingEvidence: [

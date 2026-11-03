@@ -735,8 +735,8 @@ continue dispatch from a default cursor; persistence failure after dispatch
 does not fail those lanes. Audit fanout requires a batch-aware cursor store and
 stops on state failures so outstanding children cannot be forgotten.
 
-Normal fanout refreshes the same signed live-open inventory consumed by
-`GET /api/review-coverage`, and both normal and hot fanout skip repositories
+Normal fanout refreshes the same signed live-open inventory consumed by the
+aggregate-only anonymous API and authenticated coverage build read, and both normal and hot fanout skip repositories
 with no open items. Normal fanout reserves a rotating slot for every selected
 repository, keeps the largest untracked backlog in each cycle, and apportions
 the remaining candidate volume by backlog share. The rotating slice is

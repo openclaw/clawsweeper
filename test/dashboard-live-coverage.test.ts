@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { publicReviewCoverageProjection } from "../dashboard/public-observability.ts";
+import { privateReviewCoverageProjection } from "../dashboard/public-observability.ts";
 import { liveCoverage } from "../dashboard-site/src/lib/live-coverage.ts";
 import { reviewCoverageRecordState } from "../src/review-coverage.ts";
+import { publicCoverageForBuild } from "../dashboard-site/scripts/coverage.ts";
+function publicReviewCoverageProjection(source: unknown) {
+  const candidate = privateReviewCoverageProjection(source);
+  return candidate
+    ? publicCoverageForBuild(candidate, new Set(["public/repo", "public/partial"]))
+    : null;
+}
 const now = Date.parse("2026-11-02T21:00:00Z");
 const timestamp = new Date(now).toISOString();
 function fixture() {
@@ -41,7 +48,7 @@ function fixture() {
     fleets: [row],
   };
 }
-test("public live coverage is identity-cohort, partition checked, private-redacted and idempotent", () => {
+test("verified build coverage is identity-cohort, partition checked, private-redacted and idempotent", () => {
   const source = fixture();
   source.fleets.push({
     ...source.fleets[0]!,

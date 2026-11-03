@@ -1,6 +1,7 @@
 import { publicTimestamp } from "./public-timestamp.ts";
-// Closed, observer-only public contract. Repository names are admitted only by
-// authenticated inventory metadata, never by a stored record's self-assertion.
+// Closed identifying candidate schema, NOT disclosure authorization. Only the
+// authenticated build read may return these rows; publication also requires
+// current GitHub visibility verification at the build output boundary.
 const fields = [
   "open_records",
   "reviewable_records",
@@ -45,7 +46,7 @@ const object = (value: unknown): Record<string, unknown> | null =>
     : null;
 const count = (value: unknown): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 10_000_000;
-export function publicLiveCoverage(
+export function validatedLiveCoverage(
   source: Record<string, unknown>,
   generatedAt: string,
   censusAt: string | null,

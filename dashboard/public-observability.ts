@@ -1,4 +1,4 @@
-import { publicLiveCoverage } from "./public-live-coverage.ts";
+import { validatedLiveCoverage } from "./public-live-coverage.ts";
 import { PUBLICATION_TELEMETRY_REASONS } from "./exact-review-publication-reasons.ts";
 import { publicTimestamp as timestamp } from "./public-timestamp.ts";
 import {
@@ -275,6 +275,15 @@ const REVIEW_COVERAGE_TOTAL_FIELDS = [
 ] as const;
 
 export function publicReviewCoverageProjection(value: unknown) {
+  return reviewCoverageProjection(value, false);
+}
+
+// Private candidates are provenance, not continued public visibility authority.
+export function privateReviewCoverageProjection(value: unknown) {
+  return reviewCoverageProjection(value, true);
+}
+
+function reviewCoverageProjection(value: unknown, identifyingBuildRead: boolean) {
   const source = objectValue(value);
   const totalsSource = objectValue(source?.totals);
   if (!source || source.ok !== true || !totalsSource) return null;
@@ -292,7 +301,13 @@ export function publicReviewCoverageProjection(value: unknown) {
     return null;
   }
   if (source.cohort === "live-open-identities-v1") {
-    return publicLiveCoverage(source, generatedAt, inventoryGeneratedAt, windowDays);
+    const rich = validatedLiveCoverage(source, generatedAt, inventoryGeneratedAt, windowDays);
+    if (!rich) return null;
+    if (identifyingBuildRead) return { ...rich, scope: "authenticated-coverage-candidates" };
+    // Anonymous telemetry never returns identities, regardless of persisted
+    // visibility/age or identifying query parameters. No GitHub request fanout.
+    const { fleets: _privateFleets, ...aggregate } = rich;
+    return { ...aggregate, scope: "aggregate-only", count_scope: "fleet-inventory-aggregate" };
   }
   const totals: Record<string, number | null> = {};
   for (const field of REVIEW_COVERAGE_TOTAL_FIELDS) {

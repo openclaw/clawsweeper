@@ -15,6 +15,7 @@ import {
 import { createServer } from "node:http";
 import { dirname, extname, join, resolve } from "node:path";
 import { chromium } from "playwright-core";
+import { verifiedCoverageBuildRead, syntheticPublicMetadata } from "./coverage-build-read.mjs";
 import { captureProofSource, proofEnvironment } from "./proof-provenance.mjs";
 import worker, { ExactReviewQueue } from "../../../dashboard/worker.ts";
 import {
@@ -127,12 +128,11 @@ const source = (status) => {
 };
 async function read(name) {
   fetches++;
-  const response = await worker.fetch(
-    new Request("https://local.invalid/api/review-coverage"),
-    env,
+  const result = await verifiedCoverageBuildRead(
+    (url, init) => worker.fetch(new Request(String(url), init), env),
+    secret,
+    syntheticPublicMetadata("fixture/cadence"),
   );
-  assert.equal(response.status, 200, await response.clone().text());
-  const result = await response.json();
   writeFileSync(join(output, name + "-api.json"), JSON.stringify(result, null, 2));
   observations.push({
     name,

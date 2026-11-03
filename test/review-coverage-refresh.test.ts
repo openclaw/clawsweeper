@@ -8,7 +8,8 @@ import {
   REVIEW_COVERAGE_SCAN_MAX_AGE_MS,
 } from "../dashboard/exact-review-direct-publication.ts";
 import { CANONICAL_BODY_PREFIX } from "../dashboard/canonical-bodies.ts";
-import { publicReviewCoverageProjection } from "../dashboard/public-observability.ts";
+import { privateReviewCoverageProjection } from "../dashboard/public-observability.ts";
+import { publicCoverageForBuild } from "../dashboard-site/scripts/coverage.ts";
 import { liveCoverage } from "../dashboard-site/src/lib/live-coverage.ts";
 import { TestStorage } from "./exact-review-test-storage.ts";
 
@@ -102,8 +103,9 @@ function fixture() {
     const response = await queue.fetch(new Request("https://queue/review-coverage"));
     assert.equal(response.status, 200);
     const raw = (await response.json()) as Record<string, unknown>;
-    const projected = publicReviewCoverageProjection(raw);
-    assert.ok(projected);
+    const candidate = privateReviewCoverageProjection(raw);
+    assert.ok(candidate);
+    const projected = publicCoverageForBuild(candidate, new Set(["sample/repo"]));
     return { raw, projected, model: liveCoverage(projected, Date.now()) };
   };
   const block = () => {

@@ -21,6 +21,7 @@ import { ExactReviewDirectPublicationStore } from "../../../dashboard/exact-revi
 import { TestStorage } from "../../../test/exact-review-test-storage.ts";
 import { loadReviewCoverageInventory } from "../../../dist/repair/target-fanout.js";
 import { chromium } from "playwright-core";
+import { verifiedCoverageBuildRead, syntheticPublicMetadata } from "./coverage-build-read.mjs";
 import { captureProofSource, proofEnvironment } from "./proof-provenance.mjs";
 
 const root = resolve(import.meta.dirname, "../../..");
@@ -271,7 +272,20 @@ function fixture(
       env,
     );
     assert.equal(response.status, 200, await response.clone().text());
-    const body = await response.json();
+    const anonymous = await response.json();
+    const body =
+      runtime.worker === worker
+        ? await verifiedCoverageBuildRead(
+            (url, init) => runtime.worker.fetch(new Request(String(url), init), env),
+            secret,
+            syntheticPublicMetadata("fixture/ocm"),
+          )
+        : anonymous;
+    if (runtime.worker === worker) {
+      assert.ok(!JSON.stringify(anonymous).includes(repo));
+      assert.equal(Object.hasOwn(anonymous, "fleets"), false);
+      writeFileSync(join(output, name + "-anonymous-api.json"), JSON.stringify(anonymous, null, 2));
+    }
     writeFileSync(join(output, name + "-worker.json"), JSON.stringify(body, null, 2));
     const rows = Array.from(
       storage.sql.exec("SELECT COUNT(*) AS count FROM exact_review_canonical_records_v2"),

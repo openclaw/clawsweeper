@@ -137,6 +137,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           BOOTSTRAP_GITHUB_TOKEN: ${{ steps.bootstrap.outputs.token }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           BACKFILL_DAYS: ${{ inputs.backfill_days || 0 }}
         run: node scripts/build-data.ts --state ../.dashboard-state --backfill-days "$BACKFILL_DAYS"
 

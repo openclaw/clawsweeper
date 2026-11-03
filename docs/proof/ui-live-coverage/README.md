@@ -24,6 +24,38 @@ producer proof.
 - Historical corpus Open/Stale and 7d/30d review statistics never become current
   live denominators. Closed ghost records cannot supply live reviews/exclusions.
 
+## Disclosure authority-chain repair (accepted security review)
+
+Anonymous GET /api/review-coverage is aggregate-only and never identifies a repo,
+even when persisted census metadata says public. That is provenance,not continued
+authorization. Identifying positive proof traverses the fixed-purpose signed
+private build read and ACTUAL current metadata/build-selection owners. It does
+not pretend an anonymous identifying-positive path exists.
+
+Run authority-chain-proof.mjs only under the admitted contained-proof contract
+below. It uses the real producer,signed Worker/DO,existing canonical bodies,
+private client,current visibility filter,Astro and served browser. Same census/
+body bytes persist across public→private→404/rename and403/429/network/invalid/
+partial metadata failures. Anonymous JSON has no identifying keys/values/items;
+revoked identity/slug/item links vanish from built HTML,corpus/state/coverage
+and totals;other public counts remain numeric. Failed verification creates no
+new identifying build. Auth/method/purpose negatives and fixed DO GET/zero new
+canonical tuple receipts are checked independently.
+
+Current proof scripts use private verified build data for identifying UI proof.
+In137row replay,candidate-public-api.json is truly anonymous/aggregate-only;
+candidate-build-coverage.json is the verified identifying page input. All137
+source comparisons remain recorded,including withheld alias/uncaptured identity
+dispositions;the page is not forced to publish all137identities. No canonical
+review status or missing label/reopen evidence is fabricated.
+
+Historical receipts qualify only their original executing source. Old successful
+container runs did not prove revocation and do not settle the accepted security
+finding. Fresh inspection/review, a committed checkpoint, current contained authority
+proof/full gates and a new review/body disposition are required for the changed
+source; the procedure itself grants no publication, re-review, deployment or
+production recovery authority.
+
 ## Bounded producer and automatic legacy fact owner
 
 The existing target-fanout producer retains serial limits:25queries,10pages per

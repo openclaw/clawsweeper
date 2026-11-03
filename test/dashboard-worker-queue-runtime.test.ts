@@ -9554,7 +9554,7 @@ test("worker exposes review coverage through the public API route", async () => 
   };
   assert.equal(payload.ok, true);
   assert.equal(payload.totals.open_records, null);
-  assert.deepEqual(payload.fleets, []);
+  assert.equal(payload.fleets, undefined);
   assert.equal(JSON.stringify(payload).includes(publicQueryMarker), false);
 
   const unconfigured = await worker.fetch(

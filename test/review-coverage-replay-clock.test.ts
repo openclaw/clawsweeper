@@ -5,6 +5,10 @@ import { createServer, createConnection } from "node:net";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
+import {
+  verifiedCoverageBuildRead,
+  syntheticPublicMetadata,
+} from "../docs/proof/ui-live-coverage/coverage-build-read.mjs";
 import worker, { ExactReviewQueue } from "../dashboard/worker.ts";
 import { REVIEW_COVERAGE_INVENTORY_KEY } from "../dashboard/exact-review-direct-publication.ts";
 import { liveCoverage } from "../dashboard-site/src/lib/live-coverage.ts";
@@ -43,6 +47,7 @@ function fixture() {
   const queue = new ExactReviewQueue({ storage }, {});
   storage.kv.put(REVIEW_COVERAGE_INVENTORY_KEY, inventory);
   const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: "synthetic-clock-build-secret",
     EXACT_REVIEW_QUEUE: {
       idFromName: (name: string) => name,
       get: () => ({ fetch: (request: Request) => queue.fetch(request) }),
@@ -51,12 +56,11 @@ function fixture() {
   const read = async () => {
     // Canonical evidence was not captured; do not infer missing reviews from an empty DB.
     storage.failNextSqlMatching(/SELECT MIN\(repo_slug\)/);
-    const response = await worker.fetch(
-      new Request("https://local.invalid/api/review-coverage"),
-      env,
+    return await verifiedCoverageBuildRead(
+      (url: string, init: RequestInit) => worker.fetch(new Request(String(url), init), env),
+      "synthetic-clock-build-secret",
+      syntheticPublicMetadata("openclaw/ocm", "steipete/codexbar"),
     );
-    assert.equal(response.status, 200);
-    return (await response.json()) as any;
   };
   return { inventory, storage, read };
 }
