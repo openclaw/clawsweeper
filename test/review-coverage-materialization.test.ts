@@ -114,6 +114,127 @@ function setup() {
   };
 }
 
+// Explicit Cloudflare platform oracle: Node SQLite itself allows more bindings.
+// https://developers.cloudflare.com/durable-objects/platform/limits/
+function enforceMaterializerBindLimit(storage: TestStorage) {
+  const queries: { bindings: number; ids: number[] }[] = [];
+  const exec = storage.sql.exec;
+  storage.sql.exec = (query, ...bindings) => {
+    if (
+      query.includes("SELECT item_id,digest,byte_length,revision") &&
+      query.includes("item_id IN")
+    ) {
+      queries.push({ bindings: bindings.length, ids: bindings.slice(1).map(Number) });
+      assert.ok(
+        bindings.length <= 100,
+        "Cloudflare SQL bound parameters must include fixed repo_slug",
+      );
+    }
+    return exec(query, ...bindings);
+  };
+  return queries;
+}
+
+for (const count of [99, 100, 198, 199, 200]) {
+  test(
+    "materializer respects 100 total bindings for " + count + " eligible no-op identities",
+    async () => {
+      for (const existing of [false, true]) {
+        const f = setup(),
+          ids = Array.from({ length: count }, (_, i) => i + 1);
+        if (existing) {
+          for (const id of ids) {
+            const digest = f.seed(id);
+            f.storage.sql.exec(
+              "UPDATE exact_review_canonical_records_v2 SET coverage_facts=? WHERE item_id=?",
+              JSON.stringify({
+                ...reviewCoverageRecord(markdown()),
+                sourceDigest: digest,
+                sourceRevision: 7,
+              }),
+              id,
+            );
+          }
+        }
+        const queries = enforceMaterializerBindLimit(f.storage);
+        const result = await f.store.materializeReviewCoverageFacts(f.inventory(ids));
+        assert.equal(result.attempted, 0);
+        assert.equal(result.materialized, 0);
+        assert.equal(result.bounded, false);
+        assert.equal(f.gets(), 0);
+        assert.equal(queries.length, Math.ceil(count / 99));
+        assert.deepEqual(
+          queries.flatMap((query) => query.ids),
+          ids,
+        );
+        assert.ok(queries.every((query) => query.bindings <= 100));
+        assert.equal(
+          f.storage.scalar("SELECT COUNT(*) AS value FROM canonical_record_tuple_receipts"),
+          0,
+        );
+      }
+    },
+  );
+}
+
+test("materializer skips valid first batches and advances a legacy tail by bounded 32 then 10 rows", async () => {
+  const f = setup(),
+    ids = Array.from({ length: 240 }, (_, i) => i + 1);
+  for (const id of ids) {
+    const digest = f.seed(id);
+    if (id <= 198)
+      f.storage.sql.exec(
+        "UPDATE exact_review_canonical_records_v2 SET coverage_facts=? WHERE item_id=?",
+        JSON.stringify({
+          ...reviewCoverageRecord(markdown()),
+          sourceDigest: digest,
+          sourceRevision: 7,
+        }),
+        id,
+      );
+  }
+  const sourceOnly = (row: Record<string, unknown>) =>
+    Object.fromEntries(Object.entries(row).filter(([key]) => key !== "coverage_facts"));
+  const before = ids.map((id) => sourceOnly(f.row(id)));
+  const queries = enforceMaterializerBindLimit(f.storage);
+  const first = await f.store.materializeReviewCoverageFacts(f.inventory(ids));
+  assert.equal(first.attempted, 32);
+  assert.equal(first.materialized, 32);
+  assert.equal(first.bounded, true);
+  assert.equal(f.gets(), 32);
+  assert.notEqual(f.row(230).coverage_facts, null);
+  assert.equal(f.row(231).coverage_facts, null);
+  assert.equal(first.bytes, 32 * Buffer.byteLength(markdown()));
+  assert.deepEqual(
+    queries.map((query) => query.ids.length),
+    [99, 99, 42],
+  );
+  const second = await f.store.materializeReviewCoverageFacts(f.inventory(ids));
+  assert.equal(second.attempted, 10);
+  assert.equal(second.materialized, 10);
+  assert.equal(second.bounded, false);
+  assert.equal(f.gets(), 42);
+  assert.equal(second.bytes, 10 * Buffer.byteLength(markdown()));
+  assert.equal((await f.store.materializeReviewCoverageFacts(f.inventory(ids))).attempted, 0);
+  assert.equal(f.gets(), 42);
+  assert.ok(queries.every((query) => query.bindings <= 100));
+  assert.deepEqual(
+    ids.map((id) => sourceOnly(f.row(id))),
+    before,
+  );
+  assert.ok(
+    ids.every((id) => {
+      const row = f.row(id),
+        facts = JSON.parse(String(row.coverage_facts));
+      return facts.sourceDigest === row.digest && facts.sourceRevision === row.revision;
+    }),
+  );
+  assert.equal(
+    f.storage.scalar("SELECT COUNT(*) AS value FROM canonical_record_tuple_receipts"),
+    0,
+  );
+});
+
 test("coverage reader automatically materializes legacy v2 facts with no review or tuple publication", async () => {
   const f = setup();
   f.seed(1);

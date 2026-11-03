@@ -174,6 +174,97 @@ test("coverage requires matching measured PR head while retaining the existing r
   );
 });
 
+test("failed coverage attempts must match live kind and PR head before counting as Failed", () => {
+  const pull = open(1, { kind: "pull_request", head_sha: "a".repeat(40) });
+  const failed = {
+    status: "failed",
+    kind: "pull_request",
+    headSha: "a".repeat(40),
+    reviewedAt: date,
+  };
+  assert.equal(reviewCoverageRecordState(failed, pull, now, 7 * 86400_000), "failed");
+  assert.equal(
+    reviewCoverageRecordState({ ...failed, headSha: "b".repeat(40) }, pull, now, 7 * 86400_000),
+    "stale",
+  );
+  assert.equal(
+    reviewCoverageRecordState({ ...failed, kind: "issue" }, pull, now, 7 * 86400_000),
+    "stale",
+  );
+  assert.equal(reviewCoverageRecordState(failed, open(1), now, 7 * 86400_000), "stale");
+});
+
+test("failed coverage attempts do not require completion dates or a freshness window, but a witnessed later reopen invalidates them", () => {
+  const failed = { status: "failed", kind: "issue", reviewedAt: date };
+  assert.equal(
+    reviewCoverageRecordState(
+      failed,
+      open(1, { reopened_at: new Date(now).toISOString() }),
+      now,
+      7 * 86400_000,
+    ),
+    "stale",
+  );
+  assert.equal(
+    reviewCoverageRecordState(
+      failed,
+      open(1, { reopened_at: new Date(now - 120000).toISOString() }),
+      now,
+      7 * 86400_000,
+    ),
+    "failed",
+  );
+  assert.equal(
+    reviewCoverageRecordState(failed, open(1, { reopened_at: "invalid" }), now, 7 * 86400_000),
+    "failed",
+  );
+  for (const reviewedAt of [
+    undefined,
+    "invalid",
+    new Date(now + 1).toISOString(),
+    new Date(now - 30 * 86400_000).toISOString(),
+  ]) {
+    assert.equal(
+      reviewCoverageRecordState({ ...failed, reviewedAt }, open(1), now, 7 * 86400_000),
+      "failed",
+    );
+  }
+  for (const reviewedAt of [undefined, "invalid", new Date(now + 1).toISOString()]) {
+    assert.equal(
+      reviewCoverageRecordState(
+        { ...failed, reviewedAt },
+        open(1, { reopened_at: new Date(now).toISOString() }),
+        now,
+        7 * 86400_000,
+      ),
+      "failed",
+    );
+  }
+});
+
+test("unusable coverage status never becomes source-stale merely because kind/head/date are missing", () => {
+  const pull = open(1, { kind: "pull_request", head_sha: "a".repeat(40) });
+  for (const status of ["unknown", "", "pending", "incomplete"]) {
+    assert.equal(
+      reviewCoverageRecordState({ status }, pull, now, 7 * 86400_000),
+      "unreviewed_records",
+    );
+    assert.equal(
+      reviewCoverageRecordState(
+        { status, kind: "issue", headSha: "b".repeat(40), reviewedAt: date },
+        pull,
+        now,
+        7 * 86400_000,
+      ),
+      "unreviewed_records",
+    );
+  }
+  assert.equal(
+    reviewCoverageRecordState({ status: "stale_source" }, pull, now, 7 * 86400_000),
+    "stale",
+  );
+});
+
 test("stale or future canonical scans never certify live coverage", () => {
   const { store, scanned } = fixture();
   for (const scannedAt of [now + 1, now - 16 * 60000]) {

@@ -56,6 +56,8 @@ export const REVIEW_COVERAGE_HEAD_BYTES = 4096;
 // About 20-40 ms of CPU per page on the production store.
 export const REVIEW_COVERAGE_SCAN_PAGE_ROWS = 2_000;
 export const REVIEW_COVERAGE_SCAN_MAX_AGE_MS = 15 * 60 * 1000;
+// DO SQL permits 100 bound parameters: reserve one for the fixed repo_slug.
+const REVIEW_COVERAGE_FACT_QUERY_IDS = 99;
 
 const DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT = 256;
 const BACKFILL_SHADOW_PRUNE_LIMIT = 64;
@@ -1446,12 +1448,14 @@ export class ExactReviewDirectPublicationStore {
         !entry.items?.length
       )
         continue;
-      for (let start = 0; start < entry.items.length; start += 100) {
+      for (let start = 0; start < entry.items.length; start += REVIEW_COVERAGE_FACT_QUERY_IDS) {
         if (result.attempted >= maxRows || result.bytes >= maxBytes) {
           result.bounded = true;
           return result;
         }
-        const ids = entry.items.slice(start, start + 100).map((item) => item.number);
+        const ids = entry.items
+          .slice(start, start + REVIEW_COVERAGE_FACT_QUERY_IDS)
+          .map((item) => item.number);
         const rows = Array.from(
           this.storage.sql.exec(
             `SELECT item_id,digest,byte_length,revision FROM ${EXACT_REVIEW_CANONICAL_V2_TABLE}

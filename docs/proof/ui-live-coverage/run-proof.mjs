@@ -103,6 +103,22 @@ function fixture(
 ) {
   const slug = repo.replace("/", "-");
   const storage = new TestStorage();
+  // Explicit documented Cloudflare cap oracle; Node SQLite is not claimed to
+  // impose that limit. Observe the ACTUAL production materializer SQL query.
+  const materializerSql = [];
+  if (runtime.worker === worker) {
+    const exec = storage.sql.exec;
+    storage.sql.exec = (query, ...bindings) => {
+      if (
+        query.includes("SELECT item_id,digest,byte_length,revision") &&
+        query.includes("item_id IN")
+      ) {
+        materializerSql.push({ bindings: bindings.length, ids: bindings.slice(1).map(Number) });
+        assert.ok(bindings.length <= 100, "Cloudflare SQL parameter cap includes fixed repo_slug");
+      }
+      return exec(query, ...bindings);
+    };
+  }
   const bucketDir = join(output, name, "canonical-bodies");
   mkdirSync(bucketDir, { recursive: true });
   const bucket = {
@@ -293,7 +309,17 @@ function fixture(
     cases.push({ name, canonical_v2_records: rows[0].count, coverage: body });
     return body;
   }
-  return { post, inventory, record, coverage, storage, seedLegacyRecord };
+  return {
+    post,
+    inventory,
+    record,
+    coverage,
+    storage,
+    seedLegacyRecord,
+    materializerSql,
+    materializeFacts: (value) =>
+      new runtime.Store(storage, bucket).materializeReviewCoverageFacts(value),
+  };
 }
 const views = [];
 try {
@@ -412,6 +438,66 @@ try {
   assert.equal(ocmResult.totals.reviewed_recent, 1);
   assert.equal(ocmResult.totals.record_drift, 720);
   views.push({ name: "ocm721", coverage: ocmResult, expectedOpen: 7, expectedPercent: "14.3%" });
+  // Large existing canonical fixture: all721facts are already valid, so no
+  // body reads are needed; even that no-op must stay within the platform cap.
+  const materializerStart = ocm.materializerSql.length;
+  const all721 = Array.from({ length: 721 }, (_, i) => item(i + 1));
+  const noOp = await ocm.materializeFacts(census(repo, all721));
+  assert.equal(noOp.attempted, 0);
+  assert.equal(noOp.bounded, false);
+  const noOpQueries = ocm.materializerSql.slice(materializerStart);
+  assert.deepEqual(
+    noOpQueries.flatMap((query) => query.ids),
+    all721.map((item) => item.number),
+  );
+  assert.deepEqual(
+    noOpQueries.map((query) => query.ids.length),
+    [99, 99, 99, 99, 99, 99, 99, 28],
+  );
+  const canonicalSource = () =>
+    Array.from(
+      ocm.storage.sql.exec("SELECT * FROM exact_review_canonical_records_v2 ORDER BY item_id"),
+    ).map(sourceOnly);
+  const sourceBeforeTail = canonicalSource();
+  const tuplesBeforeTail = ocm.storage.scalar(
+    "SELECT COUNT(*) AS value FROM canonical_record_tuple_receipts",
+  );
+  // Simulate legacy read-model absence ONLY,without changing canonical source
+  // ownership/body/digest/revision. First198rows retain their valid facts.
+  ocm.storage.sql.exec(
+    "UPDATE exact_review_canonical_records_v2 SET coverage_facts=NULL WHERE item_id BETWEEN 199 AND 240",
+  );
+  const tailInventory = census(repo, all721.slice(0, 240));
+  const tailFirst = await ocm.materializeFacts(tailInventory);
+  const tailSecond = await ocm.materializeFacts(tailInventory);
+  const tailDone = await ocm.materializeFacts(tailInventory);
+  assert.equal(tailFirst.attempted, 32);
+  assert.equal(tailFirst.materialized, 32);
+  assert.equal(tailFirst.bounded, true);
+  assert.equal(tailSecond.attempted, 10);
+  assert.equal(tailSecond.materialized, 10);
+  assert.equal(tailSecond.bounded, false);
+  assert.equal(tailDone.attempted, 0);
+  assert.ok(tailFirst.bytes <= 4 * 1024 * 1024 && tailSecond.bytes <= 4 * 1024 * 1024);
+  assert.deepEqual(canonicalSource(), sourceBeforeTail);
+  assert.equal(
+    ocm.storage.scalar("SELECT COUNT(*) AS value FROM canonical_record_tuple_receipts"),
+    tuplesBeforeTail,
+  );
+  const materializerQueries = ocm.materializerSql.slice(materializerStart);
+  cases.find((value) => value.name === "ocm721").materializer_platform_cap = {
+    oracle:
+      "Explicit100-binding cap on actual materializer SQL;not Node SQLite native limit or deployed Cloudflare execution",
+    officialLimits: "https://developers.cloudflare.com/durable-objects/platform/limits/",
+    maximumBindings: Math.max(...materializerQueries.map((query) => query.bindings)),
+    queries: materializerQueries,
+    noOp,
+    tailFirst,
+    tailSecond,
+    tailDone,
+    canonicalSourceUnchanged: true,
+    newTupleReceipts: 0,
+  };
   const changed = fixture(repo, "categories");
   await changed.inventory(
     census(repo, [
@@ -420,8 +506,9 @@ try {
       item(3),
       item(4),
       item(5),
-      item(6),
+      item(6, { kind: "pull_request", head_sha: "a".repeat(40) }),
       item(7, { labels: ["security"] }),
+      item(8, { kind: "pull_request", head_sha: "a".repeat(40) }),
     ]),
   );
   await changed.record(1, { kind: "pull_request", headSha: "b".repeat(40) });
@@ -429,10 +516,15 @@ try {
   await changed.record(3, { date: old });
   await changed.record(4, { date: "invalid" });
   await changed.record(5, { date: new Date(now + 3600000).toISOString() });
-  await changed.record(6, { status: "failed" });
+  await changed.record(6, { status: "failed", kind: "pull_request", headSha: "a".repeat(40) });
   await changed.record(7);
+  await changed.record(8, { status: "failed", kind: "pull_request", headSha: "b".repeat(40) });
   const categoryResult = await changed.coverage();
-  assert.equal(categoryResult.totals.stale, 2);
+  assert.equal(categoryResult.totals.stale, 3);
+  assert.equal(categoryResult.totals.failed, 1);
+  const categoryItems = categoryResult.fleets[0].needs_refresh;
+  assert.equal(categoryItems.find((item) => item.number === 8)?.category, "stale");
+  assert.equal(categoryItems.find((item) => item.number === 6)?.category, "failed");
   assert.equal(categoryResult.totals.expired, 1);
   assert.equal(categoryResult.totals.excluded, 1);
   assert.equal(categoryResult.totals.reviewed_recent, 0);
@@ -440,7 +532,7 @@ try {
   views.push({
     name: "categories",
     coverage: categoryResult,
-    expectedOpen: 7,
+    expectedOpen: 8,
     expectedPercent: "0.0%",
   });
   for (const mode of ["error", "rate_limit", "count_drift", "labels_incomplete"]) {
@@ -648,6 +740,23 @@ try {
         } else {
           assert.match(text, /Coverage unknown/);
           assert.match(text, /Unknown — no partial denominator/);
+        }
+        if (buildResult.name === "categories") {
+          const changedFailure = page
+            .locator("tr")
+            .filter({ has: page.locator('a[href="https://github.com/fixture/ocm/pull/8"]') });
+          const matchingFailure = page
+            .locator("tr")
+            .filter({ has: page.locator('a[href="https://github.com/fixture/ocm/pull/6"]') });
+          assert.equal(
+            await changedFailure.locator("td").nth(1).innerText(),
+            "Marked stale / changed",
+          );
+          assert.equal(await matchingFailure.locator("td").nth(1).innerText(), "Failed");
+          assert.equal(
+            await page.locator('[data-coverage-repo="fixture/ocm"] td').nth(2).innerText(),
+            "3",
+          );
         }
         assert.match(text, /Stored review history — not current-open coverage/);
         assert.match(text, /Archived public repository/);

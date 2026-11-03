@@ -88,18 +88,21 @@ export function reviewCoverageRecordState(
   windowMs: number,
 ): "reviewed_recent" | "stale" | "failed" | "expired" | "unreviewed_records" {
   if (record.status.startsWith("stale_")) return "stale";
-  if (record.status === "failed") return "failed";
-  if (record.status !== "complete") return "unreviewed_records";
+  if (record.status !== "complete" && record.status !== "failed") return "unreviewed_records";
   if (
     record.kind !== item.kind ||
     (item.kind === "pull_request" && record.headSha !== item.head_sha)
   )
     return "stale";
   const reviewedAt = Date.parse(record.reviewedAt ?? "");
-  if (!Number.isFinite(reviewedAt) || reviewedAt > now) return "unreviewed_records";
+  const usableReviewTime = Number.isFinite(reviewedAt) && reviewedAt <= now;
+  if (record.status === "complete" && !usableReviewTime) return "unreviewed_records";
   // Generic updated_at includes automation comments and is not a semantic
   // revision. Only an observed reopen invalidates the earlier open period.
   const reopenedAt = Date.parse(item.reopened_at ?? "");
-  if (Number.isFinite(reopenedAt) && reopenedAt > reviewedAt) return "stale";
+  if (usableReviewTime && Number.isFinite(reopenedAt) && reopenedAt > reviewedAt) return "stale";
+  // A matching failed attempt is not a completed review: no usable date or
+  // successful-review freshness window is required to report that failure.
+  if (record.status === "failed") return "failed";
   return now - reviewedAt < windowMs ? "reviewed_recent" : "expired";
 }
