@@ -96,6 +96,23 @@ The receipt is `telemetry-failures-summary.json` in the existing artifact
 directory. This proves failure retention, not the cause or resolution of a
 production collection stall. The same source capsule mechanism below applies.
 
+The GitHub cause mode compares the same native status route and SQLite owner
+against the baseline that already retained section codes:
+
+```sh
+node docs/proof/status-publication-outcomes/run-proof.mjs 1265122ec07d137740c688d90d5bf9538aa03a78 --github-failures
+```
+
+Loopback cases cover HTTP 403/429/503, explicit rate-limit headers, stalled
+headers and response bodies, a closed connection, invalid JSON, an incomplete
+successful census, and an App-token rejection using an ephemeral synthetic key.
+The candidate retains bounded cause suffixes without increasing warning counts;
+the baseline retains only section codes. Warm reads, one SQLite restart and
+healthy replacement are observed through the actual status API. The receipt is
+`github-failures-summary.json` in the existing artifact directory. No production
+request, credential, permission or timing change is exercised. A global collection
+deadline can still return a fallback without publishing these partial causes.
+
 ## Status collection lifetime
 
 The lifetime mode compares the frozen pre-repair source against the candidate:

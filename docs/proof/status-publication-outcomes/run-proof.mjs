@@ -27,7 +27,8 @@ const lifetime = process.argv.includes("--lifetime");
 const publicationOrder = process.argv.includes("--publication-order");
 const publicationReasons = process.argv.includes("--publication-reasons");
 const cachePaths = process.argv.includes("--cache-paths");
-const telemetryFailures = process.argv.includes("--telemetry-failures");
+const githubFailures = process.argv.includes("--github-failures");
+const telemetryFailures = githubFailures || process.argv.includes("--telemetry-failures");
 const serveBrowser = process.argv.includes("--serve-browser");
 const workerOnly = serveBrowser || cachePaths || process.argv.includes("--worker-only");
 assert.ok(
@@ -182,15 +183,17 @@ try {
   ]) {
     const preview = await startWorker(label, source);
     if (telemetryFailures) {
-      const { proveTelemetryFailures } = await import("./telemetry-failure-proof.mjs");
+      const { proveTelemetryFailures, proveGithubFailureCauses } =
+        await import("./telemetry-failure-proof.mjs");
       let current = preview;
-      results.push(
-        await proveTelemetryFailures(preview, label, githubFixture, async () => {
-          await stopWorker(current);
-          current = await startWorker(label, source);
-          return current;
-        }),
-      );
+      const restart = async () => {
+        await stopWorker(current);
+        current = await startWorker(label, source);
+        return current;
+      };
+      if (githubFailures)
+        results.push(...(await proveGithubFailureCauses(preview, label, githubFixture, restart)));
+      else results.push(await proveTelemetryFailures(preview, label, githubFixture, restart));
       await stopWorker(current);
       continue;
     }
@@ -293,15 +296,17 @@ try {
   }
   if (capsule) await verifyFiles(root, capsule.candidate_files);
   const summary = {
-    schema: telemetryFailures
-      ? "status-telemetry-failures-proof/v1"
-      : publicationReasons
-        ? "publication-reasons-proof/v1"
-        : publicationOrder
-          ? "status-publication-order-proof/v1"
-          : lifetime
-            ? "status-refresh-lifetime-proof/v1"
-            : "status-publication-outcomes-proof/v1",
+    schema: githubFailures
+      ? "status-github-failures-proof/v1"
+      : telemetryFailures
+        ? "status-telemetry-failures-proof/v1"
+        : publicationReasons
+          ? "publication-reasons-proof/v1"
+          : publicationOrder
+            ? "status-publication-order-proof/v1"
+            : lifetime
+              ? "status-refresh-lifetime-proof/v1"
+              : "status-publication-outcomes-proof/v1",
     base,
     candidate_head: head,
     candidate_dirty: dirty,
@@ -366,15 +371,17 @@ try {
   await writeFile(
     path.join(
       artifacts,
-      telemetryFailures
-        ? "telemetry-failures-summary.json"
-        : publicationReasons
-          ? "publication-reasons-summary.json"
-          : publicationOrder
-            ? "publication-order-summary.json"
-            : lifetime
-              ? "lifetime-summary.json"
-              : "worker-summary.json",
+      githubFailures
+        ? "github-failures-summary.json"
+        : telemetryFailures
+          ? "telemetry-failures-summary.json"
+          : publicationReasons
+            ? "publication-reasons-summary.json"
+            : publicationOrder
+              ? "publication-order-summary.json"
+              : lifetime
+                ? "lifetime-summary.json"
+                : "worker-summary.json",
     ),
     JSON.stringify(summary, null, 2) + "\n",
   );

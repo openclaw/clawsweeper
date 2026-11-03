@@ -40,6 +40,8 @@ let snapshotSettled = 0;
 let lifetimeWorkers = 17;
 let lifetimeTtl = 3600;
 let telemetryOrigin = "";
+let telemetryPrivateKey = "";
+let telemetryTtl = "1";
 const nativeFetch = globalThis.fetch.bind(globalThis);
 
 function lifetimeSnapshot() {
@@ -69,11 +71,14 @@ export default {
     const url = new URL(request.url);
     if (url.hostname !== "127.0.0.1") return new Response(null, { status: 403 });
     if (url.pathname === "/__proof/telemetry" && request.method === "POST") {
-      const { origin } = await request.json();
+      const { origin, scenario, privateKey, ttl } = await request.json();
       const upstream = new URL(origin);
       if (upstream.protocol !== "http:" || upstream.hostname !== "127.0.0.1" || !upstream.port)
         return new Response(null, { status: 400 });
       telemetryOrigin = upstream.origin;
+      if (Number.isSafeInteger(scenario) && scenario >= 0 && scenario < 100) generation = scenario;
+      telemetryPrivateKey = typeof privateKey === "string" ? privateKey : "";
+      telemetryTtl = ttl === 5 ? "5" : "1";
       return Response.json({ configured: true });
     }
     if (url.pathname.startsWith("/__proof/reasons/")) {
@@ -334,9 +339,16 @@ export default {
       ...(telemetryOrigin
         ? {
             GITHUB_API_URL: telemetryOrigin,
-            CACHE_TTL_SECONDS: "1",
-            STALE_CACHE_TTL_SECONDS: "1",
+            CACHE_TTL_SECONDS: telemetryTtl,
+            STALE_CACHE_TTL_SECONDS: telemetryTtl,
             WORKER_HEALTH_CACHE_TTL_SECONDS: "10",
+            ...(telemetryPrivateKey
+              ? {
+                  CLAWSWEEPER_APP_CLIENT_ID: "synthetic-failure-proof",
+                  CLAWSWEEPER_APP_INSTALLATION_ID: "17",
+                  CLAWSWEEPER_APP_PRIVATE_KEY: telemetryPrivateKey,
+                }
+              : {}),
           }
         : {}),
       ...(lifetimeMode ? { CACHE_TTL_SECONDS: String(lifetimeTtl) } : {}),

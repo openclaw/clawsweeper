@@ -173,6 +173,34 @@ test("public status retains bounded producer failure codes through repeated proj
   assert.equal(bounded.diagnostics.errors.length, 20);
 });
 
+test("public status retains only closed failure causes without changing warning counts", () => {
+  const allowed = [
+    "workflow_runs_unavailable:http_403",
+    "completed_workflow_runs_unavailable:http_599",
+    "active_runs_unavailable:census_incomplete",
+    "active_jobs_unavailable:timeout",
+    "worker_health_unavailable:network",
+    "recent_closed_unavailable:rate_limited",
+    "pipeline_unavailable:invalid_json",
+  ];
+  const rejected = [
+    "workflow_runs_unavailable:http_200",
+    "workflow_runs_unavailable:http_600",
+    "workflow_runs_unavailable:http_403:private-detail",
+    "pipeline_unavailable:census_incomplete",
+    "worker_health_unavailable:https://example.invalid/private",
+    "private_section:http_403",
+    "workflow_runs_unavailable:" + "x".repeat(1000),
+  ];
+  const projected = publicStatusProjection({ diagnostics: { errors: [...allowed, ...rejected] } });
+  assert.deepEqual(projected.diagnostics, {
+    errors: [...allowed, ...rejected.map(() => "telemetry_unavailable")],
+    error_count: allowed.length + rejected.length,
+  });
+  assert.deepEqual(strictPublicStatusProjection(projected).diagnostics, projected.diagnostics);
+  assert.equal(JSON.stringify(projected).includes("private"), false);
+});
+
 test("public status projection drops over-depth values and retains closed health enums", () => {
   const overDepth = { token: "synthetic-over-depth-token" };
   let nested = overDepth;
