@@ -1,0 +1,1 @@
+- Avoid repeating the dashboard typecheck in CI test shards and coverage replay while retaining the required dashboard check.
