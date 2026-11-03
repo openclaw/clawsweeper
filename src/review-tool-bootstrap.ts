@@ -16,6 +16,71 @@ import { basename, dirname, isAbsolute, join, parse, relative, resolve } from "n
 import { gunzipSync } from "node:zlib";
 
 export const TRUFFLEHOG_VERSION = "3.99.4";
+const BOOTSTRAP_PHASES = [
+  "setup",
+  "platform",
+  "cache",
+  "download",
+  "archive",
+  "install",
+  "verify",
+] as const;
+const BOOTSTRAP_CATEGORIES = ["failed", "http", "checksum", "limit", "invalid"] as const;
+export type ReviewToolBootstrapDiagnostic = {
+  phase: (typeof BOOTSTRAP_PHASES)[number];
+  category: (typeof BOOTSTRAP_CATEGORIES)[number];
+  http_status?: number;
+};
+
+export class ReviewToolBootstrapError extends Error {
+  constructor(readonly diagnostic: ReviewToolBootstrapDiagnostic) {
+    super("Trusted scanner bootstrap failed.");
+    this.name = "ReviewToolBootstrapError";
+  }
+}
+
+export function formatReviewToolBootstrapDiagnostic(value: ReviewToolBootstrapDiagnostic): string {
+  return JSON.stringify({
+    event: "review_tool_bootstrap_failed",
+    phase: value.phase,
+    category: value.category,
+    ...(value.http_status === undefined ? {} : { http_status: value.http_status }),
+  });
+}
+
+// Only finite bootstrap facts cross the child boundary. Loader errors and raw
+// network/filesystem diagnostics can contain private paths or credentials.
+export function parseReviewToolBootstrapDiagnostic(
+  text: string,
+): ReviewToolBootstrapDiagnostic | undefined {
+  if (Buffer.byteLength(text) > 256 || !/^[^\r\n]+\n$/.test(text)) return;
+  try {
+    const value = JSON.parse(text);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const http = value.phase === "download" && value.category === "http";
+    if (
+      value.event !== "review_tool_bootstrap_failed" ||
+      !BOOTSTRAP_PHASES.includes(value.phase) ||
+      !BOOTSTRAP_CATEGORIES.includes(value.category) ||
+      (value.category === "http" && !http) ||
+      Object.keys(value).sort().join(",") !==
+        (http ? "category,event,http_status,phase" : "category,event,phase") ||
+      (http &&
+        (!Number.isInteger(value.http_status) ||
+          value.http_status < 100 ||
+          value.http_status > 599))
+    )
+      return;
+    return {
+      phase: value.phase,
+      category: value.category,
+      ...(http ? { http_status: value.http_status } : {}),
+    };
+  } catch {
+    return;
+  }
+}
+
 const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
 const MAX_TAR_BYTES = 512 * 1024 * 1024;
 const PRIVATE_CACHE_MODE = 0o077;
@@ -122,7 +187,7 @@ const ARTIFACTS: Readonly<Record<string, ReviewToolArtifact>> = {
 async function boundedResponseBytes(response: Response): Promise<Buffer> {
   const contentLength = response.headers.get("content-length");
   if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > MAX_ARCHIVE_BYTES)
-    throw new Error("Trusted scanner download exceeds the archive limit.");
+    throw new ReviewToolBootstrapError({ phase: "download", category: "limit" });
   if (!response.body) throw new Error("Trusted scanner download has no body.");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -133,7 +198,7 @@ async function boundedResponseBytes(response: Response): Promise<Buffer> {
       if (done) break;
       size += value.byteLength;
       if (size > MAX_ARCHIVE_BYTES)
-        throw new Error("Trusted scanner download exceeds the archive limit.");
+        throw new ReviewToolBootstrapError({ phase: "download", category: "limit" });
       chunks.push(value);
     }
   } finally {
@@ -462,71 +527,89 @@ export async function ensureManagedTruffleHog(options: {
   runtimePlatform?: string;
   runtimeArch?: string;
 }): Promise<string> {
-  const env = options.env ?? process.env;
-  const artifact = reviewToolArtifact(
-    options.runtimePlatform ?? platform,
-    options.runtimeArch ?? arch,
-  );
-  if (!artifact)
-    throw new Error("No checksum-pinned trusted scanner is available for this platform.");
-  const root = reviewToolCacheRoot(env);
-  const cacheDir = ensureManagedCacheDirectory(root, [
-    "trufflehog",
-    `v${TRUFFLEHOG_VERSION}`,
-    artifact.platform,
-  ]);
-  const archivePath = join(cacheDir, "archive.tar.gz");
-  const binary = join(cacheDir, artifact.executable);
-  let archive: Buffer;
-  if (validCachedArchive(archivePath, artifact.sha256)) {
-    archive = readFileSync(archivePath);
-  } else {
-    const fetchImpl = options.fetchImpl ?? fetch;
-    const response = await fetchImpl(artifact.url, {
-      signal: AbortSignal.timeout(Math.max(1, options.timeoutMs)),
-    });
-    if (!response.ok) throw new Error("Trusted scanner download failed.");
-    archive = await boundedResponseBytes(response);
-    if (
-      archive.length === 0 ||
-      archive.length > MAX_ARCHIVE_BYTES ||
-      sha256(archive) !== artifact.sha256
-    )
-      throw new Error("Trusted scanner download checksum did not match.");
-    const temporaryArchive = `${archivePath}.${randomUUID()}.tmp`;
-    try {
-      writeFileSync(temporaryArchive, archive, { mode: 0o600, flag: "wx" });
-      rmSync(archivePath, { force: true });
-      renameSync(temporaryArchive, archivePath);
-    } finally {
-      rmSync(temporaryArchive, { force: true });
-    }
-  }
-  const executable = extractTarExecutable(archive, artifact.executable);
-  if (executable.length === 0 || executable.length > MAX_ARCHIVE_BYTES)
-    throw new Error("Trusted scanner executable is invalid.");
-  if (!cachedBinaryMatches(binary, executable)) {
-    const temporary = `${binary}.${randomUUID()}.tmp`;
-    try {
-      writeFileSync(temporary, executable, { mode: 0o700, flag: "wx" });
-      rmSync(binary, { force: true });
-      renameSync(temporary, binary);
-    } finally {
-      rmSync(temporary, { force: true });
-    }
-  }
+  let phase: ReviewToolBootstrapDiagnostic["phase"] = "platform";
   try {
-    if (!cachedBinaryMatches(binary, executable))
-      throw new Error("Trusted scanner cache verification failed.");
-    if (readTruffleHogVersion(binary) !== TRUFFLEHOG_VERSION)
-      throw new Error("Trusted scanner version check failed.");
-    return binary;
-  } catch (error) {
-    try {
-      rmSync(binary, { force: true });
-    } catch {
-      // The failure remains fail-closed even if a corrupted cache file cannot be removed.
+    const env = options.env ?? process.env;
+    const artifact = reviewToolArtifact(
+      options.runtimePlatform ?? platform,
+      options.runtimeArch ?? arch,
+    );
+    if (!artifact)
+      throw new Error("No checksum-pinned trusted scanner is available for this platform.");
+    phase = "cache";
+    const root = reviewToolCacheRoot(env);
+    const cacheDir = ensureManagedCacheDirectory(root, [
+      "trufflehog",
+      `v${TRUFFLEHOG_VERSION}`,
+      artifact.platform,
+    ]);
+    const archivePath = join(cacheDir, "archive.tar.gz");
+    const binary = join(cacheDir, artifact.executable);
+    let archive: Buffer;
+    if (validCachedArchive(archivePath, artifact.sha256)) {
+      archive = readFileSync(archivePath);
+    } else {
+      phase = "download";
+      const fetchImpl = options.fetchImpl ?? fetch;
+      const response = await fetchImpl(artifact.url, {
+        signal: AbortSignal.timeout(Math.max(1, options.timeoutMs)),
+      });
+      if (!response.ok) {
+        if (response.status >= 100 && response.status <= 599)
+          throw new ReviewToolBootstrapError({
+            phase,
+            category: "http",
+            http_status: response.status,
+          });
+        throw new ReviewToolBootstrapError({ phase, category: "failed" });
+      }
+      archive = await boundedResponseBytes(response);
+      if (archive.length === 0 || archive.length > MAX_ARCHIVE_BYTES)
+        throw new ReviewToolBootstrapError({ phase, category: "invalid" });
+      if (sha256(archive) !== artifact.sha256)
+        throw new ReviewToolBootstrapError({ phase, category: "checksum" });
+      phase = "cache";
+      const temporaryArchive = `${archivePath}.${randomUUID()}.tmp`;
+      try {
+        writeFileSync(temporaryArchive, archive, { mode: 0o600, flag: "wx" });
+        rmSync(archivePath, { force: true });
+        renameSync(temporaryArchive, archivePath);
+      } finally {
+        rmSync(temporaryArchive, { force: true });
+      }
     }
-    throw error;
+    phase = "archive";
+    const executable = extractTarExecutable(archive, artifact.executable);
+    if (executable.length === 0 || executable.length > MAX_ARCHIVE_BYTES)
+      throw new Error("Trusted scanner executable is invalid.");
+    phase = "install";
+    if (!cachedBinaryMatches(binary, executable)) {
+      const temporary = `${binary}.${randomUUID()}.tmp`;
+      try {
+        writeFileSync(temporary, executable, { mode: 0o700, flag: "wx" });
+        rmSync(binary, { force: true });
+        renameSync(temporary, binary);
+      } finally {
+        rmSync(temporary, { force: true });
+      }
+    }
+    phase = "verify";
+    try {
+      if (!cachedBinaryMatches(binary, executable))
+        throw new Error("Trusted scanner cache verification failed.");
+      if (readTruffleHogVersion(binary) !== TRUFFLEHOG_VERSION)
+        throw new Error("Trusted scanner version check failed.");
+      return binary;
+    } catch (error) {
+      try {
+        rmSync(binary, { force: true });
+      } catch {
+        // The failure remains fail-closed even if a corrupted cache file cannot be removed.
+      }
+      throw error;
+    }
+  } catch (error) {
+    if (error instanceof ReviewToolBootstrapError) throw error;
+    throw new ReviewToolBootstrapError({ phase, category: "failed" });
   }
 }

@@ -1,0 +1,1 @@
+- Explain managed scanner setup failures with safe phase and HTTP status diagnostics while preserving fail-closed review admission.

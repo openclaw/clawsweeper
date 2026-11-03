@@ -20,6 +20,8 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep 
 import { fileURLToPath } from "node:url";
 import {
   readTruffleHogVersion,
+  parseReviewToolBootstrapDiagnostic,
+  formatReviewToolBootstrapDiagnostic,
   reviewToolCacheRoot,
   TRUFFLEHOG_VERSION,
 } from "./review-tool-bootstrap.js";
@@ -236,6 +238,10 @@ function trustedScanner(cwd: string, lexicalCwd: string, timeoutMs: number): str
       windowsHide: true,
     },
   );
+  if (result.status !== 0) {
+    const diagnostic = parseReviewToolBootstrapDiagnostic(result.stderr ?? "");
+    if (diagnostic) console.error(formatReviewToolBootstrapDiagnostic(diagnostic));
+  }
   const path = result.status === 0 ? result.stdout.trim() : "";
   if (!path || !isAbsolute(path) || path.includes("\0"))
     throw new AgentInputScanError("scanner_unavailable");
