@@ -342,6 +342,18 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   // Approved synthetic unsafe-link fixture: https://github.com/openclaw/openclaw/pull/153274.
   [17, "URI", "PLAIN", "148db1b794aa55e895c253fc95230148dd8cf58b8f97bac16c3db0147df7f457", "e10c3a5ca351377dab596260b30d87d26337a91bb3bb7b8f8d1fecda7285a125", "9b986f89b4bc448cd97566a1512992e765197fe5be1333cbb79681b1c25d95e4", "extensions/github/src/detail-checks.test.ts", "100644"],
   [17, "URI", "HTML", "148db1b794aa55e895c253fc95230148dd8cf58b8f97bac16c3db0147df7f457", "e10c3a5ca351377dab596260b30d87d26337a91bb3bb7b8f8d1fecda7285a125", "9b986f89b4bc448cd97566a1512992e765197fe5be1333cbb79681b1c25d95e4", "extensions/github/src/detail-checks.test.ts", "100644"],
+  // Same unsafe-link fixture after OpenClaw #164043 reformatted the it.each line.
+  [17, "URI", "PLAIN", "148db1b794aa55e895c253fc95230148dd8cf58b8f97bac16c3db0147df7f457", "e10c3a5ca351377dab596260b30d87d26337a91bb3bb7b8f8d1fecda7285a125", "381684e8963a0366eed1977f9405c1f4bbf370aae95af731970017e5013b6c76", "extensions/github/src/detail-checks.test.ts", "100644"],
+  [17, "URI", "HTML", "148db1b794aa55e895c253fc95230148dd8cf58b8f97bac16c3db0147df7f457", "e10c3a5ca351377dab596260b30d87d26337a91bb3bb7b8f8d1fecda7285a125", "381684e8963a0366eed1977f9405c1f4bbf370aae95af731970017e5013b6c76", "extensions/github/src/detail-checks.test.ts", "100644"],
+  // Existing OpenClaw github-detail credential fixtures that block reviews of pull
+  // requests touching detail.test.ts: https://github.com/openclaw/openclaw/pull/191210.
+  // The native PLAIN match stops at 45 bytes; the complete line witness still binds the full URL.
+  [17, "URI", "PLAIN", "902e57fd9767d172abc419455669b173ffe3b1d1e06b45dd190c86b8082a1b2e", "a9ff2e4d2ef22693a1505cfa8939988fed4a345e9c86a3df3a5a2cbd53cddf47", "0b30551ecf54f2d038daf933e1d509b4ae44348ecc0a5b6411e4f0ee13ec6de4", "extensions/github/src/detail.test.ts", "100644"],
+  [17, "URI", "PLAIN", "902e57fd9767d172abc419455669b173ffe3b1d1e06b45dd190c86b8082a1b2e", "237992038e2f8635133fc70c6372f4fd2cbb8a6d01433d243a3056670966ca43", "0b30551ecf54f2d038daf933e1d509b4ae44348ecc0a5b6411e4f0ee13ec6de4", "extensions/github/src/detail.test.ts", "100644"],
+  [17, "URI", "HTML", "902e57fd9767d172abc419455669b173ffe3b1d1e06b45dd190c86b8082a1b2e", "237992038e2f8635133fc70c6372f4fd2cbb8a6d01433d243a3056670966ca43", "0b30551ecf54f2d038daf933e1d509b4ae44348ecc0a5b6411e4f0ee13ec6de4", "extensions/github/src/detail.test.ts", "100644"],
+  [17, "URI", "HTML", "902e57fd9767d172abc419455669b173ffe3b1d1e06b45dd190c86b8082a1b2e", "a9ff2e4d2ef22693a1505cfa8939988fed4a345e9c86a3df3a5a2cbd53cddf47", "0b30551ecf54f2d038daf933e1d509b4ae44348ecc0a5b6411e4f0ee13ec6de4", "extensions/github/src/detail.test.ts", "100644"],
+  [17, "URI", "HTML", "1aa166a254353a56288ad1942fdac6d92342f9ca53ca6690247bae6cc0ac3738", "99c6ba8a9fbc40225ed3839f4cadf69924aa66ca191aa2bc647d0a18aaabe731", "2cb3fe66d84e6b0d6db6e488ea4990f951c6540131dd1f5f2627e983be773713", "extensions/github/src/detail.test.ts", "100644"],
+  [17, "URI", "PLAIN", "1aa166a254353a56288ad1942fdac6d92342f9ca53ca6690247bae6cc0ac3738", "99c6ba8a9fbc40225ed3839f4cadf69924aa66ca191aa2bc647d0a18aaabe731", "2cb3fe66d84e6b0d6db6e488ea4990f951c6540131dd1f5f2627e983be773713", "extensions/github/src/detail.test.ts", "100644"],
   // Maintainer-qualified Gateway readiness error privacy fixture from OpenClaw #152309.
   [17,"URI","PLAIN","630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb","630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb","135365663033f668caf9d6e3fc27b905e8ffaef8ad43bc587e43fceb055bad59","test/helpers/openclaw-test-instance.test.ts","100644"],
   [17,"URI","HTML","630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb","630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb","135365663033f668caf9d6e3fc27b905e8ffaef8ad43bc587e43fceb055bad59","test/helpers/openclaw-test-instance.test.ts","100644"],
@@ -552,6 +564,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           source === "extensions/browser/src/browser/config.test.ts" ||
           source === "extensions/browser/src/browser/chrome-mcp.test.ts" ||
           source === "extensions/browser/src/browser/pw-session.connections.test.ts" ||
+          source === "extensions/github/src/detail.test.ts" ||
           source === "extensions/github/src/detail-checks.test.ts" ||
           source === "ui/src/pages/custodian/custodian-session-store.test.ts" ||
           source === "ui/src/e2e/plugins-help.e2e.test.ts" ||

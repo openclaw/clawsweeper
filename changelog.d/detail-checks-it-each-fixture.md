@@ -1,0 +1,1 @@
+- Qualify the reformatted check-link line and existing github-detail credential fixtures so reviews touching detail-checks.test.ts or detail.test.ts are not refused by the input scanner.

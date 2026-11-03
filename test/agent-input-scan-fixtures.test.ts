@@ -1440,6 +1440,53 @@ exactUriFixtureTests(
   githubCheckLinkFixture,
 );
 exactUriFixtureTests(
+  "GitHub check-link reformatted",
+  "extensions/github/src/detail-checks.test.ts",
+  () => {
+    const raw = ["https://", "user", ":", "password", "@", "ci.example.com"].join("");
+    const rawV2 = raw + "/log";
+    return {
+      raw,
+      rawV2,
+      line: '  it.each(["http://ci.example.com/log", "' + rawV2 + '"])(',
+      decoders: ["PLAIN", "HTML"],
+    };
+  },
+);
+exactUriFixtureTests(
+  "GitHub detail truncated upstream URL",
+  "extensions/github/src/detail.test.ts",
+  () => {
+    const raw = ["https://", "user", ":", "password", "@", "api.github.com"].join("");
+    return {
+      raw,
+      // The native PLAIN match stops at 45 bytes while the line holds the full URL.
+      rawV2: raw + "/repos/oc",
+      line: '    "' + raw + '/repos/octocat/repo",',
+      decoders: ["PLAIN", "HTML"],
+    };
+  },
+);
+exactUriFixtureTests(
+  "GitHub detail full upstream URL",
+  "extensions/github/src/detail.test.ts",
+  () => {
+    const raw = ["https://", "user", ":", "password", "@", "api.github.com"].join("");
+    const rawV2 = raw + "/repos/octocat/repo";
+    return { raw, rawV2, line: '    "' + rawV2 + '",', decoders: ["PLAIN", "HTML"] };
+  },
+);
+exactUriFixtureTests("GitHub detail steal-link", "extensions/github/src/detail.test.ts", () => {
+  const raw = ["https://", "user", ":", "secret", "@", "github.com"].join("");
+  const rawV2 = raw + "/owner/repo";
+  return {
+    raw,
+    rawV2,
+    line: '  it.each(["https://example.com/steal", "' + rawV2 + '"])(',
+    decoders: ["PLAIN", "HTML"],
+  };
+});
+exactUriFixtureTests(
   "browser session",
   "extensions/browser/src/browser/pw-session.connections.test.ts",
   () => browserSessionFixture(),
