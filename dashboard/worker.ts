@@ -64,9 +64,8 @@ import {
   GitHubRequestError,
   githubResponseRateLimited,
   githubAppInstallationId as typedGithubAppInstallationId,
-  githubAppJson as typedGithubAppJson,
+  githubAppJson,
   githubAppInstallationIdAsPlainError as githubAppInstallationId,
-  githubAppJsonAsPlainError as githubAppJson,
   signGithubAppJwt,
 } from "./github-api.ts";
 import {
@@ -9584,7 +9583,7 @@ async function createGithubAppInstallationToken(env, credentials, repos, request
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
   const installationId =
     credentials.installationId || (await typedGithubAppInstallationId(appJwt, repos[0], env));
-  const payload = await typedGithubAppJson(
+  const payload = await githubAppJson(
     `/app/installations/${installationId}/access_tokens`,
     appJwt,
     {

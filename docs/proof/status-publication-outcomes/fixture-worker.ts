@@ -78,7 +78,7 @@ export default {
       telemetryOrigin = upstream.origin;
       if (Number.isSafeInteger(scenario) && scenario >= 0 && scenario < 100) generation = scenario;
       telemetryPrivateKey = typeof privateKey === "string" ? privateKey : "";
-      telemetryTtl = ttl === 5 ? "5" : "1";
+      telemetryTtl = ttl === 5 || ttl === 10 ? String(ttl) : "1";
       return Response.json({ configured: true });
     }
     if (url.pathname.startsWith("/__proof/reasons/")) {

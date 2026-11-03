@@ -239,7 +239,9 @@ export async function proveGithubFailureCauses(preview, label, fixture, restart)
     const config = {
       origin: fixture.origin,
       scenario: index + 10,
-      ttl: fault.restart ? 5 : 1,
+      // Snapshot age starts before collection. Leave a warm-cache window after
+      // the real 4.5-second request timeout, without changing production timing.
+      ttl: fault.timeout || fault.bodyTimeout ? 10 : fault.restart ? 5 : 1,
       ...(fault.app ? { privateKey } : {}),
     };
     async function configure() {
