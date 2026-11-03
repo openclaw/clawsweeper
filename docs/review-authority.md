@@ -124,6 +124,12 @@ launcher must remove failed partial output. Successful output is capped at
 64 KiB; this is not a cap on the existing HTTP owner's response body. Its normal
 request timeout still applies.
 
+Configuration refusals keep `phase: configuration` and add a fixed `reason`
+(`private_output`, `arguments`, or `credentials`) and an actionable `hint`.
+These explain the private stdout, command arguments, or scoped-token requirement
+without echoing supplied values. Selected HTTP failures retain only their phase
+and status; configuration hints do not describe transport or permission failures.
+
 Source, executable, App, private-sink and real API qualification remain deployment
 gates. Secretless subprocess fixtures do not prove private-membership access,
 live revocation, or router/direct-hosted policy parity. No automatic caller or

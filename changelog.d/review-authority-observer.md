@@ -1,1 +1,1 @@
-- Add an explicit private operator command for fresh review-authority observations without changing review admission.
+- Add an explicit private operator command for fresh review-authority observations with actionable, redacted configuration diagnostics, without changing review admission.

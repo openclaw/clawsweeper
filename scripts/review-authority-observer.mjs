@@ -7,6 +7,14 @@ import { githubAppJson, GitHubRequestError } from "../dashboard/github-api.ts";
 import { acquireReviewAuthority } from "../src/review-authority-acquisition.ts";
 
 const MAX_OUTPUT_BYTES = 65_536;
+const configurationHints = {
+  private_output:
+    "Redirect stdout to a new empty regular file owned by this user, with mode 0600 and one link; keep its parent directory private.",
+  arguments:
+    "Supply --repo OWNER/REPO, --actor LOGIN and --max-age-ms as a nonnegative integer; remove unknown arguments.",
+  credentials:
+    "Supply the launcher's scoped installation token as GITHUB_TOKEN; do not use a human or Actions token.",
+};
 const permissionFlags = ["admin", "maintain", "push", "triage", "pull"];
 const record = (value) =>
   value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -91,8 +99,11 @@ export function requirePrivateObservationOutput(fd = 1) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let phase = "configuration";
+  // Record setup boundaries before parser or filesystem errors can expose private values.
+  let configurationReason = "private_output";
   try {
     requirePrivateObservationOutput();
+    configurationReason = "arguments";
     const { values } = parseArgs({
       options: {
         repo: { type: "string" },
@@ -106,10 +117,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       !values.actor ||
       values["max-age-ms"] === undefined ||
       !Number.isSafeInteger(maxAgeMs) ||
-      maxAgeMs < 0 ||
-      !process.env.GITHUB_TOKEN
+      maxAgeMs < 0
     )
       throw new Error("Invalid observation configuration");
+    if (!process.env.GITHUB_TOKEN) {
+      configurationReason = "credentials";
+      throw new Error("Observation credentials are required");
+    }
     phase = "observation";
     const result = await observeReviewAuthority(
       { repository: values.repo, actor: values.actor, maxAgeMs },
@@ -120,9 +134,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     writeSync(1, bytes);
   } catch (error) {
     // Provider messages, subjects, tokens and local paths never reach operator logs.
+    const diagnosticPhase = error.phase || phase;
     process.stderr.write(
       `${JSON.stringify({
-        phase: error.phase || phase,
+        phase: diagnosticPhase,
+        ...(diagnosticPhase === "configuration"
+          ? { reason: configurationReason, hint: configurationHints[configurationReason] }
+          : {}),
         ...(Number.isInteger(error.httpStatus) ? { httpStatus: error.httpStatus } : {}),
       })}\n`,
     );
