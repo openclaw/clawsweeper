@@ -1,18 +1,9 @@
 name: CodeQL
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "apply-report.json"
-      - "repair-apply-report.json"
-      - "jobs/**"
-      - "records/**"
-      - "results/**"
   pull_request:
   schedule:
-    - cron: "41 2 * * 1"
+    - cron: "41 */6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -21,8 +12,8 @@ permissions:
   security-events: write
 
 concurrency:
-  group: codeql-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: codeql-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analyze:
