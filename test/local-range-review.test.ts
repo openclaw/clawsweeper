@@ -1043,7 +1043,7 @@ test("both local-range entrypoints review unlisted targets without hosted admiss
     const capturePath = join(harness, "capture.json");
     const fakeCodex = writeLocalReviewCodex(harness);
     let index = 0;
-    for (const cli of new Set([LOCAL_CLI, CLI])) {
+    for (const cli of [LOCAL_CLI, CLI]) {
       const result = spawnReview(
         cli,
         [

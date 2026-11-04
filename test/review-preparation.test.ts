@@ -30,6 +30,7 @@ import { runText } from "../dist/command.js";
 import { ReviewGitError } from "../dist/clawsweeper-review-blobs.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
 import { createReviewCommandWorkflow } from "../dist/clawsweeper-review-command-workflow.js";
+import { runLocalRangeReview } from "../dist/clawsweeper-local-command.js";
 import { ValidationRecoveryRequiredError } from "../dist/validation-recovery.js";
 
 test("body-file removes advisory preflight and keeps authoritative body bytes over hosted context", () => {
@@ -500,19 +501,17 @@ for (const uncertain of [false, true])
         suppliedReviewStartLeaseFromArgs: () => null,
         targetRepo: () => "openclaw/clawsweeper",
       };
-      const workflow = createReviewCommandWorkflow(
-        new Proxy(dependencies, {
-          get(target, key) {
-            if (key in target) return target[key as keyof typeof target];
-            return () => {
-              throw new Error(`Unexpected review work: ${String(key)}`);
-            };
-          },
-        }) as unknown as Parameters<typeof createReviewCommandWorkflow>[0],
-      );
+      const localDependencies = new Proxy(dependencies, {
+        get(target, key) {
+          if (key in target) return target[key as keyof typeof target];
+          return () => {
+            throw new Error(`Unexpected review work: ${String(key)}`);
+          };
+        },
+      }) as unknown as Parameters<typeof runLocalRangeReview>[1];
       assert.throws(
         () =>
-          workflow.reviewCommand(
+          runLocalRangeReview(
             parseArgs([
               "--local-range",
               "--target-repo",
@@ -521,6 +520,7 @@ for (const uncertain of [false, true])
               root,
               "--readonly-openclaw",
             ]),
+            localDependencies,
           ),
         (error) => error === failure,
       );

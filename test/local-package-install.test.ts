@@ -422,8 +422,8 @@ if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify
     );
     const skipped = process.platform === "win32" ? 3 : 0;
     for (const [label, expected] of Object.entries({
-      tests: 25,
-      pass: 25 - skipped,
+      tests: 26,
+      pass: 26 - skipped,
       fail: 0,
       cancelled: 0,
       skipped,
