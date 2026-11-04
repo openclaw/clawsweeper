@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   REPOSITORY_PROFILES,
   repositoryProfileFor,
+  localRepositoryProfileFor,
   repoFromArgs,
   setTargetRepo,
   targetProfile,
@@ -21,6 +22,32 @@ import {
   markdownFiles,
 } from "../dist/clawsweeper-repository-paths.js";
 import { reportFileUrl, repoUrl } from "../dist/clawsweeper-links.js";
+
+test("unlisted local targets stay outside hosted admission and use their own policy", () => {
+  const before = [...REPOSITORY_PROFILES];
+  const profile = localRepositoryProfileFor("Example/Private-Tool");
+  assert.equal(profile.targetRepo, "example/private-tool");
+  assert.equal(profile.slug, "example-private-tool");
+  assert.equal(profile.packageManager, undefined);
+  assert.match(profile.promptNote, /its own AGENTS\.md/);
+  assert.doesNotMatch(profile.promptNote, /OpenClaw/);
+  assert.deepEqual(profile.applyCloseRules, {});
+  assert.deepEqual(REPOSITORY_PROFILES, before);
+  assert.throws(() => repositoryProfileFor(profile.targetRepo), /Unsupported target repo/);
+  assert.throws(() => repoFromArgs({ target_repo: profile.targetRepo }), /Unsupported target repo/);
+  for (const repo of ["", "missing-owner", "owner/repo/extra", "owner/"])
+    assert.throws(() => localRepositoryProfileFor(repo), /Local target repo/);
+});
+
+test("local profiles preserve full configured guidance and metadata without close authority", () => {
+  for (const repo of ["openclaw/openclaw", "openclaw/clawhub", "openclaw/example-tool"]) {
+    const hosted = repositoryProfileFor(repo);
+    const local = localRepositoryProfileFor(repo);
+    assert.deepEqual(local, { ...hosted, applyCloseRules: {} });
+    assert.notEqual(local, hosted);
+    assert.ok(hosted.applyCloseRules.issue?.length);
+  }
+});
 
 test("command profiles select real record trees and restore nested repository links", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-profile-"));

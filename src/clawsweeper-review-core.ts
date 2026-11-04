@@ -62,7 +62,7 @@ import {
   openClawCodexSourcePreparationFailureRetryable,
   prepareOpenClawCodexSourceForReview,
 } from "./openclaw-codex-source.js";
-import { repositoryProfileFor } from "./repository-profiles.js";
+import { repositoryProfileFor, slugForRepo, normalizeRepo } from "./repository-profiles.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
 import { appendReviewUsage } from "./review-usage.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
@@ -115,6 +115,7 @@ export interface ReviewRuntimeDependencies {
   defaultRootCauseCluster: () => RootCauseClusterAssessment;
   parseDecision: (value: unknown, item?: RootCauseNormalizationItem) => Decision;
   ensureDir: (path: string) => void;
+  repositoryProfileFor?: typeof repositoryProfileFor;
 }
 
 export function createReviewCoreRuntime({
@@ -126,6 +127,7 @@ export function createReviewCoreRuntime({
   defaultRootCauseCluster,
   parseDecision,
   ensureDir,
+  repositoryProfileFor: profileForRepo = repositoryProfileFor,
 }: Omit<ReviewRuntimeDependencies, "targetRepo" | "ghJson">) {
   let reviewPromptTemplatesCache: ReviewItemPrompts | undefined;
   let reviewDecisionSchemaCache: string | undefined;
@@ -163,7 +165,7 @@ export function createReviewCoreRuntime({
     return resolve(
       targetDir,
       gitArtifactRoot,
-      `local-range-review-history-${repositoryProfileFor(repo).slug}-${baseSha}.md`,
+      `local-range-review-history-${slugForRepo(normalizeRepo(repo))}-${baseSha}.md`,
     );
   }
 
@@ -174,7 +176,7 @@ export function createReviewCoreRuntime({
   ): string {
     return join(
       artifactDir,
-      `local-review-history-${repositoryProfileFor(repo).slug}-${itemNumber}.md`,
+      `local-review-history-${slugForRepo(normalizeRepo(repo))}-${itemNumber}.md`,
     );
   }
 
@@ -286,7 +288,7 @@ export function createReviewCoreRuntime({
     runtimeHints: ReviewPromptRuntimeHints = {},
   ): ReviewPromptBuild {
     const templates = reviewPromptTemplates();
-    const profile = repositoryProfileFor(item.repo);
+    const profile = profileForRepo(item.repo);
     const sections = reviewPromptSections(item, context, runtimeHints);
     const prompt = fillPromptSlot(
       fillPromptSlot(

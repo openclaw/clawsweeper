@@ -995,6 +995,7 @@ if (args[0] === "sandbox") {
   process.stderr.write(result.stderr ?? "");
   process.exit(result.status ?? 1);
 }
+
 const prompt = fs.readFileSync(0, "utf8");
 if (process.env.LOCAL_REVIEW_PROMPT) fs.writeFileSync(process.env.LOCAL_REVIEW_PROMPT, prompt);
 const captures = fs.existsSync(process.env.LOCAL_REVIEW_CAPTURE)
@@ -1014,6 +1015,82 @@ process.stdout.write(fs.readFileSync(process.env.LOCAL_REVIEW_DECISION, "utf8") 
 `,
   );
 }
+
+test("both local-range entrypoints review unlisted targets without hosted admission", (t) => {
+  useFakeScanner(t);
+  const dir = initRepo();
+  const harness = mkdtempSync(join(tmpdir(), "lrr-unlisted-"));
+  try {
+    writeFileSync(join(dir, "AGENTS.md"), "Review this project's own local contracts.\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "base");
+    git(dir, "branch", "base-ref");
+    git(dir, "remote", "add", "origin", "git@github.com:example/private-tool.git");
+    writeFileSync(join(dir, "feature.txt"), "changed\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "change");
+    const decisionPath = join(harness, "decision.json");
+    writeFileSync(
+      decisionPath,
+      JSON.stringify(
+        changelogReviewDecision({
+          decision: "close",
+          closeReason: "cannot_reproduce",
+        }),
+      ),
+    );
+    const promptPath = join(harness, "prompt.md");
+    const capturePath = join(harness, "capture.json");
+    const fakeCodex = writeLocalReviewCodex(harness);
+    let index = 0;
+    for (const cli of new Set([LOCAL_CLI, CLI])) {
+      const result = spawnReview(
+        cli,
+        [
+          "review",
+          "--local-range",
+          "--base",
+          "base-ref",
+          "--target-dir",
+          dir,
+          "--artifact-dir",
+          join(harness, `reports-${index}`),
+          "--result-format",
+          "json",
+        ],
+        {
+          encoding: "utf8",
+          timeout: 60_000,
+          env: {
+            ...process.env,
+            // Exercise both origin inference and the existing environment selector.
+            CLAWSWEEPER_TARGET_REPO: index++ === 0 ? "" : "example/private-tool",
+            CODEX_BIN: fakeCodex,
+            LOCAL_REVIEW_DECISION: decisionPath,
+            LOCAL_REVIEW_CAPTURE: capturePath,
+            LOCAL_REVIEW_PROMPT: promptPath,
+            CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: "1",
+          },
+        },
+      );
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr);
+      const report = JSON.parse(result.stdout).reports[0].report;
+      assert.match(report, /^repository: example\/private-tool$/m);
+      assert.match(report, /^action_taken: skipped_invalid_decision$/m);
+      assert.match(report, /^review_origin: local_range$/m);
+      const prompt = readFileSync(promptPath, "utf8");
+      assert.match(prompt, /its own AGENTS\.md/);
+      assert.match(prompt, /No close reason applies/);
+      assert.doesNotMatch(prompt, /Use the OpenClaw source tree/);
+      assert.equal(git(dir, "status", "--porcelain"), "");
+    }
+    assert.ok(JSON.parse(readFileSync(capturePath, "utf8"))[1].hasPreviousReview);
+  } finally {
+    rmSync(harness, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("native local-range entrypoints retain contributor proof and unverified identity", (t) => {
   useFakeScanner(t);

@@ -9,7 +9,7 @@ import { runAgentProcess } from "./agent-runner.js";
 import { codexEnv, codexLoginConfig, PUBLIC_CODEX_MODEL } from "./codex-env.js";
 import { codexProcessErrorCode } from "./codex-process.js";
 import { isUserFacingCommandError, runText, UserFacingCommandError } from "./command.js";
-import { configuredRepositoryProfileFor } from "./repository-profiles.js";
+import { localRepositoryProfileFor, type RepositoryProfile } from "./repository-profiles.js";
 import {
   assertActiveReviewOutputBudget,
   assertTransientReviewOutputBudget,
@@ -361,6 +361,32 @@ export function dirtyWorktree(targetDir: string): string {
   return run("git", ["status", "--porcelain"], { cwd: targetDir }).trim();
 }
 
+export function localReviewRepositoryProfile(args: Args, targetDir: string): RepositoryProfile {
+  let targetRepo =
+    argString(args, "target_repo", "") ||
+    process.env.CLAWSWEEPER_TARGET_REPO ||
+    process.env.TARGET_REPO;
+  if (!targetRepo) {
+    try {
+      targetRepo = run("git", ["remote", "get-url", "origin"], { cwd: targetDir })
+        .replace(/.*github\.com[:/]/, "")
+        .replace(/\.git\s*$/, "")
+        .trim();
+    } catch {
+      throw new UserFacingCommandError(
+        "Local review needs a repository identity. Pass --target-repo <owner/repo> or configure a GitHub origin.",
+      );
+    }
+  }
+  try {
+    return localRepositoryProfileFor(targetRepo);
+  } catch (error) {
+    throw new UserFacingCommandError(
+      `${error instanceof Error ? error.message : String(error)}. Pass --target-repo <owner/repo>.`,
+    );
+  }
+}
+
 // Withhold every GitHub credential from an offline review engine. Shared by the offline
 // committed-range review paths so neither can leak a token to the engine it spawns.
 export function scrubGitHubCredentialEnv(): void {
@@ -396,7 +422,7 @@ export function localReviewAdditionalPrompt(
 // Local, offline pre-PR review of a whole branch: reviews the committed range
 // merge-base(base, HEAD)..HEAD as a single unit, reusing the Commit Sweeper engine.
 // Conforms to the #253 replacement spec: clean checkout, unique run dir, no GitHub
-// token, and reject unsupported repos (never fall back to a foreign profile).
+// token, and target-owned guidance (never fall back to a foreign profile).
 function localReviewCommand(args: Args): void {
   const targetDir = resolve(argString(args, "target_dir", "."));
   const baseBranch = argString(args, "base", "main");
@@ -423,20 +449,8 @@ function localReviewCommand(args: Args): void {
       );
     }
 
-    const targetRepo =
-      argString(args, "target_repo", "") ||
-      run("git", ["remote", "get-url", "origin"], { cwd: targetDir })
-        .replace(/.*github\.com[:/]/, "")
-        .replace(/\.git\s*$/, "")
-        .trim();
-
-    // Spec: reject unsupported repos — never silently fall back to a foreign profile.
-    const profile = configuredRepositoryProfileFor(targetRepo);
-    if (!profile) {
-      throw new UserFacingCommandError(
-        `[local-review] no review profile for '${targetRepo}'. Add a repository profile, or pass --target-repo <known-repo>.`,
-      );
-    }
+    const profile = localReviewRepositoryProfile(args, targetDir);
+    const targetRepo = profile.targetRepo;
     const profileSlug = profile.slug;
 
     // Range = merge-base(base, HEAD)..HEAD — the whole branch, reviewed as one unit.

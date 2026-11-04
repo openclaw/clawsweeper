@@ -1,4 +1,4 @@
-import { runLocalRangeReview } from "./clawsweeper-local-command.js";
+import { localReviewCommand } from "./clawsweeper-local-composition.js";
 import { runPreparedReviewItem, writePreparedReviewReport } from "./clawsweeper-review-item.js";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { oversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
@@ -212,18 +212,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       return;
     }
     if (boolArg(args.local_range)) {
-      const resolveProvenancePull = createCommitPullResolver((repo, sha, deadlineAt) =>
-        dependencies.ghJson(
-          [
-            "api",
-            `repos/${repo}/commits/${sha}/pulls`,
-            "-H",
-            "Accept: application/vnd.github+json",
-          ],
-          { deadlineAt },
-        ),
-      );
-      runLocalRangeReview(args, { ...dependencies, resolveProvenancePull });
+      localReviewCommand(args);
       return;
     }
     const publicationPolicy = process.env.EXACT_REVIEW_DECISION

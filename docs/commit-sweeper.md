@@ -48,8 +48,13 @@ scanner release into the documented local cache before review admission. The
 review requires a clean checkout, uses private run-owned scratch,
 withholds all GitHub token env vars, skips `gh` API commit-metadata hydration,
 points `GH_CONFIG_DIR` at an empty directory, disables Codex web search, and
-forbids other review-time network lookups. Repositories without a configured
-profile are rejected (no foreign-profile fallback). It never writes to GitHub.
+forbids other review-time network lookups. Local repositories need no hosted
+profile or inventory entry: pass `--target-repo owner/repo`, or use the checkout's
+GitHub `origin`. The existing `CLAWSWEEPER_TARGET_REPO` and `TARGET_REPO`
+selectors also apply. Unlisted targets use their own `AGENTS.md`, documentation,
+tests, and Git history rather than another project's policy. Known targets retain
+their repository guidance and metadata. Local profiles have no close authority;
+hosted review and apply admission remain unchanged. It never writes to GitHub.
 Ordinary completion and caught failures remove the run-owned scratch. Signals
 retain their default operating-system termination behavior, so an unhandled
 signal or `SIGKILL` can leave that bounded private scratch behind.

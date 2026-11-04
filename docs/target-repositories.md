@@ -18,6 +18,14 @@ ClawSweeper has two target-repository paths:
 - conservative generic fallbacks for exact event/manual reviews of configured
   owner inventories such as `openclaw/*` and `steipete/*`
 
+These paths govern hosted admission. Offline committed-range review
+(`local-review` and `review --local-range`) also accepts unlisted/private targets
+without changing this configuration or hosted inventory. It selects the local
+identity from `--target-repo`, the existing environment selectors, or the
+checkout's GitHub origin. Known targets keep their full profile guidance;
+unlisted targets use the checkout's own instructions. Every local profile has
+empty close rules. See [local branch review](commit-sweeper.md).
+
 `openclaw/openclaw` remains a built-in profile because it has broader
 auto-close policy. Every other configured profile declares its own issue and PR
 close rules in `apply_close_rules`; do not infer those rules from whether the

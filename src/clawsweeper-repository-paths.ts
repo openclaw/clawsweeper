@@ -5,7 +5,6 @@ import { stringArg, type Args } from "./clawsweeper-args.js";
 import {
   DEFAULT_TARGET_REPO,
   normalizeRepo,
-  repositoryProfileFor,
   repositoryProfileForSlug,
 } from "./repository-profiles.js";
 import { frontMatterValue } from "./report-front-matter.js";
@@ -34,8 +33,7 @@ export function repoRelativePath(path: string): string {
   return relative(ROOT, path).replaceAll("\\", "/");
 }
 
-export function reportFileName(repo: string, number: number): string {
-  repositoryProfileFor(repo);
+export function reportFileName(_repo: string, number: number): string {
   return `${number}.md`;
 }
 

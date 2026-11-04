@@ -922,7 +922,14 @@ separate; `codex:local:check` still invokes its existing model smoke test.
 
 Without `--target-dir`, `--local-range` reviews the checkout where the command
 was invoked. Pass `--target-dir <path>` when invoking ClawSweeper from a
-different checkout. The range is `merge-base(<base>, HEAD)..HEAD`, includes
+different checkout. Local range review accepts unlisted and private repositories
+without central registration. `--target-repo owner/repo` overrides the existing
+`CLAWSWEEPER_TARGET_REPO` / `TARGET_REPO` selectors; otherwise the checkout's
+GitHub `origin` supplies its identity. For a checkout without a GitHub origin,
+pass `--target-repo` explicitly. Unlisted targets use their own `AGENTS.md`, docs,
+tests, and Git history; known targets retain their full repository guidance.
+Local profiles have empty close rules and do not enroll targets in hosted review
+or apply. The range is `merge-base(<base>, HEAD)..HEAD`, includes
 committed work only, and refuses a dirty working tree. `--body-file` can supply
 the proposed PR body and `--additional-policy` can layer an extra local policy.
 

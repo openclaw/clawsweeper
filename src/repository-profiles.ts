@@ -34,7 +34,8 @@ export interface RepositoryProfile {
   slug: string;
   displayName: string;
   checkoutDir: string;
-  packageManager: RepositoryPackageManager;
+  /** Unlisted local targets do not declare or install a package manager. */
+  packageManager?: RepositoryPackageManager;
   docsUrl?: string;
   communityUrl?: string;
   promptNote: string;
@@ -155,6 +156,24 @@ export function configuredRepositoryProfileFor(targetRepo: string): RepositoryPr
   return REPOSITORY_PROFILES.find(
     (candidate) => normalizeRepo(candidate.targetRepo) === normalized,
   );
+}
+
+export function localRepositoryProfileFor(targetRepo: string): RepositoryProfile {
+  const normalized = repoValue(targetRepo, "Local target repo");
+  const profile =
+    configuredRepositoryProfileFor(normalized) ?? fallbackRepositoryProfile(normalized);
+  // Local review may reuse repository guidance, but never hosted close authority.
+  if (profile) return { ...profile, applyCloseRules: {} };
+  const repoName = normalized.split("/")[1]!;
+  return {
+    targetRepo: normalized,
+    slug: slugForRepo(normalized),
+    displayName: repoName,
+    checkoutDir: repoName,
+    promptNote:
+      "Review the local checkout using its own AGENTS.md, documentation, tests, and Git history. No hosted repository policy or close authority is configured for this local target.",
+    applyCloseRules: {},
+  };
 }
 
 export function repositoryProfileForSlug(slug: string): RepositoryProfile | undefined {
@@ -397,16 +416,16 @@ function arrayValue(value: unknown, label: string): unknown[] {
 function repoRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
-let activeRepositoryProfile = repositoryProfileFor(
-  process.env.CLAWSWEEPER_TARGET_REPO ?? DEFAULT_TARGET_REPO,
-);
+let activeRepositoryProfile: RepositoryProfile | undefined;
 
 export function targetProfile(): RepositoryProfile {
-  return activeRepositoryProfile;
+  return (activeRepositoryProfile ??= repositoryProfileFor(
+    process.env.CLAWSWEEPER_TARGET_REPO ?? DEFAULT_TARGET_REPO,
+  ));
 }
 
 export function targetRepo(): string {
-  return activeRepositoryProfile.targetRepo;
+  return targetProfile().targetRepo;
 }
 
 export function setTargetRepo(repo: string): RepositoryProfile {
