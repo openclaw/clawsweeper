@@ -1,7 +1,7 @@
 {
-  "status": "Canonical native behavior proof and scoped controls complete; full-suite interruption and 11 matching baseline/environment failures explicitly qualified",
+  "status": "Complete-input escaped decoder necessity established; exact-bound qualification passes repeated native proof and controls",
   "baselineCommit": "940ad52249d67d3f7ec57deaf2fc397f771ed9d2",
-  "candidateFixtureSourceSha256": "d16e58bc87f03e748c08db8cc8d59553a5cc4144944e314dfc4024bc01d15cca",
+  "candidateFixtureSourceSha256": "681347dad16e2064e14f7f4770d08d19de2183a630a9d2e1f778739a80b7acba",
   "entrypointSha256": "c6a52497fd63fd47f4494cb8b2d472ef81c463069a5dee97c804b066bf6b7e8f",
   "environment": {
     "platform": "Linux x64",
@@ -57,7 +57,7 @@
     "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
     "verification": "canonical enabled",
     "result": "admitted",
-    "elapsedMs": 4900,
+    "elapsedMs": 2942,
     "notices": [
       {
         "event": "agent_input_scan_classified",
@@ -87,7 +87,7 @@
             "blob": "1",
             "scannerLine": 133,
             "literalLine": 133,
-            "decoder": "PLAIN",
+            "decoder": "ESCAPED_UNICODE",
             "role": "base",
             "occurrences": 1,
             "patch": {
@@ -106,196 +106,196 @@
       "scenario": "added-positive",
       "expected": "admitted",
       "actual": "admitted",
-      "elapsedMs": 3437,
+      "elapsedMs": 2953,
       "fullChangedPaths": 39,
-      "base": "484843c1533ba59c5ee4196ac1ff3ffad450e050",
-      "head": "9a341687364362846af44f9d312aabc5d10ee50d",
+      "base": "b035ffd3eedd69f1da89d49c2cfe327a4cbb4a96",
+      "head": "e8f908dd5c3a153e84bad5297160249d5ac55b82",
       "refusalReason": null,
       "diagnosticReason": null,
       "nativeVerified": null,
       "nativeDecoder": null,
       "materialKind": null,
-      "artifactSha256": "a0907c621390f764b27509c359cb3d5f24385cbeb4a72bc05f57e7f353e1377d"
+      "artifactSha256": "e11d173ff01768c0d90c1cd59da67ea8e18cadc822e3f8f32cb20938dfdce438"
     },
     {
       "scenario": "context-positive",
       "expected": "admitted",
       "actual": "admitted",
-      "elapsedMs": 2961,
+      "elapsedMs": 2927,
       "fullChangedPaths": 39,
-      "base": "c1e60c229924f3ee044428a364a794b102555567",
-      "head": "88bc07766e4645ee622e7ad6f322f5207a3a278b",
+      "base": "219d08844d89f65377e9a07d7b1dbe24af015e59",
+      "head": "a2a28b3df144ad45bf4e8e0fe2541e92b024a154",
       "refusalReason": null,
       "diagnosticReason": null,
       "nativeVerified": null,
       "nativeDecoder": null,
       "materialKind": null,
-      "artifactSha256": "770f7e2fee7415651f963c677e3480431e1294d99ee049cf269eaecfc0b0b62f"
+      "artifactSha256": "4a9dfd6504e253e3e475505a39008712e3bd8ac2ca9c5239c113738b44f8fe2a"
     },
     {
       "scenario": "changed-value",
       "expected": "refused",
       "actual": "refused",
-      "elapsedMs": 2953,
+      "elapsedMs": 2921,
       "fullChangedPaths": 39,
-      "base": "77b7dabe1c4d527fac2a6375d03e4c2fcca04246",
-      "head": "6d7938992ecc822634654563612ca1987a05bd65",
+      "base": "4921b59c390026d9d617ed40b3b7cf25e674cd76",
+      "head": "ad7c4605b2aca716c8b749144a415579444fca1f",
       "refusalReason": "findings",
       "diagnosticReason": "material_not_reviewed",
       "nativeVerified": false,
-      "nativeDecoder": "HTML",
+      "nativeDecoder": "ESCAPED_UNICODE",
       "materialKind": "patch",
-      "artifactSha256": "fddef286b3e2762d2fc18321fbecafb46ac82db68c9b81022a4d34fd57c48674"
+      "artifactSha256": "8afceee432494f1c6ebe69635365c7252ab9ab4757b61a12817b07c8abfb37e1"
     },
     {
       "scenario": "changed-full-line",
       "expected": "refused",
       "actual": "refused",
-      "elapsedMs": 3040,
+      "elapsedMs": 2919,
       "fullChangedPaths": 39,
-      "base": "4a858038c43c0e86fe697c2b89dfeaa776c8d2eb",
-      "head": "603f7f56b79374f8b2645f2e5488d3e2eabb7556",
-      "refusalReason": "findings",
-      "diagnosticReason": "material_not_reviewed",
-      "nativeVerified": false,
-      "nativeDecoder": "ESCAPED_UNICODE",
-      "materialKind": "patch",
-      "artifactSha256": "d2c6e8452ac81e6227956650904ac2cc3365ae976bd081ed2ad65973140023c9"
-    },
-    {
-      "scenario": "changed-path",
-      "expected": "refused",
-      "actual": "refused",
-      "elapsedMs": 3018,
-      "fullChangedPaths": 39,
-      "base": "1fbb86c1d51c11e3609e62591b94bfae09a51efe",
-      "head": "107c2ad5c46233047d7b8d28adf3212c5959b3d8",
-      "refusalReason": "findings",
-      "diagnosticReason": "material_not_reviewed",
-      "nativeVerified": false,
-      "nativeDecoder": "ESCAPED_UNICODE",
-      "materialKind": "patch",
-      "artifactSha256": "d4a87f55e4d9de5fc7d9e1f1cf3d97c095459a60f9223b2bd5f72d9510bc3bbe"
-    },
-    {
-      "scenario": "changed-mode",
-      "expected": "refused",
-      "actual": "refused",
-      "elapsedMs": 2990,
-      "fullChangedPaths": 39,
-      "base": "f5bcef41a776f9de104f0907b6ece66d6696f715",
-      "head": "ebcde18d80ebdd28c662611ed031a2253c46bd73",
-      "refusalReason": "findings",
-      "diagnosticReason": "material_not_reviewed",
-      "nativeVerified": false,
-      "nativeDecoder": "ESCAPED_UNICODE",
-      "materialKind": "patch",
-      "artifactSha256": "adbefc6b5cf4fcaf60cdc43bf9d4596c0bb6265edf54a16946253fe7ce1df88d"
-    },
-    {
-      "scenario": "extra-occurrence",
-      "expected": "refused",
-      "actual": "refused",
-      "elapsedMs": 2995,
-      "fullChangedPaths": 39,
-      "base": "c994c7a4aaa3bc9c257bceee7430c2af555d4845",
-      "head": "3b8ff7649d2d1a9e6656626bafe522b1176e640f",
+      "base": "8147a571211f781704b74a4b1509ec721ae4a84d",
+      "head": "c19be05a63dff813c1e0a11c22c142f8bc3187e2",
       "refusalReason": "findings",
       "diagnosticReason": "literal_mismatch",
       "nativeVerified": false,
       "nativeDecoder": "PLAIN",
       "materialKind": "patch",
-      "artifactSha256": "5b53f0211dd421dadec510c6fd6d1bb8d09e80d516323303ee209daf87b318b9"
+      "artifactSha256": "cedb5605401d253abd1e33731fecce3d1460a2c53bb891a47cd278bda90762c7"
+    },
+    {
+      "scenario": "changed-path",
+      "expected": "refused",
+      "actual": "refused",
+      "elapsedMs": 2916,
+      "fullChangedPaths": 39,
+      "base": "6a5242630780d0abc11774c7a3b6bbbfd95abcd0",
+      "head": "3b7e540fdbaf48e47ce47ca0c7c72817508da289",
+      "refusalReason": "findings",
+      "diagnosticReason": "source_not_reviewed",
+      "nativeVerified": false,
+      "nativeDecoder": "ESCAPED_UNICODE",
+      "materialKind": "patch",
+      "artifactSha256": "15bb7b5b93125f1a56d9fbcb53927f252a21765a7b6b015e66a3d4e5827d7876"
+    },
+    {
+      "scenario": "changed-mode",
+      "expected": "refused",
+      "actual": "refused",
+      "elapsedMs": 2901,
+      "fullChangedPaths": 39,
+      "base": "ea79a1195e06b540f072845f47055aa65440f7c9",
+      "head": "64fc8b27e6c50f0dfb211e19b01aec2fd41ad272",
+      "refusalReason": "findings",
+      "diagnosticReason": "source_not_reviewed",
+      "nativeVerified": false,
+      "nativeDecoder": "PLAIN",
+      "materialKind": "blob",
+      "artifactSha256": "176be837c3aff15f88fb9091ac328b2cb3f30920f2997894de3bf83c0b942d29"
+    },
+    {
+      "scenario": "extra-occurrence",
+      "expected": "refused",
+      "actual": "refused",
+      "elapsedMs": 2892,
+      "fullChangedPaths": 39,
+      "base": "fb891f6e63050473343fb505c8c533f5eeec0c3c",
+      "head": "e3b1f088adb7e96123b57e860415deaf70441ee6",
+      "refusalReason": "findings",
+      "diagnosticReason": "literal_mismatch",
+      "nativeVerified": false,
+      "nativeDecoder": "PLAIN",
+      "materialKind": "blob",
+      "artifactSha256": "2127b5bb37295c1f526df45503c81781f802605de799ed5ae61d61e6b3e1f013"
     },
     {
       "scenario": "mixed-findings",
       "expected": "refused",
       "actual": "refused",
-      "elapsedMs": 3127,
+      "elapsedMs": 2911,
       "fullChangedPaths": 39,
-      "base": "dc9d89fa6e205a744b118f37af541b80030afe75",
-      "head": "47be9bc0ea61654095405148e77104e802b953aa",
+      "base": "e092a051aa332250d4e613fd2877da32e7824125",
+      "head": "9fbb028a80044ae2dfb4e63a6b6d97ac4a77b5db",
       "refusalReason": "findings",
       "diagnosticReason": "material_not_reviewed",
       "nativeVerified": false,
-      "nativeDecoder": "ESCAPED_UNICODE",
+      "nativeDecoder": "PLAIN",
       "materialKind": "patch",
-      "artifactSha256": "6862a4d686113a3d4fc9934a0b965c04d9f64c0f6ba9beae7127448e80641190"
+      "artifactSha256": "3f7443595a4c133dc51be2b8f0d96dd4eaed8d623aa72c77d16537a24c6f6006"
     },
     {
       "scenario": "unapproved-decoder",
       "expected": "refused",
       "actual": "refused",
-      "elapsedMs": 3024,
+      "elapsedMs": 2914,
       "fullChangedPaths": 39,
-      "base": "a9b23a36f05114e3ecface8fc1f70db286295cdf",
-      "head": "ef5ccbacd662275198be16c217280365e06c85e1",
+      "base": "ea5a185b44c1ff17ee75d3b0e3eaf197c90d0dbb",
+      "head": "6bf09e706edad82049c0f7081f74c03fa1104199",
       "refusalReason": "findings",
       "diagnosticReason": "material_not_reviewed",
       "nativeVerified": false,
-      "nativeDecoder": "HTML",
+      "nativeDecoder": "OTHER",
       "materialKind": "patch",
-      "artifactSha256": "8caa277a0f32388b665c6558a85a6a89faba44f322113cf7597c3a741263ef0c"
+      "artifactSha256": "fa8bb42daa7168e891460274baf36e1ba67eea98410d7e83a016b8b863605ab1"
     },
     {
       "scenario": "prompt-material",
       "expected": "refused",
       "actual": "refused",
-      "elapsedMs": 3082,
+      "elapsedMs": 2899,
       "fullChangedPaths": 39,
-      "base": "75aa4b385f6b89dc9504fe38ef17019d35d01fb6",
-      "head": "e4383e8d9c4ad79af6190abe716de4990f5a6e7b",
+      "base": "74c5d02867dbde9e688f118024145b20700349a2",
+      "head": "4c79923e1bd60a511234be096a521877c622ef69",
       "refusalReason": "findings",
       "diagnosticReason": "material_not_reviewed",
       "nativeVerified": false,
       "nativeDecoder": "PLAIN",
       "materialKind": "prompt",
-      "artifactSha256": "f29e1d86d87fd49a7502c5cfb9fff78de09aa9f30440aa3a81dd646565f9fcf8"
+      "artifactSha256": "e72cd5f783c94e5ade794519b05297a1466e4d1406d35fee3c50587d9b781a66"
     },
     {
       "scenario": "additional-material",
       "expected": "refused",
       "actual": "refused",
-      "elapsedMs": 3031,
+      "elapsedMs": 2915,
       "fullChangedPaths": 39,
-      "base": "75aa4b385f6b89dc9504fe38ef17019d35d01fb6",
-      "head": "e4383e8d9c4ad79af6190abe716de4990f5a6e7b",
+      "base": "74c5d02867dbde9e688f118024145b20700349a2",
+      "head": "4c79923e1bd60a511234be096a521877c622ef69",
       "refusalReason": "findings",
       "diagnosticReason": "material_not_reviewed",
       "nativeVerified": false,
       "nativeDecoder": "PLAIN",
       "materialKind": "additional",
-      "artifactSha256": "ca4762246456ac87df733230f09146555510dee178dead2989a76e9aadc694db"
+      "artifactSha256": "662017bd2386a62eae22f881ed289884126d66ebe39c892b6a16ad1330f87302"
     },
     {
       "scenario": "index-role",
       "expected": "refused",
       "actual": "refused",
-      "elapsedMs": 3090,
+      "elapsedMs": 2999,
       "fullChangedPaths": 39,
-      "base": "e03531f4196572cad17fe9f4ea8cffe3f28419af",
-      "head": "27e220699942458bc871955638a14da7addc0e03",
+      "base": "3a014d1519a6c08f23e515cef72c12d49bbf58de",
+      "head": "34b24501af14d295e3a189d873f467b335d7661b",
       "refusalReason": "findings",
       "diagnosticReason": "material_not_reviewed",
       "nativeVerified": false,
-      "nativeDecoder": "HTML",
+      "nativeDecoder": "PLAIN",
       "materialKind": "patch",
-      "artifactSha256": "0e85f9cc990044229cdc85dc43ec8b6ff358cd5dfeedc999ca119a762700138c"
+      "artifactSha256": "780ffca258842b9bfa6bc6ad4f1228fe73435893ae8f16742484cd840c2915bc"
     },
     {
       "scenario": "tree-role",
       "expected": "refused",
       "actual": "refused",
-      "elapsedMs": 3191,
+      "elapsedMs": 2981,
       "fullChangedPaths": 39,
-      "base": "3738a31df660efaf98a8fe4ec17b03006f8bbf70",
-      "head": "d061b1b09e8ce63ed69bd4d75d4c2011c8492162",
+      "base": "ac00106b8bf016830ff7e499b8620046c8cf4475",
+      "head": "8cd06635cb0534f77a24f46313fb37d29a2ca237",
       "refusalReason": "findings",
       "diagnosticReason": "material_not_reviewed",
       "nativeVerified": false,
-      "nativeDecoder": "HTML",
+      "nativeDecoder": "PLAIN",
       "materialKind": "patch",
-      "artifactSha256": "8a8edb520968cd5474ed8d59277d97a1b4b6a5826958d40d5d3928dbeebc8bdb"
+      "artifactSha256": "07013e2897eb1a2a54ac624a2fbe34c66e608ed2e76aabba120dcaed957a5621"
     }
   ],
   "verifiedControl": {
@@ -321,15 +321,15 @@
   "limits": [
     "Controlled prompt, not full hosted prompt admission",
     "Control ranges preserve all 39 changed paths and unrelated original tree content; only the fixture file is deliberately varied",
-    "No unproven ESCAPED_UNICODE permission remains; matcher logic is unchanged",
     "Native setup preflight failures and complete private logs are retained in task scratch",
-    "The Verified=true rejection control is explicitly constructed/classifier-level, not a native verified finding."
+    "The Verified=true rejection control is explicitly constructed/classifier-level, not a native verified finding.",
+    "ESCAPED_UNICODE is admitted only for the complete exact tuple observed in full-input failure and successful reruns; all other decoder permissions are unchanged."
   ],
-  "productionScope": "Three exact tuples and enrollment in existing URI PLAIN/HTML validation; runtime matcher unchanged",
+  "productionScope": "Only the complete-tuple-bound MCP ESCAPED_UNICODE patch eligibility predicate",
   "validation": {
     "selectedMcpPolicyRegressions": {
-      "tests": 61,
-      "pass": 61,
+      "tests": 105,
+      "pass": 105,
       "fail": 0
     },
     "requiredCheck": {
@@ -373,5 +373,223 @@
       "explicitVerifiedDiagnostic": true
     }
   },
-  "capturedBeforeFinalCommit": true
+  "capturedBeforeFinalCommit": true,
+  "candidateFixtureCompiledSha256": "0e41b720a94cf0bb3cde552f59c6676d213d8bb5b59073495b790c930744e464",
+  "guardPreservation": {
+    "allOtherClassifierBytesMatchBase": true,
+    "unchangedFiles": {
+      "src/agent-input-scan.ts": true,
+      "src/agent-input-scan-patch.ts": true,
+      "src/agent-input-scan-git-metadata.ts": true,
+      "src/review-tool-bootstrap.ts": true
+    }
+  },
+  "escapedFullInputRefusal": {
+    "targetHead": "3679341be3efbae7b466a4eb6bb12ee945186f97",
+    "base": "fb2c420c4e75ea43884869786f5b0e9b7af36c06",
+    "source": "complete committed range, canonical pinned native scanner",
+    "prompt": {
+      "kind": "controlled",
+      "bytes": 71,
+      "sha256": "ec04b7c204ee8e5aafb5fc4f81351c69e8fa7375aba79b95e50ecc86c127f66f"
+    },
+    "schema": null,
+    "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+    "verification": "canonical enabled",
+    "result": "refused",
+    "elapsedMs": 3510,
+    "notices": [],
+    "failure": {
+      "reason": "findings",
+      "diagnostic": {
+        "kind": "unclassified_finding",
+        "reason": "material_not_reviewed",
+        "findingCount": 2,
+        "findingIndex": 1,
+        "detectorType": 17,
+        "decoder": "ESCAPED_UNICODE",
+        "verified": false,
+        "scannerLine": 133,
+        "material": {
+          "kind": "patch",
+          "id": "1",
+          "from": "fb2c420c4e75ea43884869786f5b0e9b7af36c06",
+          "to": "3679341be3efbae7b466a4eb6bb12ee945186f97"
+        }
+      }
+    }
+  },
+  "repetitions": [
+    {
+      "targetHead": "3679341be3efbae7b466a4eb6bb12ee945186f97",
+      "base": "fb2c420c4e75ea43884869786f5b0e9b7af36c06",
+      "source": "complete committed range, canonical pinned native scanner",
+      "prompt": {
+        "kind": "controlled",
+        "bytes": 71,
+        "sha256": "ec04b7c204ee8e5aafb5fc4f81351c69e8fa7375aba79b95e50ecc86c127f66f"
+      },
+      "schema": null,
+      "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+      "verification": "canonical enabled",
+      "result": "admitted",
+      "elapsedMs": 3368,
+      "notices": [
+        {
+          "event": "agent_input_scan_classified",
+          "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+          "fixtureSha256": "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4",
+          "source": "src/config/config-misc.test.ts",
+          "detector": "URI",
+          "findings": [
+            {
+              "blob": "31c6eb5e1aef768f44b8fa778d24cc8b5bffe8c1",
+              "scannerLine": 153,
+              "literalLine": 153,
+              "decoder": "HTML",
+              "role": "base",
+              "occurrences": 1
+            }
+          ]
+        },
+        {
+          "event": "agent_input_scan_classified",
+          "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+          "fixtureSha256": "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4",
+          "source": "src/config/config-misc.test.ts",
+          "detector": "URI",
+          "findings": [
+            {
+              "blob": "1",
+              "scannerLine": 133,
+              "literalLine": 133,
+              "decoder": "HTML",
+              "role": "base",
+              "occurrences": 1,
+              "patch": {
+                "from": "fb2c420c4e75ea43884869786f5b0e9b7af36c06",
+                "to": "3679341be3efbae7b466a4eb6bb12ee945186f97",
+                "sourceBlob": "31c6eb5e1aef768f44b8fa778d24cc8b5bffe8c1",
+                "sourceLine": 153
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "targetHead": "3679341be3efbae7b466a4eb6bb12ee945186f97",
+      "base": "fb2c420c4e75ea43884869786f5b0e9b7af36c06",
+      "source": "complete committed range, canonical pinned native scanner",
+      "prompt": {
+        "kind": "controlled",
+        "bytes": 71,
+        "sha256": "ec04b7c204ee8e5aafb5fc4f81351c69e8fa7375aba79b95e50ecc86c127f66f"
+      },
+      "schema": null,
+      "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+      "verification": "canonical enabled",
+      "result": "admitted",
+      "elapsedMs": 2942,
+      "notices": [
+        {
+          "event": "agent_input_scan_classified",
+          "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+          "fixtureSha256": "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4",
+          "source": "src/config/config-misc.test.ts",
+          "detector": "URI",
+          "findings": [
+            {
+              "blob": "31c6eb5e1aef768f44b8fa778d24cc8b5bffe8c1",
+              "scannerLine": 153,
+              "literalLine": 153,
+              "decoder": "PLAIN",
+              "role": "base",
+              "occurrences": 1
+            }
+          ]
+        },
+        {
+          "event": "agent_input_scan_classified",
+          "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+          "fixtureSha256": "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4",
+          "source": "src/config/config-misc.test.ts",
+          "detector": "URI",
+          "findings": [
+            {
+              "blob": "1",
+              "scannerLine": 133,
+              "literalLine": 133,
+              "decoder": "ESCAPED_UNICODE",
+              "role": "base",
+              "occurrences": 1,
+              "patch": {
+                "from": "fb2c420c4e75ea43884869786f5b0e9b7af36c06",
+                "to": "3679341be3efbae7b466a4eb6bb12ee945186f97",
+                "sourceBlob": "31c6eb5e1aef768f44b8fa778d24cc8b5bffe8c1",
+                "sourceLine": 153
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "targetHead": "3679341be3efbae7b466a4eb6bb12ee945186f97",
+      "base": "fb2c420c4e75ea43884869786f5b0e9b7af36c06",
+      "source": "complete committed range, canonical pinned native scanner",
+      "prompt": {
+        "kind": "controlled",
+        "bytes": 71,
+        "sha256": "ec04b7c204ee8e5aafb5fc4f81351c69e8fa7375aba79b95e50ecc86c127f66f"
+      },
+      "schema": null,
+      "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+      "verification": "canonical enabled",
+      "result": "admitted",
+      "elapsedMs": 2948,
+      "notices": [
+        {
+          "event": "agent_input_scan_classified",
+          "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+          "fixtureSha256": "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4",
+          "source": "src/config/config-misc.test.ts",
+          "detector": "URI",
+          "findings": [
+            {
+              "blob": "31c6eb5e1aef768f44b8fa778d24cc8b5bffe8c1",
+              "scannerLine": 153,
+              "literalLine": 153,
+              "decoder": "HTML",
+              "role": "base",
+              "occurrences": 1
+            }
+          ]
+        },
+        {
+          "event": "agent_input_scan_classified",
+          "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+          "fixtureSha256": "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4",
+          "source": "src/config/config-misc.test.ts",
+          "detector": "URI",
+          "findings": [
+            {
+              "blob": "1",
+              "scannerLine": 133,
+              "literalLine": 133,
+              "decoder": "ESCAPED_UNICODE",
+              "role": "base",
+              "occurrences": 1,
+              "patch": {
+                "from": "fb2c420c4e75ea43884869786f5b0e9b7af36c06",
+                "to": "3679341be3efbae7b466a4eb6bb12ee945186f97",
+                "sourceBlob": "31c6eb5e1aef768f44b8fa778d24cc8b5bffe8c1",
+                "sourceLine": 153
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
 }

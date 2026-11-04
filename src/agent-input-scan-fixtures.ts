@@ -286,6 +286,8 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   // Native 3.99.4 observed both source-blob decoders for the exact four-space source line.
   [17, "URI", "PLAIN", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "6b3e1580cf762cafe2a8483dbfecf2aee6bd929725febab70331cfbf8d13a8b5", "src/config/config-misc.test.ts", "100644"],
   [17, "URI", "HTML", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "6b3e1580cf762cafe2a8483dbfecf2aee6bd929725febab70331cfbf8d13a8b5", "src/config/config-misc.test.ts", "100644"],
+  // Observed in the complete committed-range native patch scan.
+  [17, "URI", "ESCAPED_UNICODE", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "6b3e1580cf762cafe2a8483dbfecf2aee6bd929725febab70331cfbf8d13a8b5", "src/config/config-misc.test.ts", "100644"],
   // Existing synthetic loopback CDP endpoint in the mocked profile-status test.
   [17, "URI", "PLAIN", "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0", "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0", ["246be528bbd0812126ba9e5aae3b9d61d60430c352cbd41d69c066c38fee4882", "9a313b5e628ff1390c50c9616bc95c8eb25c2c93050cafe481190930722103b9"], "extensions/browser/src/browser/server-context.existing-session.test.ts", "100644"],
   [17, "URI", "HTML", "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0", "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0", ["246be528bbd0812126ba9e5aae3b9d61d60430c352cbd41d69c066c38fee4882", "9a313b5e628ff1390c50c9616bc95c8eb25c2c93050cafe481190930722103b9"], "extensions/browser/src/browser/server-context.existing-session.test.ts", "100644"],
@@ -480,6 +482,22 @@ const detectorNames = {
   968: "Postgres",
 } as const;
 
+// An observed decoder variant is eligible only for this complete reviewed tuple.
+function isExactMcpSandboxEscapedAttribution(row: ReviewedAttribution): boolean {
+  const [detectorType, detectorName, decoder, raw, rawV2, line, source, mode] = row;
+  return (
+    row.length === 8 &&
+    detectorType === 17 &&
+    detectorName === "URI" &&
+    decoder === "ESCAPED_UNICODE" &&
+    raw === "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4" &&
+    rawV2 === "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4" &&
+    line === "6b3e1580cf762cafe2a8483dbfecf2aee6bd929725febab70331cfbf8d13a8b5" &&
+    source === "src/config/config-misc.test.ts" &&
+    mode === "100644"
+  );
+}
+
 function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): void {
   const seen = new Set<string>();
   for (const row of rows) {
@@ -542,7 +560,9 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
         (source === "src/config/config-misc.test.ts" &&
           detectorType === 17 &&
           detectorName === "URI" &&
-          (decoder === "PLAIN" || decoder === "HTML")) ||
+          (decoder === "PLAIN" ||
+            decoder === "HTML" ||
+            isExactMcpSandboxEscapedAttribution(row))) ||
         (source === "extensions/matrix/src/matrix/client.test.ts" &&
           detectorType === 17 &&
           detectorName === "URI" &&
@@ -1038,6 +1058,9 @@ function classifyReviewedFindings(
             source === "src/infra/git-source.test.ts" &&
             mode === "100644",
         );
+      const exactMcpSandboxEscapedAttribution =
+        finding.DecoderName === "ESCAPED_UNICODE" &&
+        exactCandidates.some(isExactMcpSandboxEscapedAttribution);
       const reviewedEventUuid =
         finding.DetectorType === 938 &&
         finding.DecoderName === "PLAIN" &&
@@ -1048,7 +1071,8 @@ function classifyReviewedFindings(
         !patchLiteral ||
         (finding.DecoderName !== "PLAIN" &&
           finding.DecoderName !== "HTML" &&
-          (finding.DecoderName !== "ESCAPED_UNICODE" || !exactGitSourceEscapedAttribution))
+          (finding.DecoderName !== "ESCAPED_UNICODE" ||
+            (!exactGitSourceEscapedAttribution && !exactMcpSandboxEscapedAttribution)))
       )
         return refuse("material_not_reviewed");
       // Decoder labels do not reconstruct source: this fixture still needs literal witnesses.

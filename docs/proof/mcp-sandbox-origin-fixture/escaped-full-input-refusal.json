@@ -1,0 +1,35 @@
+{
+  "targetHead": "3679341be3efbae7b466a4eb6bb12ee945186f97",
+  "base": "fb2c420c4e75ea43884869786f5b0e9b7af36c06",
+  "source": "complete committed range, canonical pinned native scanner",
+  "prompt": {
+    "kind": "controlled",
+    "bytes": 71,
+    "sha256": "ec04b7c204ee8e5aafb5fc4f81351c69e8fa7375aba79b95e50ecc86c127f66f"
+  },
+  "schema": null,
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "refused",
+  "elapsedMs": 3510,
+  "notices": [],
+  "failure": {
+    "reason": "findings",
+    "diagnostic": {
+      "kind": "unclassified_finding",
+      "reason": "material_not_reviewed",
+      "findingCount": 2,
+      "findingIndex": 1,
+      "detectorType": 17,
+      "decoder": "ESCAPED_UNICODE",
+      "verified": false,
+      "scannerLine": 133,
+      "material": {
+        "kind": "patch",
+        "id": "1",
+        "from": "fb2c420c4e75ea43884869786f5b0e9b7af36c06",
+        "to": "3679341be3efbae7b466a4eb6bb12ee945186f97"
+      }
+    }
+  }
+}

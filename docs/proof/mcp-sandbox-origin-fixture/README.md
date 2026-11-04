@@ -45,19 +45,30 @@ No raw credential-shaped value is printed in this evidence.
 
 ## Narrow policy change
 
-The production change adds three exact attribution tuples and enrolls their
-source in the existing URI PLAIN/HTML validation schema: the retained six-space
-legacy PLAIN witness, plus PLAIN and HTML for the observed four-space full line. Detector, Raw, RawV2, full-line digest, source path, regular-file
+The production change adds exact attribution tuples for the retained six-space
+legacy PLAIN witness and the observed four-space PLAIN/HTML/ESCAPED_UNICODE
+variants. PLAIN/HTML use the existing URI validation schema. The new escaped
+variant has a shared eligibility predicate bound to its complete eight-field
+tuple: detector, name, decoder, Raw, RawV2, full-line digest, path, and mode. Detector, Raw, RawV2, full-line digest, source path, regular-file
 mode, committed-reference checks, and all existing native completion and
 verification requirements still apply.
 
-The proposed ESCAPED_UNICODE tuple and special predicate were removed. An earlier
-standalone compare-patch scan emitted that label, but did not prove it necessary
-on the complete canonical input. The narrowed candidate passed that full input
-and real added/context patch controls using the existing matcher unchanged.
-Unapproved decoder variants remain refused, including explicit regression
-coverage for ESCAPED_UNICODE. There is no domain, path, detector, PR-number, or
-scanner-wide exception.
+The standalone ESCAPED_UNICODE observation initially did not establish a need
+for broader logic, so that permission was removed. After managed publication,
+a new canonical run on the identical complete source range produced an
+ESCAPED_UNICODE removed-patch finding and refused it. The
+[immutable full-input refusal](escaped-full-input-refusal.json) records that
+new evidence. An exact-bound patch eligibility predicate is therefore necessary,
+not inferred from the standalone patch.
+
+After that fix, three predetermined full-input native runs all admitted; two
+actually classified the escaped patch finding. All 13 native controls were
+refreshed. The eligibility predicate rejects any changed tuple field, including
+the legacy line and single-line-array alias. No path-wide or decoder-wide
+permission is added. Removing only this precise predicate leaves all other
+classifier bytes identical to the pinned baseline. The scanner entrypoint,
+patch/provenance helpers, bootstrap, verification settings, and other guards
+are unchanged.
 
 ## Immutable failure and same-input diagnosis
 
@@ -85,7 +96,7 @@ Retained legacy full-line SHA-256:
 ## Validation and controls
 
 After fixing the policy-schema enrollment and the existing MCP audit/patch
-expectations, 61 selected MCP/policy regressions passed against actual built
+expectations, 105 selected MCP/policy regressions passed against actual built
 modules. It covers exact committed references, added/context/removed patch
 attribution, and refusal of changed values, lines, paths, modes, roles, decoder
 variants, extra occurrences, verified/mixed metadata, and completion mismatches.
@@ -108,9 +119,10 @@ fixture and consistent completion counters, sets `Verified=true`, and asserts
 classifier-level evidence, not native verification. This follows the existing
 [proof boundary](../agent-input-scan-context/README.md): real canonical native
 full-range admission is proved separately from public-classifier rejection
-controls. The production classifier, verified guard, decoder predicate, scanner
-entrypoint, and bootstrap are byte-identical to the pinned baseline; the
-production matcher and native verification settings were not changed.
+controls. The verified guard and every other classifier byte outside the exact-bound
+escaped patch eligibility addition are unchanged. The scanner entrypoint and
+bootstrap are byte-identical to the pinned baseline; native verification
+settings were not changed.
 
 ## Full-suite qualification
 
