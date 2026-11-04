@@ -1443,7 +1443,7 @@ test("dashboard retains worker-health failure codes when its aggregate is cached
     const request = new Request("https://clawsweeper.openclaw.ai/api/status");
     const first = await (await worker.fetch(request, env, ctx)).json();
     await Promise.allSettled(background);
-    assert.deepEqual(first.diagnostics.errors, ["worker_health_unavailable"]);
+    assert.deepEqual(first.diagnostics.errors, ["worker_health_unavailable:http_503"]);
     assert.equal(first.diagnostics.error_count, 1);
     assert.equal(JSON.stringify(first).includes("synthetic private upstream detail"), false);
 

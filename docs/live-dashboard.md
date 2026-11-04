@@ -115,9 +115,16 @@ Status collection records fixed section codes in `diagnostics.errors`, including
 `worker_health_unavailable`, `active_jobs_unavailable`, and
 `recent_closed_unavailable`. These codes survive snapshot projection and caching;
 a partial worker-health sample retains its failure signal on cache reuse.
-Unrecognized or historical error text remains `telemetry_unavailable`. Codes name
-the failed section, not the upstream HTTP status or failure cause. Public status
-never includes upstream messages, request paths, or private identifiers.
+Known failures append a bounded cause: `:http_400` through `:http_599`, `:timeout`,
+`:network`, `:rate_limited`, or `:invalid_json`. Active run census validation and
+pagination failures use `active_runs_unavailable:census_incomplete`. Each warning
+still occupies one entry; unknown causes retain the bare section code.
+Unrecognized or historical error text remains `telemetry_unavailable`. HTTP 403
+alone does not distinguish permissions from secondary throttling; `rate_limited`
+requires the shared classifier's explicit evidence. REST diagnostics do not read
+additional error bodies. Public status never includes upstream messages, request
+paths, or private identifiers. A collection deadline still returns the existing
+fallback or stale snapshot without publishing partial causes.
 
 When a change updates both the Worker and a GitHub Actions workflow, keep the
 cross-component protocol compatible in both deployment orders. The exact-review

@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { generateKeyPairSync } from "node:crypto";
 
 export async function startGithubFixture() {
   let healthy = false;
   let healthReads = 0;
   let unexpected = 0;
+  let failure = null;
+  let failureReads = 0;
   const now = new Date().toISOString();
   const run = (id, status) => ({
     id,
@@ -20,7 +23,43 @@ export async function startGithubFixture() {
   const server = createServer((request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
     let body;
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+    const faultRoute = failure?.app
+      ? url.pathname === "/app/installations/17/access_tokens"
+      : url.pathname === "/repos/openclaw/clawsweeper/actions/runs" &&
+        url.searchParams.get("status") ===
+          (failure?.census ? "waiting" : failure?.completed ? "completed" : null);
+    if (failure && faultRoute) {
+      failureReads += 1;
+      if (failure.network) return request.socket.destroy();
+      if (failure.timeout) return;
+      if (failure.bodyTimeout) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.write('{"workflow_runs":[');
+        return;
+      }
+      if (failure.bodyNetwork) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.write('{"workflow_runs":[');
+        setTimeout(() => request.socket.destroy(), 200);
+        return;
+      }
+      response.writeHead(failure.status || 200, {
+        "content-type": "application/json",
+        ...(failure.rateLimited ? { "x-ratelimit-remaining": "0" } : {}),
+      });
+      response.end(
+        failure.census
+          ? JSON.stringify({ total_count: 1, workflow_runs: [] })
+          : "synthetic private upstream detail",
+      );
+      return;
+    }
+    if (url.pathname === "/app/installations/17/access_tokens") {
+      body = {
+        token: "synthetic-loopback-token",
+        expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      };
+    } else if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
       const status = url.searchParams.get("status");
       const runs = !status
         ? [active, completed]
@@ -83,13 +122,28 @@ export async function startGithubFixture() {
     origin: `http://127.0.0.1:${server.address().port}`,
     reset() {
       healthy = false;
-      healthReads = unexpected = 0;
+      healthReads = unexpected = failureReads = 0;
+      failure = null;
     },
     recover() {
       healthy = true;
+      failure = null;
     },
-    observations: () => ({ health_reads: healthReads, unexpected_routes: unexpected }),
-    close: () => new Promise((resolve) => server.close(resolve)),
+    fail(value) {
+      healthy = true;
+      failure = value;
+      failureReads = 0;
+    },
+    observations: () => ({
+      health_reads: healthReads,
+      unexpected_routes: unexpected,
+      failure_reads: failureReads,
+    }),
+    close: () =>
+      new Promise((resolve) => {
+        server.close(resolve);
+        server.closeAllConnections();
+      }),
   };
 }
 
@@ -113,7 +167,8 @@ export async function proveTelemetryFailures(preview, label, fixture, restart) {
   await configure(preview.origin);
   const started = Date.now();
   const cold = await status(preview.origin);
-  const expected = label === "candidate" ? "worker_health_unavailable" : "telemetry_unavailable";
+  const expected =
+    label === "candidate" ? "worker_health_unavailable:http_503" : "telemetry_unavailable";
   assert.deepEqual(cold.body.diagnostics.errors, [expected]);
   const warm = await status(preview.origin);
   assert.equal(warm.cache, "fresh");
@@ -146,4 +201,103 @@ export async function proveTelemetryFailures(preview, label, fixture, restart) {
     recovered_errors: recovered.body.diagnostics.errors,
     ...fixture.observations(),
   };
+}
+
+export async function proveGithubFailureCauses(preview, label, fixture, restart) {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const cases = [
+    { status: 403, cause: "http_403", restart: true },
+    { status: 429, cause: "rate_limited" },
+    { status: 503, cause: "http_503", completed: true },
+    { status: 403, cause: "rate_limited", rateLimited: true },
+    { timeout: true, cause: "timeout" },
+    { bodyTimeout: true, cause: "timeout" },
+    { network: true, cause: "network" },
+    { bodyNetwork: true, cause: "network" },
+    { cause: "invalid_json" },
+    { census: true, cause: "census_incomplete" },
+    { app: true, status: 403, cause: "http_403" },
+  ];
+  const results = [];
+  let current = preview;
+  async function status() {
+    const response = await fetch(current.origin + "/api/status");
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.public_projection_complete, true);
+    assert.equal(JSON.stringify(body).includes("synthetic private upstream detail"), false);
+    assert.equal(JSON.stringify(body).includes("synthetic-loopback-token"), false);
+    return { body, cache: response.headers.get("x-clawsweeper-cache") };
+  }
+  for (const [index, fault] of cases.entries()) {
+    fixture.reset();
+    fixture.fail(fault);
+    const config = {
+      origin: fixture.origin,
+      scenario: index + 10,
+      // Snapshot age starts before collection. Leave a warm-cache window after
+      // the real 4.5-second request timeout, without changing production timing.
+      ttl: fault.timeout || fault.bodyTimeout ? 10 : fault.restart ? 5 : 1,
+      ...(fault.app ? { privateKey } : {}),
+    };
+    async function configure() {
+      const response = await fetch(current.origin + "/__proof/telemetry", {
+        method: "POST",
+        body: JSON.stringify(config),
+      });
+      assert.equal(response.status, 200);
+    }
+    await configure();
+    const cold = await status();
+    const section = fault.census
+      ? "active_runs_unavailable"
+      : fault.completed
+        ? "completed_workflow_runs_unavailable"
+        : "workflow_runs_unavailable";
+    const expected = label === "candidate" ? `${section}:${fault.cause}` : section;
+    assert.ok(
+      cold.body.diagnostics.errors.includes(expected),
+      `${label}: ${JSON.stringify(fault)}`,
+    );
+    if (!fault.app) assert.equal(cold.body.diagnostics.error_count, 1);
+    const reads = fixture.observations().failure_reads;
+    if (!fault.app) {
+      const warm = await status();
+      assert.equal(warm.cache, "fresh");
+      assert.deepEqual(warm.body.diagnostics, cold.body.diagnostics);
+      if (fault.restart) {
+        current = await restart();
+        await configure();
+        const persisted = await status();
+        assert.equal(persisted.cache, "fresh");
+        assert.deepEqual(persisted.body.diagnostics, cold.body.diagnostics);
+      }
+      assert.equal(
+        fixture.observations().failure_reads,
+        reads,
+        "cached reads must not requery GitHub",
+      );
+    }
+    fixture.recover();
+    const expires = Date.parse(cold.body.generated_at) + config.ttl * 1000 + 100;
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, expires - Date.now())));
+    const recovered = await status();
+    assert.deepEqual(recovered.body.diagnostics.errors, []);
+    assert.equal(fixture.observations().unexpected_routes, 0);
+    results.push({
+      revision: label,
+      cause: fault.cause,
+      section,
+      errors: cold.body.diagnostics.errors,
+      error_count: cold.body.diagnostics.error_count,
+      sqlite_restart: Boolean(fault.restart),
+      recovered_errors: recovered.body.diagnostics.errors,
+      failure_reads: reads,
+    });
+  }
+  return results;
 }

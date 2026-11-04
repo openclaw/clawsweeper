@@ -61,8 +61,11 @@ import {
   githubAppTokenRequest,
   githubApiUrl,
   githubAppCredentials,
+  GitHubRequestError,
+  githubResponseRateLimited,
+  githubAppInstallationId as typedGithubAppInstallationId,
+  githubAppJson,
   githubAppInstallationIdAsPlainError as githubAppInstallationId,
-  githubAppJsonAsPlainError as githubAppJson,
   signGithubAppJwt,
 } from "./github-api.ts";
 import {
@@ -464,6 +467,49 @@ const PUBLIC_STATUS_TELEMETRY_ERRORS = new Set([
   "recent_closed_unavailable",
   "events_unavailable",
 ]);
+const PUBLIC_STATUS_TELEMETRY_CAUSES = new Set([
+  "timeout",
+  "network",
+  "rate_limited",
+  "invalid_json",
+]);
+
+function publicStatusTelemetryError(value: unknown): string {
+  if (typeof value !== "string" || value.length > 96) return "telemetry_unavailable";
+  const [section, cause, extra] = value.split(":");
+  return PUBLIC_STATUS_TELEMETRY_ERRORS.has(section) &&
+    extra === undefined &&
+    (cause === undefined ||
+      PUBLIC_STATUS_TELEMETRY_CAUSES.has(cause) ||
+      /^http_[45]\d{2}$/.test(cause) ||
+      (section === "active_runs_unavailable" && cause === "census_incomplete"))
+    ? value
+    : "telemetry_unavailable";
+}
+
+function statusTelemetryError(section: string, error: unknown): string {
+  // Cached errors are already closed codes. Never recover a cause from an
+  // upstream message: paths, credentials and response text must stay private.
+  if (typeof error === "string" && error.split(":", 1)[0] === section) {
+    if (publicStatusTelemetryError(error) === error) return error;
+  }
+  const cause =
+    error instanceof GitHubRequestError
+      ? error.timedOut
+        ? "timeout"
+        : error.rateLimited
+          ? "rate_limited"
+          : error.status !== undefined
+            ? `http_${error.status}`
+            : "network"
+      : error instanceof DOMException && error.name === "TimeoutError"
+        ? "timeout"
+        : error instanceof SyntaxError
+          ? "invalid_json"
+          : null;
+  const code = cause ? `${section}:${cause}` : section;
+  return publicStatusTelemetryError(code) === code ? code : section;
+}
 const STALE_CACHE_TTL_SECONDS = 900;
 const CI_STATUS_TTL_SECONDS = 7200;
 const WORKER_JOB_CACHE_TTL_SECONDS = 60;
@@ -646,6 +692,9 @@ const githubAppTokenCache = new Map<
   }
 >();
 let statusRefresh: { key: string; promise: ReturnType<typeof refreshStatusCaches> } | null = null;
+// The body can fail after headers resolve. Retain its actual request signal
+// without keeping completed responses alive or confusing collection cancellation.
+const githubResponseSignals = new WeakMap<Response, AbortSignal | undefined>();
 export const STATUS_REFRESH_TIMEOUT_MS = 18_000;
 type StatusCollectionPhase = "cache" | "refresh" | "github" | "github_auth" | "queue" | "store";
 
@@ -3212,9 +3261,7 @@ export function publicStatusProjection(
     ...diagnostics,
     // Only producer-owned codes survive repeated projection and durable caching.
     errors: Array.from({ length: errorCount }, (_, index) =>
-      PUBLIC_STATUS_TELEMETRY_ERRORS.has(sourceErrors[index])
-        ? sourceErrors[index]
-        : "telemetry_unavailable",
+      publicStatusTelemetryError(sourceErrors[index]),
     ),
     error_count: errorCount,
   };
@@ -6723,18 +6770,18 @@ async function statusSnapshot(env) {
   const budget = numberFrom(env.WORKER_BUDGET, 32);
   const activeRunErrors = [];
   const [runs, completedRuns, activeRunCandidates] = await Promise.all([
-    github(`/repos/${repo}/actions/runs?per_page=100`).catch(() => {
-      errors.push("workflow_runs_unavailable");
+    github(`/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
+      errors.push(statusTelemetryError("workflow_runs_unavailable", error));
       return null;
     }),
-    github(`/repos/${repo}/actions/runs?status=completed&per_page=100`).catch(() => {
-      errors.push("completed_workflow_runs_unavailable");
+    github(`/repos/${repo}/actions/runs?status=completed&per_page=100`).catch((error) => {
+      errors.push(statusTelemetryError("completed_workflow_runs_unavailable", error));
       return null;
     }),
     activeWorkflowRunCandidates(env, repo, activeRunErrors, github),
   ]);
   const operationalRunCandidates = activeRunCandidates;
-  errors.push(...activeRunErrors.map(() => "active_runs_unavailable"));
+  errors.push(...activeRunErrors);
   const workflowRuns = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
   const completedWorkflowRuns = uniqueWorkflowRuns([
     ...(Array.isArray(completedRuns?.workflow_runs) ? completedRuns.workflow_runs : []),
@@ -6775,41 +6822,45 @@ async function statusSnapshot(env) {
         env.WORKER_HEALTH_SECTION_TIMEOUT_MS,
       ),
       "worker health",
-    ).catch(() => {
-      errors.push("worker_health_unavailable");
+    ).catch((error) => {
+      errors.push(statusTelemetryError("worker_health_unavailable", error));
       return emptyWorkerHealth(generatedAt);
     }),
     withTimeout(
       pipelineItems(env, workerRuns.slice(0, 30), github),
       OPTIONAL_SECTION_TIMEOUT_MS,
       "pipeline",
-    ).catch(() => {
-      errors.push("pipeline_unavailable");
+    ).catch((error) => {
+      errors.push(statusTelemetryError("pipeline_unavailable", error));
       return workerRuns.slice(0, 30).map((run) => classifyRun(run));
     }),
     withTimeout(
       applyHealthStatus(env, targetRepos, github),
       OPTIONAL_SECTION_TIMEOUT_MS,
       "apply health",
-    ).catch(() => {
-      errors.push("apply_health_unavailable");
+    ).catch((error) => {
+      errors.push(statusTelemetryError("apply_health_unavailable", error));
       return emptyApplyHealthStatus(targetRepos);
     }),
     withTimeout(
       recentClawsweeperClosed(env, targetRepos, github),
       OPTIONAL_SECTION_TIMEOUT_MS,
       "recent closed",
-    ).catch(() => {
-      errors.push("recent_closed_unavailable");
+    ).catch((error) => {
+      errors.push(statusTelemetryError("recent_closed_unavailable", error));
       return { items: [], stats: emptyClosedStats(generatedAt) };
     }),
-    readEvents(env).catch(() => {
-      errors.push("events_unavailable");
+    readEvents(env).catch((error) => {
+      errors.push(statusTelemetryError("events_unavailable", error));
       return [];
     }),
   ]);
-  errors.push(...activeJobs.errors.map(() => "active_jobs_unavailable"));
-  errors.push(...workerHealth.errors.map(() => "worker_health_unavailable"));
+  errors.push(
+    ...activeJobs.errors.map((error) => statusTelemetryError("active_jobs_unavailable", error)),
+  );
+  errors.push(
+    ...workerHealth.errors.map((error) => statusTelemetryError("worker_health_unavailable", error)),
+  );
   statusCollections.get(env)?.check();
   const { recent_attempts: _recentAttempts, ...publicWorkerHealth } = workerHealth;
 
@@ -7668,7 +7719,7 @@ async function activeWorkerSnapshot(
           codexWorkers: 0,
           hasWorkerJobs: false,
           complete: false,
-          error: error instanceof Error ? error.message : String(error),
+          error: statusTelemetryError("active_jobs_unavailable", error),
         };
       }
     },
@@ -7681,7 +7732,7 @@ async function activeWorkerSnapshot(
   for (const result of results) {
     codexWorkers += result.codexWorkers;
     if (result.error) {
-      errors.push(`workflow jobs ${result.run.id}: ${result.error}`);
+      errors.push(result.error);
       if (isCodexWorkflowFallback(result.run)) {
         workers.push(normalizeFallbackWorker(result.run));
         fallbacks += 1;
@@ -7769,9 +7820,7 @@ async function recentWorkerHealth(
       } catch (error) {
         return {
           attempts: [],
-          error: `worker health run ${run.id}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          error: statusTelemetryError("worker_health_unavailable", error),
         };
       }
     },
@@ -7849,7 +7898,9 @@ function workerHealthStorageProjection(health) {
     recent_attempts: [],
     failures: publicStatusValue(health.failures, "failures", 0),
     // A cached partial sample must retain the same failure signal as its first read.
-    errors: health.errors.slice(0, 10).map(() => "worker_health_unavailable"),
+    errors: health.errors
+      .slice(0, 10)
+      .map((error) => statusTelemetryError("worker_health_unavailable", error)),
     updated_at: health.updated_at,
   };
 }
@@ -8009,11 +8060,7 @@ async function attachWorkerTargets(env, workers, errors) {
               ),
             );
           } catch (error) {
-            errors.push(
-              `worker target titles ${repository}: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
+            errors.push(statusTelemetryError("active_jobs_unavailable", error));
           }
         }),
       ),
@@ -8375,7 +8422,7 @@ async function activeWorkflowRunCandidates(
             `/repos/${repo}/actions/runs?status=${status}&per_page=100${page > 1 ? `&page=${page}` : ""}`,
             { fresh: attempt > 0 },
           ).catch((error) => {
-            errors.push(`workflow runs ${status}: ${error.message}`);
+            errors.push(statusTelemetryError("active_runs_unavailable", error));
             return undefined;
           });
           if (runs === undefined) return workflowRuns;
@@ -8408,7 +8455,7 @@ async function activeWorkflowRunCandidates(
         // Actions can change between pages, or even between its count and rows.
         // Rebuild that census once from fresh reads; never combine generations.
         if (changedDuringRead && attempt === 0) continue;
-        if (!complete) errors.push(`workflow runs ${status}: census incomplete`);
+        if (!complete) errors.push("active_runs_unavailable:census_incomplete");
         return workflowRuns;
       }
     }),
@@ -9314,8 +9361,17 @@ async function githubJson(env, path) {
     }
     response = await read("");
   }
-  if (!response.ok) throw new Error(`GitHub ${response.status} for ${path}`);
-  const body = await response.text();
+  if (!response.ok) {
+    throw new GitHubRequestError(
+      `GitHub ${response.status} for ${path}`,
+      response.status,
+      false,
+      githubResponseRateLimited(response, ""),
+    );
+  }
+  const body = await response
+    .text()
+    .catch((error) => githubTransportFailure(env, error, githubResponseSignals.get(response)));
   if (etagBrokerEnabled && requestBody) {
     const etag = response.headers.get("etag") || "";
     const bodyBytes = new TextEncoder().encode(body).byteLength;
@@ -9330,16 +9386,29 @@ async function githubJson(env, path) {
 
 export const githubJsonForTest = githubJson;
 
-function githubJsonResponse(env, path, token: string, ifNoneMatch: string) {
-  return fetch(githubApiUrl(env, path), {
-    signal: statusRequestSignal(env, AbortSignal.timeout(GITHUB_TIMEOUT_MS)),
-    headers: {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "openclaw-clawsweeper-status",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(ifNoneMatch ? { "If-None-Match": ifNoneMatch } : {}),
-    },
-  });
+async function githubJsonResponse(env, path, token: string, ifNoneMatch: string) {
+  const url = githubApiUrl(env, path);
+  const signal = statusRequestSignal(env, AbortSignal.timeout(GITHUB_TIMEOUT_MS));
+  try {
+    const response = await fetch(url, {
+      signal,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "openclaw-clawsweeper-status",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(ifNoneMatch ? { "If-None-Match": ifNoneMatch } : {}),
+      },
+    });
+    githubResponseSignals.set(response, signal);
+    return response;
+  } catch (error) {
+    return githubTransportFailure(env, error, signal);
+  }
+}
+
+function githubTransportFailure(env, error: unknown, signal?: AbortSignal): never {
+  if (statusCollections.get(env)?.controller.signal.aborted) throw error;
+  throw new GitHubRequestError("GitHub request failed", undefined, signal?.aborted === true);
 }
 
 async function githubEtagCachePost(env, operation: "lookup" | "store" | "confirm", body) {
@@ -9371,7 +9440,7 @@ function parseGithubJsonBody(body: string, path: string) {
   try {
     return JSON.parse(body);
   } catch {
-    throw new Error(`GitHub returned invalid JSON for ${path}`);
+    throw new SyntaxError(`GitHub returned invalid JSON for ${path}`);
   }
 }
 
@@ -9402,7 +9471,14 @@ async function githubGraphql(env, query, variables) {
       });
     },
   );
-  if (!response.ok) throw new Error(`GitHub GraphQL ${response.status}`);
+  if (!response.ok) {
+    throw new GitHubRequestError(
+      `GitHub GraphQL ${response.status}`,
+      response.status,
+      false,
+      githubResponseRateLimited(response, ""),
+    );
+  }
   const payload = await response.json();
   if (Array.isArray(payload.errors) && payload.errors.length) {
     throw new Error(payload.errors.map((error) => error.message).join("; "));
@@ -9506,7 +9582,7 @@ async function githubAuthToken(env, scope) {
 async function createGithubAppInstallationToken(env, credentials, repos, request) {
   const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
   const installationId =
-    credentials.installationId || (await githubAppInstallationId(appJwt, repos[0], env));
+    credentials.installationId || (await typedGithubAppInstallationId(appJwt, repos[0], env));
   const payload = await githubAppJson(
     `/app/installations/${installationId}/access_tokens`,
     appJwt,
