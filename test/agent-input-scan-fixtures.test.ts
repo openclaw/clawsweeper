@@ -334,64 +334,81 @@ function questionPromptFixture(): ReturnType<typeof autoreviewFixtures>[number] 
   return { raw, rawV2, line: `    "${rawV2}-in",`, decoders: ["PLAIN", "HTML"] };
 }
 
-const questionPromptSource = "ui/src/app/question-prompt.test.ts";
-
-for (const change of ["add", "remove", "context"] as const) {
-  test(`question URL rejection fixture admits exact Git-generated ${change} attribution`, (t) => {
-    const patch = fixturePatch(t, questionPromptSource, [questionPromptFixture()], change);
-    for (const decoder of ["PLAIN", "HTML"] as const) {
-      const result = patch.classify(decoder);
-      assert.equal(result.kind, "classified", JSON.stringify(result));
-      if (result.kind !== "classified") continue;
-      assert.ok(result.notices.every((notice) => notice.source === questionPromptSource));
-      const findings = result.notices.flatMap((notice) => notice.findings);
-      assert.ok(findings.some((finding) => finding.patch));
-      assert.ok(findings.every((finding) => finding.decoder === decoder));
-      if (change === "context") {
-        assert.ok(findings.some((finding) => finding.role === "base"));
-        assert.ok(findings.some((finding) => finding.role === "head"));
-      } else {
-        assert.ok(findings.every((finding) => finding.role === patch.role));
-      }
-    }
-  });
+function websiteFixture(): ReturnType<typeof autoreviewFixtures>[number] {
+  const raw = ["https://:", "example-password", "@", "status.example"].join("");
+  return {
+    raw,
+    rawV2: raw,
+    line: `    { name: "password-only", url: "${raw}/" },`,
+    decoders: ["PLAIN"],
+  };
 }
 
-for (const variant of ["literal", "line", "path", "mode", "verified", "decoder"] as const) {
-  test(`question URL rejection fixture still refuses changed ${variant}`, (t) => {
-    const entry = questionPromptFixture();
-    if (variant === "literal") {
-      entry.raw = entry.raw.replace("password", "passwore");
-      entry.rawV2 = entry.rawV2!.replace("password", "passwore");
-      entry.line = entry.line.replace("password", "passwore");
-    } else if (variant === "line") {
-      entry.line += " ";
-    }
-    const patch = fixturePatch(
-      t,
-      variant === "path" ? "ui/src/app/another-question.test.ts" : questionPromptSource,
-      [entry],
-    );
-    if (variant === "mode") {
-      for (const [file, input] of patch.inputs) {
-        if (input.kind === "blob") {
-          patch.inputs.set(file, {
-            ...input,
-            references: input.references.map((reference) => ({ ...reference, mode: "100755" })),
-          });
+for (const { name, source, makeFixture } of [
+  {
+    name: "question",
+    source: "ui/src/app/question-prompt.test.ts",
+    makeFixture: questionPromptFixture,
+  },
+  {
+    name: "website",
+    source: "ui/src/lib/board/widgets/website.test.ts",
+    makeFixture: websiteFixture,
+  },
+]) {
+  for (const change of ["add", "remove", "context"] as const) {
+    test(`${name} URL rejection fixture admits exact Git-generated ${change} attribution`, (t) => {
+      const patch = fixturePatch(t, source, [makeFixture()], change);
+      for (const decoder of makeFixture().decoders) {
+        const result = patch.classify(decoder);
+        assert.equal(result.kind, "classified", JSON.stringify(result));
+        if (result.kind !== "classified") continue;
+        assert.ok(result.notices.every((notice) => notice.source === source));
+        const findings = result.notices.flatMap((notice) => notice.findings);
+        assert.ok(findings.some((finding) => finding.patch));
+        assert.ok(findings.every((finding) => finding.decoder === decoder));
+        if (change === "context") {
+          assert.ok(findings.some((finding) => finding.role === "base"));
+          assert.ok(findings.some((finding) => finding.role === "head"));
+        } else {
+          assert.ok(findings.every((finding) => finding.role === patch.role));
         }
       }
-    }
-    const result = patch.classify(
-      "HTML",
-      variant === "verified"
-        ? { Verified: true }
-        : variant === "decoder"
-          ? { DecoderName: "BASE64" }
-          : {},
-    );
-    assert.equal(result.kind, "refused", JSON.stringify(result));
-  });
+    });
+  }
+
+  for (const variant of ["literal", "line", "path", "mode", "verified", "decoder"] as const) {
+    test(`${name} URL rejection fixture still refuses changed ${variant}`, (t) => {
+      const entry = makeFixture();
+      if (variant === "literal") {
+        entry.raw = entry.raw.replace("password", "passwore");
+        entry.rawV2 = entry.rawV2!.replace("password", "passwore");
+        entry.line = entry.line.replace("password", "passwore");
+      } else if (variant === "line") {
+        entry.line += " ";
+      }
+      const patch = fixturePatch(t, variant === "path" ? `${source}.other` : source, [entry]);
+      if (variant === "mode") {
+        for (const [file, input] of patch.inputs) {
+          if (input.kind === "blob") {
+            patch.inputs.set(file, {
+              ...input,
+              references: input.references.map((reference) => ({ ...reference, mode: "100755" })),
+            });
+          }
+        }
+      }
+      const result = patch.classify(
+        entry.decoders.at(-1)!,
+        variant === "verified"
+          ? { Verified: true }
+          : variant === "decoder"
+            ? { DecoderName: name === "website" ? "HTML" : "BASE64" }
+            : {},
+      );
+      assert.equal(result.kind, "refused", JSON.stringify(result));
+    });
+  }
 }
 
 function readinessPrivacyFixture(): ReturnType<typeof autoreviewFixtures>[number] {

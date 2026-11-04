@@ -1,0 +1,42 @@
+{
+  "targetHead": "d76cbab8d029d179b7ae9b998fd5a76e5994bcc9",
+  "base": "f4cc8b316d074de47246dc02524e140b0d922117",
+  "source": "complete committed range, canonical pinned native scanner",
+  "prompt": {
+    "kind": "controlled",
+    "bytes": 71,
+    "sha256": "ec04b7c204ee8e5aafb5fc4f81351c69e8fa7375aba79b95e50ecc86c127f66f"
+  },
+  "schema": null,
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "refused",
+  "elapsedMs": 1022,
+  "notices": [],
+  "failure": {
+    "reason": "findings",
+    "diagnostic": {
+      "kind": "unclassified_finding",
+      "reason": "source_not_reviewed",
+      "findingCount": 2,
+      "findingIndex": 0,
+      "detectorType": 17,
+      "decoder": "PLAIN",
+      "verified": false,
+      "scannerLine": 62,
+      "material": {
+        "kind": "blob",
+        "id": "30166d3311b6e1dc14562487d1fa7a94cc5a9051",
+        "referenceCount": 1,
+        "references": [
+          {
+            "revision": "d76cbab8d029d179b7ae9b998fd5a76e5994bcc9",
+            "pathSha256": "5142a20ea7b300286802d547f5196b574f421aba48c16d93c78adcecf98ad51c",
+            "mode": "100644",
+            "role": "head"
+          }
+        ]
+      }
+    }
+  }
+}
