@@ -2598,14 +2598,15 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
       }
       return f.run(source);
     };
-    if (gatewayConfigFixture && scenario === "diff") {
+    if ((gatewayConfigFixture || mcpAppsFixture) && scenario === "diff") {
+      const exactSource = gatewayConfigFixture ? gatewayConfigSource : mcpAppsSource;
       assert.equal(run().status, 0);
       assert.equal(readFileSync(f.calls, "utf8"), "called");
       const classified = notices.map(([message]) => JSON.parse(String(message)));
       assert.equal(classified.length, 2);
       for (const notice of classified) {
         assert.equal(notice.event, "agent_input_scan_classified");
-        assert.equal(notice.source, gatewayConfigSource);
+        assert.equal(notice.source, exactSource);
         assert.equal(notice.fixtureSha256, createHash("sha256").update(uri).digest("hex"));
         assert.equal(notice.detector, "URI");
         assert.equal(notice.findings.length, 1);
@@ -2620,7 +2621,7 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
       assert.deepEqual(patch?.patch, {
         from: baseSha,
         to: headSha,
-        sourceBlob: f.git("rev-parse", `${headSha}:${gatewayConfigSource}`),
+        sourceBlob: f.git("rev-parse", `${headSha}:${exactSource}`),
         sourceLine: literalLine,
       });
       assert.equal(
@@ -2705,7 +2706,11 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
       ).map((location, index) => ({
         ...location,
         literalLine,
-        ...(gatewayConfigFixture ? { role: index === 0 ? "base" : "head" } : {}),
+        ...(gatewayConfigFixture
+          ? { role: index === 0 ? "base" : "head" }
+          : mcpAppsFixture
+            ? { role: index === 0 ? "head" : "base" }
+            : {}),
       }));
       const expectedFindings = expectedLocations.length;
       assert.equal(

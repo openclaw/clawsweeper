@@ -281,6 +281,11 @@ const OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // MCP Apps sandbox-origin negative fixture: retain the legacy PLAIN witness.
+  [17, "URI", "PLAIN", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "f7d672c72c5b3f9f67b09a5b0f15fdab1c565d36d534c62e3424c4cd1981bb06", "src/config/config-misc.test.ts", "100644"],
+  // Native 3.99.4 observed both source-blob decoders for the exact four-space source line.
+  [17, "URI", "PLAIN", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "6b3e1580cf762cafe2a8483dbfecf2aee6bd929725febab70331cfbf8d13a8b5", "src/config/config-misc.test.ts", "100644"],
+  [17, "URI", "HTML", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "6b3e1580cf762cafe2a8483dbfecf2aee6bd929725febab70331cfbf8d13a8b5", "src/config/config-misc.test.ts", "100644"],
   // Existing synthetic loopback CDP endpoint in the mocked profile-status test.
   [17, "URI", "PLAIN", "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0", "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0", ["246be528bbd0812126ba9e5aae3b9d61d60430c352cbd41d69c066c38fee4882", "9a313b5e628ff1390c50c9616bc95c8eb25c2c93050cafe481190930722103b9"], "extensions/browser/src/browser/server-context.existing-session.test.ts", "100644"],
   [17, "URI", "HTML", "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0", "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0", ["246be528bbd0812126ba9e5aae3b9d61d60430c352cbd41d69c066c38fee4882", "9a313b5e628ff1390c50c9616bc95c8eb25c2c93050cafe481190930722103b9"], "extensions/browser/src/browser/server-context.existing-session.test.ts", "100644"],
@@ -531,6 +536,10 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML" || decoder === "ESCAPED_UNICODE")) ||
         (source === "src/cli/plugins-cli.marketplace-entries.test.ts" &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          (decoder === "PLAIN" || decoder === "HTML")) ||
+        (source === "src/config/config-misc.test.ts" &&
           detectorType === 17 &&
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
