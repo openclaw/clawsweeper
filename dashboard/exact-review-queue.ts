@@ -898,6 +898,9 @@ const DEFAULT_EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS = 2;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS = 15 * 60_000;
 const DEFAULT_STATE_WRITER_COORDINATOR_LEASE_MS = 2 * 60_000;
 const DEFAULT_STATE_WRITER_COORDINATOR_QUEUED_STALE_MS = 2 * 60_000;
+// A once-per-build coverage consumer must not publish an expired cache while
+// its refresh finishes after the build. Bound only the read wait, not work/rates.
+export const REVIEW_COVERAGE_READ_WAIT_MS = 5_000;
 const EXACT_REVIEW_ALARM_SAMPLE_WINDOW_MS = 60_000;
 const EXACT_REVIEW_ALARM_SAMPLE_THRESHOLD = 10;
 const BACKFILL_SHADOW_CLEANUP_KEY = "record-backfill-shadow-cleanup:v1";
@@ -1041,6 +1044,9 @@ export class ExactReviewQueue {
 
   private refreshReviewCoverageScan(): Promise<ReviewCoverageScan> {
     this.reviewCoverageScanInFlight ??= (async () => {
+      await this.directPublicationStore.materializeReviewCoverageFacts(
+        normalizeReviewCoverageInventory(this.storage.kv.get(REVIEW_COVERAGE_INVENTORY_KEY)),
+      );
       const scannedAt = Date.now();
       const fleets = new Map<string, ReviewCoverageFleetCounts>();
       let cursor = this.directPublicationStore.reviewCoverageScanPageSync(
@@ -1065,6 +1071,37 @@ export class ExactReviewQueue {
       this.reviewCoverageScanInFlight = null;
     });
     return this.reviewCoverageScanInFlight;
+  }
+
+  private async currentReviewCoverageScan(): Promise<ReviewCoverageScan | null> {
+    const cached = this.reviewCoverageScan;
+    const now = Date.now();
+    if (
+      cached &&
+      cached.scannedAt <= now &&
+      now - cached.scannedAt <= REVIEW_COVERAGE_SCAN_MAX_AGE_MS
+    )
+      return cached;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const readTimeout = new Error("coverage_scan_read_timeout");
+    try {
+      // refreshReviewCoverageScan coalesces every waiter and yields between
+      // pages, so awaiting it does not hold claims/heartbeats behind a scan.
+      return await Promise.race([
+        this.refreshReviewCoverageScan(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(readTimeout), REVIEW_COVERAGE_READ_WAIT_MS);
+        }),
+      ]);
+    } catch (error: unknown) {
+      if (error === readTimeout) console.warn("exact_review_coverage_scan_read_timeout");
+      else console.warn("exact_review_coverage_scan_refresh_failed");
+      // Never relabel or copy expired evidence as fresh. Count witnesses can
+      // still be projected independently; this response has no current scan.
+      return null;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   private alarmSampleWindowStartedAt = Number.NEGATIVE_INFINITY;
@@ -4662,24 +4699,22 @@ export class ExactReviewQueue {
     }
 
     if (request.method === "GET" && url.pathname === "/review-coverage") {
-      // Serve the last finished scan and refresh it in the background once it is
-      // stale. Only the first request after a restart waits for a scan.
+      // One fetch per static build must consume the refresh, not the expired
+      // cache. The owner coalesces refreshes and bounds the awaited read.
+      const scan = await this.currentReviewCoverageScan();
+      // The initial scan can begin after request arrival; sample validity only
+      // after that await, or a healthy scan can look spuriously future-dated.
       const now = Date.now();
-      const scan = this.reviewCoverageScan ?? (await this.refreshReviewCoverageScan());
-      if (now - scan.scannedAt > REVIEW_COVERAGE_SCAN_MAX_AGE_MS) {
-        this.refreshReviewCoverageScan().catch((error: unknown) => {
-          console.warn("exact_review_coverage_scan_failed", {
-            error: error instanceof Error ? error.name : "unknown",
-          });
-        });
-      }
       return json({
         ok: true,
-        generated_at: new Date(scan.scannedAt).toISOString(),
+        generated_at: new Date(scan?.scannedAt ?? now).toISOString(),
+        record_scan_observed_at: scan ? new Date(scan.scannedAt).toISOString() : null,
         ...this.directPublicationStore.reviewCoverageSummary(
-          scan.fleets,
+          scan?.fleets ?? new Map(),
           now,
           normalizeReviewCoverageInventory(this.storage.kv.get(REVIEW_COVERAGE_INVENTORY_KEY)),
+          undefined,
+          scan?.scannedAt ?? Number.NaN,
         ),
       });
     }

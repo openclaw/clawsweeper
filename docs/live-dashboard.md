@@ -249,7 +249,8 @@ Each build reads four sources:
   timing out and froze the site), so full rebuilds keep to the quietest hour and
   hourly refreshes read only the changed records. Until the first corpus refresh,
   site builds skip with a notice;
-- the public `/api/exact-review-queue` and `/api/review-coverage` responses;
+- the public `/api/exact-review-queue` response and the fixed-purpose signed private
+  coverage build read described in the public projection contract below;
 - the public 7-day `/api/health-history` samples and the 24-hour and 7-day
   `/api/apply-observability` summaries, for the Operations page. Samples are
   reduced to hourly points (counter growth between consecutive 5-minute samples;
@@ -768,8 +769,19 @@ use direct and batch outcome telemetry, and Overview still uses the shared
 - `/api/review-observability` returns the four closed review lanes and global
   health, completeness, run counts, item counts, and timestamps for a normalized
   `6h`, `24h`, or `7d` range. It does not return repository filters or labels.
-- `/api/review-coverage` returns fleet-wide inventory status and coverage
-  totals. Per-repository rows remain in the private queue store.
+- /api/review-coverage returns ONLY fleet-wide inventory status and closed
+  aggregate totals for modern,legacy,stale and unavailable census input. It never
+  returns repo names/slugs,item references or per-repo query selection. Global
+  inventory telemetry is NOT a verified-public repository cohort or permission
+  to disclose an identity. It makes no GitHub request fanout.
+- Rich candidates remain private:POST /internal/review-coverage/build requires
+  the existing webhook secret,HMAC domain-bound to this fixed POST/path and the
+  exact closed purpose body
+  {"purpose":"dashboard-site-coverage-v1"},no query and at most128body bytes.
+  It forwards ONLY fixed DO GET /review-coverage,never arbitrary paths/mutations.
+  Identifying responses are private,no-store,without public CORS permission.
+  Missing/bad authority denies access;no anonymous fallback. The existing Pages
+  build step explicitly receives this existing secret.
 - `/api/apply-observability` returns global queue, result, retry, lease, and
   closed failure-category counts for a normalized range. It omits repository
   inventories, run links, and failure messages.
@@ -783,6 +795,35 @@ before they reach a public response, edge cache, or ordinary status snapshot.
 The projector may retain only the narrow `PUBLIC_BAY_REPOS` reference tuple
 described above; this is not permission to expose arbitrary public-repository
 metadata or untrusted text.
+
+### Coverage build disclosure owner
+
+Owner:ClawSweeper maintainers/Pages build owner; sources:dashboard/worker.ts,
+dashboard/public-observability.ts,dashboard-site/scripts/coverage.ts and
+.github/workflows/dashboard-site.yml. Boundary inspected atc923bf2498221e2725aa2e47bdf161ecc5118004;
+changed-source proof must bind its actual executing head before publication.
+Update when fixed read purpose,private schema,visibility checks,publication
+filter or secret wiring changes. This confers no deployment/recovery authority.
+
+The build reads candidates only into memory,then uses its existing GITHUB_TOKEN
+for fresh owner-list/per-repository validation of the UNION of corpus names and
+coverage-only names immediately before output. Persisted public visibility,TTL,
+hosted admission eligibility and PUBLIC_BAY_REPOS are not disclosure authority.
+Metadata must identify the exact canonical requested repository as public.
+Private/404/renamed identities are withheld from corpus,coverage,state keys and
+item references; totals are recomputed from the remaining verified public cohort
+so other public Open counts remain useful.403/429,network,invalid or partial
+metadata aborts before a new public dataset is written. No raw metadata/error
+text or secret reaches browser data or logs.
+
+These are current-at-build publication checks,not instantaneous deletion of
+already-published immutable snapshots after a later visibility flip. Anonymous
+API output is permanently nonidentifying even during that interval. Authority
+proof keeps census/body state unchanged while a controlled current metadata
+owner flips public→private/renamed/unverifiable through actual Worker routes
+and build/Astro/browser output. Do NOT invent an anonymous identifying-positive
+path:identifying positive authority is signed private read PLUS current build
+visibility verification.
 
 ## Exact Review history
 

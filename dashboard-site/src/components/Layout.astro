@@ -93,7 +93,7 @@ const jump = repos.map(repo => ({ r: repo.repo, s: repo.slug, n: repo.records })
             <Icon name={status.level === 'ok' ? 'flag' : 'mine'} size={14} class={status.level === 'ok' ? 'text-ok' : 'text-warn'} />
             <span class="font-medium text-fg">{status.level === 'ok' ? 'All clear' : 'Mines on the board'}</span>
           </a>
-          <div class="mt-1 text-fg-faint" data-tip={`Snapshot built ${stamp(asOf.build)}`}>Sweeping {repos.length} repositories</div>
+          <div class="mt-1 text-fg-faint" data-tip={`Snapshot built ${stamp(asOf.build)}`}>Stored history · {repos.length} repositories</div>
         </div>
       </aside>
 

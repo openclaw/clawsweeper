@@ -4,6 +4,22 @@ import {
   canonicalBodyLifecycleRules,
 } from "../src/canonical-body-tiering-policy.ts";
 import { CanonicalBodyStore, CanonicalBodyUnavailableError } from "./canonical-bodies.ts";
+import {
+  REVIEW_COVERAGE_INVENTORY_MAX_BYTES,
+  REVIEW_COVERAGE_INVENTORY_MAX_ITEMS,
+  REVIEW_COVERAGE_RECORD_FIELDS,
+  reviewCoverageRecord,
+  reviewCoverageRecordFromFields,
+  reviewCoverageRecordState,
+  type ReviewCoverageRecord,
+  type ReviewCoverageInventoryRepository,
+  type ReviewCoverageInventorySnapshot,
+  type ReviewCoverageOpenItem,
+} from "../src/review-coverage.ts";
+export type {
+  ReviewCoverageInventoryRepository,
+  ReviewCoverageInventorySnapshot,
+} from "../src/review-coverage.ts";
 import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "../src/exact-review-publication-limits.ts";
 import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
 import { isCompletedPullRequestReview } from "../src/pr-review-policy.ts";
@@ -35,11 +51,13 @@ export const EXACT_REVIEW_DIRECT_PUBLICATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1
 export const REVIEW_COVERAGE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const REVIEW_COVERAGE_INVENTORY_KEY = "review-coverage-inventory:v1";
 export const REVIEW_COVERAGE_INVENTORY_STALE_MS = 12 * 60 * 60 * 1000;
-// Front matter always leads a canonical record; 4 KiB comfortably bounds it.
+// Coverage scalars lead new canonical records; cap reads before large typed metadata.
 export const REVIEW_COVERAGE_HEAD_BYTES = 4096;
 // About 20-40 ms of CPU per page on the production store.
 export const REVIEW_COVERAGE_SCAN_PAGE_ROWS = 2_000;
 export const REVIEW_COVERAGE_SCAN_MAX_AGE_MS = 15 * 60 * 1000;
+// DO SQL permits 100 bound parameters: reserve one for the fixed repo_slug.
+const REVIEW_COVERAGE_FACT_QUERY_IDS = 99;
 
 const DIRECT_PUBLICATION_TERMINAL_PRUNE_LIMIT = 256;
 const BACKFILL_SHADOW_PRUNE_LIMIT = 64;
@@ -261,6 +279,7 @@ export class ExactReviewDirectPublicationStore {
   private readonly storage: DurableStorage;
 
   private readonly bodies: CanonicalBodyStore;
+  private readonly coverageFactRetryAfter = new Map<string, number>();
 
   constructor(storage: DurableStorage, bucket?: unknown) {
     this.storage = storage;
@@ -396,6 +415,11 @@ export class ExactReviewDirectPublicationStore {
       PRIMARY KEY(repo_slug, section, item_id),
       CHECK((deleted=1 AND digest IS NULL AND byte_length=0) OR (deleted=0 AND digest IS NOT NULL AND length(digest)=64))
     ) STRICT`);
+    if (!sqlColumnNames(this.storage, EXACT_REVIEW_CANONICAL_V2_TABLE).has("coverage_facts")) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_CANONICAL_V2_TABLE} ADD COLUMN coverage_facts TEXT`,
+      );
+    }
     this.storage.sql.exec(`CREATE VIEW IF NOT EXISTS ${CANONICAL_READ_TABLE} AS
       SELECT repo_slug, section, item_id, NULL AS content, digest, byte_length, 0 AS chunk_count,
              deleted, revision, item_key, claim_generation, updated_at, 2 AS body_format,
@@ -851,13 +875,14 @@ export class ExactReviewDirectPublicationStore {
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_CANONICAL_V2_TABLE}
       (repo_slug,section,item_id,digest,byte_length,deleted,revision,item_key,claim_generation,updated_at,
-       coverage_repo,coverage_status,coverage_reviewed_at,coverage_excluded)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       coverage_repo,coverage_status,coverage_reviewed_at,coverage_excluded,coverage_facts)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(repo_slug,section,item_id) DO UPDATE SET
        digest=excluded.digest,byte_length=excluded.byte_length,deleted=excluded.deleted,revision=excluded.revision,
        item_key=excluded.item_key,claim_generation=excluded.claim_generation,updated_at=excluded.updated_at,
        coverage_repo=excluded.coverage_repo,coverage_status=excluded.coverage_status,
-       coverage_reviewed_at=excluded.coverage_reviewed_at,coverage_excluded=excluded.coverage_excluded`,
+       coverage_reviewed_at=excluded.coverage_reviewed_at,coverage_excluded=excluded.coverage_excluded,
+       coverage_facts=excluded.coverage_facts`,
       row.repo_slug,
       row.section,
       row.item_id,
@@ -872,6 +897,11 @@ export class ExactReviewDirectPublicationStore {
       fields.review_status,
       Number.isFinite(reviewedAt) ? reviewedAt : null,
       Number(reviewCoverageRecordExcluded(fields.labels)),
+      JSON.stringify({
+        ...canonicalReviewCoverageRecord(content ?? "", Number(row.byte_length)),
+        sourceDigest: row.digest,
+        sourceRevision: Number(row.revision),
+      }),
     );
   }
 
@@ -1357,7 +1387,7 @@ export class ExactReviewDirectPublicationStore {
     // Limit each indexed format before combining. An outer LIMIT on a UNION
     // view sorts every remaining row and can materialize old SQL bodies.
     const v2 = `SELECT item_id, digest, revision, updated_at, 2 AS body_format, coverage_repo, coverage_status,
-       coverage_reviewed_at, coverage_excluded, NULL AS head, 0 AS chunked
+       coverage_reviewed_at, coverage_excluded, coverage_facts, NULL AS head, 0 AS chunked
        FROM ${EXACT_REVIEW_CANONICAL_V2_TABLE} WHERE repo_slug=? AND section=? AND item_id>? AND deleted=0 ORDER BY item_id LIMIT ?`;
     const head = coverage
       ? `CASE WHEN r.content IS NOT NULL THEN substr(r.content,1,${REVIEW_COVERAGE_HEAD_BYTES})
@@ -1366,7 +1396,7 @@ export class ExactReviewDirectPublicationStore {
            WHERE c.repo_slug=r.repo_slug AND c.section=r.section AND c.item_id=r.item_id AND c.chunk_index=0) END`
       : "NULL";
     const v1 = `SELECT item_id, digest, revision, updated_at, 1 AS body_format, NULL AS coverage_repo, NULL AS coverage_status,
-       NULL AS coverage_reviewed_at, 0 AS coverage_excluded,
+       NULL AS coverage_reviewed_at, 0 AS coverage_excluded, NULL AS coverage_facts,
        ${head} AS head,
        (r.content IS NULL) AS chunked
        FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} r WHERE repo_slug=? AND section=? AND item_id>? AND deleted=0
@@ -1388,6 +1418,106 @@ export class ExactReviewDirectPublicationStore {
     );
   }
 
+  // Automatic, bounded read-model enrichment owned by the existing canonical
+  // body reader. It never republishes a tuple or changes canonical placement,
+  // digest, revision, timestamps, completion/admission history or body bytes.
+  async materializeReviewCoverageFacts(
+    inventory: ReviewCoverageInventorySnapshot | null,
+    budget: { rows: number; bytes: number } = { rows: 32, bytes: 4 * 1024 * 1024 },
+  ) {
+    const result = {
+      attempted: 0,
+      materialized: 0,
+      conflicts: 0,
+      unavailable: 0,
+      bytes: 0,
+      bounded: false,
+    };
+    const maxRows = Math.max(
+      0,
+      Math.min(32, Number.isFinite(budget.rows) ? Math.floor(budget.rows) : 0),
+    );
+    const maxBytes = Math.max(
+      0,
+      Math.min(4 * 1024 * 1024, Number.isFinite(budget.bytes) ? Math.floor(budget.bytes) : 0),
+    );
+    for (const entry of inventory?.repositories ?? []) {
+      if (
+        (entry.observation_scope ?? "eligible") !== "eligible" ||
+        !entry.complete ||
+        !entry.items?.length
+      )
+        continue;
+      for (let start = 0; start < entry.items.length; start += REVIEW_COVERAGE_FACT_QUERY_IDS) {
+        if (result.attempted >= maxRows || result.bytes >= maxBytes) {
+          result.bounded = true;
+          return result;
+        }
+        const ids = entry.items
+          .slice(start, start + REVIEW_COVERAGE_FACT_QUERY_IDS)
+          .map((item) => item.number);
+        const rows = Array.from(
+          this.storage.sql.exec(
+            `SELECT item_id,digest,byte_length,revision FROM ${EXACT_REVIEW_CANONICAL_V2_TABLE}
+           WHERE repo_slug=? AND section='items' AND deleted=0 AND item_id IN (${ids.map(() => "?").join(",")})
+           AND (CASE WHEN json_valid(coverage_facts) THEN
+             json_extract(coverage_facts,'$.sourceDigest')=digest AND json_extract(coverage_facts,'$.sourceRevision')=revision AND json_type(coverage_facts,'$.status')='text'
+             ELSE 0 END) IS NOT 1 ORDER BY item_id`,
+            entry.repo_slug,
+            ...ids,
+          ),
+        );
+        for (const row of rows) {
+          const failureKey = `${entry.repo_slug}/${row.item_id}/${row.digest}/${row.revision}`;
+          if ((this.coverageFactRetryAfter.get(failureKey) ?? 0) > Date.now()) continue;
+          const bytes = Number(row.byte_length);
+          if (result.attempted >= maxRows || bytes > maxBytes - result.bytes) {
+            result.bounded = true;
+            return result;
+          }
+          result.attempted++;
+          result.bytes += bytes;
+          try {
+            const content = await this.bodies.read({ digest: String(row.digest), bytes });
+            const facts = JSON.stringify({
+              ...canonicalReviewCoverageRecord(content, bytes),
+              sourceDigest: String(row.digest),
+              sourceRevision: Number(row.revision),
+            });
+            const updated = Array.from(
+              this.storage.sql.exec(
+                `UPDATE ${EXACT_REVIEW_CANONICAL_V2_TABLE} SET coverage_facts=?
+               WHERE repo_slug=? AND section='items' AND item_id=? AND deleted=0 AND digest=? AND revision=?
+               AND (CASE WHEN json_valid(coverage_facts) THEN
+                 json_extract(coverage_facts,'$.sourceDigest')=digest AND json_extract(coverage_facts,'$.sourceRevision')=revision AND json_type(coverage_facts,'$.status')='text'
+                 ELSE 0 END) IS NOT 1 RETURNING item_id`,
+                facts,
+                entry.repo_slug,
+                Number(row.item_id),
+                String(row.digest),
+                Number(row.revision),
+              ),
+            );
+            this.coverageFactRetryAfter.delete(failureKey);
+            if (updated.length) result.materialized++;
+            else result.conflicts++;
+          } catch {
+            result.unavailable++;
+            // Negative read-cache only, not a queue/admission retry. Failed
+            // bodies cannot monopolize every later bounded materialization pass.
+            this.coverageFactRetryAfter.set(
+              failureKey,
+              Date.now() + 2 * REVIEW_COVERAGE_SCAN_MAX_AGE_MS,
+            );
+            if (this.coverageFactRetryAfter.size > 256)
+              this.coverageFactRetryAfter.delete(this.coverageFactRetryAfter.keys().next().value!);
+          }
+        }
+      }
+    }
+    return result;
+  }
+
   // Folds one page of canonical `items` records into `fleets` and returns the
   // cursor for the next page, or null after the last page. A full scan reads
   // every record head and takes seconds of CPU; the caller yields between pages
@@ -1404,7 +1534,7 @@ export class ExactReviewDirectPublicationStore {
     // Canonical `items` records cover items that have reached publication; they
     // are not a complete GitHub-open inventory. Only the front matter is needed,
     // so read a bounded head and combine it with the periodically published live
-    // fleet counts instead of treating missing records as nonexistent work.
+    // fleet identities instead of treating missing records as nonexistent work.
     // Each page stays inside one repository: equality on (repo_slug, section)
     // and a range on item_id read the listing index in order. A cursor that
     // spans repositories makes SQLite sort every remaining row for each page.
@@ -1434,7 +1564,7 @@ export class ExactReviewDirectPublicationStore {
         : /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fields.repo ?? "")
           ? fields.repo!
           : repoSlug;
-      const fleet = fleets.get(repoSlug) ?? {
+      const fleet: ReviewCoverageFleetCounts = fleets.get(repoSlug) ?? {
         repo,
         repo_slug: repoSlug,
         tracked_records: 0,
@@ -1446,6 +1576,15 @@ export class ExactReviewDirectPublicationStore {
         excluded: 0,
         oldest_reviewed_at: null as string | null,
       };
+      fleet.records ??= new Map();
+      fleet.records.set(
+        lastItemId,
+        Number(row.body_format) === 2
+          ? typeof row.coverage_facts === "string"
+            ? storedCoverageFacts(row.coverage_facts, row.digest, Number(row.revision))
+            : { status: "unknown", unavailable: true }
+          : reviewCoverageRecordFromFields(fields),
+      );
       fleet.tracked_records += 1;
       const status = fields.review_status ?? "";
       const reviewedAtMs = fields.reviewed_at ? Date.parse(fields.reviewed_at) : Number.NaN;
@@ -1497,7 +1636,27 @@ export class ExactReviewDirectPublicationStore {
     now: number,
     inventory: ReviewCoverageInventorySnapshot | null,
     windowMs = REVIEW_COVERAGE_WINDOW_MS,
+    scannedAt = now,
   ): ReviewCoverageSummary {
+    const scanCurrent =
+      Number.isFinite(scannedAt) &&
+      scannedAt <= now &&
+      now - scannedAt <= REVIEW_COVERAGE_SCAN_MAX_AGE_MS;
+    const inventoryGeneratedAt = inventory?.generated_at ?? null;
+    const inventoryGeneratedAtMs = Date.parse(inventoryGeneratedAt ?? "");
+    const inventoryStatus =
+      inventory === null
+        ? "missing"
+        : now - inventoryGeneratedAtMs > REVIEW_COVERAGE_INVENTORY_STALE_MS ||
+            inventoryGeneratedAtMs > now
+          ? "stale"
+          : "current";
+    let coverageStatus: "complete" | "unknown" =
+      scanCurrent &&
+      inventoryStatus === "current" &&
+      inventory!.repositories.every((entry) => entry.complete === true && entry.items !== undefined)
+        ? "complete"
+        : "unknown";
     const fleets = new Map(scanned);
     const inventoryBySlug = new Map(
       (inventory?.repositories ?? []).map((entry) => [entry.repo_slug, entry] as const),
@@ -1523,16 +1682,24 @@ export class ExactReviewDirectPublicationStore {
           fleet,
           inventoryBySlug.get(fleet.repo_slug) ?? null,
           inventory !== null,
+          scanCurrent && inventoryStatus === "current",
+          now,
+          windowMs,
+          inventoryStatus === "current",
+          inventoryGeneratedAt,
         ),
       )
       .sort((left, right) => left.repo.localeCompare(right.repo));
+    if (fleetList.some((fleet) => fleet.schedulable && fleet.coverage_status !== "complete"))
+      coverageStatus = "unknown";
     const totals = fleetList.reduce(
       (sum, fleet) => {
         if (!fleet.schedulable) {
+          if (inventory === null) sum.tracked_records += fleet.tracked_records;
           sum.unschedulable_records += fleet.unschedulable_records;
           return sum;
         }
-        sum.open_records += fleet.open_records;
+        sum.open_records += fleet.open_records ?? 0;
         sum.reviewable_records += fleet.reviewable_records;
         sum.tracked_records += fleet.tracked_records;
         sum.reviewed_recent += fleet.reviewed_recent;
@@ -1562,25 +1729,20 @@ export class ExactReviewDirectPublicationStore {
         record_drift: 0,
       },
     );
-    const inventoryGeneratedAt = inventory?.generated_at ?? null;
-    const inventoryGeneratedAtMs = Date.parse(inventoryGeneratedAt ?? "");
-    const inventoryStatus =
-      inventory === null
-        ? "missing"
-        : !Number.isFinite(inventoryGeneratedAtMs) ||
-            now - inventoryGeneratedAtMs > REVIEW_COVERAGE_INVENTORY_STALE_MS
-          ? "stale"
-          : "current";
     return {
+      cohort: "live-open-identities-v1",
+      scan_status: scanCurrent ? "current" : "unknown",
       window_days: Math.round(windowMs / (24 * 60 * 60 * 1000)),
       inventory_generated_at: inventoryGeneratedAt,
       inventory_status: inventoryStatus,
+      coverage_status: coverageStatus,
       fleets: fleetList,
       totals: {
         ...totals,
-        coverage_percent: totals.reviewable_records
-          ? Math.round((totals.reviewed_recent / totals.reviewable_records) * 1000) / 10
-          : null,
+        coverage_percent:
+          coverageStatus === "complete" && totals.reviewable_records
+            ? Math.round((totals.reviewed_recent / totals.reviewable_records) * 1000) / 10
+            : null,
       },
     };
   }
@@ -3446,22 +3608,15 @@ export type ReviewCoverageFleetCounts = {
   unreviewed_records: number;
   excluded: number;
   oldest_reviewed_at: string | null;
-};
-
-export type ReviewCoverageInventoryRepository = {
-  repo: string;
-  repo_slug: string;
-  open_issues: number;
-  open_pull_requests: number;
-};
-
-export type ReviewCoverageInventorySnapshot = {
-  generated_at: string;
-  repositories: ReviewCoverageInventoryRepository[];
+  records?: Map<number, ReviewCoverageRecord>;
 };
 
 export type ReviewCoverageFleet = ReviewCoverageFleetCounts & {
-  open_records: number;
+  open_records: number | null;
+  count_status: "observed" | "missing" | "stale" | "future";
+  counts_observed_at: string | null;
+  counts_qualification: "identity_scan_drifted" | null;
+  observation_scope: NonNullable<ReviewCoverageInventoryRepository["observation_scope"]>;
   reviewable_records: number;
   untracked_open: number;
   pending: number;
@@ -3469,12 +3624,26 @@ export type ReviewCoverageFleet = ReviewCoverageFleetCounts & {
   record_drift: number;
   schedulable: boolean;
   coverage_percent: number | null;
+  visibility: "public" | "unknown";
+  coverage_status: "complete" | "unknown";
+  census_status: "complete" | "unknown";
+  reason: string | null;
+  missing_fields: string[];
+  needs_refresh: Array<{
+    number: number;
+    kind: string;
+    reviewed_at: string | null;
+    category: string;
+  }>;
 };
 
 export type ReviewCoverageSummary = {
+  cohort: "live-open-identities-v1";
+  scan_status: "current" | "unknown";
   window_days: number;
   inventory_generated_at: string | null;
   inventory_status: "current" | "stale" | "missing";
+  coverage_status: "complete" | "unknown";
   fleets: ReviewCoverageFleet[];
   totals: {
     open_records: number;
@@ -3498,6 +3667,10 @@ export function normalizeReviewCoverageInventory(
   value: unknown,
 ): ReviewCoverageInventorySnapshot | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (
+    new TextEncoder().encode(JSON.stringify(value)).byteLength > REVIEW_COVERAGE_INVENTORY_MAX_BYTES
+  )
+    return null;
   const input = value as Record<string, unknown>;
   const generatedAt = String(input.generated_at ?? "").trim();
   const generatedAtMs = Date.parse(generatedAt);
@@ -3505,6 +3678,7 @@ export function normalizeReviewCoverageInventory(
   if (input.repositories.length > 2_000) return null;
   const seen = new Set<string>();
   const repositories: ReviewCoverageInventoryRepository[] = [];
+  let itemCount = 0;
   for (const candidate of input.repositories) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
     const entry = candidate as Record<string, unknown>;
@@ -3514,92 +3688,297 @@ export function normalizeReviewCoverageInventory(
     const repoSlug = String(entry.repo_slug ?? "")
       .trim()
       .toLowerCase();
-    const openIssues = Number(entry.open_issues);
-    const openPullRequests = Number(entry.open_pull_requests);
+    const scope = entry.observation_scope ?? "eligible";
+    if (
+      !["eligible", "observed", "archived", "fork", "alias", "historical"].includes(String(scope))
+    )
+      return null;
+    const openIssues = entry.open_issues == null ? null : Number(entry.open_issues);
+    const openPullRequests =
+      entry.open_pull_requests == null ? null : Number(entry.open_pull_requests);
+    const rawCountsAt =
+      entry.counts_observed_at === undefined ? generatedAt : entry.counts_observed_at;
+    const countsAt =
+      rawCountsAt === null
+        ? null
+        : typeof rawCountsAt === "string" && Number.isFinite(Date.parse(rawCountsAt))
+          ? new Date(rawCountsAt).toISOString()
+          : undefined;
+    if (countsAt === undefined) return null;
     if (
       !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repo) ||
       !/^[a-z0-9][a-z0-9_.-]*$/.test(repoSlug) ||
       repo.replace("/", "-") !== repoSlug ||
-      !Number.isSafeInteger(openIssues) ||
-      openIssues < 0 ||
-      !Number.isSafeInteger(openPullRequests) ||
-      openPullRequests < 0 ||
+      (openIssues !== null && (!Number.isSafeInteger(openIssues) || openIssues < 0)) ||
+      (openPullRequests !== null &&
+        (!Number.isSafeInteger(openPullRequests) || openPullRequests < 0)) ||
       seen.has(repoSlug)
     ) {
       return null;
     }
     seen.add(repoSlug);
+    let items: ReviewCoverageOpenItem[] | undefined;
+    if (entry.items !== undefined) {
+      if (!Array.isArray(entry.items)) return null;
+      itemCount += entry.items.length;
+      if (itemCount > REVIEW_COVERAGE_INVENTORY_MAX_ITEMS) return null;
+      items = [];
+      const numbers = new Set<number>();
+      for (const raw of entry.items) {
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+        const item = raw as Record<string, unknown>;
+        if (
+          !Number.isSafeInteger(item.number) ||
+          Number(item.number) <= 0 ||
+          numbers.has(Number(item.number)) ||
+          (item.kind !== "issue" && item.kind !== "pull_request") ||
+          typeof item.updated_at !== "string" ||
+          !Number.isFinite(Date.parse(item.updated_at)) ||
+          Date.parse(item.updated_at) > generatedAtMs ||
+          !(
+            item.reopened_at === null ||
+            (typeof item.reopened_at === "string" &&
+              Number.isFinite(Date.parse(item.reopened_at)) &&
+              Date.parse(item.reopened_at) <= generatedAtMs)
+          ) ||
+          !Array.isArray(item.labels) ||
+          item.labels.length > 100 ||
+          !item.labels.every((label) => typeof label === "string" && label.length <= 100) ||
+          (item.kind === "pull_request" &&
+            (typeof item.head_sha !== "string" || !/^[a-f0-9]{40,64}$/.test(item.head_sha)))
+        )
+          return null;
+        numbers.add(Number(item.number));
+        items.push({
+          number: Number(item.number),
+          kind: item.kind,
+          updated_at: item.updated_at,
+          reopened_at: item.reopened_at as string | null,
+          labels: item.labels as string[],
+          ...(item.kind === "pull_request" ? { head_sha: item.head_sha as string } : {}),
+        });
+      }
+      if (
+        entry.complete === true &&
+        (items.filter((item) => item.kind === "issue").length !== openIssues ||
+          items.filter((item) => item.kind === "pull_request").length !== openPullRequests)
+      )
+        return null;
+    }
     repositories.push({
       repo,
       repo_slug: repoSlug,
       open_issues: openIssues,
       open_pull_requests: openPullRequests,
+      counts_observed_at: countsAt,
+      ...(entry.counts_qualification === "identity_scan_drifted"
+        ? { counts_qualification: "identity_scan_drifted" as const }
+        : {}),
+      missing_fields: Array.isArray(entry.missing_fields)
+        ? entry.missing_fields
+            .filter(
+              (field): field is string =>
+                typeof field === "string" &&
+                ["labels", "latest_reopen", "pr_head", "updated_at"].includes(field),
+            )
+            .slice(0, 4)
+        : [],
+      observation_scope: scope as NonNullable<
+        ReviewCoverageInventoryRepository["observation_scope"]
+      >,
+      visibility: entry.visibility === "public" ? "public" : "unknown",
+      reason:
+        typeof entry.reason === "string" && /^[a-z_]{1,64}$/.test(entry.reason)
+          ? entry.reason
+          : undefined,
+      ...(entry.complete !== undefined ? { complete: entry.complete === true } : {}),
+      ...(items !== undefined ? { items } : {}),
     });
   }
   return { generated_at: new Date(generatedAtMs).toISOString(), repositories };
 }
 
+// Preserve SQLite inline-text NUL semantics across v1 detachment. This does not
+// reintroduce the clipped 4KiB header limit: ordinary long verified bodies still
+// provide their complete header. Chunked v1 prefixes decode base64 and do not
+// have SQLite TEXT NUL termination. Canonical bytes and fences are unchanged.
+function canonicalReviewCoverageRecord(content: string, bytes: number): ReviewCoverageRecord {
+  const nul = bytes <= EXACT_REVIEW_CANONICAL_INLINE_BYTES ? content.indexOf("\0") : -1;
+  return reviewCoverageRecord(nul < 0 ? content : content.slice(0, nul));
+}
+
+function storedCoverageFacts(
+  value: string,
+  digest: unknown,
+  revision: number,
+): ReviewCoverageRecord {
+  try {
+    const facts = JSON.parse(value) as ReviewCoverageRecord & {
+      sourceDigest?: unknown;
+      sourceRevision?: unknown;
+    };
+    if (
+      facts.sourceDigest === digest &&
+      facts.sourceRevision === revision &&
+      typeof facts.status === "string"
+    )
+      return {
+        kind: facts.kind,
+        headSha: facts.headSha,
+        status: facts.status,
+        reviewedAt: facts.reviewedAt,
+      };
+  } catch {
+    /* A malformed read-model cache is unavailable, never source evidence. */
+  }
+  return { status: "unknown", unavailable: true };
+}
+
 function projectReviewCoverageFleet(
-  fleet: ReviewCoverageFleetCounts,
+  source: ReviewCoverageFleetCounts,
   inventory: ReviewCoverageInventoryRepository | null,
   hasInventory: boolean,
+  complete: boolean,
+  now: number,
+  windowMs: number,
+  censusCurrent = complete,
+  inventoryObservedAt: string | null = null,
 ): ReviewCoverageFleet {
-  if (hasInventory && inventory === null) {
-    return {
-      ...fleet,
-      open_records: 0,
-      reviewable_records: 0,
-      reviewed_recent: 0,
-      stale: 0,
-      failed: 0,
-      expired: 0,
-      unreviewed_records: 0,
-      untracked_open: 0,
-      pending: 0,
-      excluded: 0,
-      unschedulable_records: fleet.tracked_records,
-      record_drift: 0,
-      schedulable: false,
-      coverage_percent: null,
-    };
-  }
-  const openRecords = inventory
-    ? inventory.open_issues + inventory.open_pull_requests
-    : fleet.tracked_records;
-  const excluded = Math.min(fleet.excluded, openRecords);
-  const reviewableRecords = Math.max(0, openRecords - excluded);
-  let remaining = reviewableRecords;
-  const take = (count: number) => {
-    const accepted = Math.min(Math.max(0, count), remaining);
-    remaining -= accepted;
-    return accepted;
-  };
-  const reviewedRecent = take(fleet.reviewed_recent);
-  const stale = take(fleet.stale);
-  const failed = take(fleet.failed);
-  const expired = take(fleet.expired);
-  const unreviewedRecords = take(fleet.unreviewed_records);
-  const untrackedOpen = remaining;
-  return {
+  // Internal identity maps never become part of the public fleet projection.
+  const { records, ...fleet } = source;
+  const countsAt =
+    inventory?.counts_observed_at === undefined
+      ? inventoryObservedAt
+      : inventory.counts_observed_at;
+  const countsMs = Date.parse(countsAt ?? "");
+  const countStatus =
+    !inventory ||
+    inventory.open_issues === null ||
+    inventory.open_pull_requests === null ||
+    !Number.isFinite(countsMs)
+      ? "missing"
+      : countsMs > now
+        ? "future"
+        : now - countsMs > REVIEW_COVERAGE_INVENTORY_STALE_MS
+          ? "stale"
+          : "observed";
+  const result: ReviewCoverageFleet = {
     ...fleet,
     repo: inventory?.repo ?? fleet.repo,
-    open_records: openRecords,
-    reviewable_records: reviewableRecords,
-    reviewed_recent: reviewedRecent,
-    stale,
-    failed,
-    expired,
-    unreviewed_records: unreviewedRecords,
-    untracked_open: untrackedOpen,
-    pending: expired + unreviewedRecords + untrackedOpen,
-    excluded,
-    unschedulable_records: 0,
-    record_drift: Math.max(0, fleet.tracked_records - openRecords),
-    schedulable: true,
-    coverage_percent: reviewableRecords
-      ? Math.round((reviewedRecent / reviewableRecords) * 1000) / 10
-      : null,
+    open_records:
+      countStatus === "observed" ? inventory!.open_issues! + inventory!.open_pull_requests! : null,
+    count_status: countStatus,
+    counts_observed_at: countsAt ?? null,
+    counts_qualification: inventory?.counts_qualification ?? null,
+    reviewable_records: 0,
+    reviewed_recent: 0,
+    stale: 0,
+    failed: 0,
+    expired: 0,
+    unreviewed_records: 0,
+    untracked_open: 0,
+    pending: 0,
+    excluded: 0,
+    unschedulable_records: hasInventory && !inventory ? fleet.tracked_records : 0,
+    record_drift: 0,
+    schedulable: !!inventory && (inventory.observation_scope ?? "eligible") === "eligible",
+    observation_scope: inventory?.observation_scope ?? "historical",
+    visibility: inventory?.visibility ?? "unknown",
+    coverage_status:
+      complete &&
+      countStatus === "observed" &&
+      (inventory?.observation_scope ?? "eligible") === "eligible" &&
+      inventory?.complete === true &&
+      inventory.items !== undefined
+        ? "complete"
+        : "unknown",
+    census_status:
+      censusCurrent &&
+      (inventory?.observation_scope ?? "eligible") === "eligible" &&
+      inventory?.complete === true &&
+      inventory.items !== undefined
+        ? "complete"
+        : "unknown",
+    reason: !inventory
+      ? "not_in_current_census"
+      : (inventory.reason ??
+        (!censusCurrent
+          ? "census_not_current"
+          : !inventory.complete
+            ? "incomplete_census"
+            : !complete
+              ? "canonical_scan_unavailable"
+              : (inventory.observation_scope ?? "eligible") !== "eligible"
+                ? "outside_qualified_review_scope"
+                : null)),
+    coverage_percent: null,
+    needs_refresh: [],
+    missing_fields: inventory?.missing_fields ?? [],
   };
+  if (
+    censusCurrent &&
+    (inventory?.observation_scope ?? "eligible") === "eligible" &&
+    inventory?.complete &&
+    inventory.items
+  ) {
+    result.excluded = inventory.items.filter((item) =>
+      reviewCoverageRecordExcluded(item.labels),
+    ).length;
+    result.reviewable_records = (result.open_records ?? 0) - result.excluded;
+  }
+  if (
+    !complete ||
+    (inventory?.observation_scope ?? "eligible") !== "eligible" ||
+    countStatus !== "observed" ||
+    !inventory?.complete ||
+    !inventory.items
+  )
+    return result;
+  if (
+    inventory.items.some(
+      (item) =>
+        !reviewCoverageRecordExcluded(item.labels) && records?.get(item.number)?.unavailable,
+    )
+  ) {
+    result.coverage_status = "unknown";
+    result.reason = "canonical_evidence_unavailable";
+    return result;
+  }
+  const openNumbers = new Set(inventory.items.map((item) => item.number));
+  result.record_drift = [...(records?.keys() ?? [])].filter(
+    (number) => !openNumbers.has(number),
+  ).length;
+  for (const item of inventory.items) {
+    if (reviewCoverageRecordExcluded(item.labels)) continue;
+    const record = records?.get(item.number);
+    const category = record
+      ? reviewCoverageRecordState(record, item, now, windowMs)
+      : "untracked_open";
+    result[category] += 1;
+    if (category !== "reviewed_recent") {
+      const reviewedAt = Date.parse(record?.reviewedAt ?? "");
+      result.needs_refresh.push({
+        number: item.number,
+        kind: item.kind,
+        reviewed_at:
+          Number.isFinite(reviewedAt) && reviewedAt <= now
+            ? new Date(reviewedAt).toISOString()
+            : null,
+        category,
+      });
+      result.needs_refresh.sort(
+        (a, b) =>
+          (Date.parse(a.reviewed_at ?? "") || 0) - (Date.parse(b.reviewed_at ?? "") || 0) ||
+          a.number - b.number,
+      );
+      result.needs_refresh.length = Math.min(result.needs_refresh.length, 16);
+    }
+  }
+  result.pending = result.expired + result.unreviewed_records + result.untracked_open;
+  result.coverage_percent = result.reviewable_records
+    ? Math.round((result.reviewed_recent / result.reviewable_records) * 1000) / 10
+    : null;
+  return result;
 }
 
 const REVIEW_COVERAGE_EXCLUDED_LABELS = new Set<string>(
@@ -3622,27 +4001,38 @@ function reviewCoverageHeadText(head: unknown, chunked: boolean): string {
   }
 }
 
-function reviewCoverageFrontMatter(head: string): {
-  repository: string | null;
-  repo: string | null;
-  reviewed_at: string | null;
-  review_status: string | null;
-  labels: string[];
-} {
-  const result: {
-    repository: string | null;
-    repo: string | null;
-    reviewed_at: string | null;
-    review_status: string | null;
-    labels: string[];
-  } = { repository: null, repo: null, reviewed_at: null, review_status: null, labels: [] };
+const REVIEW_COVERAGE_FRONT_MATTER_FIELDS = [
+  "repository",
+  "repo",
+  ...REVIEW_COVERAGE_RECORD_FIELDS,
+] as const;
+type ReviewCoverageFrontMatter = Record<
+  (typeof REVIEW_COVERAGE_FRONT_MATTER_FIELDS)[number],
+  string | null
+> & { labels: string[] };
+
+function reviewCoverageFrontMatter(head: string): ReviewCoverageFrontMatter {
+  const result: ReviewCoverageFrontMatter = {
+    repository: null,
+    repo: null,
+    type: null,
+    pull_head_sha: null,
+    reviewed_at: null,
+    review_status: null,
+    local_checkout_access: null,
+    local_checkout_access_source: null,
+    labels: [],
+  };
   if (!head.startsWith("---")) return result;
   const end = head.indexOf("\n---", 3);
-  const frontMatter = end === -1 ? head : head.slice(0, end);
-  for (const key of ["repository", "repo", "reviewed_at", "review_status"] as const) {
-    const match = frontMatter.match(new RegExp(`^${key}:[ \\t]*"?([^"\\n]*)"?[ \\t]*$`, "m"));
-    const value = match?.[1];
-    if (value !== undefined) result[key] = value.trim() || null;
+  // The large typed review record follows these scalar fields. Only complete
+  // prefix lines are evidence; a truncated final value must not grant coverage.
+  const frontMatter = end === -1 ? head.slice(0, head.lastIndexOf("\n")) : head.slice(0, end);
+  for (const key of REVIEW_COVERAGE_FRONT_MATTER_FIELDS) {
+    const matches = [
+      ...frontMatter.matchAll(new RegExp(`^${key}:[ \\t]*"?([^"\\n]*)"?[ \\t]*$`, "gm")),
+    ];
+    if (matches.length === 1) result[key] = matches[0]?.[1]?.trim() || null;
   }
   const labels = frontMatter.match(/^labels:[ \t]*(.+?)[ \t]*$/m)?.[1]?.trim();
   if (labels) {

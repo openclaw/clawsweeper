@@ -526,6 +526,13 @@ test("coverage and lifetime answered facts survive detachment including stale-so
   const after = new Map();
   store.reviewCoverageScanPageSync(after, null, 200, now);
   assert.deepEqual(after, before);
+  for (const fleet of after.values()) {
+    for (const record of fleet.records.values()) {
+      assert.equal(Object.hasOwn(record, "sourceDigest"), false);
+      assert.equal(Object.hasOwn(record, "sourceRevision"), false);
+      assert.deepEqual(Object.keys(record).sort(), ["headSha", "kind", "reviewedAt", "status"]);
+    }
+  }
   assert.equal(store.hasCompletedPullRequestReview(repo, 1), true);
   assert.equal(store.hasCompletedPullRequestReview(repo, 2), false);
 });

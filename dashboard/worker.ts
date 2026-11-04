@@ -121,6 +121,7 @@ import {
   publicGithubEgressObservabilityProjection,
   publicRecentDurablePublicationEventsProjection,
   publicReviewCoverageProjection,
+  privateReviewCoverageProjection,
   publicReviewObservabilityProjection,
 } from "./public-observability.ts";
 import {
@@ -1109,6 +1110,8 @@ export default {
       return authenticatedHostedTargetQueueRequest(request, env, "/branch-authority");
     if (url.pathname === "/internal/exact-review/source-authority" && request.method === "POST")
       return authenticatedHostedTargetQueueRequest(request, env, "/source-authority");
+    if (url.pathname === "/internal/review-coverage/build" && request.method === "POST")
+      return authenticatedReviewCoverageBuildRead(request, env);
     if (url.pathname === "/internal/review-coverage/inventory" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/review-coverage/inventory");
     const operationalCursorPath =
@@ -5551,6 +5554,42 @@ async function publicReviewObservabilityJson(env, params: URLSearchParams) {
     publicReviewObservabilityProjection,
     "review_observability_unavailable",
   );
+}
+
+async function authenticatedReviewCoverageBuildRead(request: Request, env) {
+  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
+  if (!signature) return json({ error: "invalid_signature" }, 401);
+  const body = await boundedTargetDispatchBody(request, 128);
+  if (body === null) return json({ error: "coverage_build_request_too_large" }, 413);
+  if (
+    !(await verifyGithubWebhookSignature({
+      secret,
+      signature,
+      bodyText: "coverage-build-read-v1\nPOST\n/internal/review-coverage/build\n" + body,
+    }))
+  )
+    return json({ error: "invalid_signature" }, 401);
+  // Closed purpose on a fixed method/path; a signature over another request
+  // never authorizes a mutation, arbitrary queue route or identifying query.
+  if (body !== '{"purpose":"dashboard-site-coverage-v1"}' || new URL(request.url).search)
+    return json({ error: "invalid_coverage_build_read" }, 400);
+  try {
+    const response = await exactReviewQueueRequest(env, "/review-coverage");
+    const projection = response.ok
+      ? privateReviewCoverageProjection(await response.json().catch(() => null))
+      : null;
+    if (!projection) return json({ error: "review_coverage_unavailable" }, 503);
+    return new Response(JSON.stringify(projection), {
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "private, no-store",
+      },
+    });
+  } catch {
+    return json({ error: "review_coverage_unavailable" }, 503);
+  }
 }
 
 async function publicReviewCoverageJson(env) {
