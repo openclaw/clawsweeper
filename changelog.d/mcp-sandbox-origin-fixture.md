@@ -1,0 +1,1 @@
+- Qualify the exact synthetic MCP Apps sandbox-origin negative-URL fixture across observed native decoder variants without relaxing other secret-scanning checks.

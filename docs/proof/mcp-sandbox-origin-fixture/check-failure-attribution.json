@@ -1,0 +1,311 @@
+{
+  "status": "All 11 observed markers are distinct tests, reproduced as the same failures on candidate and complete pinned baseline; no observed PR-caused or unknown signature remains. This is not an overall full-suite pass.",
+  "baselineCommit": "940ad52249d67d3f7ec57deaf2fc397f771ed9d2",
+  "candidateFixtureSourceSha256": "d16e58bc87f03e748c08db8cc8d59553a5cc4144944e314dfc4024bc01d15cca",
+  "environment": "Same host, Node v26.12.1, pinned pnpm 12.15.0, same own-worktree dependency installation; no PATH override or shim workaround.",
+  "probeSelection": "Only the 11 exact observed names across six test files; execution of every name asserted, excluding file-level/no-match results.",
+  "candidateProbe": {
+    "label": "candidate",
+    "command": [
+      "node",
+      "--test",
+      "--test-reporter=tap",
+      "--test-concurrency=1",
+      "--test-name-pattern=default\\ apply\\ drift\\ refresh\\ executes\\ queue\\-only\\ ingress\\ with\\ bounded\\ selection\\ and\\ live\\ guards|retirement\\ workflow\\ executes\\ isolated\\ preview\\ and\\ apply\\ argument\\ routes|setup\\-state\\ supports\\ opting\\ out\\ of\\ canonical\\ record\\ and\\ blob\\ hydration|changed\\-pr\\-clean\\ local\\ none\\ media\\ run\\ admission|changed\\-pr\\-clean\\ local\\ summary\\ media\\ run\\ admission|changed\\-pr\\-clean\\ local\\ debug\\ media\\ run\\ admission|scanner\\ bootstrap\\ refuses\\ a\\ corrupt\\ download\\ before\\ extraction\\ or\\ execution|review\\ scanner\\ cold\\ and\\ warm\\ archives\\ always\\ install\\ and\\ smoke\\ fresh\\ binaries|review\\ scanner\\ missing\\ archive\\ acquires\\ verified\\ pinned\\ bytes|review\\ scanner\\ corrupt\\ archive\\ acquires\\ verified\\ pinned\\ bytes|hosted\\ scanner\\ archive\\ proof\\ is\\ scoped\\ after\\ the\\ existing\\ build\\ and\\ fails\\ closed\\ on\\ missing\\ ancestry",
+      "test/apply-drift-refresh.test.ts",
+      "test/repair/exact-review-queue-maintenance-workflow.test.ts",
+      "test/repair/focused-state-hydration.test.ts",
+      "test/review-command-workflow.test.ts",
+      "test/setup-codex-action.test.ts",
+      "test/setup-review-tools-action.test.ts"
+    ],
+    "exitCode": 1,
+    "timedOut": false,
+    "ownedProcessJoined": true,
+    "elapsedSeconds": 14.688,
+    "cases": [
+      {
+        "name": "default apply drift refresh executes queue-only ingress with bounded selection and live guards",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "retirement workflow executes isolated preview and apply argument routes",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "setup-state supports opting out of canonical record and blob hydration",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "changed-pr-clean local none media run admission",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "changed-pr-clean local summary media run admission",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "changed-pr-clean local debug media run admission",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "scanner bootstrap refuses a corrupt download before extraction or execution",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "review scanner cold and warm archives always install and smoke fresh binaries",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "review scanner missing archive acquires verified pinned bytes",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "review scanner corrupt archive acquires verified pinned bytes",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "hosted scanner archive proof is scoped after the existing build and fails closed on missing ancestry",
+        "executed": true,
+        "result": "failed"
+      }
+    ]
+  },
+  "baselineProbe": {
+    "label": "baseline",
+    "command": [
+      "node",
+      "--test",
+      "--test-reporter=tap",
+      "--test-concurrency=1",
+      "--test-name-pattern=default\\ apply\\ drift\\ refresh\\ executes\\ queue\\-only\\ ingress\\ with\\ bounded\\ selection\\ and\\ live\\ guards|retirement\\ workflow\\ executes\\ isolated\\ preview\\ and\\ apply\\ argument\\ routes|setup\\-state\\ supports\\ opting\\ out\\ of\\ canonical\\ record\\ and\\ blob\\ hydration|changed\\-pr\\-clean\\ local\\ none\\ media\\ run\\ admission|changed\\-pr\\-clean\\ local\\ summary\\ media\\ run\\ admission|changed\\-pr\\-clean\\ local\\ debug\\ media\\ run\\ admission|scanner\\ bootstrap\\ refuses\\ a\\ corrupt\\ download\\ before\\ extraction\\ or\\ execution|review\\ scanner\\ cold\\ and\\ warm\\ archives\\ always\\ install\\ and\\ smoke\\ fresh\\ binaries|review\\ scanner\\ missing\\ archive\\ acquires\\ verified\\ pinned\\ bytes|review\\ scanner\\ corrupt\\ archive\\ acquires\\ verified\\ pinned\\ bytes|hosted\\ scanner\\ archive\\ proof\\ is\\ scoped\\ after\\ the\\ existing\\ build\\ and\\ fails\\ closed\\ on\\ missing\\ ancestry",
+      "test/apply-drift-refresh.test.ts",
+      "test/repair/exact-review-queue-maintenance-workflow.test.ts",
+      "test/repair/focused-state-hydration.test.ts",
+      "test/review-command-workflow.test.ts",
+      "test/setup-codex-action.test.ts",
+      "test/setup-review-tools-action.test.ts"
+    ],
+    "exitCode": 1,
+    "timedOut": false,
+    "ownedProcessJoined": true,
+    "elapsedSeconds": 5.925,
+    "cases": [
+      {
+        "name": "default apply drift refresh executes queue-only ingress with bounded selection and live guards",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "retirement workflow executes isolated preview and apply argument routes",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "setup-state supports opting out of canonical record and blob hydration",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "changed-pr-clean local none media run admission",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "changed-pr-clean local summary media run admission",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "changed-pr-clean local debug media run admission",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "scanner bootstrap refuses a corrupt download before extraction or execution",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "review scanner cold and warm archives always install and smoke fresh binaries",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "review scanner missing archive acquires verified pinned bytes",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "review scanner corrupt archive acquires verified pinned bytes",
+        "executed": true,
+        "result": "failed"
+      },
+      {
+        "name": "hosted scanner archive proof is scoped after the existing build and fails closed on missing ancestry",
+        "executed": true,
+        "result": "failed"
+      }
+    ]
+  },
+  "candidateTapSha256": "6e80abea3949d7531e74cb6c3396d9b6dd6ae32a81f80b2d1027f43196fc89d5",
+  "baselineTapSha256": "08c57e41e421ba665b0c3165245efd5b29548be869ed537de515a0e8dd1496f7",
+  "fullRunLogSha256": "953034957f0fd05a4694d0a258354d817a99c8615848ed3152cd528c60786ead",
+  "mechanismLimit": "A bare Node child and the apply-drift shell both prepend /usr/bin ahead of requested test shims. This directly explains the observed apply pnpm resolution; other failures have independently matching baseline signatures and shim/recorder symptoms. Do not infer every underlying mechanism solely from the apply case.",
+  "priorCorrection": "Earlier apply-label-sync filtered probes executed no matching case and were invalid evidence. They are not used here.",
+  "failures": [
+    {
+      "test": "default apply drift refresh executes queue-only ingress with bounded selection and live guards",
+      "testFile": "test/apply-drift-refresh.test.ts",
+      "fullRunMarkerLine": 1490,
+      "actualError": "ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND: real pnpm ran from the temporary fixture directory instead of the local shim.",
+      "candidate": "executed and failed",
+      "baseline": "executed and failed on 940ad52249d67d3f7ec57deaf2fc397f771ed9d2",
+      "sameFailureSignature": true,
+      "testFileUnchangedFromBase": true,
+      "testFileSha256": "7c416cde924552b9ac5abd79a43ec06bc9c6c1870b1b10fda9546461a91ff681",
+      "changedPathLinkage": "Not a changed path; the same failure occurs with the complete pinned-baseline source and baseline build. No fixture-policy-specific failure signature was observed.",
+      "status": "proven_baseline_or_environment"
+    },
+    {
+      "test": "retirement workflow executes isolated preview and apply argument routes",
+      "testFile": "test/repair/exact-review-queue-maintenance-workflow.test.ts",
+      "fullRunMarkerLine": 29673,
+      "actualError": "Retirement command exited 1 with retirement_failed instead of the expected isolated preview/apply route.",
+      "candidate": "executed and failed",
+      "baseline": "executed and failed on 940ad52249d67d3f7ec57deaf2fc397f771ed9d2",
+      "sameFailureSignature": true,
+      "testFileUnchangedFromBase": true,
+      "testFileSha256": "8d0fb3b643db3ce5d2d71ce3fa536cd91332d07b37da6900b9f63cb8158523d0",
+      "changedPathLinkage": "Not a changed path; the same failure occurs with the complete pinned-baseline source and baseline build. No fixture-policy-specific failure signature was observed.",
+      "status": "proven_baseline_or_environment"
+    },
+    {
+      "test": "setup-state supports opting out of canonical record and blob hydration",
+      "testFile": "test/repair/focused-state-hydration.test.ts",
+      "fullRunMarkerLine": 29769,
+      "actualError": "Expected node invocation recorder text with --skip-records --skip-state-blobs; actual output was empty.",
+      "candidate": "executed and failed",
+      "baseline": "executed and failed on 940ad52249d67d3f7ec57deaf2fc397f771ed9d2",
+      "sameFailureSignature": true,
+      "testFileUnchangedFromBase": true,
+      "testFileSha256": "1f00336b0f9f5d028095e3652351e5820364aff5fee4283a6e4bf8a64cfc7064",
+      "changedPathLinkage": "Not a changed path; the same failure occurs with the complete pinned-baseline source and baseline build. No fixture-policy-specific failure signature was observed.",
+      "status": "proven_baseline_or_environment"
+    },
+    {
+      "test": "changed-pr-clean local none media run admission",
+      "testFile": "test/review-command-workflow.test.ts",
+      "fullRunMarkerLine": 31509,
+      "actualError": "ENOENT opening the expected media-calls recorder file.",
+      "candidate": "executed and failed",
+      "baseline": "executed and failed on 940ad52249d67d3f7ec57deaf2fc397f771ed9d2",
+      "sameFailureSignature": true,
+      "testFileUnchangedFromBase": true,
+      "testFileSha256": "45850de8cc3a36d6e127f57f01fd481ef2c20609e12763e0600f1de94beb8f51",
+      "changedPathLinkage": "Not a changed path; the same failure occurs with the complete pinned-baseline source and baseline build. No fixture-policy-specific failure signature was observed.",
+      "status": "proven_baseline_or_environment"
+    },
+    {
+      "test": "changed-pr-clean local summary media run admission",
+      "testFile": "test/review-command-workflow.test.ts",
+      "fullRunMarkerLine": 31511,
+      "actualError": "ENOENT opening the expected media-calls recorder file.",
+      "candidate": "executed and failed",
+      "baseline": "executed and failed on 940ad52249d67d3f7ec57deaf2fc397f771ed9d2",
+      "sameFailureSignature": true,
+      "testFileUnchangedFromBase": true,
+      "testFileSha256": "45850de8cc3a36d6e127f57f01fd481ef2c20609e12763e0600f1de94beb8f51",
+      "changedPathLinkage": "Not a changed path; the same failure occurs with the complete pinned-baseline source and baseline build. No fixture-policy-specific failure signature was observed.",
+      "status": "proven_baseline_or_environment"
+    },
+    {
+      "test": "changed-pr-clean local debug media run admission",
+      "testFile": "test/review-command-workflow.test.ts",
+      "fullRunMarkerLine": 31513,
+      "actualError": "ENOENT opening the expected media-calls recorder file.",
+      "candidate": "executed and failed",
+      "baseline": "executed and failed on 940ad52249d67d3f7ec57deaf2fc397f771ed9d2",
+      "sameFailureSignature": true,
+      "testFileUnchangedFromBase": true,
+      "testFileSha256": "45850de8cc3a36d6e127f57f01fd481ef2c20609e12763e0600f1de94beb8f51",
+      "changedPathLinkage": "Not a changed path; the same failure occurs with the complete pinned-baseline source and baseline build. No fixture-policy-specific failure signature was observed.",
+      "status": "proven_baseline_or_environment"
+    },
+    {
+      "test": "scanner bootstrap refuses a corrupt download before extraction or execution",
+      "testFile": "test/setup-codex-action.test.ts",
+      "fullRunMarkerLine": 32418,
+      "actualError": "Corrupt-download rejection expected nonzero exit; actual exit was 0.",
+      "candidate": "executed and failed",
+      "baseline": "executed and failed on 940ad52249d67d3f7ec57deaf2fc397f771ed9d2",
+      "sameFailureSignature": true,
+      "testFileUnchangedFromBase": true,
+      "testFileSha256": "32435ede9693267dd32cbcf0006aae39303b8bb734cda408d32a57209b64b47f",
+      "changedPathLinkage": "Not a changed path; the same failure occurs with the complete pinned-baseline source and baseline build. No fixture-policy-specific failure signature was observed.",
+      "status": "proven_baseline_or_environment"
+    },
+    {
+      "test": "review scanner cold and warm archives always install and smoke fresh binaries",
+      "testFile": "test/setup-review-tools-action.test.ts",
+      "fullRunMarkerLine": 32456,
+      "actualError": "Archive installation expected exit 0; actual exit 1 reported sha256sum checksum mismatch.",
+      "candidate": "executed and failed",
+      "baseline": "executed and failed on 940ad52249d67d3f7ec57deaf2fc397f771ed9d2",
+      "sameFailureSignature": true,
+      "testFileUnchangedFromBase": true,
+      "testFileSha256": "840cd411556920f44d65ef8bf870ebadc62ddb9baba887ce03a41358cf3fad66",
+      "changedPathLinkage": "Not a changed path; the same failure occurs with the complete pinned-baseline source and baseline build. No fixture-policy-specific failure signature was observed.",
+      "status": "proven_baseline_or_environment"
+    },
+    {
+      "test": "review scanner missing archive acquires verified pinned bytes",
+      "testFile": "test/setup-review-tools-action.test.ts",
+      "fullRunMarkerLine": 32457,
+      "actualError": "Archive installation expected exit 0; actual exit 1 reported sha256sum checksum mismatch.",
+      "candidate": "executed and failed",
+      "baseline": "executed and failed on 940ad52249d67d3f7ec57deaf2fc397f771ed9d2",
+      "sameFailureSignature": true,
+      "testFileUnchangedFromBase": true,
+      "testFileSha256": "840cd411556920f44d65ef8bf870ebadc62ddb9baba887ce03a41358cf3fad66",
+      "changedPathLinkage": "Not a changed path; the same failure occurs with the complete pinned-baseline source and baseline build. No fixture-policy-specific failure signature was observed.",
+      "status": "proven_baseline_or_environment"
+    },
+    {
+      "test": "review scanner corrupt archive acquires verified pinned bytes",
+      "testFile": "test/setup-review-tools-action.test.ts",
+      "fullRunMarkerLine": 32458,
+      "actualError": "Archive installation expected exit 0; actual exit 1 reported sha256sum checksum mismatch.",
+      "candidate": "executed and failed",
+      "baseline": "executed and failed on 940ad52249d67d3f7ec57deaf2fc397f771ed9d2",
+      "sameFailureSignature": true,
+      "testFileUnchangedFromBase": true,
+      "testFileSha256": "840cd411556920f44d65ef8bf870ebadc62ddb9baba887ce03a41358cf3fad66",
+      "changedPathLinkage": "Not a changed path; the same failure occurs with the complete pinned-baseline source and baseline build. No fixture-policy-specific failure signature was observed.",
+      "status": "proven_baseline_or_environment"
+    },
+    {
+      "test": "hosted scanner archive proof is scoped after the existing build and fails closed on missing ancestry",
+      "testFile": "test/setup-review-tools-action.test.ts",
+      "fullRunMarkerLine": 32471,
+      "actualError": "ENOENT opening the expected git-args recorder file.",
+      "candidate": "executed and failed",
+      "baseline": "executed and failed on 940ad52249d67d3f7ec57deaf2fc397f771ed9d2",
+      "sameFailureSignature": true,
+      "testFileUnchangedFromBase": true,
+      "testFileSha256": "840cd411556920f44d65ef8bf870ebadc62ddb9baba887ce03a41358cf3fad66",
+      "changedPathLinkage": "Not a changed path; the same failure occurs with the complete pinned-baseline source and baseline build. No fixture-policy-specific failure signature was observed.",
+      "status": "proven_baseline_or_environment"
+    }
+  ]
+}
