@@ -5,6 +5,7 @@ import {
   classifyReviewedFixtureScan,
   validateReviewedAttributionPolicy,
   type StagedScanInput,
+  type ReviewedAttribution,
   type ScanSourceRole,
 } from "../dist/agent-input-scan-fixtures.js";
 import { TRUFFLEHOG_VERSION } from "../dist/review-tool-bootstrap.js";
@@ -67,6 +68,7 @@ function classify(
   findings: unknown[],
   inputs: ReadonlyMap<string, StagedScanInput>,
   completion: Record<string, unknown> = {},
+  policy?: readonly ReviewedAttribution[],
 ) {
   return classifyReviewedFixtureScan(
     183,
@@ -85,6 +87,7 @@ function classify(
       }) + "\n",
     ),
     inputs,
+    policy,
   );
 }
 
@@ -94,10 +97,7 @@ for (const decoder of ["PLAIN", "HTML", "ESCAPED_UNICODE"]) {
       "MCP sandbox origin enforces decoder policy for " + decoder + " committed " + roles.join("/"),
       () => {
         const { finding, inputs } = fixture(decoder, sourceLine, roles);
-        assert.equal(
-          classify([finding], inputs).kind,
-          decoder === "ESCAPED_UNICODE" ? "refused" : "classified",
-        );
+        assert.equal(classify([finding], inputs).kind, "classified");
       },
     );
   }
@@ -108,111 +108,119 @@ test("MCP sandbox origin preserves the existing PLAIN legacy witness", () => {
   assert.equal(classify([finding], inputs).kind, "classified");
 });
 
-for (const scenario of [
-  "raw",
-  "raw-v2",
-  "line",
-  "extra-occurrence",
-  "path",
-  "mode",
-  "index",
-  "tree",
-  "worktree",
-  "mixed-reference",
-  "no-reference",
-  "decoder",
-  "legacy-html",
-  "detector",
-  "verified",
-  "mixed-finding",
-  "completion-count",
-  "completion-version",
-  "invalid-scanner-line",
-  "verification-missing",
-]) {
-  test("MCP sandbox origin refuses unapproved " + scenario, () => {
-    const { finding, input, inputs } = fixture();
-    assert.equal(input.kind, "blob");
-    if (input.kind !== "blob") throw new Error("Expected blob fixture");
-    const findings = [finding];
-    const completion: Record<string, unknown> = {};
-    switch (scenario) {
-      case "raw":
-        finding.Raw += "x";
-        break;
-      case "raw-v2":
-        finding.RawV2 += "x";
-        break;
-      case "line":
-        input.bytes = Buffer.from(" " + sourceLine + "\n");
-        break;
-      case "extra-occurrence":
-        input.bytes = Buffer.from([sourceLine, sourceLine, ""].join("\n"));
-        break;
-      case "path":
-        input.references[0]!.source = "src/config/other.test.ts";
-        break;
-      case "mode":
-        input.references[0]!.mode = "100755";
-        break;
-      case "index":
-      case "tree":
-      case "worktree":
-        input.references[0]!.role = scenario;
-        break;
-      case "mixed-reference":
-        input.references = [
-          ...input.references,
-          { ...input.references[0]!, source: "other.test.ts" },
-        ];
-        break;
-      case "no-reference":
-        input.references = [];
-        break;
-      case "decoder":
-        finding.DecoderName = "BASE64";
-        break;
-      case "legacy-html":
-        input.bytes = Buffer.from(legacyLine + "\n");
-        break;
-      case "detector":
-        finding.DetectorType = 895;
-        break;
-      case "verified":
-        finding.Verified = true;
-        completion.verified_secrets = 1;
-        completion.unverified_secrets = 0;
-        break;
-      case "mixed-finding":
-        findings.push({ ...structuredClone(finding), Raw: finding.Raw + "x" });
-        break;
-      case "completion-count":
-        completion.unverified_secrets = 0;
-        break;
-      case "completion-version":
-        completion.trufflehog_version = "0.0.0";
-        break;
-      case "invalid-scanner-line":
-        finding.SourceMetadata.Data.Filesystem.line = 0;
-        break;
-      case "verification-missing":
-        finding.VerificationError = "";
-        break;
-      default:
-        throw new Error("Unknown negative scenario");
-    }
-    const result = classify(findings, inputs, completion);
-    assert.equal(result.kind, "refused");
-    if (scenario === "verified") {
-      // Constructed classifier control, not a native verified finding.
-      // The exact approved fixture and consistent completion counts stay fixed.
-      assert.equal(result.kind === "refused" && result.diagnostic.kind, "unclassified_finding");
-      if (result.kind === "refused" && result.diagnostic.kind === "unclassified_finding") {
-        assert.equal(result.diagnostic.reason, "finding_not_reviewed");
-        assert.equal(result.diagnostic.verified, true);
+for (const decoder of ["PLAIN", "HTML", "ESCAPED_UNICODE"]) {
+  for (const scenario of [
+    "raw",
+    "raw-v2",
+    "line",
+    "extra-occurrence",
+    "path",
+    "mode",
+    "index",
+    "tree",
+    "worktree",
+    "mixed-reference",
+    "no-reference",
+    "decoder",
+    "legacy-html",
+    "legacy-escaped",
+    "detector",
+    "verified",
+    "mixed-finding",
+    "completion-count",
+    "completion-version",
+    "invalid-scanner-line",
+    "verification-missing",
+  ]) {
+    test("MCP sandbox origin refuses unapproved " + scenario + " with " + decoder, () => {
+      const { finding, input, inputs } = fixture(decoder);
+      assert.equal(input.kind, "blob");
+      if (input.kind !== "blob") throw new Error("Expected blob fixture");
+      const findings = [finding];
+      const completion: Record<string, unknown> = {};
+      switch (scenario) {
+        case "raw":
+          finding.Raw += "x";
+          break;
+        case "raw-v2":
+          finding.RawV2 += "x";
+          break;
+        case "line":
+          input.bytes = Buffer.from(" " + sourceLine + "\n");
+          break;
+        case "extra-occurrence":
+          input.bytes = Buffer.from([sourceLine, sourceLine, ""].join("\n"));
+          break;
+        case "path":
+          input.references[0]!.source = "src/config/other.test.ts";
+          break;
+        case "mode":
+          input.references[0]!.mode = "100755";
+          break;
+        case "index":
+        case "tree":
+        case "worktree":
+          input.references[0]!.role = scenario;
+          break;
+        case "mixed-reference":
+          input.references = [
+            ...input.references,
+            { ...input.references[0]!, source: "other.test.ts" },
+          ];
+          break;
+        case "no-reference":
+          input.references = [];
+          break;
+        case "decoder":
+          finding.DecoderName = "BASE64";
+          break;
+        case "legacy-html":
+          finding.DecoderName = "HTML";
+          input.bytes = Buffer.from(legacyLine + "\n");
+          break;
+        case "legacy-escaped":
+          finding.DecoderName = "ESCAPED_UNICODE";
+          input.bytes = Buffer.from(legacyLine + "\n");
+          break;
+        case "detector":
+          finding.DetectorType = 895;
+          break;
+        case "verified":
+          finding.Verified = true;
+          completion.verified_secrets = 1;
+          completion.unverified_secrets = 0;
+          break;
+        case "mixed-finding":
+          findings.push({ ...structuredClone(finding), Raw: finding.Raw + "x" });
+          break;
+        case "completion-count":
+          completion.unverified_secrets = 0;
+          break;
+        case "completion-version":
+          completion.trufflehog_version = "0.0.0";
+          break;
+        case "invalid-scanner-line":
+          finding.SourceMetadata.Data.Filesystem.line = 0;
+          break;
+        case "verification-missing":
+          finding.VerificationError = "";
+          break;
+        default:
+          throw new Error("Unknown negative scenario");
       }
-    }
-  });
+      const result = classify(findings, inputs, completion);
+      assert.equal(result.kind, "refused");
+      if (scenario === "verified") {
+        // Constructed classifier control, not a native verified finding.
+        // The exact approved fixture and consistent completion counts stay fixed.
+        assert.equal(result.kind === "refused" && result.diagnostic.kind, "unclassified_finding");
+        if (result.kind === "refused" && result.diagnostic.kind === "unclassified_finding") {
+          assert.equal(result.diagnostic.reason, "finding_not_reviewed");
+          assert.equal(result.diagnostic.verified, true);
+        }
+      }
+    });
+  }
 }
 
 function gitBlob(bytes: Buffer) {
@@ -284,10 +292,7 @@ for (const change of ["add", "context", "remove"]) {
       const finding = structuredClone(nativeFinding);
       finding.DecoderName = decoder;
       finding.SourceMetadata.Data.Filesystem = { file: patchFile, line: 6 };
-      assert.equal(
-        classify([finding], inputs).kind,
-        decoder === "ESCAPED_UNICODE" ? "refused" : "classified",
-      );
+      assert.equal(classify([finding], inputs).kind, "classified");
 
       // Full before/after source binding is mandatory, even for a removed value.
       inputs.delete(change === "add" ? newFile : oldFile);
@@ -295,3 +300,39 @@ for (const change of ["add", "context", "remove"]) {
     });
   }
 }
+
+// The new decoder eligibility is a complete tuple, never a path-wide permission.
+test("MCP sandbox origin escaped policy rejects every unapproved tuple field", () => {
+  const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+  const row: ReviewedAttribution = [
+    17,
+    "URI",
+    "ESCAPED_UNICODE",
+    digest(nativeFinding.Raw),
+    digest(nativeFinding.RawV2),
+    digest(sourceLine),
+    source,
+    "100644",
+  ];
+  const { finding, inputs } = fixture("ESCAPED_UNICODE");
+  assert.equal(classify([finding], inputs, {}, [row]).kind, "classified");
+  const changes: [number, unknown][] = [
+    [0, 895],
+    [1, "MongoDB"],
+    [2, "BASE64"],
+    [3, digest("unreviewed raw")],
+    [4, digest("unreviewed raw-v2")],
+    [5, digest(legacyLine)],
+    [5, [digest(sourceLine)]],
+    [6, "src/config/other.test.ts"],
+    [7, "100755"],
+  ];
+  for (const [index, value] of changes) {
+    const mutated: unknown[] = [...row];
+    mutated[index] = value;
+    assert.throws(
+      () => classify([finding], inputs, {}, [mutated as unknown as ReviewedAttribution]),
+      /invalid reviewed attribution policy/,
+    );
+  }
+});
