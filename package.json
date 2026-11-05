@@ -94,7 +94,7 @@
     "@types/node": "^24.19.2",
     "@types/yauzl": "3.4.0",
     "es-module-lexer": "3.0.4",
-    "oxfmt": "^0.75.0",
+    "oxfmt": "^0.76.0",
     "oxlint": "^1.90.0",
     "oxlint-tsgolint": "7.0.2005",
     "playwright-core": "^1.64.1",
