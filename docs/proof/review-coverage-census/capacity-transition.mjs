@@ -22,6 +22,7 @@ const files = [
   "dashboard/exact-review-queue.ts",
   "dashboard/exact-review-direct-publication.ts",
   "test/fixtures/review-coverage-cli.ts",
+  "test/fixtures/fleet-coverage-query.ts",
   "docs/proof/review-coverage-census/capacity-transition.mjs",
   "dist/repair/target-fanout.js",
   "dist/repair/review-coverage-census.js",
@@ -174,18 +175,17 @@ for (const name of [
       anonymousStatus: anonymous.status,
       canonicalUnchanged: true,
       admissionUnchanged: true,
-      observations: f
-        .states()
-        .map((r) => ({
-          repo: r.repo,
-          issues: r.state.repository.issues,
-          pulls: r.state.repository.pulls,
-          countsAt: r.state.repository.countsAt,
-          reason: r.state.reason,
-          generation: r.state.complete?.generation ?? null,
-          publishedAt: r.state.complete?.published ?? null,
-        })),
+      observations: f.states().map((r) => ({
+        repo: r.repo,
+        issues: r.state.repository.issues,
+        pulls: r.state.repository.pulls,
+        countsAt: r.state.repository.countsAt,
+        reason: r.state.reason,
+        generation: r.state.complete?.generation ?? null,
+        publishedAt: r.state.complete?.published ?? null,
+      })),
     };
+    record.countExchanges = f.countExchanges;
     records.push(record);
     writeFileSync(join(out, name + ".json"), JSON.stringify(record, null, 2));
   } finally {

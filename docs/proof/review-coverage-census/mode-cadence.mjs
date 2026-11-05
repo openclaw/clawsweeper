@@ -32,6 +32,7 @@ const sourceFiles = [
   "dashboard-site/src/pages/coverage.astro",
   "test/fixtures/review-coverage-census.ts",
   "test/fixtures/review-coverage-cli.ts",
+  "test/fixtures/fleet-coverage-query.ts",
   "docs/proof/review-coverage-census/mode-cadence.mjs",
   "dist/repair/target-fanout.js",
   "dist/repair/review-coverage-census.js",
@@ -268,6 +269,10 @@ try {
   writeFileSync(join(output, "live-model.json"), JSON.stringify(live, null, 2));
   writeFileSync(join(output, "frames.json"), JSON.stringify(frames, null, 2));
   writeFileSync(join(output, "raw-pagination.json"), JSON.stringify(rawPages, null, 2));
+  writeFileSync(
+    join(output, "count-query-contract.json"),
+    JSON.stringify(f.countExchanges, null, 2),
+  );
   result = {
     head,
     headTree,
