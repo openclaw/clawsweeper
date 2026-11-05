@@ -22,6 +22,7 @@ const sourceFiles = [
   "pnpm-lock.yaml",
   "src/review-coverage-census.ts",
   "src/repair/target-fanout.ts",
+  "src/repair/coverage-summary.ts",
   "src/repair/review-coverage-census.ts",
   "dashboard/review-coverage-census.ts",
   "dashboard/exact-review-queue.ts",
@@ -35,6 +36,7 @@ const sourceFiles = [
   "test/fixtures/fleet-coverage-query.ts",
   "docs/proof/review-coverage-census/mode-cadence.mjs",
   "dist/repair/target-fanout.js",
+  "dist/repair/coverage-summary.js",
   "dist/repair/review-coverage-census.js",
   "dist/review-coverage-census.js",
 ];

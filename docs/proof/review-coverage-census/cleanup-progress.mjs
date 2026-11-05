@@ -26,6 +26,7 @@ const sourceFiles = [
     "src/review-coverage-census.ts",
     "src/repair/review-coverage-census.ts",
     "src/repair/target-fanout.ts",
+    "src/repair/coverage-summary.ts",
     "dashboard/review-coverage-census.ts",
     "dashboard/exact-review-queue.ts",
     "dashboard/worker.ts",
@@ -36,6 +37,7 @@ const sourceFiles = [
     "docs/proof/review-coverage-census/cleanup-progress.mjs",
     "dist/repair/review-coverage-census.js",
     "dist/repair/target-fanout.js",
+    "dist/repair/coverage-summary.js",
   ],
   hashes = () =>
     Object.fromEntries(

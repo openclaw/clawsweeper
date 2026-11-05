@@ -1,0 +1,1 @@
+- Restore truthful aggregate-only weekly coverage Markdown after coverage publication, with bounded public reads and explicit Unknown results for unavailable or mismatched review windows.

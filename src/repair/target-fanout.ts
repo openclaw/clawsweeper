@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readPublicCoverageSummary, renderPublicCoverageSummary } from "./coverage-summary.js";
 import { requireRecord as record, errorSummary as errorMessage } from "../value-coerce.js";
 import { runCommand } from "./command-runner.js";
 import { createHmac, createHash } from "node:crypto";
@@ -212,13 +213,17 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     const windowDays = positiveNumber(stringArg(args["window-days"], "7"), "window-days"),
       openCounts = loadRepositoryOpenCounts(repositories);
     if (publishUrl) {
-      console.log(JSON.stringify(await publishCoverage(openCounts)));
+      const progress = await publishCoverage(openCounts);
+      console.error(JSON.stringify({ coverage_collection: progress }));
+      process.stdout.write(
+        renderPublicCoverageSummary(await readPublicCoverageSummary(publishUrl), windowDays),
+      );
       return;
     }
     const now = Date.now(),
       snapshot = loadReviewCoverageInventory(repositories, openCounts, now);
-    console.log(
-      JSON.stringify(
+    process.stdout.write(
+      renderFleetReviewCoverage(
         summarizeFleetReviewCoverage({
           repositories,
           openCounts,
@@ -1394,7 +1399,7 @@ export async function publishReviewCoverageInventory(options: {
 }
 
 export function renderFleetReviewCoverage(coverage: FleetReviewCoverage): string {
-  return `## Weekly review coverage
+  return `${coverage.windowDays === 7 ? "## Weekly review coverage" : "## Review coverage — trailing " + coverage.windowDays + " days"}
 
 Generated ${coverage.generatedAt}. Canonical review records are joined to the complete live-open GitHub census by identity. Coverage is unknown when that census is incomplete or stale.
 

@@ -1689,6 +1689,21 @@ Limits are centralized in CENSUS in src/review-coverage-census.ts:
   fallback or injected fixture field, is carried into signed census metadata.
   Count-query fixtures return only actually requested root fields; actual CLI
   mode proofs retain query/response selection traces.
+- The explicit `coverage --publish-url` command keeps its human-readable
+  trailing-week Markdown on stdout after one publication; collector counters
+  are diagnostics on stderr. A single credential-free, non-redirecting
+  `/api/review-coverage` aggregate GET supplies the report, bounded to 64 KiB
+  and five seconds across headers/body. It never reads private build/control
+  payloads, rescans identities, falls back to v1 publication, or performs
+  GitHub visibility fanout. Non-coverage producer modes add no report read.
+  Missing facts/reads or a requested window different from the source window
+  yield explicit Unknown review metrics, not zero or relabeled seven-day data;
+  current counts and their observation timestamps remain separate. Anonymous
+  aggregates do not expose repository Complete/Total cardinalities, so that
+  detail is explicitly unavailable rather than guessed from the local producer
+  population; the public Coverage page owns current-visibility-filtered detail.
+  Repair CLI/public-projection owners maintain this contract when report fields,
+  supported review windows, disclosure authority or read bounds change.
 - Retired orphan payloads are bounded **control work**, even when no GitHub
   identity work can start until that cleanup finishes. An empty `/census/next`
   response remains pending only while removable orphan rows or eligible
@@ -1822,6 +1837,7 @@ Host supporting checks (not the required final browser/container proof):
     node docs/proof/review-coverage-census/capacity-transition.mjs
     node docs/proof/review-coverage-census/byte-pressure.mjs
     node docs/proof/review-coverage-census/cleanup-progress.mjs
+    node docs/proof/review-coverage-census/scheduled-summary.mjs
     node docs/proof/review-coverage-census/compatibility.mjs --browser
 
 The compatibility harness builds the pinned predecessor

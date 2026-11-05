@@ -314,6 +314,7 @@ const schema = () =>
 let currentRecords, compatibilityResult, admissionSeedReceipt;
 const sourcePaths = [
     "src/repair/target-fanout.ts",
+    "src/repair/coverage-summary.ts",
     "dashboard/worker.ts",
     "dashboard/exact-review-queue.ts",
     "dashboard/exact-review-direct-publication.ts",
@@ -324,6 +325,7 @@ const sourcePaths = [
     "docs/proof/review-coverage-census/compatibility.mjs",
     "docs/proof/review-coverage-census/compatibility-browser.mjs",
     "dist/repair/target-fanout.js",
+    "dist/repair/coverage-summary.js",
   ],
   sourceBefore = Object.fromEntries(sourcePaths.map((p) => [p, sha(readFileSync(join(root, p)))]));
 try {
@@ -611,6 +613,7 @@ try {
   );
   const currentPaths = [
       "src/repair/target-fanout.ts",
+      "src/repair/coverage-summary.ts",
       "dashboard/worker.ts",
       "dashboard/exact-review-queue.ts",
       "dashboard/exact-review-direct-publication.ts",
@@ -621,6 +624,7 @@ try {
       "docs/proof/review-coverage-census/compatibility.mjs",
       "docs/proof/review-coverage-census/compatibility-browser.mjs",
       "dist/repair/target-fanout.js",
+      "dist/repair/coverage-summary.js",
     ],
     sourceHashes = Object.fromEntries(
       currentPaths.map((p) => [p, sha(readFileSync(join(root, p)))]),
