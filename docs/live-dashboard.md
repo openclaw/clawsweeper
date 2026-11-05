@@ -1695,6 +1695,14 @@ Limits are centralized in CENSUS in src/review-coverage-census.ts:
   A five-minute producer
   lease can expire without losing accepted pages. An accepted progress timestamp,
   not a new counts-only attempt, extends the seven-day staging expiry.
+- Page admission charges each accepted replacement once and reclaims expendable
+  older-pass payloads before enforcing count/byte pressure. Only the same
+  repository/generation staging rows from strictly older passes are eligible;
+  accepted current-pass rows and complete/other scopes are never victims. Reads
+  and deletes use at most 100 metadata rows per batch and a whole-copy
+  20,000-victim page budget, inside the cursor/receipt transaction. The previous
+  witness remains a digest, not a second payload copy. Exact final SQL sums
+  verify accounting; genuine current-pass over-capacity still rolls back Unknown.
 - Cleanup removes at most 128 identity chunks and 32 receipt/expired metadata
   entries per operation. Promotion prunes old-pass unseen rows in bounded next
   steps before switching the complete pointer. No review-queue alarm is involved.
@@ -1800,6 +1808,7 @@ Host supporting checks (not the required final browser/container proof):
     node docs/proof/review-coverage-census/mode-cadence.mjs --bounded-churn
     node docs/proof/review-coverage-census/mode-cadence.mjs --two-incomplete
     node docs/proof/review-coverage-census/capacity-transition.mjs
+    node docs/proof/review-coverage-census/byte-pressure.mjs
 
 The mode-cadence harness additionally invokes the actual CLI modes at explicit
 virtual 20-minute opportunities (with a six-hour coverage opportunity), retaining
