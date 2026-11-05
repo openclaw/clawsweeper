@@ -215,6 +215,30 @@ export class ReviewCoverageCensusStore {
   private completeCurrent(s: RepositoryState, now: number): boolean {
     return this.witnessCurrent(s, now) && (s.active ? s.active.compatible === true : !s.reason);
   }
+  private invalidateCountWitness(
+    s: RepositoryState,
+    repository: CensusRepository,
+    observedAt: string,
+  ) {
+    const issueDrift = s.repository.issues !== repository.issues,
+      pullDrift = s.repository.pulls !== repository.pulls,
+      g = s.active;
+    if (!g || (!issueDrift && !pullDrift)) return;
+    g.compatible = false;
+    g.revision++;
+    if (issueDrift) g.connections.issue.stable = false;
+    if (pullDrift) g.connections.pull_request.stable = false;
+    if (g.promoting) {
+      // A verified candidate contradicted by new metadata is not publishable.
+      // Keep bounded pruning, but require two fresh stable witnesses afterward.
+      g.previous = { ...g.promoting, stable: false };
+      delete g.promoting;
+      g.prunePass = g.pass;
+      g.pass++;
+      g.passStarted = observedAt;
+      g.connections = { issue: EMPTY(), pull_request: EMPTY() };
+    }
+  }
   private populationObservation(
     repositories: CensusRepository[],
     observedAt: string,
@@ -368,24 +392,8 @@ export class ReviewCoverageCensusStore {
           state.active = null;
           state.complete = null;
         }
-        const issueDrift = old.issues !== repository.issues,
-          pullDrift = old.pulls !== repository.pulls;
+        this.invalidateCountWitness(state, repository, observedAt);
         state.repository = repository;
-        if (state.active && (issueDrift || pullDrift)) {
-          const g = state.active;
-          g.compatible = false;
-          g.revision++;
-          if (issueDrift) g.connections.issue.stable = false;
-          if (pullDrift) g.connections.pull_request.stable = false;
-          if (g.promoting) {
-            g.previous = { ...g.promoting, stable: false };
-            delete g.promoting;
-            g.prunePass = g.pass;
-            g.pass++;
-            g.passStarted = observedAt;
-            g.connections = { issue: EMPTY(), pull_request: EMPTY() };
-          }
-        }
         if (state.active && !this.witnessCurrent(state, now)) state.active.compatible = false;
         if (!this.completeCurrent(state, now)) state.reason = "bounded_census";
         this.save(state, now);
@@ -527,6 +535,17 @@ export class ReviewCoverageCensusStore {
           s.complete = null;
           s.reason = "qualification_changed";
         }
+        // Cleanup may defer the next generation. Preserve observed drift even
+        // without an active compatible flag; matching counts alone are not a
+        // new identity witness. Only successful promotion clears this reason.
+        if (
+          !s.active &&
+          s.complete &&
+          !s.reason &&
+          (s.complete.issues !== repository.issues || s.complete.pulls !== repository.pulls)
+        )
+          s.reason = "count_drift";
+        this.invalidateCountWitness(s, repository, observedAt);
         s.repository = repository;
         if (s.active && !this.witnessCurrent(s, now)) s.active.compatible = false;
         if (

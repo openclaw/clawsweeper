@@ -6,7 +6,10 @@ import { Console } from "node:console";
 import worker from "../../dashboard/worker.ts";
 import { readCoverageForBuild } from "../../dashboard-site/scripts/coverage.ts";
 import { coverageCliFixture } from "./review-coverage-cli.ts";
-import { installCoverageFailure } from "./coverage-summary-failure.ts";
+import {
+  installCoverageFailure,
+  COVERAGE_FAILURE_PRIVATE_MARKER,
+} from "./coverage-summary-failure.ts";
 const root = resolve(import.meta.dirname, "../.."),
   canonical = join(root, "dist/repair/target-fanout.js"),
   entry = join(dirname(canonical), "coverage-summary-failure-entry-" + process.pid + ".mjs"),
@@ -27,7 +30,14 @@ f.useImplementations({
   queue: f.authority.queue,
 });
 await f.run("coverage", "v2", { windowDays: 7 });
-const fault = installCoverageFailure(f, stage, kind),
+const thrownKind = process.env.CENSUS_SUMMARY_FAILURE_THROW;
+const rejection =
+  thrownKind === "undefined"
+    ? { value: undefined }
+    : thrownKind === "object"
+      ? { value: { toString: () => COVERAGE_FAILURE_PRIVATE_MARKER } }
+      : undefined;
+const fault = installCoverageFailure(f, stage, kind, rejection),
   realConsole = new Console(process.stdout, process.stderr),
   bytes = fs.readFileSync(canonical),
   compiledSha256 = sha(bytes);
@@ -43,6 +53,8 @@ process.once("beforeExit", () => {
     entryByteIdentical: true,
     stage,
     kind,
+    discoveryQueries: fault.discoveryQueries,
+    thrownKind: thrownKind ?? "Error",
     countQueries: fault.countQueries,
     identityQueries: fault.identityQueries,
     controlRequests: fault.requests,
