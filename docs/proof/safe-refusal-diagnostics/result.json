@@ -1,0 +1,12 @@
+{
+  "base": "385ed215fa2cfd04e53ab11d6cf814b8a3226b85",
+  "sourceHead": "0f79ebb4fb40f8f1da46d5a50107c6c321d026bd",
+  "exit": 79,
+  "retryable": false,
+  "modelCalls": 0,
+  "baselineExactRunRejected": true,
+  "workflowPointer": true,
+  "missingArtifactReported": true,
+  "scanner": "controlled native-protocol process",
+  "limits": "No live scanner accuracy, hosted artifact access, queue service mutation, or model inference exercised."
+}

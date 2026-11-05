@@ -90,6 +90,9 @@ everything else requires human comparison with current main.
 - [Local ClawSweeper skill](local-clawsweeper-skill.md) — active; read-only
   local exact-item or committed-range review
 
+- [Input-scan refusal diagnostics](input-scan-diagnostics.md) — active; exact-run,
+  read-only inspection of sanitized failure metadata
+
 ## Dashboards and observability
 
 - [Live dashboard](live-dashboard.md) — active; Worker status and operational

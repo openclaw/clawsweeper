@@ -33,6 +33,8 @@ manifest with `failure.stage: agent_input_scan` and `retryable: false`, using
 `scanner_unavailable`, `scanner_failed`, `findings`, `deadline`, `staging_limit`,
 `incomplete_source`, `source_drift`, `unsafe_path`, and `unsupported_content`;
 `source_incompatible` remains a separate terminal source-preparation reason.
+Operators can follow the [input-scan diagnostic inspection recipe](input-scan-diagnostics.md)
+from the failed workflow summary without reading raw scanner logs.
 The shared allowlist lives in `src/exact-review-failure-reason.ts`. Exit codes
 78 and 79 still identify `incomplete_source` and `findings` without a manifest.
 A matching non-retryable `review_failure` detail is accepted; retryable or

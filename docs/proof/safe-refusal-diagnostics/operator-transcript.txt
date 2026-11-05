@@ -1,0 +1,54 @@
+Before (fresh upstream base): terminal findings / exit 79; manifest exists, no run/attempt provenance and no workflow discovery summary. Exact-run inspector rejects missing provenance.
+
+After (synthetic run 123 attempt 2, not a live GitHub artifact):
+{
+  "source": {
+    "repository": "openclaw/clawsweeper",
+    "itemKind": "pull_request",
+    "itemNumber": 2057,
+    "sourceSha": "0f79ebb4fb40f8f1da46d5a50107c6c321d026bd"
+  },
+  "run": {
+    "repository": "openclaw/clawsweeper",
+    "id": "123",
+    "attempt": "2"
+  },
+  "retryable": false,
+  "failure": {
+    "stage": "agent_input_scan",
+    "reason": "findings",
+    "scan": {
+      "kind": "unclassified_finding",
+      "reason": "finding_not_reviewed",
+      "findingCount": 1,
+      "findingIndex": 0,
+      "detectorType": 3,
+      "decoder": "PLAIN",
+      "verified": false,
+      "scannerLine": 1,
+      "sourceCoordinates": "not_proven",
+      "material": {
+        "kind": "blob",
+        "id": "14e1ed67571740a48d99cdc955ebfcb6e8c7f42e",
+        "referenceCount": 1,
+        "references": [
+          {
+            "revision": "6ac16e47148b03ea9516003e124bedc8d2b6f943",
+            "pathSha256": "e7cb632359a2be17c1008b50f9ec85691cd5d66834d5fe8f63ef65ceb06682ee",
+            "mode": "100644",
+            "role": "base"
+          }
+        ]
+      }
+    }
+  }
+}
+
+### Input-scan refusal diagnostics
+
+The review remains refused. [Open the exact workflow attempt](https://github.com/openclaw/clawsweeper/actions/runs/123/attempts/2).
+[Download diagnostic artifact](https://github.com/openclaw/clawsweeper/actions/runs/123/artifacts/456) (`exact-review-failure-diagnostics-123-2`).
+Use the [authenticated inspection recipe](https://github.com/openclaw/clawsweeper/blob/main/docs/input-scan-diagnostics.md) to verify its identity and read sanitized metadata.
+Diagnostic contents are intentionally omitted here. Inspection does not authorize a retry or a fixture exemption.
+
+Refusal remains terminal (79), retryable=false, model calls=0.
