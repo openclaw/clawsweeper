@@ -1032,6 +1032,7 @@ export class ExactReviewQueue {
   } | null = null;
 
   private coverageCensus: ReviewCoverageCensusStore;
+  private schemaReady: Promise<void>;
 
   private coverageInventory() {
     return (
@@ -1163,20 +1164,21 @@ export class ExactReviewQueue {
       this.storage,
       encodeReadModel,
     );
-    // Establish lifecycle schemas before requests run; full queue initialization
-    // and migration remain deferred.
+    // Keep every early schema under the same initialization/error barrier.
+    const initializeSchema = async () => {
+      try {
+        this.lifecycleProjectionStore.ensureSchemaSync();
+        this.lifecycleTelemetryStore.ensureSchemaSync();
+        this.coverageCensus.ensureSchemaSync();
+      } catch (error) {
+        rethrowQueueFailure(error, "initialize");
+      }
+    };
     if (typeof state.blockConcurrencyWhile === "function") {
-      state.blockConcurrencyWhile(async () => {
-        try {
-          this.lifecycleProjectionStore.ensureSchemaSync();
-          this.lifecycleTelemetryStore.ensureSchemaSync();
-        } catch (error) {
-          rethrowQueueFailure(error, "initialize");
-        }
-      });
+      this.schemaReady = Promise.resolve(state.blockConcurrencyWhile(initializeSchema));
     } else {
-      this.ready = this.initializeStorage().catch((error) =>
-        rethrowQueueFailure(error, "initialize"),
+      this.schemaReady = this.ready = initializeSchema().then(() =>
+        this.initializeStorage().catch((error) => rethrowQueueFailure(error, "initialize")),
       );
     }
   }
@@ -1192,6 +1194,7 @@ export class ExactReviewQueue {
         : null;
     if (mutating) this.invalidateReadCaches();
     try {
+      await this.schemaReady;
       return await this.handleFetch(request, hostedTargetMetadataToken, maintenance);
     } catch (error) {
       // A failed transaction may have rolled back the retention pass.
@@ -6768,7 +6771,8 @@ export class ExactReviewQueue {
     await this.scheduleNext(current, completedAt);
   }
 
-  private ensureReady() {
+  private async ensureReady() {
+    await this.schemaReady;
     if (this.ready) return this.ready;
     const initialize = () =>
       this.initializeStorage().catch((error) => rethrowQueueFailure(error, "initialize"));

@@ -26,7 +26,12 @@ export function censusFixture(
       }
     },
   };
-  let store = new ReviewCoverageCensusStore(storage),
+  const createStore = () => {
+    const next = new ReviewCoverageCensusStore(storage);
+    next.ensureSchemaSync();
+    return next;
+  };
+  let store = createStore(),
     time = Date.parse("2026-11-04T12:00:00Z"),
     queryCount = 0;
   const at = new Date(time - 1000).toISOString();
@@ -166,7 +171,7 @@ export function censusFixture(
       time += elapsed;
       interruptAfter = Infinity;
       accepted = 0;
-      store = new ReviewCoverageCensusStore(storage);
+      store = createStore();
     },
     run() {
       return runReviewCoverageCensus({

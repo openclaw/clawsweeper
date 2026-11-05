@@ -88,8 +88,13 @@ const MAX_ROWS = CENSUS.identities * 2;
 // review-admission, audit-cursor, body-tiering or queue-alarm table.
 export class ReviewCoverageCensusStore {
   private readonly storage: DurableStorage;
+  private schemaInitialized = false;
   constructor(storage: DurableStorage) {
     this.storage = storage;
+  }
+  ensureSchemaSync() {
+    if (this.schemaInitialized) return;
+    const storage = this.storage;
     storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS coverage_census_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     );
@@ -108,6 +113,7 @@ export class ReviewCoverageCensusStore {
     storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS coverage_census_receipts (id TEXT PRIMARY KEY, attempt TEXT NOT NULL, digest TEXT NOT NULL, result TEXT NOT NULL, created INTEGER NOT NULL)",
     );
+    this.schemaInitialized = true;
   }
   private rows(query: string, ...args: unknown[]) {
     return Array.from(this.storage.sql.exec(query, ...args));
