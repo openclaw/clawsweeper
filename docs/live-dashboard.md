@@ -1684,6 +1684,11 @@ Limits are centralized in CENSUS in src/review-coverage-census.ts:
   fleet copy. Retain no more than two 20,000-identity copies across latest,
   staging and transient orphan chunks. Payload cap: 32 MiB per staging copy,
   64 MiB total retained; byte accounting replaces an identity once, not on retry.
+- The production FleetCoverage count query explicitly selects the immutable
+  repository `id` alongside counts. That selected provider witness, not a slug
+  fallback or injected fixture field, is carried into signed census metadata.
+  Count-query fixtures return only actually requested root fields; actual CLI
+  mode proofs retain query/response selection traces.
 - At most 64 KiB per identity chunk; a wire/control/page-accept body or query
   result is at most 1,900,000 UTF-8 bytes. A response exceeding that bound fails
   rather than being partially admitted.
@@ -1809,6 +1814,25 @@ Host supporting checks (not the required final browser/container proof):
     node docs/proof/review-coverage-census/mode-cadence.mjs --two-incomplete
     node docs/proof/review-coverage-census/capacity-transition.mjs
     node docs/proof/review-coverage-census/byte-pressure.mjs
+    node docs/proof/review-coverage-census/compatibility.mjs --browser
+
+The compatibility harness builds the pinned predecessor
+`03e24309cf919bf866bb2ffe2551beca27fd9bb3` from offline Git source and seeds
+canonical records through that owner's validated API, history and a nonempty
+admission through its signed Worker APIs, and v1 inventory through its actual
+producer. The predecessor's normal preview/activate/migrate APIs first produce
+format-two canonical rows and immutable-body objects; their qualification
+metadata describes only the controlled stand-in bucket, not a real R2 rollout
+approval. It then upgrades the **same KV/SQLite storage**, exercising cold/warm
+reads, reconstructed partial v2 progress, verified refresh, unchanged old-client
+compatibility and fail-closed oversized v2 downgrade. Canonical bodies/tuples,
+revisions, export history and admission snapshots must remain equal. This is a
+controlled synthetic predecessor scope, not a production-store capture or a
+promise for every historical version. `--browser` additionally builds/serves the
+current Astro page to real Chromium; its execution must be recorded separately
+from preparing the harness. Coverage producer/DO/private-build owners maintain
+this proof when storage, protocol, metadata selection or public-build boundaries
+change.
 
 The mode-cadence harness additionally invokes the actual CLI modes at explicit
 virtual 20-minute opportunities (with a six-hour coverage opportunity), retaining

@@ -1015,7 +1015,7 @@ function loadRepositoryOpenCounts(
     const fields = batch
       .map((repository, index) => {
         const [owner, name] = repository.targetRepo.split("/");
-        return `r${index}:repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}){issues(states:OPEN){totalCount} pullRequests(states:OPEN){totalCount}}`;
+        return `r${index}:repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}){id issues(states:OPEN){totalCount} pullRequests(states:OPEN){totalCount}}`;
       })
       .join(" ");
     const output = runGh(
