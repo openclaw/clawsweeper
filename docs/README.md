@@ -25,7 +25,7 @@ manual.
 | Inspect observer routes and configuration ownership | [Public observer API](public-api.md)          | [Operator configuration](operator-configuration.md) |
 | Prepare proof for a change                          | [Contributing](../CONTRIBUTING.md)            | [Agent instructions](../AGENTS.md)                  |
 | Review a local committed range                      | [Local branch review](commit-sweeper.md)      | `pnpm local-review -- --base origin/main`           |
-| Qualify the full local review artifact              | [Private local package](local-package.md)    | Build, pack, and install outside the checkout      |
+| Qualify the full local review artifact              | [Private local package](local-package.md)     | Build, pack, and install outside the checkout       |
 
 Production mutation commands are intentionally not repeated here. Follow the
 linked runbook, confirm its status and source of truth, and keep deployment,
@@ -63,6 +63,8 @@ everything else requires human comparison with current main.
 - [Issue review advisory labels](work-lane.md) — active; structured review labels
 - [Review cache](review-cache.md) — active; reusable review-state contract
 - [Intake triage](intake-triage.md) — active; bounded preliminary classification
+- [Manual Coverage credential probe](coverage-credential-probe.md) — active;
+  fixed read-only credential comparison, safety guard, and evidence limits
 - [Local review preflight summary](portable-review-receipt.md) — proposed
   local-range export; bounded advisory PR-body handoff and review-content reader
 - [GitHub webhook read model](github-webhook-read-model.md) — active; signed
