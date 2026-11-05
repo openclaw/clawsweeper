@@ -1,0 +1,1 @@
+- Add a manual-only, guarded read-only Coverage credential comparison with bounded requests and redacted aggregate diagnostics; no production collector behavior changes.
