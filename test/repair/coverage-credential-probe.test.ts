@@ -73,9 +73,106 @@ async function scenario(name: string, mode: string, missing: boolean | "B" = fal
       return;
     }
     switch (mode) {
-      case "access":
+      case "rate403remaining":
+        res.writeHead(403, { "x-ratelimit-remaining": "0" });
+        res.end(secret);
+        break;
+      case "rate403retry":
+        res.writeHead(403, { "retry-after": "60" });
+        res.end(secret);
+        break;
+      case "rate403date":
+        res.writeHead(403, { "retry-after": "Thu, 05 Nov 2026 18:00:00 GMT" });
+        res.end(secret);
+        break;
+      case "rate403secondary":
+        res.writeHead(403);
+        res.end(
+          JSON.stringify({
+            message:
+              "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+            private: secret,
+          }),
+        );
+        break;
+      case "ambiguous403":
         res.writeHead(403);
         res.end(secret);
+        break;
+      case "invalidretry403":
+        res.writeHead(403, { "retry-after": secret });
+        res.end(secret);
+        break;
+      case "access":
+        res.writeHead(403);
+        res.end(
+          JSON.stringify({ message: "Resource not accessible by integration", private: secret }),
+        );
+        break;
+      case "authentication":
+        res.writeHead(401);
+        res.end(secret);
+        break;
+      case "http429":
+        res.writeHead(429);
+        res.end(secret);
+        break;
+      case "quota-success":
+        res.writeHead(200, { "x-ratelimit-remaining": "0" });
+        res.end(JSON.stringify(payload()));
+        break;
+      case "mixed-rate-access":
+        res.end(
+          JSON.stringify({
+            errors: [
+              { type: "FORBIDDEN", message: secret },
+              { type: "RATE_LIMITED", message: secret },
+            ],
+          }),
+        );
+        break;
+      case "mixed-rate-unknown":
+        res.end(
+          JSON.stringify({
+            errors: [
+              { type: "RATE_LIMITED" },
+              { type: "FORBIDDEN" },
+              { type: secret, message: secret },
+            ],
+          }),
+        );
+        break;
+      case "body-rate200":
+        res.end(
+          JSON.stringify({
+            errors: [
+              {
+                message:
+                  "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+                private: secret,
+              },
+            ],
+          }),
+        );
+        break;
+      case "typed403":
+        res.writeHead(403);
+        res.end(JSON.stringify({ errors: [{ type: "FORBIDDEN", message: secret }] }));
+        break;
+      case "unknown403":
+        res.writeHead(403);
+        res.end(
+          JSON.stringify({
+            message: "Resource not accessible by integration",
+            errors: [{ type: "FORBIDDEN" }, { type: secret }],
+          }),
+        );
+        break;
+      case "auth200":
+        res.end(JSON.stringify({ errors: [{ type: "UNAUTHORIZED", message: secret }] }));
+        break;
+      case "notfound200":
+        res.end(JSON.stringify({ errors: [{ type: "NOT_FOUND", message: secret }] }));
         break;
       case "errors":
         res.end(
@@ -181,6 +278,10 @@ async function scenario(name: string, mode: string, missing: boolean | "B" = fal
       "PRIVATE_INTERNAL_ID",
       "must-not-follow",
       "authorization",
+      "retry-after",
+      "x-ratelimit-remaining",
+      "Resource not accessible",
+      "secondary rate limit",
       "extensions",
       "cursor",
     ])
@@ -228,7 +329,23 @@ test(
   async () => {
     const cases = [
       ["healthy", "parsed", "none", 0],
+      ["rate403remaining", "http", "rate", 0],
+      ["rate403retry", "http", "rate", 0],
+      ["rate403date", "http", "rate", 0],
+      ["rate403secondary", "http", "rate", 0],
+      ["ambiguous403", "http", "ambiguous", 1],
+      ["invalidretry403", "http", "ambiguous", 1],
+      ["authentication", "http", "authentication", 1],
+      ["http429", "http", "rate", 0],
+      ["quota-success", "parsed", "none", 0],
+      ["mixed-rate-access", "graphql", "rate", 0],
+      ["mixed-rate-unknown", "graphql", "graphql", 1],
+      ["body-rate200", "graphql", "rate", 0],
       ["access", "http", "access", 0],
+      ["typed403", "http", "access", 0],
+      ["unknown403", "http", "graphql", 1],
+      ["auth200", "graphql", "authentication", 1],
+      ["notfound200", "graphql", "ambiguous", 1],
       ["errors", "graphql", "access", 0],
       ["rate", "graphql", "rate", 0],
       ["schema", "graphql", "schema", 1],

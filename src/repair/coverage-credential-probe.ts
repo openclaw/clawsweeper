@@ -22,6 +22,8 @@ const endpoint = "https://api.github.com/graphql";
 type Category =
   | "none"
   | "access"
+  | "authentication"
+  | "ambiguous"
   | "rate"
   | "schema"
   | "graphql"
@@ -64,20 +66,74 @@ function rate(value: unknown): Rate | null {
     ? { cost: r.cost as number, remaining: r.remaining as number, reset: r.resetAt }
     : null;
 }
+function canonicalRateMessage(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    (value.startsWith("You have exceeded a secondary rate limit.") ||
+      value.startsWith("API rate limit exceeded for ") ||
+      value === "API rate limit exceeded" ||
+      value.startsWith("You have triggered an abuse detection mechanism."))
+  );
+}
+function permissionMessage(value: unknown): boolean {
+  return (
+    value === "Resource not accessible by integration" ||
+    value === "Resource not accessible by personal access token"
+  );
+}
 function errorCategory(errors: unknown[]): Category {
-  // Never serialize messages, paths, extensions, or arbitrary error types.
-  const types = errors.map((error) => record(error).type);
-  const known = [
-    "RATE_LIMITED",
-    "FORBIDDEN",
-    "UNAUTHORIZED",
-    "NOT_FOUND",
-    "GRAPHQL_VALIDATION_FAILED",
-  ];
-  if (types.some((type) => typeof type !== "string" || !known.includes(type))) return "graphql";
-  if (types.includes("GRAPHQL_VALIDATION_FAILED")) return "schema";
-  if (types.includes("RATE_LIMITED")) return "rate";
+  // Recognize only fixed known signals in bounded memory; never emit messages.
+  const categories: Category[] = errors.map((error) => {
+    const e = record(error);
+    const known = [
+      "RATE_LIMITED",
+      "FORBIDDEN",
+      "UNAUTHORIZED",
+      "NOT_FOUND",
+      "GRAPHQL_VALIDATION_FAILED",
+    ];
+    if (e.type !== undefined && (typeof e.type !== "string" || !known.includes(e.type)))
+      return "graphql";
+    if (e.type === "GRAPHQL_VALIDATION_FAILED") return "schema";
+    if (e.type === "RATE_LIMITED" || canonicalRateMessage(e.message)) return "rate";
+    if (e.type === "UNAUTHORIZED") return "authentication";
+    if (e.type === "NOT_FOUND") return "ambiguous";
+    if (e.type === "FORBIDDEN" || permissionMessage(e.message)) return "access";
+    return "graphql";
+  });
+  // Unknown/schema/credential failures cannot be hidden by a simultaneous denial.
+  for (const category of ["graphql", "schema", "authentication", "ambiguous", "rate"] as const) {
+    if (categories.includes(category)) return category;
+  }
   return "access";
+}
+function rateSignal(headers: Headers, value: unknown): boolean {
+  const retry = headers.get("retry-after");
+  const validRetry =
+    retry !== null &&
+    ((/^\d+$/.test(retry) && Number.isSafeInteger(Number(retry))) ||
+      (Number.isFinite(Date.parse(retry)) && new Date(retry).toUTCString() === retry));
+  return (
+    headers.get("x-ratelimit-remaining") === "0" ||
+    validRetry ||
+    canonicalRateMessage(record(value).message)
+  );
+}
+function httpErrorCategory(response: Response, value: unknown): Category {
+  if (response.status === 429) return "rate";
+  if (response.status === 401) return "authentication";
+  if (response.status !== 403) return "http";
+  const errors = record(value).errors;
+  let category: Category | undefined;
+  if (errors !== undefined) {
+    if (!Array.isArray(errors) || errors.length === 0) return "schema";
+    category = errorCategory(errors);
+    if (category === "graphql" || category === "schema" || category === "authentication")
+      return category;
+  }
+  if (rateSignal(response.headers, value) || category === "rate") return "rate";
+  if (category !== undefined) return category;
+  return permissionMessage(record(value).message) ? "access" : "ambiguous";
 }
 async function observe(role: "A" | "B", token: string | undefined): Promise<Observation> {
   const start = performance.now();
@@ -123,21 +179,19 @@ async function observe(role: "A" | "B", token: string | undefined): Promise<Obse
         chunks.push(chunk);
       }
     }
-    if (response.status !== 200) {
-      result.phase = "http";
-      result.category =
-        response.status === 401 || response.status === 403
-          ? "access"
-          : response.status === 429
-            ? "rate"
-            : "http";
-      return result;
-    }
-    result.phase = "parser";
     let value: unknown;
     try {
       value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     } catch {
+      /* Non-JSON error bodies remain ambiguous; nothing raw is emitted. */
+    }
+    if (response.status !== 200) {
+      result.phase = "http";
+      result.category = httpErrorCategory(response, value);
+      return result;
+    }
+    result.phase = "parser";
+    if (value === undefined) {
       result.category = "schema";
       return result;
     }
@@ -146,6 +200,8 @@ async function observe(role: "A" | "B", token: string | undefined): Promise<Obse
     if (errors !== undefined && (!Array.isArray(errors) || errors.length > 0)) {
       result.phase = "graphql";
       result.category = Array.isArray(errors) ? errorCategory(errors) : "schema";
+      if (result.category === "access" && rateSignal(response.headers, value))
+        result.category = "rate";
       return result;
     }
     try {
@@ -209,6 +265,8 @@ export function probeExitCode(result: Awaited<ReturnType<typeof runProbe>>): num
   return result.observations.some(
     (r) =>
       r.category === "missing_role" ||
+      r.category === "authentication" ||
+      r.category === "ambiguous" ||
       r.category === "transport" ||
       r.category === "timeout" ||
       r.category === "body_oversize" ||
