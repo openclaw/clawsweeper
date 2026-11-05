@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
@@ -189,6 +189,21 @@ function valueFor(name: string): string {
 
 // Keep production parsers and Bash bodies intact. Only network/process boundaries
 // are fixtures; an unknown external invocation fails instead of reaching live APIs.
+const coverageProbeFixture = {
+  sourceSHA: "1".repeat(40),
+  querySHA: "2".repeat(64),
+  publicTarget: "openclaw/openclaw",
+  observations: (["A", "B"] as const).map((role) => ({
+    role,
+    phase: "parsed",
+    httpStatus: 200,
+    category: "none",
+    parserItemCount: 0,
+    rate: null,
+    elapsedMs: 0,
+  })),
+};
+
 function fixture(root: string, temporary: string) {
   for (const dir of [
     "bin",
@@ -416,6 +431,11 @@ case "$1" in
   "$FIXTURE_ROOT/action/validate-install.mjs"|"$FIXTURE_ROOT/action/configure-api-context.mjs"|dist/intake-triage-workflow.js|dist/github-egress-observer-cli.js|dist/review-placeholder-recovery.js|dist/repair/state-repo-size.js|dist/repair/manual-review-enqueue.js) exit 0 ;;
   .github/actions/setup-review-tools/archive-cache.mjs) exec "$REAL_NODE" "$@" ;;
   scripts/build-data.ts|scripts/dashboard-corpus.ts|scripts/prepare-exact-review-batch.mjs|scripts/exact-review-dead-letter-operator.mjs|scripts/stuck-queued-run-remediation.mjs|scripts/queue-storage-census.mjs|scripts/canonical-record-verification.ts|scripts/review-usage-operator.mjs|scripts/publish-apply-observability.mjs|./scripts/prepare-worker-record-cache.ts|--max-old-space-size=12288) exit 0 ;;
+  dist/repair/coverage-credential-probe.js)
+    if [ "$#" -ne 1 ]; then echo "Unexpected probe fixture arguments" >&2; exit 97; fi
+    printf '%s\n' '${JSON.stringify(coverageProbeFixture)}' > coverage-credential-probe.json
+    cat coverage-credential-probe.json
+    ;;
   scripts/worker-records.ts) echo '{"ok":true}' ;;
   scripts/dashboard-smoke.mjs) exit 0 ;;
   *) echo "Unexpected node invocation: $*" >&2; exit 97 ;;
@@ -437,6 +457,50 @@ exit 0
     },
   };
 }
+
+test("coverage probe shell fixture is exact, closed, and never runs the actual CLI", () => {
+  const parent = mkdtempSync(join(tmpdir(), "coverage-probe-shell-fixture-"));
+  const temporary = join(parent, "archive-tmp");
+  const root = join(parent, "workspace");
+  try {
+    fixture(root, temporary);
+    const before = readdirSync(root).sort();
+    const env = {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      REAL_NODE: "/must-not-execute-real-node",
+      FIXTURE_ROOT: root,
+    };
+    const result = spawnSync(join(root, "bin/node"), ["dist/repair/coverage-credential-probe.js"], {
+      cwd: root,
+      env,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    assert.equal(result.stdout, JSON.stringify(coverageProbeFixture) + String.fromCharCode(10));
+    assert.equal(readFileSync(join(root, "coverage-credential-probe.json"), "utf8"), result.stdout);
+    assert.deepEqual(
+      readdirSync(root).filter((name) => !before.includes(name)),
+      ["coverage-credential-probe.json"],
+    );
+    for (const args of [
+      ["dist/repair/coverage-credential-probe.js", "--unexpected"],
+      ["dist/repair/coverage-credential-probe.js.other"],
+      ["./dist/repair/coverage-credential-probe.js"],
+      ["dist/repair/coverage-credential-probe.js/extra"],
+      ["unknown.js"],
+    ]) {
+      rmSync(join(root, "coverage-credential-probe.json"));
+      const denied = spawnSync(join(root, "bin/node"), args, { cwd: root, env, encoding: "utf8" });
+      assert.equal(denied.status, 97, args.join(" "));
+      assert.equal(denied.stdout, "");
+      assert.ok(!existsSync(join(root, "coverage-credential-probe.json")));
+      writeFileSync(join(root, "coverage-credential-probe.json"), result.stdout);
+    }
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
 
 // No exemptions: every matching workflow/action step is executed. A clean baseline
 // is mandatory so missing fixtures or an early unrelated failure cannot fake safety.
