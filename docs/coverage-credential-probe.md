@@ -56,18 +56,35 @@ bodies are held only in bounded memory. No Worker/control/state calls exist.
 
 ## Interpretation (observations, not production health)
 
-- A 403 / B parsed 200 supports an access difference for this precise query and
-  these roles. It does **not** establish the production failure's cause without
-  identifying the failing production phase and observing natural producer
-  progress. The generic checkpoint 409 does not identify that phase.
-- Both parsed: this paired query succeeded; the production cause remains open.
-- HTTP 200 with GraphQL errors is never parsed success. Access/rate/unknown
-  GraphQL observations remain observations, never a health claim; only recognized
-  access/rate errors can finish a complete negative experiment without job failure.
-- Missing roles, network/deadline/body-limit failures, redirects/HTTP
-  infrastructure errors, unknown GraphQL errors, invalid JSON/schema/parser results
-  fail the job.
-  No incomplete experiment is converted to a pass.
+The closed category enum is `none`, `access`, `authentication`, `ambiguous`,
+`rate`, `schema`, `graphql`, `http`, `transport`, `timeout`,
+`body_oversize`, and `missing_role`. There is no automatic access-difference or
+production-health verdict in the output.
+
+- A reliable positive `access` signal / B parsed 200 supports an access difference
+  only for this precise query and these roles. `access` requires a typed GraphQL
+  denial or an exact known GitHub permission phrase, after rate/mixed/unknown
+  guards. A bare HTTP 403 is `ambiguous`, **not** confirmed access denial.
+- HTTP 429, exhausted-quota/valid Retry-After error signals, explicit GraphQL
+  RATE_LIMITED, and fixed canonical GitHub rate-limit phrases identify `rate`.
+  This includes secondary 403s without Retry-After; absent Retry-After never
+  establishes access. Headers and bounded error text are inspected only inside
+  memory, never emitted. A successful 200 with zero remaining quota stays success.
+- HTTP 401 and typed UNAUTHORIZED are `authentication`, not scope evidence.
+  NOT_FOUND is ambiguous. Unknown/mixed GraphQL failures stay conservative;
+  unknown/schema/credential failures are not hidden by another typed denial.
+- A `rate`, `ambiguous`, or `authentication` / B success must not be interpreted
+  as an access difference. Both parsed means only that this paired query worked.
+  HTTP 200 with GraphQL errors is never parsed success. Recognized access/rate
+  observations can complete a negative experiment, never a health claim.
+- Missing roles, authentication, ambiguity, network/deadline/body-limit failures,
+  redirects/HTTP infrastructure, unknown GraphQL, invalid JSON/schema/parser
+  results fail the job. No incomplete experiment is converted to a pass.
+
+Even reliable A-denial/B-success does **not** establish the production failure's
+cause without identifying its failing phase and observing natural producer
+progress. The generic checkpoint 409 does not identify that phase. No retries,
+backoff, credential fallback, permission broadening, or live A/B are added.
 
 ## Controlled behavior proof
 
@@ -86,7 +103,9 @@ The test records sanitized aggregate artifacts and a role-label-only HTTP trace
 under `.openclaw/tmp/coverage-probe/http-proof-*/`. It asserts the identical query
 hash in exactly two serial POSTs (zero when both roles are missing, one A-only
 POST when App minting is missing), parsed 200
-versus 403, GraphQL access/rate/schema errors, invalid JSON/parser data, redirect
+versus explicit permission/ambiguous/rate-limited 403 (quota, valid Retry-After,
+and secondary limits without Retry-After), 401, 429, mixed/unknown GraphQL
+access/rate/schema errors, invalid JSON/parser data, redirect
 refusal, transport failure, actual 15-second timeout, measured oversized body,
 and secret-string non-disclosure in stdout/stderr/artifact. Workflow assertions
 cover trigger/guard/read grants, exact mint inputs, probe env, and exact artifact.
