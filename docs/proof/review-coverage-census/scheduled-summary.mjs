@@ -28,6 +28,7 @@ const paths = [
     "src/repair/coverage-summary.ts",
     "src/repair/review-coverage-census.ts",
     "dashboard/worker.ts",
+    "dashboard/review-coverage-census.ts",
     "dashboard/public-observability.ts",
     "dashboard/exact-review-queue.ts",
     "dashboard/exact-review-direct-publication.ts",
@@ -238,56 +239,60 @@ try {
   f.close();
 }
 // Actual compiled main guard, not merely renderer or exported-function proof.
-const failureTrace = join(output, "publication-failure-child.trace.json"),
-  failure = spawnSync(
-    process.execPath,
-    [join(root, "test/fixtures/coverage-summary-failure-child.mjs")],
-    {
-      cwd: root,
-      encoding: "utf8",
-      timeout: 30_000,
-      env: {
-        ...process.env,
-        CENSUS_SUMMARY_FAILURE_STAGE: "start",
-        CENSUS_SUMMARY_FAILURE_KIND: "http503",
-        CENSUS_SUMMARY_FAILURE_TRACE: failureTrace,
+for (const stage of ["start", "discovery"]) {
+  const prefix = stage === "start" ? "publication-failure" : "discovery-failure";
+  const failureTrace = join(output, prefix + "-child.trace.json"),
+    failure = spawnSync(
+      process.execPath,
+      [join(root, "test/fixtures/coverage-summary-failure-child.mjs")],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 30_000,
+        env: {
+          ...process.env,
+          CENSUS_SUMMARY_FAILURE_STAGE: stage,
+          CENSUS_SUMMARY_FAILURE_KIND: stage === "discovery" ? "network" : "http503",
+          CENSUS_SUMMARY_FAILURE_TRACE: failureTrace,
+        },
       },
-    },
+    );
+  writeFileSync(join(output, prefix + ".stdout.md"), failure.stdout);
+  writeFileSync(join(output, prefix + ".stderr.txt"), failure.stderr);
+  writeFileSync(join(output, prefix + ".exit.txt"), String(failure.status));
+  assert.equal(failure.status, 1);
+  assert.equal(failure.signal, null);
+  assert.equal(failure.error, undefined);
+  assert.match(failure.stdout, /## Weekly review coverage/);
+  assert.ok(failure.stdout.includes("collection/publication unavailable"));
+  assert.match(failure.stderr, /coverage_command_failed/);
+  assert.ok(
+    !/ID_secret|ghp_never_echo|SYNTHETIC_PRIVATE_ERROR|private\/secret-repo/.test(
+      failure.stdout + failure.stderr,
+    ),
   );
-writeFileSync(join(output, "publication-failure.stdout.md"), failure.stdout);
-writeFileSync(join(output, "publication-failure.stderr.txt"), failure.stderr);
-writeFileSync(join(output, "publication-failure.exit.txt"), String(failure.status));
-assert.equal(failure.status, 1);
-assert.equal(failure.signal, null);
-assert.equal(failure.error, undefined);
-assert.match(failure.stdout, /## Weekly review coverage/);
-assert.ok(failure.stdout.includes("collection/publication unavailable"));
-assert.match(failure.stderr, /coverage_command_failed/);
-assert.ok(
-  !/ID_secret|ghp_never_echo|SYNTHETIC_PRIVATE_ERROR|private\/secret-repo/.test(
-    failure.stdout + failure.stderr,
-  ),
-);
-const failedTrace = JSON.parse(readFileSync(failureTrace));
-assert.equal(failedTrace.actualCliExit, 1);
-assert.equal(failedTrace.entryByteIdentical, true);
-assert.equal(failedTrace.compiledCanonicalSha256, failedTrace.compiledEntrySha256);
-assert.equal(failedTrace.countQueries, 1);
-assert.equal(failedTrace.identityQueries, 0);
-assert.equal(failedTrace.publicReads.length, 1);
-assert.equal(failedTrace.controlRequests.length, 1);
-assert.equal(failedTrace.v1Publications, 0);
-assert.equal(failedTrace.fixtureClosed, true);
-cases.push({
-  name: "publication-failure-start503",
-  stdout: failure.stdout,
-  stderr: failure.stderr,
-  actualExit: failure.status,
-  wire: failedTrace.publicReads,
-  trace: failedTrace,
-  limits:
-    "Real child exit1 is the required negative outcome; parent proof assertion exits0. Canonical compiled entry bytes copied at same generated directory to exercise actual main guard under existing controlled providers, hash-identical, then removed. No altered source or success swallowing.",
-});
+  const failedTrace = JSON.parse(readFileSync(failureTrace));
+  assert.equal(failedTrace.actualCliExit, 1);
+  assert.equal(failedTrace.entryByteIdentical, true);
+  assert.equal(failedTrace.compiledCanonicalSha256, failedTrace.compiledEntrySha256);
+  assert.equal(failedTrace.countQueries, stage === "discovery" ? 0 : 1);
+  assert.equal(failedTrace.discoveryQueries, 1);
+  assert.equal(failedTrace.identityQueries, 0);
+  assert.equal(failedTrace.publicReads.length, 1);
+  assert.equal(failedTrace.controlRequests.length, stage === "discovery" ? 0 : 1);
+  assert.equal(failedTrace.v1Publications, 0);
+  assert.equal(failedTrace.fixtureClosed, true);
+  cases.push({
+    name: stage === "start" ? "publication-failure-start503" : "discovery-failure",
+    stdout: failure.stdout,
+    stderr: failure.stderr,
+    actualExit: failure.status,
+    wire: failedTrace.publicReads,
+    trace: failedTrace,
+    limits:
+      "Real child exit1 is the required negative outcome; parent proof assertion exits0. Canonical compiled entry bytes copied at same generated directory to exercise actual main guard under existing controlled providers, hash-identical, then removed. No altered source or success swallowing.",
+  });
+}
 assert.deepEqual(hashes(), sourceHashes);
 const result = {
   head,

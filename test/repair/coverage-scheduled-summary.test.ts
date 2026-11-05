@@ -744,3 +744,189 @@ for (const stage of ["count", "start", "next", "page"] as const)
       }
     },
   );
+
+test("repository discovery failure emits independent coverage report before original rejection", async () => {
+  const f = await coverageCliFixture([{ name: "core", issues: 2, pulls: 1 }]),
+    fault = installCoverageFailure(f, "discovery", "network");
+  let rejected = false,
+    rejection: unknown;
+  try {
+    const out = await stdoutOf(async () => {
+      try {
+        await f.run("coverage");
+      } catch (e) {
+        rejected = true;
+        rejection = e;
+      }
+    });
+    assert.equal(rejected, true);
+    assert.equal(rejection, fault.original);
+    assert.match(out, /## Weekly review coverage/);
+    assert.ok(out.includes("collection/publication unavailable"));
+    assert.equal(fault.discoveryQueries, 1);
+    assert.equal(fault.countQueries, 0);
+    assert.equal(fault.identityQueries, 0);
+    assert.equal(fault.requests.length, 0);
+    assert.equal(f.publicCoverageReads.length, 1);
+    assert.ok(!out.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+    assert.ok(!lastDiagnostics.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+  } finally {
+    fault.restore();
+    f.close();
+  }
+});
+
+for (const [name, value] of [
+  ["undefined", undefined],
+  ["null", null],
+  ["false", false],
+  ["zero", 0],
+  ["string", COVERAGE_FAILURE_PRIVATE_MARKER],
+  ["object", { toString: () => COVERAGE_FAILURE_PRIVATE_MARKER }],
+  ["symbol", Symbol("controlled private")],
+] as const)
+  test("discovery preserves original " + name + " rejection after safe report", async () => {
+    const f = await coverageCliFixture([{ name: "core", issues: 2, pulls: 1 }]),
+      fault = installCoverageFailure(f, "discovery", "network", { value });
+    let rejected = false,
+      rejection: unknown;
+    try {
+      const out = await stdoutOf(async () => {
+        try {
+          await f.run("coverage");
+        } catch (e) {
+          rejected = true;
+          rejection = e;
+        }
+      });
+      assert.equal(rejected, true);
+      assert.equal(rejection, value);
+      assert.match(out, /## Weekly review coverage/);
+      assert.ok(out.includes("not a claim of newly published coverage"));
+      assert.equal(fault.discoveryQueries, 1);
+      assert.equal(fault.countQueries, 0);
+      assert.equal(fault.identityQueries, 0);
+      assert.equal(f.publicCoverageReads.length, 1);
+      assert.ok(!out.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+      assert.ok(!lastDiagnostics.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+    } finally {
+      fault.restore();
+      f.close();
+    }
+  });
+
+for (const response of ["503", "malformed"] as const)
+  test("discovery failure survives simultaneous summary " + response, async () => {
+    const f = await coverageCliFixture([{ name: "core", issues: 2, pulls: 1 }]),
+      fault = installCoverageFailure(f, "discovery");
+    let rejection: unknown;
+    try {
+      f.setPublicCoverageResponse(
+        () =>
+          new Response(COVERAGE_FAILURE_PRIVATE_MARKER, { status: response === "503" ? 503 : 200 }),
+      );
+      const out = await stdoutOf(async () => {
+        try {
+          await f.run("coverage");
+        } catch (e) {
+          rejection = e;
+        }
+      });
+      assert.equal(rejection, fault.original);
+      assert.match(out, /Trailing coverage \| Unknown/);
+      assert.ok(out.includes("collection/publication unavailable"));
+      assert.equal(f.publicCoverageReads.length, 1);
+      assert.equal(fault.countQueries, 0);
+      assert.equal(fault.identityQueries, 0);
+      assert.ok(!out.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+      assert.ok(!lastDiagnostics.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+    } finally {
+      fault.restore();
+      f.close();
+    }
+  });
+
+test("summary output failure cannot mask original discovery rejection", async () => {
+  const f = await coverageCliFixture([{ name: "core", issues: 2, pulls: 1 }]),
+    fault = installCoverageFailure(f, "discovery"),
+    write = process.stdout.write;
+  let rejection: unknown;
+  try {
+    process.stdout.write = (() => {
+      throw new Error("controlled output failure");
+    }) as typeof process.stdout.write;
+    try {
+      await f.run("coverage");
+    } catch (e) {
+      rejection = e;
+    } finally {
+      process.stdout.write = write;
+    }
+    assert.equal(rejection, fault.original);
+    assert.equal(f.publicCoverageReads.length, 1);
+    assert.equal(fault.countQueries, 0);
+  } finally {
+    process.stdout.write = write;
+    fault.restore();
+    f.close();
+  }
+});
+
+for (const thrown of ["Error", "undefined", "object"] as const)
+  test(
+    "actual compiled discovery " + thrown + " rejection reports and exits1 without leaked payload",
+    () => {
+      mkdirSync(".artifacts", { recursive: true });
+      const folder = mkdtempSync(join(".artifacts", "coverage-discovery-child-")),
+        trace = join(folder, "trace.json");
+      try {
+        const result = spawnSync(
+          process.execPath,
+          ["test/fixtures/coverage-summary-failure-child.mjs"],
+          {
+            encoding: "utf8",
+            timeout: 25_000,
+            env: {
+              ...process.env,
+              CENSUS_SUMMARY_FAILURE_STAGE: "discovery",
+              CENSUS_SUMMARY_FAILURE_KIND: "network",
+              CENSUS_SUMMARY_FAILURE_TRACE: trace,
+              ...(thrown === "Error" ? {} : { CENSUS_SUMMARY_FAILURE_THROW: thrown }),
+            },
+          },
+        );
+        assert.equal(result.status, 1);
+        assert.equal(result.signal, null);
+        assert.equal(result.error, undefined);
+        assert.match(result.stdout, /## Weekly review coverage/);
+        assert.ok(result.stdout.includes("collection/publication unavailable"));
+        assert.match(result.stderr, /coverage_command_failed/);
+        assert.ok(!result.stdout.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+        assert.ok(!result.stderr.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+        assert.ok(!result.stderr.includes("[object Object]"));
+        const t = JSON.parse(readFileSync(trace, "utf8"));
+        assert.equal(t.actualCliExit, 1);
+        assert.equal(t.entryByteIdentical, true);
+        assert.equal(t.compiledCanonicalSha256, t.compiledEntrySha256);
+        assert.equal(t.fixtureClosed, true);
+        assert.equal(t.discoveryQueries, 1);
+        assert.equal(t.countQueries, 0);
+        assert.equal(t.identityQueries, 0);
+        assert.equal(t.controlRequests.length, 0);
+        assert.equal(t.publicReads.length, 1);
+        assert.equal(t.v1Publications, 0);
+        const output = process.env.CENSUS_SUMMARY_TRACE_OUTPUT;
+        if (output) {
+          mkdirSync(output, { recursive: true });
+          writeFileSync(join(output, "discovery-" + thrown + ".md"), result.stdout);
+          writeFileSync(join(output, "discovery-" + thrown + ".stderr.txt"), result.stderr);
+          writeFileSync(
+            join(output, "discovery-" + thrown + ".trace.json"),
+            JSON.stringify(t, null, 2),
+          );
+        }
+      } finally {
+        rmSync(folder, { recursive: true, force: true });
+      }
+    },
+  );

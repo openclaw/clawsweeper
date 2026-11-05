@@ -1,0 +1,1 @@
+- Invalidate pending coverage verification and promotion witnesses when count metadata drifts, retaining Unknown until fresh matching sweeps qualify.

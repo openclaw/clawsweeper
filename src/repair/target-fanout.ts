@@ -153,11 +153,13 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     owners: csvArg(args.owners),
   };
 
-  const repositories = await loadEligibleRepositories(config, options.owners);
   const publishUrl = stringArg(args["publish-url"], "");
   const coverageProtocol = stringArg(args["coverage-protocol"], "v2");
   if (!["v1", "v2"].includes(coverageProtocol)) throw new Error("unsupported coverage protocol");
-  const publishCoverage = async (openCounts: ReadonlyMap<string, RepositoryOpenCounts>) => {
+  const publishCoverage = async (
+    repositories: readonly SelectedRepository[],
+    openCounts: ReadonlyMap<string, RepositoryOpenCounts>,
+  ) => {
     if (coverageProtocol === "v1") {
       await publishReviewCoverageInventory({
         baseUrl: publishUrl,
@@ -218,8 +220,9 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     if (publishUrl) {
       let collectionFailure: { error: unknown } | undefined;
       try {
+        const repositories = await loadEligibleRepositories(config, options.owners);
         const openCounts = loadRepositoryOpenCounts(repositories);
-        const progress = await publishCoverage(openCounts);
+        const progress = await publishCoverage(repositories, openCounts);
         console.error(JSON.stringify({ coverage_collection: progress }));
       } catch (error) {
         collectionFailure = { error };
@@ -246,6 +249,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
       if (reportFailure) throw reportFailure.error;
       return;
     }
+    const repositories = await loadEligibleRepositories(config, options.owners);
     const openCounts = loadRepositoryOpenCounts(repositories);
     const now = Date.now(),
       snapshot = loadReviewCoverageInventory(repositories, openCounts, now);
@@ -263,6 +267,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     return;
   }
 
+  const repositories = await loadEligibleRepositories(config, options.owners);
   if (args._[0] === "list") {
     process.stdout.write(
       `${JSON.stringify({ total: repositories.length, repositories }, null, 2)}\n`,
@@ -276,7 +281,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     const openCounts = loadRepositoryOpenCounts(repositories);
     if (publishUrl) {
       try {
-        await publishCoverage(openCounts);
+        await publishCoverage(repositories, openCounts);
       } catch (error) {
         console.error(
           "[target-fanout] WARNING: live review inventory did not publish; continuing without blocking scheduled fanout work: " +
@@ -300,7 +305,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   }
   if (mode === "audit" && publishUrl) {
     try {
-      await publishCoverage(loadRepositoryOpenCounts(repositories));
+      await publishCoverage(repositories, loadRepositoryOpenCounts(repositories));
     } catch (error) {
       console.error(
         "[target-fanout] WARNING: live review inventory did not publish; continuing without blocking scheduled fanout work: " +

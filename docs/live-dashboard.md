@@ -1689,9 +1689,17 @@ Limits are centralized in CENSUS in src/review-coverage-census.ts:
   fallback or injected fixture field, is carried into signed census metadata.
   Count-query fixtures return only actually requested root fields; actual CLI
   mode proofs retain query/response selection traces.
+- Observed count drift keeps the retained complete witness non-current even while
+  bounded orphan cleanup prevents a refresh generation. Matching counts, control
+  replay, reconstruction, and legacy inventory cannot clear that hold; only a
+  genuinely re-verified two-sweep promotion can. The old payload/window may remain
+  an immutable snapshot without being presented as current coverage. Active count
+  drift also invalidates pending verification/promotion certificates atomically
+  with the checkpoint revision; capacity becoming free or a stale ACK cannot
+  publish evidence contradicted by that metadata.
 - The explicit `coverage --publish-url` command keeps human-readable
   trailing-week Markdown on stdout independently of its one collection/publication
-  attempt. A count/control publication failure still emits the bounded report,
+  attempt. A discovery/count/control publication failure still emits the bounded report,
   then retains the original rejection/nonzero exit; it is never swallowed as success.
   Failure context marks aggregate observations as independent as-of evidence, not
   newly published coverage. Collector counters stay unchanged on success; failure
@@ -1841,6 +1849,7 @@ Host supporting checks (not the required final browser/container proof):
     node docs/proof/review-coverage-census/capacity-transition.mjs
     node docs/proof/review-coverage-census/byte-pressure.mjs
     node docs/proof/review-coverage-census/cleanup-progress.mjs
+    node docs/proof/review-coverage-census/sticky-drift.mjs
     node docs/proof/review-coverage-census/scheduled-summary.mjs
     node docs/proof/review-coverage-census/compatibility.mjs --browser
 

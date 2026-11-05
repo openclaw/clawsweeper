@@ -1,0 +1,1 @@
+- Keep coverage Unknown after count drift during cleanup until fresh verification, and retain bounded failure reports when repository discovery fails.

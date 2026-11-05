@@ -3,7 +3,7 @@ import { syncBuiltinESMExports } from "node:module";
 import type { coverageCliFixture } from "./review-coverage-cli.ts";
 export const COVERAGE_FAILURE_PRIVATE_MARKER =
   "SYNTHETIC_PRIVATE_ERROR_ID_secret_candidate ghp_never_echo private/secret-repo";
-export type CoverageFailureStage = "count" | "start" | "next" | "page";
+export type CoverageFailureStage = "discovery" | "count" | "start" | "next" | "page";
 export type CoverageFailureKind = "http503" | "network" | "malformed" | "lease409";
 // Only controlled upstream fault inputs. The actual producer, count projection,
 // signed HTTP path and anonymous Worker report owners remain unchanged.
@@ -11,16 +11,22 @@ export function installCoverageFailure(
   f: Awaited<ReturnType<typeof coverageCliFixture>>,
   stage: CoverageFailureStage,
   kind: CoverageFailureKind = "http503",
+  rejection?: { value: unknown },
 ) {
   const spawn = childProcess.spawnSync,
     transport = globalThis.fetch,
     query = f.model.query,
-    original = new Error(COVERAGE_FAILURE_PRIVATE_MARKER);
+    original = rejection ? rejection.value : new Error(COVERAGE_FAILURE_PRIVATE_MARKER);
   let counts = 0,
     identities = 0,
+    discoveries = 0,
     pageOutage = false;
   const requests: { method: string; path: string; signaturePresent: boolean }[] = [];
   childProcess.spawnSync = ((command: unknown, args: readonly string[], options: unknown) => {
+    if (command === "gh" && args[0] === "repo" && args[1] === "list") {
+      discoveries++;
+      if (stage === "discovery") throw original;
+    }
     if (
       command === "gh" &&
       args[0] === "api" &&
@@ -64,6 +70,9 @@ export function installCoverageFailure(
   return {
     original,
     requests,
+    get discoveryQueries() {
+      return discoveries;
+    },
     get countQueries() {
       return counts;
     },
