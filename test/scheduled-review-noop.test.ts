@@ -135,3 +135,68 @@ test("claim-time classifier requires an exact durable pull request head", () => 
     true,
   );
 });
+
+test("planner does not offer an issue whose only post-review activity is ClawSweeper's own write", async () => {
+  // Production: clawhub issues were offered every ~15 minutes (scheduled no-op
+  // runs) and fully re-reviewed every ~2 hours, because each review's own
+  // comment edit and label sync moved updated_at past reviewed_at.
+  const { createReviewPlanningInventory } =
+    await import("../dist/clawsweeper-review-planning-inventory.js");
+  const repo = "openclaw/clawhub";
+  const { issue: liveIssue, comments } = fixture();
+  const now = Date.parse("2026-08-09T22:30:00Z");
+  const item = {
+    repo,
+    number: 41,
+    kind: "issue",
+    labels: [],
+    createdAt: "2026-07-01T00:00:00Z",
+    updatedAt: liveIssue.updated_at,
+  };
+  const review = {
+    reviewStatus: "complete",
+    reviewedAt: "2026-08-09T21:12:33Z",
+    itemUpdatedAt: "2026-08-09T21:12:20Z",
+  };
+  const index = { byKey: new Map([[`${repo}#41`, review]]) };
+  const inventoryFor = (live: unknown, liveComments: unknown[]) => {
+    const reads: string[] = [];
+    const inventory = createReviewPlanningInventory({
+      targetRepo: () => repo,
+      ghJson: (args: string[]) => {
+        reads.push(args[1]!);
+        return args[1]!.includes("/comments") ? [liveComments] : live;
+      },
+      ghJsonLines: () => [],
+      normalizeAuthorAssociation: () => "CONTRIBUTOR",
+    } as never);
+    return { inventory, reads };
+  };
+
+  const owned = inventoryFor(liveIssue, comments);
+  assert.equal(owned.inventory.dueCandidate(item, "/nonexistent", now, undefined, index), null);
+  assert.equal(owned.reads.length, 2);
+
+  const human = {
+    id: 3,
+    user: { login: "reporter" },
+    body: "Still broken on 2.1",
+    created_at: "2026-08-09T21:12:38Z",
+    updated_at: "2026-08-09T21:12:38Z",
+  };
+  const changed = inventoryFor(liveIssue, [...comments, human]);
+  assert.equal(
+    changed.inventory.dueCandidate(item, "/nonexistent", now, undefined, index)?.item.number,
+    41,
+  );
+
+  // Normal cadence still applies: a week later the issue is offered without
+  // any ownership read, so target-branch drift keeps being reviewed.
+  const later = inventoryFor(liveIssue, comments);
+  assert.equal(
+    later.inventory.dueCandidate(item, "/nonexistent", now + 8 * 86_400_000, undefined, index)?.item
+      .number,
+    41,
+  );
+  assert.equal(later.reads.length, 0);
+});

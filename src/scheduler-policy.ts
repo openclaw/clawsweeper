@@ -157,6 +157,24 @@ export function shouldReviewItem(
   );
 }
 
+/**
+ * The item is due only because GitHub reports activity after the last review:
+ * without that activity its normal cadence would not have come round yet.
+ */
+export function dueOnlyForActivitySinceReview(
+  item: SchedulerItem,
+  review: SchedulerExistingReview | null,
+  now = Date.now(),
+  reviewPolicy?: string,
+): boolean {
+  if (!review || !hasActivitySinceReview(item, review)) return false;
+  if (!shouldReviewItem(item, review, now, reviewPolicy)) return false;
+  const reviewedAt = reviewedAtMs(review);
+  if (reviewedAt === null) return false;
+  const quiet = { ...item, updatedAt: new Date(reviewedAt - 1000).toISOString() };
+  return !shouldReviewItem(quiet, { ...review, itemUpdatedAt: undefined }, now, reviewPolicy);
+}
+
 export const REVIEW_CACHE_MAX_AGE_DAYS = 14;
 // Issue reviews read the target branch, so every target commit changes the exact
 // content digest even when the issue itself is untouched. Busy target branches move

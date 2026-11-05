@@ -8,6 +8,7 @@ import type {
   RepoOpenCountsQuery,
 } from "./clawsweeper-types.js";
 import {
+  dueOnlyForActivitySinceReview,
   hasReviewPolicyMismatch,
   nextReviewDueAtMs,
   reviewPriority,
@@ -28,6 +29,7 @@ import {
 } from "./github-webhook-read-model-client.js";
 import { indexedExistingReview } from "./clawsweeper-record-metadata.js";
 import { assertGitHubItemIdentity, GitHubItemMovedError } from "./github-item-identity.js";
+import { trustedOwnedActivityOnly } from "./scheduled-review-noop.js";
 
 export function isFresh(
   review: { reviewedAt: string | undefined; reviewStatus: string | undefined } | null,
@@ -69,6 +71,14 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
       ? coverageTrackedItemIds.has(item.number)
       : review !== null;
     if (coverageTracked && !shouldReviewItem(item, review, now, reviewPolicy)) return null;
+    if (
+      coverageTracked &&
+      item.kind === "issue" &&
+      dueOnlyForActivitySinceReview(item, review, now, reviewPolicy) &&
+      issueActivityIsOwnedReviewWrite(item)
+    ) {
+      return null;
+    }
     return {
       item,
       review,
@@ -78,6 +88,27 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
       nextDueAt: coverageTracked ? nextReviewDueAtMs(item, review, now, reviewPolicy) : 0,
       bucket: schedulerBucket(item, review, now),
     };
+  }
+  // ClawSweeper's own review writes (comment edits, label sync) move
+  // updated_at after the review. Do not offer another review for that alone;
+  // the same durable-source check already makes such runs scheduled no-ops.
+  function issueActivityIsOwnedReviewWrite(item: Item): boolean {
+    try {
+      const issue = ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${item.number}`]);
+      const pages = ghJson<unknown[]>([
+        "api",
+        `repos/${targetRepo()}/issues/${item.number}/comments?per_page=100`,
+        "--paginate",
+        "--slurp",
+      ]);
+      const live = issue && typeof issue === "object" ? (issue as { updated_at?: unknown }) : {};
+      return (
+        live.updated_at === item.updatedAt &&
+        trustedOwnedActivityOnly({ issue, comments: Array.isArray(pages) ? pages.flat() : [] })
+      );
+    } catch {
+      return false;
+    }
   }
   function reviewBackfillCandidate(
     item: Item,

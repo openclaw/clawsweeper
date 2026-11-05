@@ -1,0 +1,1 @@
+- Stop re-offering an issue for review when its only activity since the last review is ClawSweeper's own review write; normal review cadence still applies.
