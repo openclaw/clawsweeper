@@ -6857,19 +6857,22 @@ async function statusSnapshot(env) {
     }),
     activeWorkflowRunCandidates(env, repo, activeRunErrors, github),
   ]);
-  const operationalRunCandidates = activeRunCandidates;
   errors.push(...activeRunErrors);
-  const completedWorkflowRuns = uniqueWorkflowRuns(
-    Array.isArray(completedRuns?.workflow_runs) ? completedRuns.workflow_runs : [],
-  ).sort(newestWorkflowRunFirst);
-  const activeRuns = uniqueWorkflowRuns(
-    activeRunCandidates.filter((run) => isActiveWorkflowRun(run)),
-  ).sort(newestWorkflowRunFirst);
+  // Reconcile observations before splitting lifecycle views, so a completion or
+  // rerun retires stale rows everywhere. Feed position cannot establish recency.
+  const workflowRuns = uniqueWorkflowRuns([
+    ...activeRunCandidates,
+    ...(Array.isArray(completedRuns?.workflow_runs) ? completedRuns.workflow_runs : []),
+  ]);
+  const completedWorkflowRuns = workflowRuns
+    .filter((run) => run.status === "completed")
+    .sort(newestWorkflowRunFirst);
+  const activeRuns = workflowRuns.filter(isActiveWorkflowRun).sort(newestWorkflowRunFirst);
   const workerRuns = activeRuns.filter((run) => !isSupportWorkflowRun(run));
   const supportRuns = activeRuns.filter((run) => isSupportWorkflowRun(run));
   const controlPlane = controlPlaneSnapshot(activeRuns);
   const operationalHealth = summarizeOperationalHealth(
-    operationalRunCandidates.filter((run) => !isSupportWorkflowRun(run)),
+    workflowRuns.filter((run) => !isSupportWorkflowRun(run)),
     generatedAt,
     activeRunErrors.length === 0,
   );
@@ -8553,7 +8556,19 @@ function uniqueWorkflowRuns(runs) {
       run?.id ??
       run?.html_url ??
       `${run?.name || ""}:${run?.display_title || ""}:${run?.created_at || ""}`;
-    if (key) seen.set(String(key), run);
+    if (!key) continue;
+    const previous = seen.get(String(key));
+    if (previous) {
+      // A rerun keeps its ID but advances its attempt. Within that generation,
+      // prefer the last update, then terminal state for equal-second timestamps.
+      // Remaining ties retain the first feed's whole observation.
+      const newer =
+        (run?.run_attempt || 0) - (previous?.run_attempt || 0) ||
+        (Date.parse(run?.updated_at || "") || 0) - (Date.parse(previous?.updated_at || "") || 0) ||
+        Number(run?.status === "completed") - Number(previous?.status === "completed");
+      if (newer <= 0) continue;
+    }
+    seen.set(String(key), run);
   }
   return [...seen.values()];
 }

@@ -8,6 +8,10 @@ export async function startGithubFixture() {
   let unexpected = 0;
   let failure = null;
   let failureReads = 0;
+  let workflowCase = null;
+  let workflowReads = 0;
+  let responseOrder = [];
+  const pending = new Map();
   const now = new Date().toISOString();
   const run = (id, status) => ({
     id,
@@ -61,14 +65,39 @@ export async function startGithubFixture() {
       };
     } else if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
       const status = url.searchParams.get("status");
-      const runs = !status
-        ? [active, completed]
-        : status === "completed"
-          ? [completed]
-          : status === "in_progress"
-            ? [active]
-            : [];
+      if (workflowCase && !status) unexpected += 1;
+      const runs = workflowCase
+        ? status === "completed"
+          ? workflowCase.completed
+          : workflowCase.active.filter((item) => item.status === status)
+        : !status
+          ? [active, completed]
+          : status === "completed"
+            ? [completed]
+            : status === "in_progress"
+              ? [active]
+              : [];
       body = { total_count: runs.length, workflow_runs: runs };
+      if (workflowCase) {
+        workflowReads += 1;
+        const source = status || "overview";
+        if (workflowCase.sources.includes(source)) {
+          const send = () => {
+            response.once("finish", () => responseOrder.push(source));
+            response.writeHead(200, { "content-type": "application/json" });
+            response.end(JSON.stringify(body));
+          };
+          pending.set(source, send);
+          // Gate only the conflicting pair; holding all seven initial reads
+          // would deadlock runtimes with a smaller outbound connection limit.
+          if (pending.size === 2) {
+            pending.get(workflowCase.first)();
+            const second = workflowCase.sources.find((item) => item !== workflowCase.first);
+            setTimeout(() => pending.get(second)(), 30);
+          }
+          return;
+        }
+      }
     } else if (/\/actions\/runs\/(101|202)\/jobs$/.test(url.pathname)) {
       const id = Number(url.pathname.split("/").at(-2));
       if (id === 101) {
@@ -79,6 +108,8 @@ export async function startGithubFixture() {
           return;
         }
       }
+      const observed = workflowCase?.winner;
+      const jobStatus = observed?.status || (id === 101 ? "completed" : "in_progress");
       body = {
         total_count: 1,
         jobs: [
@@ -86,10 +117,10 @@ export async function startGithubFixture() {
             id: id * 10,
             run_id: id,
             name: "Review shard",
-            status: id === 101 ? "completed" : "in_progress",
-            conclusion: id === 101 ? "success" : null,
+            status: jobStatus,
+            conclusion: observed ? observed.conclusion : id === 101 ? "success" : null,
             started_at: now,
-            completed_at: id === 101 ? now : null,
+            completed_at: jobStatus === "completed" ? now : null,
             steps: [],
           },
         ],
@@ -124,6 +155,10 @@ export async function startGithubFixture() {
       healthy = false;
       healthReads = unexpected = failureReads = 0;
       failure = null;
+      workflowCase = null;
+      workflowReads = 0;
+      responseOrder = [];
+      pending.clear();
     },
     recover() {
       healthy = true;
@@ -134,10 +169,16 @@ export async function startGithubFixture() {
       failure = value;
       failureReads = 0;
     },
+    workflows(value) {
+      healthy = true;
+      workflowCase = value;
+    },
     observations: () => ({
       health_reads: healthReads,
       unexpected_routes: unexpected,
       failure_reads: failureReads,
+      workflow_reads: workflowReads,
+      response_order: [...responseOrder],
     }),
     close: () =>
       new Promise((resolve) => {
@@ -145,6 +186,124 @@ export async function startGithubFixture() {
         server.closeAllConnections();
       }),
   };
+}
+
+export async function proveWorkflowObservations(preview, label, fixture, restart) {
+  const row = {
+    id: 202,
+    name: "Review ClawSweeper items",
+    display_title: "Review synthetic workflow observations",
+    html_url: "https://github.com/openclaw/clawsweeper/actions/runs/202",
+    run_attempt: 1,
+    created_at: new Date(Date.now() - 60_000).toISOString(),
+    updated_at: new Date(Date.now() - 20_000).toISOString(),
+  };
+  const running = { ...row, status: "in_progress", conclusion: null };
+  const queued = { ...running, status: "queued", updated_at: row.created_at };
+  const completed = {
+    ...row,
+    status: "completed",
+    conclusion: "failure",
+    updated_at: new Date(Date.now() - 10_000).toISOString(),
+  };
+  const cases = [
+    {
+      name: "queued-to-running",
+      completed: [],
+      active: [running, queued],
+      winner: running,
+      sources: ["queued", "in_progress"],
+      expected: [1, 0, 0, true, 0, 0, ["in_progress"]],
+      baseline: [1, 1, 0, false, 1, 0, ["queued"]],
+    },
+    {
+      name: "active-to-completed",
+      completed: [completed],
+      active: [running],
+      winner: completed,
+      sources: ["in_progress", "completed"],
+      expected: [0, 0, 1, false, 0, 1, []],
+      baseline: [1, 0, 1, true, 0, 1, ["in_progress"]],
+    },
+    {
+      name: "completed-to-rerun",
+      completed: [completed],
+      active: [{ ...running, run_attempt: 2 }],
+      winner: running,
+      sources: ["completed", "in_progress"],
+      expected: [1, 0, 0, true, 0, 0, ["in_progress"]],
+      baseline: [1, 0, 1, true, 0, 1, ["in_progress"]],
+    },
+  ];
+  const metrics = (body) => [
+    body.fleet.active_workflow_runs,
+    body.fleet.queued_workflow_runs,
+    body.fleet.failed_recent_runs,
+    body.operational_health.oldest_running_minutes > 0,
+    body.operational_health.queued_runs,
+    body.health.sampled_runs,
+    body.pipeline.map((item) => item.status),
+  ];
+  const results = [];
+  let current = preview;
+  for (const [index, scenario] of cases.entries()) {
+    for (const [order, first] of scenario.sources.entries()) {
+      fixture.reset();
+      fixture.workflows({ ...scenario, first });
+      const config = { origin: fixture.origin, scenario: 70 + index * 2 + order, ttl: 10 };
+      async function configure() {
+        const response = await fetch(current.origin + "/__proof/telemetry", {
+          method: "POST",
+          body: JSON.stringify(config),
+        });
+        assert.equal(response.status, 200);
+      }
+      async function status() {
+        const response = await fetch(current.origin + "/api/status");
+        assert.equal(response.status, 200);
+        const body = await response.json();
+        assert.equal(body.public_projection_complete, true);
+        assert.deepEqual(body.diagnostics.errors, []);
+        assert.equal(body.operational_health.telemetry_complete, true);
+        assert.deepEqual(
+          metrics(body),
+          label === "base" ? scenario.baseline : scenario.expected,
+          `${label}: ${scenario.name}, first=${first}`,
+        );
+        return response.headers.get("x-clawsweeper-cache");
+      }
+      await configure();
+      await status();
+      const observed = fixture.observations();
+      assert.deepEqual(observed.response_order, [
+        first,
+        ...scenario.sources.filter((s) => s !== first),
+      ]);
+      assert.equal(await status(), "fresh");
+      const restartCase = index === 0 && order === 0;
+      if (restartCase) {
+        current = await restart();
+        await configure();
+        assert.equal(await status(), "fresh");
+      }
+      assert.equal(
+        fixture.observations().workflow_reads,
+        observed.workflow_reads,
+        "warm/restarted snapshot must not requery workflows",
+      );
+      assert.equal(fixture.observations().unexpected_routes, 0);
+      results.push({
+        revision: label,
+        scenario: scenario.name,
+        response_order: observed.response_order,
+        metrics: label === "base" ? scenario.baseline : scenario.expected,
+        workflow_reads: observed.workflow_reads,
+        warm_reused: true,
+        sqlite_restart: restartCase,
+      });
+    }
+  }
+  return results;
 }
 
 export async function proveTelemetryFailures(preview, label, fixture, restart) {
