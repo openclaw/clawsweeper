@@ -116,7 +116,7 @@ process.stdout.write("---\\nresult: success\\n---\\n\\nOffline local review comp
           dir,
           [
             "--target-repo",
-            "openclaw/clawsweeper",
+            "example/private-tool",
             "--base",
             "local-base",
             "--report-dir",
@@ -158,6 +158,8 @@ process.stdout.write("---\\nresult: success\\n---\\n\\nOffline local review comp
         assert.equal(recorded.args[sandboxIndex + 1], "read-only");
         assert.match(recorded.prompt, /do not run gh/i);
         assert.match(recorded.prompt, /do not .*network request/i);
+        assert.match(recorded.prompt, /Target repo: example\/private-tool/);
+        assert.match(recorded.prompt, /read the target\s+repository's full `AGENTS\.md`/);
         assert.match(result.out, /local-review\.md/);
       } finally {
         rmSync(dir, { recursive: true, force: true });
@@ -354,23 +356,23 @@ test("local-review JSON preflight failure leaves no scratch or receipt directory
   }
 });
 
-test("local-review rejects an unsupported repository instead of a foreign-profile fallback", () => {
+test("local-review rejects a malformed repository identity", () => {
   const dir = initRepo();
   try {
     const { status, out } = runLocalReview(dir, [
       "--target-repo",
-      "nobody/not-a-real-profile",
+      "owner/repo/extra",
       "--base",
       "HEAD",
     ]);
     assert.equal(status, 1);
-    assert.match(out, /no review profile/);
+    assert.match(out, /Local target repo must be owner\/repo/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("local-review rejects repositories covered only by a generic owner fallback", () => {
+test("local-review admits generic owner targets without a configured profile", () => {
   const dir = initRepo();
   try {
     const { status, out } = runLocalReview(dir, [
@@ -380,7 +382,7 @@ test("local-review rejects repositories covered only by a generic owner fallback
       "HEAD",
     ]);
     assert.equal(status, 1);
-    assert.match(out, /no review profile/);
+    assert.match(out, /no commits on HEAD beyond/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

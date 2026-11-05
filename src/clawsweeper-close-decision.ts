@@ -9,7 +9,11 @@ import {
   isGitHubVerifiedFixedPullRequestSource,
   requiresMaintainerProductClose,
 } from "./clawsweeper-policy.js";
-import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
+import {
+  isAutoCloseAllowed,
+  repositoryProfileFor,
+  type RepositoryProfile,
+} from "./repository-profiles.js";
 import { closeReasonItemKindError } from "./clawsweeper-close-reasons.js";
 import type { ActionTaken, CloseReason, Decision, Item } from "./clawsweeper-types.js";
 import { NEEDS_SECURITY_REVIEW_LABEL } from "./repair/exact-review-guard-labels.js";
@@ -237,10 +241,10 @@ function obsoleteFixPrDecisionBlockReason(
 export function validateCloseDecision(
   item: Pick<Item, "kind" | "labels" | "repo"> & Partial<Pick<Item, "authorAssociation">>,
   decision: Decision,
-  options: { requireCloseComment?: boolean } = {},
+  options: { requireCloseComment?: boolean; profile?: RepositoryProfile } = {},
 ): { ok: true } | { ok: false; actionTaken: ActionTaken; reason: string } {
   const requireCloseComment = options.requireCloseComment !== false;
-  const profile = repositoryProfileFor(item.repo);
+  const profile = options.profile ?? repositoryProfileFor(item.repo);
   if (decision.decision !== "close") {
     return {
       ok: false,

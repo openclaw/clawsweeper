@@ -2,13 +2,14 @@ import type { Action, Decision, GitInfo, Item, ReviewRuntime } from "./clawsweep
 import { hasUsableCloseComment, validateCloseDecision } from "./clawsweeper-close-decision.js";
 import { isMaintainerAuthored, isVerifiedFixedCloseReason } from "./clawsweeper-item-policy.js";
 import { normalizeComment } from "./clawsweeper-report-comment-helpers.js";
-import { targetProfile } from "./repository-profiles.js";
+import { targetProfile, type RepositoryProfile } from "./repository-profiles.js";
 
 export function reviewActionForDecision(options: {
   item: Item;
   decision: Decision;
   git: GitInfo;
   runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort">;
+  profile?: RepositoryProfile;
 }): Action {
   if (options.decision.decision !== "close") return { actionTaken: "kept_open", closeComment: "" };
   if (
@@ -20,6 +21,7 @@ export function reviewActionForDecision(options: {
   }
   const validation = validateCloseDecision(options.item, options.decision, {
     requireCloseComment: false,
+    ...(options.profile ? { profile: options.profile } : {}),
   });
   if (!validation.ok) return { actionTaken: validation.actionTaken, closeComment: "" };
   const closeComment = normalizeComment(
@@ -27,7 +29,7 @@ export function reviewActionForDecision(options: {
     options.git,
     options.runtime,
     options.item,
-    targetProfile(),
+    options.profile ?? targetProfile(),
   );
   if (!hasUsableCloseComment(closeComment)) {
     return { actionTaken: "skipped_invalid_decision", closeComment: "" };

@@ -10,7 +10,10 @@ import {
   defaultItemsDir,
   reportFileName,
 } from "./clawsweeper-repository-paths.js";
-import { repoFromArgs, targetRepo } from "./repository-profiles.js";
+import { targetRepo, withTargetProfile } from "./repository-profiles.js";
+import { localReviewRepositoryProfile } from "./commit-sweeper.js";
+import { stringArg } from "./clawsweeper-args.js";
+import { resolve } from "node:path";
 import { untrustedCodexEnv, withGitHubRun } from "./clawsweeper-github-runtime.js";
 import { ghJson } from "./clawsweeper-github-execution.js";
 import { createCommitPullResolver } from "./pr-review-provenance.js";
@@ -35,80 +38,92 @@ import { renderReviewCommentFromReport } from "./clawsweeper-report-comment-pres
 import type { Args } from "./clawsweeper-args.js";
 
 export function localReviewCommand(args: Args): void {
+  const profile = localReviewRepositoryProfile(
+    args,
+    resolve(stringArg(args.target_dir ?? args.openclaw_dir, process.cwd())),
+  );
   // Read-only provenance lookups still need the native command scope. This
   // does not enroll local review in hosted admission or action publication.
-  withGitHubRun(() => {
-    const core = createReviewCoreRuntime({
-      reviewItemPromptPaths: REVIEW_ITEM_PROMPT_PATHS,
-      decisionSchemaPath: CLAWSWEEPER_DECISION_SCHEMA_PATH,
-      prCloseCoverageProofPromptPath: PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH,
-      run,
-      untrustedCodexEnv,
-      ensureDir,
-      defaultRootCauseCluster: reviewDecisionParser.defaultRootCauseCluster,
-      parseDecision: reviewDecisionParser.parseDecision,
-    });
-    const buildLocalRangeReview = createLocalRangeReviewer({
-      run,
-      pullCommitContentRevision,
-      reviewCommentContentRevision,
-    });
-    const { attachFixedPullRequest } = createFixedPullRequestContext();
-    const verifier = createRegressionProvenanceVerifier({
-      fetchPull: (repo, number) =>
-        ghJson<unknown>([
-          "api",
-          `repos/${repo}/pulls/${number}`,
-          "-H",
-          "Accept: application/vnd.github+json",
-        ]),
-      fetchPullDiff: (repo, number) =>
-        run("gh", [
-          "api",
-          `repos/${repo}/pulls/${number}`,
-          "-H",
-          "Accept: application/vnd.github.v3.diff",
-        ]),
-    });
-    const resolveProvenancePull = createCommitPullResolver((repo, sha, deadlineAt) =>
-      ghJson(
-        ["api", `repos/${repo}/commits/${sha}/pulls`, "-H", "Accept: application/vnd.github+json"],
-        { deadlineAt },
-      ),
-    );
-    runLocalRangeReview(args, {
-      ...core,
-      buildLocalRangeReview,
-      DEFAULT_PLAN_BATCH_SIZE: 3,
-      defaultItemsDir,
-      ensureDir,
-      repoFromArgs,
-      suppliedReviewStartLeaseFromArgs,
-      targetRepo,
-      reviewPolicyHash: (options) => reviewPolicyHash(options, core),
-      itemContentDigest,
-      itemSnapshotHash,
-      extractClawSweeperReviewCommentBody,
-      updateBulkFilerDetectedFrontMatter,
-      attachFixedPullRequest,
-      resolveProvenancePull,
-      reviewActionForDecision,
-      reportFileName,
-      markdownFor,
-      renderReviewCommentFromReport,
-      verifyRegressionProvenance: (decision, item, context, checkoutDir, git) => ({
-        ...decision,
-        regressionProvenance: verifier.verify({
-          candidate: decision.regressionProvenance,
-          item,
-          checkoutDir,
-          targetBranch: git.targetBranch,
-          reviewedCommitShas:
-            item.kind === "pull_request"
-              ? [git.mainSha, pullHeadShaFromContext(context) ?? undefined]
-              : [git.mainSha],
+  withTargetProfile(profile, () =>
+    withGitHubRun(() => {
+      const core = createReviewCoreRuntime({
+        reviewItemPromptPaths: REVIEW_ITEM_PROMPT_PATHS,
+        decisionSchemaPath: CLAWSWEEPER_DECISION_SCHEMA_PATH,
+        prCloseCoverageProofPromptPath: PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH,
+        run,
+        untrustedCodexEnv,
+        ensureDir,
+        defaultRootCauseCluster: reviewDecisionParser.defaultRootCauseCluster,
+        parseDecision: reviewDecisionParser.parseDecision,
+        repositoryProfileFor: () => profile,
+      });
+      const buildLocalRangeReview = createLocalRangeReviewer({
+        run,
+        pullCommitContentRevision,
+        reviewCommentContentRevision,
+      });
+      const { attachFixedPullRequest } = createFixedPullRequestContext();
+      const verifier = createRegressionProvenanceVerifier({
+        fetchPull: (repo, number) =>
+          ghJson<unknown>([
+            "api",
+            `repos/${repo}/pulls/${number}`,
+            "-H",
+            "Accept: application/vnd.github+json",
+          ]),
+        fetchPullDiff: (repo, number) =>
+          run("gh", [
+            "api",
+            `repos/${repo}/pulls/${number}`,
+            "-H",
+            "Accept: application/vnd.github.v3.diff",
+          ]),
+      });
+      const resolveProvenancePull = createCommitPullResolver((repo, sha, deadlineAt) =>
+        ghJson(
+          [
+            "api",
+            `repos/${repo}/commits/${sha}/pulls`,
+            "-H",
+            "Accept: application/vnd.github+json",
+          ],
+          { deadlineAt },
+        ),
+      );
+      runLocalRangeReview(args, {
+        ...core,
+        buildLocalRangeReview,
+        DEFAULT_PLAN_BATCH_SIZE: 3,
+        defaultItemsDir,
+        ensureDir,
+        repoFromArgs: () => profile,
+        suppliedReviewStartLeaseFromArgs,
+        targetRepo,
+        reviewPolicyHash: (options) => reviewPolicyHash(options, core),
+        itemContentDigest,
+        itemSnapshotHash,
+        extractClawSweeperReviewCommentBody,
+        updateBulkFilerDetectedFrontMatter,
+        attachFixedPullRequest,
+        resolveProvenancePull,
+        reviewActionForDecision: (options) => reviewActionForDecision({ ...options, profile }),
+        reportFileName,
+        markdownFor,
+        renderReviewCommentFromReport,
+        verifyRegressionProvenance: (decision, item, context, checkoutDir, git) => ({
+          ...decision,
+          regressionProvenance: verifier.verify({
+            candidate: decision.regressionProvenance,
+            item,
+            checkoutDir,
+            targetBranch: git.targetBranch,
+            reviewedCommitShas:
+              item.kind === "pull_request"
+                ? [git.mainSha, pullHeadShaFromContext(context) ?? undefined]
+                : [git.mainSha],
+          }),
         }),
-      }),
-    });
-  });
+      });
+    }),
+  );
 }
