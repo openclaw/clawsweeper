@@ -1,6 +1,11 @@
+import {
+  installCoverageFailure,
+  COVERAGE_FAILURE_PRIVATE_MARKER,
+} from "../fixtures/coverage-summary-failure.ts";
 import { Console } from "node:console";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import {
   ExactReviewDirectPublicationStore,
   validateDirectPublicationPlan,
@@ -416,3 +421,326 @@ test("explicit legacy-v1 publication keeps one inventory publication and reads o
     f.close();
   }
 });
+
+test("coverage publication failure still emits an independent public report and rejects", async () => {
+  const f = await coverageCliFixture([{ name: "core", issues: 2, pulls: 1 }]),
+    fault = installCoverageFailure(f, "start", "http503");
+  let rejection: unknown;
+  try {
+    const out = await stdoutOf(async () => {
+      try {
+        await f.run("coverage", "v2", { windowDays: 7 });
+      } catch (e) {
+        rejection = e;
+      }
+    });
+    assert.ok(rejection instanceof Error);
+    assert.equal(rejection.message, COVERAGE_FAILURE_PRIVATE_MARKER);
+    assert.match(out, /## Weekly review coverage/);
+    assert.match(out, /collection\/publication unavailable/);
+    assert.equal(f.publicCoverageReads.length, 1);
+    assert.equal(fault.countQueries, 1);
+    assert.equal(fault.identityQueries, 0);
+    assert.equal(fault.requests.length, 1);
+    assert.ok(!out.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+    assert.ok(!lastDiagnostics.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+    assert.ok(
+      !f.calls.some((c) => c.path.endsWith("/review-coverage/inventory") && c.method === "POST"),
+    );
+  } finally {
+    fault.restore();
+    f.close();
+  }
+});
+
+for (const [stage, kind] of [
+  ["count", "network"],
+  ["start", "network"],
+  ["start", "malformed"],
+  ["start", "lease409"],
+  ["next", "http503"],
+  ["next", "network"],
+  ["next", "malformed"],
+  ["page", "http503"],
+  ["page", "network"],
+  ["page", "malformed"],
+  ["page", "lease409"],
+] as const)
+  test(
+    "coverage " + stage + "/" + kind + " keeps failure after exactly one public report",
+    async () => {
+      const f = await coverageCliFixture([{ name: "core", issues: 2, pulls: 1 }]),
+        fault = installCoverageFailure(f, stage, kind);
+      let rejection: unknown;
+      try {
+        const out = await stdoutOf(async () => {
+          try {
+            await f.run("coverage");
+          } catch (e) {
+            rejection = e;
+          }
+        });
+        assert.ok(rejection instanceof Error);
+        if (stage === "count" || kind === "network") assert.equal(rejection, fault.original);
+        assert.match(out, /## Weekly review coverage/);
+        assert.ok(out.includes("collection/publication unavailable"));
+        assert.equal(f.publicCoverageReads.length, 1);
+        assert.equal(fault.countQueries, 1);
+        assert.equal(fault.identityQueries, stage === "page" ? 1 : 0);
+        assert.equal(fault.requests.length, stage === "count" ? 0 : stage === "page" ? 2 : 1);
+        assert.ok(!out.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+        assert.ok(!lastDiagnostics.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+        assert.ok(
+          !/ID_core|ID_secret|ghp_never_echo|private\/secret-repo/.test(out + lastDiagnostics),
+        );
+        assert.match(lastDiagnostics, /coverage_collection_unavailable/);
+        assert.ok(
+          !f.calls.some(
+            (c) => c.path.endsWith("/review-coverage/inventory") && c.method === "POST",
+          ),
+        );
+        assert.deepEqual(f.publicCoverageReads[0], {
+          path: "/api/review-coverage",
+          method: "GET",
+          query: "",
+          authorization: false,
+          signature: false,
+          redirect: "error",
+        });
+      } finally {
+        fault.restore();
+        f.close();
+      }
+    },
+  );
+
+for (const failure of [
+  "http",
+  "malformed",
+  "oversized",
+  "headers-timeout",
+  "body-timeout",
+] as const)
+  test(
+    "publication rejection survives simultaneous public report " + failure,
+    { timeout: 15_000 },
+    async () => {
+      const f = await coverageCliFixture([{ name: "core", issues: 2, pulls: 1 }]),
+        fault = installCoverageFailure(f, "start", "network");
+      let rejection: unknown,
+        cancelled = false;
+      try {
+        f.setPublicCoverageResponse((request) => {
+          if (failure === "http")
+            return new Response(COVERAGE_FAILURE_PRIVATE_MARKER, { status: 503 });
+          if (failure === "malformed") return new Response(COVERAGE_FAILURE_PRIVATE_MARKER);
+          if (failure === "oversized")
+            return new Response(
+              new ReadableStream({
+                start(c) {
+                  c.enqueue(new Uint8Array(COVERAGE_SUMMARY_READ.bytes + 1));
+                },
+                cancel() {
+                  cancelled = true;
+                },
+              }),
+            );
+          if (failure === "headers-timeout")
+            return new Promise<Response>((_resolve, reject) => {
+              const hold = setTimeout(
+                () => reject(new Error("mock escaped report deadline")),
+                12_000,
+              );
+              request.signal.addEventListener(
+                "abort",
+                () => {
+                  clearTimeout(hold);
+                  cancelled = true;
+                  reject(new Error(COVERAGE_FAILURE_PRIVATE_MARKER));
+                },
+                { once: true },
+              );
+            });
+          let hold: ReturnType<typeof setTimeout>;
+          return new Response(
+            new ReadableStream({
+              start() {
+                hold = setTimeout(() => {}, 12_000);
+              },
+              cancel() {
+                clearTimeout(hold);
+                cancelled = true;
+              },
+            }),
+          );
+        });
+        const start = performance.now(),
+          out = await stdoutOf(async () => {
+            try {
+              await f.run("coverage");
+            } catch (e) {
+              rejection = e;
+            }
+          });
+        assert.equal(rejection, fault.original);
+        assert.match(out, /## Weekly review coverage/);
+        assert.ok(out.includes("collection/publication unavailable"));
+        assert.match(out, /Trailing coverage \| Unknown/);
+        assert.equal(f.publicCoverageReads.length, 1);
+        assert.equal(fault.countQueries, 1);
+        assert.equal(fault.identityQueries, 0);
+        assert.equal(fault.requests.length, 1);
+        assert.ok(!out.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+        assert.ok(!lastDiagnostics.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
+        if (failure.includes("timeout")) {
+          assert.ok(performance.now() - start < COVERAGE_SUMMARY_READ.timeoutMs + 4_000);
+          assert.ok(out.includes("timed out"));
+          assert.equal(cancelled, true);
+        }
+        if (failure === "oversized") assert.equal(cancelled, true);
+      } finally {
+        fault.restore();
+        f.close();
+      }
+    },
+  );
+
+test("initial count rejection may report valid cached aggregates without retimestamping or new-publication claims", async () => {
+  const f = await coverageCliFixture([{ name: "core", issues: 2, pulls: 1 }]);
+  let fault: ReturnType<typeof installCoverageFailure> | undefined, rejection: unknown;
+  try {
+    await seedFresh(f);
+    await stdoutOf(() => f.run("coverage"));
+    const state = JSON.stringify(f.states()),
+      before = (await (await f.anonymous()).json()) as {
+        counts_observed_at: string;
+        inventory_generated_at: string;
+      };
+    f.advance(20 * 60_000);
+    fault = installCoverageFailure(f, "count");
+    const out = await stdoutOf(async () => {
+      try {
+        await f.run("coverage");
+      } catch (e) {
+        rejection = e;
+      }
+    });
+    assert.equal(rejection, fault.original);
+    assert.match(out, /Current observed open items \| 3/);
+    assert.match(out, /Fresh in trailing 7 days \| 1/);
+    assert.match(out, /Trailing coverage \| 33\.3%/);
+    assert.ok(out.includes("not a claim of newly published coverage"));
+    assert.ok(out.includes(before.counts_observed_at));
+    assert.ok(out.includes(before.inventory_generated_at));
+    assert.equal(JSON.stringify(f.states()), state);
+    assert.equal(fault.countQueries, 1);
+    assert.equal(fault.identityQueries, 0);
+    assert.equal(f.publicCoverageReads.length, 2);
+  } finally {
+    fault?.restore();
+    f.close();
+  }
+});
+
+test("failed collection never relabels cached source7 as requested14 and still rejects", async () => {
+  const f = await coverageCliFixture([{ name: "core", issues: 2, pulls: 1 }]);
+  let fault: ReturnType<typeof installCoverageFailure> | undefined, rejection: unknown;
+  try {
+    await seedFresh(f);
+    await stdoutOf(() => f.run("coverage"));
+    fault = installCoverageFailure(f, "count");
+    const out = await stdoutOf(async () => {
+      try {
+        await f.run("coverage", "v2", { windowDays: 14 });
+      } catch (e) {
+        rejection = e;
+      }
+    });
+    assert.equal(rejection, fault.original);
+    assert.match(out, /Source review window \| 7 days/);
+    assert.match(out, /Fresh in trailing 14 days \| Unknown/);
+    assert.match(out, /Trailing coverage \| Unknown/);
+    assert.match(out, /Current observed open items \| 3/);
+    assert.ok(out.includes("collection/publication unavailable"));
+  } finally {
+    fault?.restore();
+    f.close();
+  }
+});
+
+test("invalid coverage window rejects before collection/report instead of emitting a misleading fallback", async () => {
+  const f = await coverageCliFixture([{ name: "core", issues: 2, pulls: 1 }]),
+    fault = installCoverageFailure(f, "count");
+  let rejection: unknown;
+  try {
+    const out = await stdoutOf(async () => {
+      try {
+        await f.run("coverage", "v2", { windowDays: 0 });
+      } catch (e) {
+        rejection = e;
+      }
+    });
+    assert.ok(rejection instanceof Error);
+    assert.equal(out, "");
+    assert.equal(fault.countQueries, 0);
+    assert.equal(f.publicCoverageReads.length, 0);
+  } finally {
+    fault.restore();
+    f.close();
+  }
+});
+
+for (const stage of ["count", "start", "next", "page"] as const)
+  test(
+    "actual compiled CLI " + stage + " failure exits1 with Markdown and sanitized stderr",
+    () => {
+      mkdirSync(".artifacts", { recursive: true });
+      const folder = mkdtempSync(join(".artifacts", "coverage-failure-child-")),
+        trace = join(folder, "trace.json");
+      try {
+        const result = spawnSync(
+          process.execPath,
+          ["test/fixtures/coverage-summary-failure-child.mjs"],
+          {
+            encoding: "utf8",
+            timeout: 25_000,
+            env: {
+              ...process.env,
+              CENSUS_SUMMARY_FAILURE_STAGE: stage,
+              CENSUS_SUMMARY_FAILURE_KIND: stage === "count" ? "network" : "http503",
+              CENSUS_SUMMARY_FAILURE_TRACE: trace,
+            },
+          },
+        );
+        assert.equal(result.status, 1);
+        assert.equal(result.signal, null);
+        assert.equal(result.error, undefined);
+        assert.match(result.stdout, /## Weekly review coverage/);
+        assert.ok(result.stdout.includes("collection/publication unavailable"));
+        assert.match(result.stderr, /coverage_command_failed/);
+        assert.ok(
+          !/ID_secret|ghp_never_echo|private\/secret-repo|SYNTHETIC_PRIVATE_ERROR/.test(
+            result.stdout + result.stderr,
+          ),
+        );
+        const t = JSON.parse(readFileSync(trace, "utf8"));
+        assert.equal(t.actualCliExit, 1);
+        assert.equal(t.entryByteIdentical, true);
+        assert.equal(t.compiledCanonicalSha256, t.compiledEntrySha256);
+        assert.equal(t.fixtureClosed, true);
+        assert.equal(t.countQueries, 1);
+        assert.equal(t.identityQueries, stage === "page" ? 1 : 0);
+        assert.equal(t.publicReads.length, 1);
+        assert.equal(t.v1Publications, 0);
+        const output = process.env.CENSUS_SUMMARY_TRACE_OUTPUT;
+        if (output) {
+          mkdirSync(output, { recursive: true });
+          writeFileSync(join(output, "child-" + stage + ".md"), result.stdout);
+          writeFileSync(join(output, "child-" + stage + ".stderr.txt"), result.stderr);
+          writeFileSync(join(output, "child-" + stage + ".trace.json"), JSON.stringify(t, null, 2));
+        }
+      } finally {
+        rmSync(folder, { recursive: true, force: true });
+      }
+    },
+  );

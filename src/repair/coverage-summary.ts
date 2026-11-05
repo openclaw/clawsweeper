@@ -177,6 +177,7 @@ export function renderPublicCoverageSummary(
   read: CoverageSummaryRead,
   windowDays: number,
   now = Date.now(),
+  publicationUnavailable = false,
 ): string {
   const a = read.available ? read.aggregate : null,
     windowMatches = a?.windowDays === windowDays,
@@ -227,6 +228,9 @@ export function renderPublicCoverageSummary(
     "\n\nReport generated " +
     new Date(now).toISOString() +
     ". Aggregate-only current live-open observations; not a historical-record denominator.\n\n" +
+    (publicationUnavailable
+      ? "Coverage collection/publication unavailable; command failure is retained. Aggregate observations below are independent as-of evidence, not a claim of newly published coverage.\n\n"
+      : "") +
     (unavailable ? unavailable + "\n\n" : "") +
     "| Metric | Value |\n| --- | ---: |\n" +
     "| Requested review window | " +

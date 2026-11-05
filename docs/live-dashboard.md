@@ -1689,9 +1689,13 @@ Limits are centralized in CENSUS in src/review-coverage-census.ts:
   fallback or injected fixture field, is carried into signed census metadata.
   Count-query fixtures return only actually requested root fields; actual CLI
   mode proofs retain query/response selection traces.
-- The explicit `coverage --publish-url` command keeps its human-readable
-  trailing-week Markdown on stdout after one publication; collector counters
-  are diagnostics on stderr. A single credential-free, non-redirecting
+- The explicit `coverage --publish-url` command keeps human-readable
+  trailing-week Markdown on stdout independently of its one collection/publication
+  attempt. A count/control publication failure still emits the bounded report,
+  then retains the original rejection/nonzero exit; it is never swallowed as success.
+  Failure context marks aggregate observations as independent as-of evidence, not
+  newly published coverage. Collector counters stay unchanged on success; failure
+  diagnostics are closed categories on stderr, not upstream payloads. A single credential-free, non-redirecting
   `/api/review-coverage` aggregate GET supplies the report, bounded to 64 KiB
   and five seconds across headers/body. It never reads private build/control
   payloads, rescans identities, falls back to v1 publication, or performs
