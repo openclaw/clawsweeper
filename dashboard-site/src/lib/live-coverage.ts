@@ -69,6 +69,12 @@ export function liveCoverage(source: Json, now = Date.now()) {
       repo: String(row.repo),
       slug: String(row.repo_slug),
       observationScope: row.observation_scope ?? "eligible",
+      collectionWindow: row.collection_window ?? null,
+      censusComplete:
+        censusCurrent &&
+        rowCountKnown &&
+        ["eligible", "observed"].includes(row.observation_scope ?? "eligible") &&
+        row.census_status === "complete",
       known: complete,
       censusKnown: rowCensusKnown,
       countKnown: rowCountKnown,
@@ -108,6 +114,7 @@ export function liveCoverage(source: Json, now = Date.now()) {
     countsAt: source.counts_observed_at ?? null,
     countsThrough: source.counts_observed_through ?? null,
     rows,
+    populationKnown: censusCurrent,
     refresh,
     ...totals,
     percent: known ? number(source.totals?.coverage_percent) : null,

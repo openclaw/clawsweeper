@@ -7,6 +7,9 @@ import { liveCover as cover, coverageRepositoryStates, repos } from '../lib/data
 import { int, stamp } from '../lib/format';
 const count = (n: number | null | undefined) => n == null ? 'Unknown' : int(n);
 const observed = (date: string | null) => date && Number.isFinite(Date.parse(date)) ? stamp(date) : "Unknown";
+const participating = cover.rows.filter(row => ["eligible", "observed"].includes(row.observationScope));
+const completedCensus = participating.filter(row => row.censusComplete).length;
+const collectionWindows = participating.flatMap(row => row.collectionWindow ? [row.collectionWindow] : []);
 const percent = (n: number | null, known = false) => n === null ? (known ? 'N/A' : 'Unknown') : n.toFixed(1) + '%';
 const liveRepos = [...cover.rows].filter(repo => ["eligible", "observed"].includes(repo.observationScope)).sort((a,b) => (b.open_records ?? -1) - (a.open_records ?? -1));
 const liveNames = new Set(liveRepos.map(repo => repo.repo.toLowerCase()));
@@ -25,6 +28,9 @@ const segments = [
   <p class="mt-1 text-[13px] text-fg-muted">Observed GitHub Open counts and identity-matched review evidence are separate observations. Neither grants review admission nor proves GitHub App installation.</p>
   <p class="mt-2 text-[12px] text-fg-muted">Count observations: {observed(cover.countsAt)} – {observed(cover.countsThrough)} · Identity observation: {observed(cover.censusAt)} · Canonical record scan: {observed(cover.scanAt)} · Freshness window: {cover.windowDays} days. Counts are as of these observations, not a continuous GitHub query.</p>
   {!cover.known && <p class="mt-3 rounded border border-warn p-3 text-warn" role="status">Coverage unknown: {cover.reason}. Historical records cannot fill this gap.</p>}
+  <p class="mt-2 text-[12px] text-fg-muted">Census complete: {cover.populationKnown ? completedCensus + "/" + participating.length : "Unknown"} participating public repositories. Individual complete rows remain usable; an incomplete row keeps the fleet percentage Unknown.</p>
+  <p class="mt-2 text-[12px] text-fg-muted">Observational as-of collection windows, not a live point-in-time snapshot. A verified generation may remain usable during an unchanged refresh for at most 12 hours from its collection-window start; observed drift stays Unknown until reverified: two complete sweeps must agree on identities, labels, PR heads and observed reopen fields. Bounded changes can reconcile; sustained churn may remain Unknown while bounded collection continues.</p>
+  {collectionWindows.length > 0 && <details class="mt-2 text-[12px] text-fg-muted"><summary>Verified collection windows</summary><ul>{participating.filter(row => row.collectionWindow).map(row => <li>{row.repo}: collection {observed(row.collectionWindow.started_at)}–{observed(row.collectionWindow.ended_at)}; witness {observed(row.collectionWindow.witness_observed_at)}; published {observed(row.collectionWindow.published_at)}. Counts as of {observed(row.countsAt)}.</li>)}</ul></details>}
   <p class="mt-2 text-[12px] text-fg-muted">Freshness checks recorded completion/date, PR head and the latest observed reopen only. Current issue body/comment semantic freshness is not proven by these fields; generic updated_at is not source validity.</p>
   <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
     <Kpi label="Observed Open" value={count(cover.open_records)} sub={count(cover.excluded) + ' excluded by live labels'} tip="Direct, timestamped GitHub repository totals. Remains known when identity pagination is bounded. Explicit archived/fork/alias/history scopes are outside this total; this is not an active-work or installation count." />

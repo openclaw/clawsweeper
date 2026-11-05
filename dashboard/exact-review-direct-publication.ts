@@ -1654,6 +1654,7 @@ export class ExactReviewDirectPublicationStore {
     let coverageStatus: "complete" | "unknown" =
       scanCurrent &&
       inventoryStatus === "current" &&
+      !inventory!.capacity_blocked &&
       inventory!.repositories.every((entry) => entry.complete === true && entry.items !== undefined)
         ? "complete"
         : "unknown";
@@ -3612,6 +3613,7 @@ export type ReviewCoverageFleetCounts = {
 };
 
 export type ReviewCoverageFleet = ReviewCoverageFleetCounts & {
+  collection_window?: ReviewCoverageInventoryRepository["collection_window"];
   open_records: number | null;
   count_status: "observed" | "missing" | "stale" | "future";
   counts_observed_at: string | null;
@@ -3865,6 +3867,7 @@ function projectReviewCoverageFleet(
   const result: ReviewCoverageFleet = {
     ...fleet,
     repo: inventory?.repo ?? fleet.repo,
+    ...(inventory?.collection_window ? { collection_window: inventory.collection_window } : {}),
     open_records:
       countStatus === "observed" ? inventory!.open_issues! + inventory!.open_pull_requests! : null,
     count_status: countStatus,
@@ -3921,9 +3924,9 @@ function projectReviewCoverageFleet(
     inventory?.complete &&
     inventory.items
   ) {
-    result.excluded = inventory.items.filter((item) =>
-      reviewCoverageRecordExcluded(item.labels),
-    ).length;
+    result.excluded = 0;
+    for (const item of inventory.items)
+      if (reviewCoverageRecordExcluded(item.labels)) result.excluded++;
     result.reviewable_records = (result.open_records ?? 0) - result.excluded;
   }
   if (
@@ -3944,7 +3947,8 @@ function projectReviewCoverageFleet(
     result.reason = "canonical_evidence_unavailable";
     return result;
   }
-  const openNumbers = new Set(inventory.items.map((item) => item.number));
+  const openNumbers = new Set<number>();
+  for (const item of inventory.items) openNumbers.add(item.number);
   result.record_drift = [...(records?.keys() ?? [])].filter(
     (number) => !openNumbers.has(number),
   ).length;

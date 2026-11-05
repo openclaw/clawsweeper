@@ -131,6 +131,27 @@ export function validatedLiveCoverage(
           reviewed_at: reviewedAt,
         });
       }
+    const windowSource =
+      row.collection_window &&
+      typeof row.collection_window === "object" &&
+      !Array.isArray(row.collection_window)
+        ? (row.collection_window as Record<string, unknown>)
+        : null;
+    let collectionWindow: Record<string, string> | null = null;
+    if (row.collection_window !== undefined && row.collection_window !== null) {
+      if (!windowSource) return null;
+      collectionWindow = {};
+      for (const key of ["started_at", "ended_at", "witness_observed_at", "published_at"]) {
+        const date = publicTimestamp(windowSource[key]);
+        if (!date) return null;
+        collectionWindow[key] = date;
+      }
+      if (
+        Date.parse(collectionWindow.started_at!) > Date.parse(collectionWindow.ended_at!) ||
+        Date.parse(collectionWindow.ended_at!) > Date.parse(collectionWindow.published_at!)
+      )
+        return null;
+    }
     fleets.push({
       repo: row.repo,
       visibility: "public",
@@ -141,6 +162,7 @@ export function validatedLiveCoverage(
           ? String(row.count_status)
           : "missing",
       counts_observed_at: countsAt,
+      ...(collectionWindow ? { collection_window: collectionWindow } : {}),
       counts_qualification:
         row.counts_qualification === "identity_scan_drifted" ? "identity_scan_drifted" : null,
       missing_fields: Array.isArray(row.missing_fields)

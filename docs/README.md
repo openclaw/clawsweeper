@@ -92,8 +92,8 @@ everything else requires human comparison with current main.
 
 ## Dashboards and observability
 
-- [Live dashboard](live-dashboard.md) — active; Worker status and operational
-  telemetry
+- [Live dashboard](live-dashboard.md) — active; Worker status, operational
+  telemetry, and resumable observational coverage census ownership/proof limits
 - [Agent performance metrics](agent-performance-metrics.md) — execution timing, repeated work, chart ownership and observation limits
 - [GitHub publication egress telemetry](github-egress-telemetry.md) — active;
   wire denominator, credential attribution, completeness, and retention

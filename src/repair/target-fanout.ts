@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { requireRecord as record, errorSummary as errorMessage } from "../value-coerce.js";
 import { runCommand } from "./command-runner.js";
-import { createHmac } from "node:crypto";
+import { createHmac, createHash } from "node:crypto";
+import { censusHttpControl, runReviewCoverageCensus } from "./review-coverage-census.js";
+import { CENSUS } from "../review-coverage-census.js";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -67,6 +69,7 @@ export interface SelectedRepository {
 }
 
 export interface RepositoryOpenCounts {
+  repositoryId?: string | undefined;
   issues: number;
   pullRequests: number;
   observedAt?: string;
@@ -146,36 +149,85 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   };
 
   const repositories = await loadEligibleRepositories(config, options.owners);
-  if (args._[0] === "coverage") {
-    const windowDays = positiveNumber(stringArg(args["window-days"], "7"), "window-days");
-    const openCounts = loadRepositoryOpenCounts(repositories);
-    const now = Date.now();
-    const snapshot = loadReviewCoverageInventory(repositories, openCounts, now);
-    const coverage = summarizeFleetReviewCoverage({
-      repositories,
-      openCounts,
-      windowDays,
-      now,
-      inventory: snapshot,
-    });
-    const publishUrl = stringArg(args["publish-url"], "");
-    if (publishUrl) {
-      try {
-        await publishReviewCoverageInventory({
-          baseUrl: publishUrl,
-          webhookSecret: stringValue(
-            process.env.CLAWSWEEPER_WEBHOOK_SECRET,
-            "CLAWSWEEPER_WEBHOOK_SECRET",
-          ),
-          snapshot,
-        });
-      } catch (error) {
-        console.error(
-          `[target-fanout] WARNING: live review inventory did not publish; continuing without blocking scheduled fanout work: ${errorMessage(error)}`,
-        );
-      }
+  const publishUrl = stringArg(args["publish-url"], "");
+  const coverageProtocol = stringArg(args["coverage-protocol"], "v2");
+  if (!["v1", "v2"].includes(coverageProtocol)) throw new Error("unsupported coverage protocol");
+  const publishCoverage = async (openCounts: ReadonlyMap<string, RepositoryOpenCounts>) => {
+    if (coverageProtocol === "v1") {
+      await publishReviewCoverageInventory({
+        baseUrl: publishUrl,
+        webhookSecret: process.env.CLAWSWEEPER_WEBHOOK_SECRET ?? "",
+        snapshot: loadReviewCoverageInventory(repositories, openCounts, Date.now()),
+      });
+      return { protocol: "v1" };
     }
-    process.stdout.write(renderFleetReviewCoverage(coverage));
+    const result = await runReviewCoverageCensus({
+      repositories: repositories.map((repo) => {
+        const counts = openCounts.get(repo.targetRepo);
+        if (!counts?.repositoryId || !counts.observedAt)
+          throw new Error("coverage repository identity/counts unavailable");
+        const scope = repo.coverageScope ?? "eligible";
+        if (scope !== "eligible" && scope !== "observed")
+          throw new Error("coverage scope unqualified");
+        return {
+          repo: repo.targetRepo.toLowerCase(),
+          id: counts.repositoryId,
+          revision: createHash("sha256")
+            .update(
+              JSON.stringify([
+                CENSUS.policy,
+                repo.targetRepo.toLowerCase(),
+                scope,
+                repo.visibility,
+              ]),
+            )
+            .digest("hex"),
+          scope,
+          visibility:
+            repo.visibility.toLowerCase() === "public" ? ("public" as const) : ("unknown" as const),
+          issues: counts.issues,
+          pulls: counts.pullRequests,
+          countsAt: counts.observedAt,
+        };
+      }),
+      control: censusHttpControl({
+        baseUrl: publishUrl,
+        secret: process.env.CLAWSWEEPER_WEBHOOK_SECRET ?? "",
+      }),
+      query: (query) =>
+        JSON.parse(runGh(["api", "graphql", "-f", "query=" + query], publicInventoryEnv())),
+    });
+    return {
+      protocol: "v2",
+      queries: result.queries,
+      accepted: result.accepted,
+      failed: result.failed,
+      observational: result.observational,
+      capacityBlocked: result.capacityBlocked,
+      metadataAccepted: result.metadataAccepted,
+      stale: result.stale,
+    };
+  };
+  if (args._[0] === "coverage") {
+    const windowDays = positiveNumber(stringArg(args["window-days"], "7"), "window-days"),
+      openCounts = loadRepositoryOpenCounts(repositories);
+    if (publishUrl) {
+      console.log(JSON.stringify(await publishCoverage(openCounts)));
+      return;
+    }
+    const now = Date.now(),
+      snapshot = loadReviewCoverageInventory(repositories, openCounts, now);
+    console.log(
+      JSON.stringify(
+        summarizeFleetReviewCoverage({
+          repositories,
+          openCounts,
+          windowDays,
+          now,
+          inventory: snapshot,
+        }),
+      ),
+    );
     return;
   }
 
@@ -190,25 +242,17 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   let reviewCandidateCapacity: number | null = null;
   if (mode === "normal-review" || mode === "hot-intake") {
     const openCounts = loadRepositoryOpenCounts(repositories);
-    const now = Date.now();
-    if (mode === "normal-review") {
-      const publishUrl = stringArg(args["publish-url"], "");
-      if (publishUrl) {
-        try {
-          await publishReviewCoverageInventory({
-            baseUrl: publishUrl,
-            webhookSecret: stringValue(
-              process.env.CLAWSWEEPER_WEBHOOK_SECRET,
-              "CLAWSWEEPER_WEBHOOK_SECRET",
-            ),
-            snapshot: loadReviewCoverageInventory(repositories, openCounts, now),
-          });
-        } catch (error) {
-          console.error(
-            `[target-fanout] WARNING: live review inventory did not publish; continuing without blocking scheduled fanout work: ${errorMessage(error)}`,
-          );
-        }
+    if (publishUrl) {
+      try {
+        await publishCoverage(openCounts);
+      } catch (error) {
+        console.error(
+          "[target-fanout] WARNING: live review inventory did not publish; continuing without blocking scheduled fanout work: " +
+            errorMessage(error),
+        );
       }
+    }
+    if (mode === "normal-review") {
       const coverageManifestPath = stringArg(args["coverage-tracked-items-manifest"], "");
       const coverageTrackedCounts = coverageManifestPath
         ? coverageTrackedCountsFromManifest(coverageManifestPath)
@@ -220,6 +264,16 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
       });
     } else {
       planningRepositories = repositoriesWithOpenItems(repositories, openCounts);
+    }
+  }
+  if (mode === "audit" && publishUrl) {
+    try {
+      await publishCoverage(loadRepositoryOpenCounts(repositories));
+    } catch (error) {
+      console.error(
+        "[target-fanout] WARNING: live review inventory did not publish; continuing without blocking scheduled fanout work: " +
+          errorMessage(error),
+      );
     }
   }
   const cursorStore: FanoutCursorStoreOptions = {
@@ -977,6 +1031,7 @@ function loadRepositoryOpenCounts(
         `${repository.targetRepo} pull request counts`,
       );
       counts.set(repository.targetRepo, {
+        repositoryId: typeof result.id === "string" ? result.id : undefined,
         issues: nonNegativeNumber(issues.totalCount, "issue totalCount"),
         pullRequests: nonNegativeNumber(pullRequests.totalCount, "pull request totalCount"),
         observedAt: new Date().toISOString(),
