@@ -4,18 +4,24 @@ import { frontMatterValue } from "./report-front-matter.js";
 import { asRecord } from "./value-coerce.js";
 
 type SourceState = "matches" | "stale" | "unknown";
-
-const heading = "## Local preflight source";
-const qualification =
-  "Source comparison at the observed PR snapshot only. Completion is self-reported; body, policy, tests, execution, and report bytes are not verified.";
-
-function sourceState(options: {
+type PreflightObservation = {
   repo: string;
   number: number;
   pull: unknown;
   targetDir: string;
-  reportHead: string | undefined;
-}): SourceState {
+};
+
+const heading = "## Local preflight source";
+const hostedHeading = "## Preflight source";
+const states = ["matches", "stale", "unknown"] as const;
+const qualification =
+  "Source comparison at the observed PR snapshot only. Completion is self-reported; body, policy, tests, execution, and report bytes are not verified.";
+
+function sourceState(
+  options: PreflightObservation & {
+    reportHead: string | undefined;
+  },
+): SourceState {
   const pull = asRecord(options.pull);
   const base = asRecord(pull.base);
   const head = asRecord(pull.head);
@@ -44,32 +50,65 @@ function sourceState(options: {
     : "stale";
 }
 
+function section(state: SourceState, title: string): string {
+  return `\n\n${title}\n\nSource ${state}. ${qualification}\n`;
+}
+
+function withoutPreflightSource(markdown: string): string {
+  // Only exact host-written suffixes are replaceable. A carried report never
+  // supplies the current observation, including when output modes change.
+  let clean = markdown;
+  const suffixes = [heading, hostedHeading].flatMap((title) =>
+    states.map((state) => section(state, title)),
+  );
+  for (;;) {
+    const suffix = suffixes.find((value) => clean.endsWith(value));
+    if (!suffix) return clean;
+    clean = clean.slice(0, -suffix.length);
+  }
+}
+
+function reportSourceState(markdown: string, observation: PreflightObservation): SourceState {
+  const reportMatchesTarget =
+    frontMatterValue(markdown, "repository")?.toLowerCase() === observation.repo.toLowerCase() &&
+    frontMatterValue(markdown, "number") === String(observation.number);
+  return reportMatchesTarget
+    ? sourceState({
+        ...observation,
+        reportHead: frontMatterValue(markdown, "pull_head_sha"),
+      })
+    : "unknown";
+}
+
 /** Host-only local output: no contributor strings enter reports or model/cache state. */
 export function withLocalPreflightSource(
   markdown: string,
-  observation?: {
-    repo: string;
-    number: number;
-    pull: unknown;
-    targetDir: string;
-  },
+  observation?: PreflightObservation,
 ): string {
-  // Replace only our exact terminal section on carried reports. Hosted output
-  // removes it, so a locally retained report cannot cross-post the advisory.
-  let clean = markdown;
-  for (const state of ["matches", "stale", "unknown"] as const) {
-    const section = `\n\n${heading}\n\nSource ${state}. ${qualification}\n`;
-    if (clean.endsWith(section)) clean = clean.slice(0, -section.length);
-  }
-  if (!observation) return clean;
-  const reportMatchesTarget =
-    frontMatterValue(clean, "repository")?.toLowerCase() === observation.repo.toLowerCase() &&
-    frontMatterValue(clean, "number") === String(observation.number);
-  const state = reportMatchesTarget
-    ? sourceState({
-        ...observation,
-        reportHead: frontMatterValue(clean, "pull_head_sha"),
-      })
-    : "unknown";
-  return `${clean}\n\n${heading}\n\nSource ${state}. ${qualification}\n`;
+  const clean = withoutPreflightSource(markdown);
+  return observation ? clean + section(reportSourceState(clean, observation), heading) : clean;
+}
+
+export function withHostedPreflightSource(
+  markdown: string,
+  observation?: PreflightObservation,
+): string {
+  const clean = withoutPreflightSource(markdown);
+  if (!observation || !hostedSourceEligible(clean)) return clean;
+  return clean + section(reportSourceState(clean, observation), hostedHeading);
+}
+
+function hostedSourceEligible(markdown: string): boolean {
+  return (
+    frontMatterValue(markdown, "type") === "pull_request" &&
+    frontMatterValue(markdown, "review_status") === "complete" &&
+    frontMatterValue(markdown, "decision") === "keep_open"
+  );
+}
+
+/** Read only the finite host projection, never arbitrary report section text. */
+export function hostedPreflightSource(markdown: string): string {
+  if (!hostedSourceEligible(markdown)) return "";
+  const state = states.find((value) => markdown.endsWith(section(value, hostedHeading)));
+  return state ? `Source ${state}. ${qualification}` : "";
 }
