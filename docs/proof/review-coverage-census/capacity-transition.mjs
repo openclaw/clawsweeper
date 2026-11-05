@@ -18,6 +18,7 @@ const files = [
   "src/review-coverage.ts",
   "src/repair/review-coverage-census.ts",
   "src/repair/target-fanout.ts",
+  "src/repair/coverage-summary.ts",
   "dashboard/review-coverage-census.ts",
   "dashboard/exact-review-queue.ts",
   "dashboard/exact-review-direct-publication.ts",
@@ -25,6 +26,7 @@ const files = [
   "test/fixtures/fleet-coverage-query.ts",
   "docs/proof/review-coverage-census/capacity-transition.mjs",
   "dist/repair/target-fanout.js",
+  "dist/repair/coverage-summary.js",
   "dist/repair/review-coverage-census.js",
   "dist/review-coverage-census.js",
 ];

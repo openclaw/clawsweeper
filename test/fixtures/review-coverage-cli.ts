@@ -78,6 +78,15 @@ export async function coverageCliFixture(
     lastQuery = "";
   let observer: ((event: { path: string; body?: Record<string, unknown> }) => void) | undefined;
   let controlFailure = false;
+  let publicCoverageOverride: ((request: Request) => Response | Promise<Response>) | undefined;
+  const publicCoverageReads: {
+    path: string;
+    method: string;
+    query: string;
+    authorization: boolean;
+    signature: boolean;
+    redirect: string;
+  }[] = [];
   childProcess.spawnSync = ((command: unknown, args: readonly string[]) => {
     let value: unknown;
     if (args[0] === "repo" && args[1] === "list")
@@ -257,6 +266,19 @@ export async function coverageCliFixture(
       throw new Error("Unexpected network blocked: " + url.hostname);
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ path: url.pathname, method, ...(body ? { body } : {}) });
+    if (url.pathname === "/api/review-coverage" && method === "GET") {
+      publicCoverageReads.push({
+        path: url.pathname,
+        method,
+        query: url.search,
+        authorization: request.headers.has("authorization"),
+        signature: request.headers.has("x-clawsweeper-exact-review-signature"),
+        redirect: request.redirect,
+      });
+      return publicCoverageOverride
+        ? publicCoverageOverride(request)
+        : activeWorker.fetch(request, env, {});
+    }
     if (controlFailure && url.pathname.includes("/census/"))
       return new Response("controlled unsupported v2", { status: 404 });
     if (url.pathname.startsWith("/internal/review-coverage/")) {
@@ -287,6 +309,10 @@ export async function coverageCliFixture(
   console.error = (...args) => logs.push(args.join(" "));
   return {
     countExchanges,
+    publicCoverageReads,
+    setPublicCoverageResponse(reply: typeof publicCoverageOverride) {
+      publicCoverageOverride = reply;
+    },
     useImplementations(next: {
       worker: typeof worker;
       runTargetFanout: typeof runTargetFanout;
@@ -349,7 +375,11 @@ export async function coverageCliFixture(
     advance(ms: number) {
       model.restart(ms);
     },
-    async run(mode: string, protocol = "v2") {
+    async run(
+      mode: string,
+      protocol = "v2",
+      reportOptions: { publish?: boolean; windowDays?: number } = {},
+    ) {
       currentMode = mode;
       inventory = 0;
       counts = 0;
@@ -369,6 +399,12 @@ export async function coverageCliFixture(
         "1",
         "--dry-run",
       ];
+      if (reportOptions.publish === false) {
+        const at = args.indexOf("--publish-url");
+        if (at >= 0) args.splice(at, 2);
+      }
+      if (reportOptions.windowDays !== undefined)
+        args.push("--window-days", String(reportOptions.windowDays));
       await withReplayClock(model.time, () =>
         activeCli(
           protocolFlag
