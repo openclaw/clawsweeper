@@ -1,3 +1,8 @@
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { captureCompatibilityBrowser } from "../docs/proof/review-coverage-census/compatibility-browser.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -250,4 +255,92 @@ test("proof caption separates real execution from as-of evaluation and leaves br
   assert.match(source, /executionStartedAt/);
   assert.match(source, /proofCaption: caption/);
   assert.doesNotMatch(source, /addInitScript|page\.clock|context\.clock/);
+});
+
+test("compatibility Astro build handoff executes the actual ISO replay preload without replacing native timers", async () => {
+  const root = process.cwd(),
+    artifacts = join(root, ".artifacts");
+  mkdirSync(artifacts, { recursive: true });
+  const scratch = mkdtempSync(join(artifacts, "compatibility-clock-")),
+    site = join(scratch, "dashboard-site"),
+    docs = join(scratch, "docs/proof/ui-live-coverage"),
+    data = join(site, "src/data/dashboard.json"),
+    savedData = '{"source":"restore-this-exact-byte-snapshot"}\n';
+  mkdirSync(join(site, "fixtures"), { recursive: true });
+  mkdirSync(join(site, "src/data"), { recursive: true });
+  mkdirSync(docs, { recursive: true });
+  copyFileSync(
+    join(root, "dashboard-site/fixtures/dashboard.json"),
+    join(site, "fixtures/dashboard.json"),
+  );
+  for (const name of ["replay-clock-preload.mjs", "replay-clock.mjs"])
+    copyFileSync(join(root, "docs/proof/ui-live-coverage", name), join(docs, name));
+  writeFileSync(data, savedData);
+  const evaluation = "2026-10-31T05:12:34.000Z",
+    originalSpawn = childProcess.spawnSync,
+    originalDate = Date,
+    priorEvaluation = process.env.CLAWSWEEPER_PROOF_EVALUATION_AT,
+    stop = new Error("controlled stop after the real child preload");
+  let child: ReturnType<typeof originalSpawn> | undefined,
+    observedCommand: string | undefined,
+    observedEnvironment: NodeJS.ProcessEnv | undefined;
+  delete process.env.CLAWSWEEPER_PROOF_EVALUATION_AT;
+  childProcess.spawnSync = ((command, args, options) => {
+    observedCommand = String(command);
+    observedEnvironment = options?.env;
+    child = originalSpawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        "import {setTimeout as nativeTimeout,setInterval as nativeInterval} from'node:timers';const before=performance.now();await new Promise(resolve=>nativeTimeout(resolve,15));console.log(JSON.stringify({evaluation:process.env.CLAWSWEEPER_PROOF_EVALUATION_AT,now:Date.now(),iso:new Date().toISOString(),nativeTimeout:globalThis.setTimeout===nativeTimeout,nativeInterval:globalThis.setInterval===nativeInterval,realPerformanceAdvanced:performance.now()>before}));",
+      ],
+      { cwd: options?.cwd, env: options?.env, encoding: "utf8" },
+    );
+    throw stop;
+  }) as typeof childProcess.spawnSync;
+  syncBuiltinESMExports();
+  process.chdir(scratch);
+  try {
+    await assert.rejects(
+      captureCompatibilityBrowser({
+        selected: {},
+        output: join(scratch, "evidence"),
+        evaluation,
+        executionStartedAt: new originalDate().toISOString(),
+        complete: true,
+      }),
+      (error) => error === stop,
+    );
+    assert.equal(observedCommand, "pnpm");
+    assert.ok(child);
+    assert.equal(child.status, 0, String(child.stderr));
+    assert.equal(observedEnvironment?.CLAWSWEEPER_PROOF_EVALUATION_AT, evaluation);
+    assert.deepEqual(JSON.parse(String(child.stdout)), {
+      evaluation,
+      now: Date.parse(evaluation),
+      iso: evaluation,
+      nativeTimeout: true,
+      nativeInterval: true,
+      realPerformanceAdvanced: true,
+    });
+    assert.equal(Date, originalDate, "the parent clock must stay real");
+    assert.equal(
+      readFileSync(data, "utf8"),
+      savedData,
+      "actual helper finally restores its input file",
+    );
+    assert.equal(
+      existsSync(join(scratch, "evidence/coverage.png")),
+      false,
+      "this child-contract test does not claim browser execution",
+    );
+  } finally {
+    process.chdir(root);
+    childProcess.spawnSync = originalSpawn;
+    syncBuiltinESMExports();
+    if (priorEvaluation === undefined) delete process.env.CLAWSWEEPER_PROOF_EVALUATION_AT;
+    else process.env.CLAWSWEEPER_PROOF_EVALUATION_AT = priorEvaluation;
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });

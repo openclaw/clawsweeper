@@ -1,0 +1,1 @@
+- Keep bounded coverage producers draining removable retired-generation payloads within the existing control budget so large static repositories do not wait many scheduled runs for refresh to resume.

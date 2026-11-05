@@ -656,9 +656,12 @@ export class ReviewCoverageCensusStore {
         return {
           ok: true,
           work: [],
-          pending: this.all().some(
-            (s) => (!!s.active?.promoting || s.active?.prunePass !== undefined) && s.retryAt <= now,
-          ),
+          pending:
+            this.all().some(
+              (s) =>
+                (!!s.active?.promoting || s.active?.prunePass !== undefined) && s.retryAt <= now,
+            ) ||
+            this.rows("SELECT 1 FROM coverage_census_items WHERE slot='orphan' LIMIT 1").length > 0,
         };
       // First-page batching remains bounded to ten repository connections. The
       // alternating continuation reservation prevents a 145-small-repo flood
