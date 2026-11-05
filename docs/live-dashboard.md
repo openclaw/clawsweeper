@@ -1689,6 +1689,13 @@ Limits are centralized in CENSUS in src/review-coverage-census.ts:
   fallback or injected fixture field, is carried into signed census metadata.
   Count-query fixtures return only actually requested root fields; actual CLI
   mode proofs retain query/response selection traces.
+- Retired orphan payloads are bounded **control work**, even when no GitHub
+  identity work can start until that cleanup finishes. An empty `/census/next`
+  response remains pending only while removable orphan rows or eligible
+  finalization work remain. Existing limits stay at 200 producer control steps
+  and 128 orphan deletions per cleanup call; cleanup does not consume an
+  identity query, retimestamp a qualified collection window, or advance
+  completeness without new valid witnesses.
 - At most 64 KiB per identity chunk; a wire/control/page-accept body or query
   result is at most 1,900,000 UTF-8 bytes. A response exceeding that bound fails
   rather than being partially admitted.
@@ -1814,6 +1821,7 @@ Host supporting checks (not the required final browser/container proof):
     node docs/proof/review-coverage-census/mode-cadence.mjs --two-incomplete
     node docs/proof/review-coverage-census/capacity-transition.mjs
     node docs/proof/review-coverage-census/byte-pressure.mjs
+    node docs/proof/review-coverage-census/cleanup-progress.mjs
     node docs/proof/review-coverage-census/compatibility.mjs --browser
 
 The compatibility harness builds the pinned predecessor

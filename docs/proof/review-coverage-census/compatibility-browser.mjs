@@ -36,7 +36,7 @@ export async function captureCompatibilityBrowser({
       encoding: "utf8",
       env: {
         ...process.env,
-        COVERAGE_REPLAY_NOW: String(Date.parse(evaluation)),
+        CLAWSWEEPER_PROOF_EVALUATION_AT: evaluation,
         NODE_OPTIONS: [
           process.env.NODE_OPTIONS,
           "--import=" + resolve("docs/proof/ui-live-coverage/replay-clock-preload.mjs"),
