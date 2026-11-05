@@ -193,14 +193,18 @@ function openclawConfig(
         timeoutSeconds,
       },
     },
-    ...(checkoutInspection
-      ? {
-          plugins: {
+    // Each job gets a fresh, discarded state directory, so memory has nothing to
+    // recall; left on, it syncs the workspace and session through an embeddings
+    // API, and that pending work can fail the CLI after the turn has finished.
+    plugins: {
+      slots: { memory: "none" },
+      ...(checkoutInspection
+        ? {
             load: { paths: [OPENCLAW_READ_RECEIPT_PLUGIN_PATH] },
             entries: { [OPENCLAW_READ_RECEIPT_PLUGIN_ID]: { enabled: true } },
-          },
-        }
-      : {}),
+          }
+        : {}),
+    },
     tools: checkoutInspection
       ? {
           allow: ["read"],
