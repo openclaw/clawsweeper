@@ -1,0 +1,46 @@
+[
+  {
+    "name": "first",
+    "scanner": "3.99.4",
+    "findings": [
+      {
+        "detector": 17,
+        "decoder": "PLAIN",
+        "verified": false,
+        "fixtureSha256": "7efab902442b7a5718ca6037293710b1651a072ea24f11da9c6a9a5cadfb5fc3",
+        "line": 182,
+        "material": "patch"
+      },
+      {
+        "detector": 17,
+        "decoder": "PLAIN",
+        "verified": false,
+        "fixtureSha256": "7efab902442b7a5718ca6037293710b1651a072ea24f11da9c6a9a5cadfb5fc3",
+        "line": 176,
+        "material": "blob"
+      }
+    ]
+  },
+  {
+    "name": "stacked",
+    "scanner": "3.99.4",
+    "findings": [
+      {
+        "detector": 17,
+        "decoder": "HTML",
+        "verified": false,
+        "fixtureSha256": "7efab902442b7a5718ca6037293710b1651a072ea24f11da9c6a9a5cadfb5fc3",
+        "line": 176,
+        "material": "blob"
+      },
+      {
+        "detector": 17,
+        "decoder": "PLAIN",
+        "verified": false,
+        "fixtureSha256": "7efab902442b7a5718ca6037293710b1651a072ea24f11da9c6a9a5cadfb5fc3",
+        "line": 218,
+        "material": "blob"
+      }
+    ]
+  }
+]

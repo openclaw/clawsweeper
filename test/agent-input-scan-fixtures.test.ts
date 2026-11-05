@@ -13,6 +13,34 @@ import {
   type StagedScanInput,
 } from "../dist/agent-input-scan-fixtures.js";
 
+test("custom endpoint URI qualification stays native-identity and source-line bound", () => {
+  const source = readFileSync(
+    new URL("../src/agent-input-scan-fixtures.ts", import.meta.url),
+    "utf8",
+  );
+  const declaration = source.match(/const REVIEWED_ATTRIBUTIONS:[^\n]* = \[([\s\S]*?)\n\];/);
+  assert.ok(declaration);
+  const matching = declaration[1]!
+    .split("\n")
+    .filter((line) =>
+      line.includes("7efab902442b7a5718ca6037293710b1651a072ea24f11da9c6a9a5cadfb5fc3"),
+    )
+    .map((line) => JSON.parse(line.trim().replace(/,$/, "")) as ReviewedAttribution);
+  assert.deepEqual(
+    matching,
+    ["PLAIN", "HTML"].map((decoder) => [
+      17,
+      "URI",
+      decoder,
+      "597eab0f9f33f6ee623768b183c5e349f6b5e94f4760d5e846c2e77fd193f977",
+      "7efab902442b7a5718ca6037293710b1651a072ea24f11da9c6a9a5cadfb5fc3",
+      "6532ea82ef6d753e323297804484e534857b597d5d82d161a1f14ab6ed606672",
+      "src/gateway/server-methods/config-custom-endpoint.test.ts",
+      "100644",
+    ]),
+  );
+});
+
 test("host-owned reviewed attribution policy is valid and has no duplicate rows", () => {
   assert.doesNotThrow(validateReviewedAttributionPolicy);
 });
