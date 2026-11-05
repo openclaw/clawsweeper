@@ -830,6 +830,26 @@ export class ReviewCoverageCensusStore {
       throw error;
     }
   }
+  private retainedUsage() {
+    const usage = { rows: 0, bytes: 0, stagingRows: 0, stagingBytes: 0 };
+    for (const row of this.rows(
+      "SELECT slot,COUNT(*) AS n,COALESCE(SUM(bytes),0) AS bytes FROM coverage_census_items GROUP BY slot",
+    )) {
+      const count = Number(row.n),
+        bytes = Number(row.bytes);
+      if (!Number.isSafeInteger(count) || count < 0 || !Number.isSafeInteger(bytes) || bytes < 0)
+        throw new Error("census retained accounting");
+      usage.rows += count;
+      usage.bytes += bytes;
+      if (row.slot === "staging") {
+        usage.stagingRows = count;
+        usage.stagingBytes = bytes;
+      }
+    }
+    if (!Number.isSafeInteger(usage.rows) || !Number.isSafeInteger(usage.bytes))
+      throw new Error("census retained accounting");
+    return usage;
+  }
   private acceptPage(p: CensusPage, hash: string, receipt: string, now: number) {
     const s = this.state(p.repo),
       g = s.active,
@@ -891,10 +911,19 @@ export class ReviewCoverageCensusStore {
         p.kind,
         p.cursor,
       );
+    const usage = this.retainedUsage();
+    const exceeds = (rows = 0, bytes = 0) =>
+      usage.rows + rows > MAX_ROWS ||
+      usage.bytes + bytes > 2 * CENSUS.copyBytes ||
+      usage.stagingRows + rows > CENSUS.identities ||
+      usage.stagingBytes + bytes > CENSUS.copyBytes;
+    // One whole old staging copy fits this finite page budget. Every candidate
+    // read/delete is additionally bounded to pageNodes metadata rows, not payloads.
+    let reclaimRemaining = CENSUS.identities;
     let newlySeen = 0;
     for (const item of p.items) {
       const old = this.rows(
-        "SELECT seen,bytes FROM coverage_census_items WHERE repo=? AND generation=? AND kind=? AND number=?",
+        "SELECT seen,bytes,slot FROM coverage_census_items WHERE repo=? AND generation=? AND kind=? AND number=?",
         p.repo,
         g.id,
         p.kind,
@@ -905,21 +934,66 @@ export class ReviewCoverageCensusStore {
         continue;
       }
       newlySeen++;
-      const bytes = censusBytes(item);
-      if (!old) {
-        // An old-pass row is expendable: its prior witness is a digest, not a
-        // second staging copy. Never evict identities seen in this pass.
-        const count = Number(
-          this.rows("SELECT COUNT(*) AS n FROM coverage_census_items WHERE slot='staging'")[0]?.n ??
-            0,
+      const bytes = censusBytes(item),
+        oldBytes = old ? Number(old.bytes) : 0;
+      if (
+        old &&
+        (old.slot !== "staging" ||
+          !Number.isSafeInteger(oldBytes) ||
+          oldBytes <= 0 ||
+          oldBytes > CENSUS.chunkBytes)
+      )
+        throw new Error("census retained accounting");
+      const rowDelta = old ? 0 : 1,
+        byteDelta = bytes - oldBytes;
+      while (exceeds(rowDelta, byteDelta)) {
+        if (reclaimRemaining <= 0) throw new Error("census retained capacity bound");
+        const candidates = this.rows(
+          "SELECT rowid,bytes FROM coverage_census_items WHERE slot='staging' AND repo=? AND generation=? AND seen<? AND NOT(kind=? AND number=?) ORDER BY rowid LIMIT ?",
+          p.repo,
+          g.id,
+          g.pass,
+          p.kind,
+          item.number,
+          Math.min(CENSUS.pageNodes, reclaimRemaining),
         );
-        if (count >= CENSUS.identities)
-          this.storage.sql.exec(
-            "DELETE FROM coverage_census_items WHERE rowid IN (SELECT rowid FROM coverage_census_items WHERE slot='staging' AND repo=? AND generation=? AND seen<>? LIMIT 1)",
-            p.repo,
-            g.id,
-            g.pass,
-          );
+        if (!candidates.length) throw new Error("census retained capacity bound");
+        let count = 0,
+          lastRow = 0;
+        for (const candidate of candidates) {
+          const obsoleteBytes = Number(candidate.bytes),
+            rowid = Number(candidate.rowid);
+          if (
+            !Number.isSafeInteger(obsoleteBytes) ||
+            obsoleteBytes <= 0 ||
+            obsoleteBytes > CENSUS.chunkBytes ||
+            !Number.isSafeInteger(rowid) ||
+            rowid <= 0
+          )
+            throw new Error("census retained accounting");
+          count++;
+          lastRow = rowid;
+          reclaimRemaining--;
+          usage.rows--;
+          usage.stagingRows--;
+          usage.bytes -= obsoleteBytes;
+          usage.stagingBytes -= obsoleteBytes;
+          if (usage.rows < 0 || usage.stagingRows < 0 || usage.bytes < 0 || usage.stagingBytes < 0)
+            throw new Error("census retained accounting");
+          if (!exceeds(rowDelta, byteDelta)) break;
+        }
+        // Prior-pass payloads are expendable: their witness is already a digest.
+        // Excluding the replacement target prevents subtracting its bytes twice.
+        this.storage.sql.exec(
+          "DELETE FROM coverage_census_items WHERE rowid IN (SELECT rowid FROM coverage_census_items WHERE slot='staging' AND repo=? AND generation=? AND seen<? AND NOT(kind=? AND number=?) AND rowid<=? ORDER BY rowid LIMIT ?)",
+          p.repo,
+          g.id,
+          g.pass,
+          p.kind,
+          item.number,
+          lastRow,
+          count,
+        );
       }
       this.storage.sql.exec(
         "INSERT OR REPLACE INTO coverage_census_items(repo,generation,kind,number,payload,bytes,checksum,seen,slot) VALUES(?,?,?,?,?,?,?,?,'staging')",
@@ -932,20 +1006,20 @@ export class ReviewCoverageCensusStore {
         censusChecksum(JSON.stringify(item)),
         g.pass,
       );
+      usage.rows += rowDelta;
+      usage.stagingRows += rowDelta;
+      usage.bytes += byteDelta;
+      usage.stagingBytes += byteDelta;
     }
-    const totals = this.rows(
-      "SELECT slot,COUNT(*) AS n,COALESCE(SUM(bytes),0) AS bytes FROM coverage_census_items GROUP BY slot",
-    );
+    const actual = this.retainedUsage();
     if (
-      totals.reduce((n, r) => n + Number(r.n), 0) > MAX_ROWS ||
-      totals.reduce((n, r) => n + Number(r.bytes), 0) > 2 * CENSUS.copyBytes ||
-      totals.some(
-        (r) =>
-          r.slot === "staging" &&
-          (Number(r.n) > CENSUS.identities || Number(r.bytes) > CENSUS.copyBytes),
-      )
+      actual.rows !== usage.rows ||
+      actual.bytes !== usage.bytes ||
+      actual.stagingRows !== usage.stagingRows ||
+      actual.stagingBytes !== usage.stagingBytes
     )
-      throw new Error("census retained capacity bound");
+      throw new Error("census retained accounting");
+    if (exceeds()) throw new Error("census retained capacity bound");
     c.count += newlySeen;
     c.stable = c.stable && (c.total === null || c.total === p.total);
     c.total = p.total;
