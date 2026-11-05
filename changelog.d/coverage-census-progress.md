@@ -1,0 +1,1 @@
+- Resume bounded coverage censuses through existing publisher modes, preserve qualified as-of evidence during unchanged refreshes, and show completeness without partial fleet percentages.

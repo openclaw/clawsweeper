@@ -1,3 +1,4 @@
+import { CENSUS, CENSUS_PATHS, censusSignatureInput } from "../src/review-coverage-census.ts";
 import { publicWarningEvidence } from "./exact-review-warning-evidence.ts";
 import { publicTimestamp } from "./public-timestamp.ts";
 import { writeReviewUsage } from "./review-usage.ts";
@@ -1077,6 +1078,21 @@ export default {
       url.pathname !== "/api/health"
     ) {
       return json({ error: "not_found" }, 404);
+    }
+    if ((CENSUS_PATHS as readonly string[]).includes(url.pathname)) {
+      const response =
+        request.method !== "POST" || url.search
+          ? json({ error: "invalid_coverage_checkpoint_request" }, 400)
+          : await authenticatedCoverageCheckpoint(request, env);
+      const headers = new Headers(response.headers);
+      for (const key of [
+        "access-control-allow-origin",
+        "access-control-allow-methods",
+        "access-control-allow-headers",
+      ])
+        headers.delete(key);
+      headers.set("cache-control", "private, no-store");
+      return new Response(response.body, { status: response.status, headers });
     }
     if (request.method === "OPTIONS") return cors(new Response(null, { status: 204 }));
     if (url.pathname === "/api/health") {
@@ -5550,6 +5566,33 @@ async function publicReviewObservabilityJson(env, params: URLSearchParams) {
     `/review-observability?range=${range}&repo=all`,
     publicReviewObservabilityProjection,
     "review_observability_unavailable",
+  );
+}
+
+async function authenticatedCoverageCheckpoint(request: Request, env) {
+  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
+  if (!signature) return json({ error: "invalid_signature" }, 401);
+  const body = await boundedTargetDispatchBody(request, CENSUS.wireBytes);
+  if (body === null) return json({ error: "coverage_checkpoint_too_large" }, 413);
+  const path = new URL(request.url).pathname;
+  if (
+    !(await verifyGithubWebhookSignature({
+      bodyText: censusSignatureInput(path, body),
+      signature,
+      secret,
+    }))
+  )
+    return json({ error: "invalid_signature" }, 401);
+  return exactReviewQueueRequest(
+    env,
+    path.replace("/internal", ""),
+    new Request("https://internal.invalid" + path.replace("/internal", ""), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    }),
   );
 }
 

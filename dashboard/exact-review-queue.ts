@@ -1,4 +1,5 @@
 import { exactReviewWarningEvidence } from "./exact-review-warning-evidence.ts";
+import { ReviewCoverageCensusStore } from "./review-coverage-census.ts";
 import { StoredJsonCorruptionError, encodeStoredJson } from "./stored-json.ts";
 import {
   ReadModelCompressionStore,
@@ -1030,6 +1031,15 @@ export class ExactReviewQueue {
     generation: number;
   } | null = null;
 
+  private coverageCensus: ReviewCoverageCensusStore;
+
+  private coverageInventory() {
+    return (
+      this.coverageCensus.inventory() ??
+      normalizeReviewCoverageInventory(this.storage.kv.get(REVIEW_COVERAGE_INVENTORY_KEY))
+    );
+  }
+
   private invalidateReadCaches() {
     this.statsMutationGeneration++;
     this.statsCache = null;
@@ -1044,9 +1054,7 @@ export class ExactReviewQueue {
 
   private refreshReviewCoverageScan(): Promise<ReviewCoverageScan> {
     this.reviewCoverageScanInFlight ??= (async () => {
-      await this.directPublicationStore.materializeReviewCoverageFacts(
-        normalizeReviewCoverageInventory(this.storage.kv.get(REVIEW_COVERAGE_INVENTORY_KEY)),
-      );
+      await this.directPublicationStore.materializeReviewCoverageFacts(this.coverageInventory());
       const scannedAt = Date.now();
       const fleets = new Map<string, ReviewCoverageFleetCounts>();
       let cursor = this.directPublicationStore.reviewCoverageScanPageSync(
@@ -1119,6 +1127,7 @@ export class ExactReviewQueue {
   constructor(state, env, random: () => number = Math.random) {
     this.state = state;
     this.storage = state.storage;
+    this.coverageCensus = new ReviewCoverageCensusStore(this.storage);
     this.env = env;
     this.random = random;
     this.batchStore = new ExactReviewPublicationBatchStore(this.storage);
@@ -1351,6 +1360,29 @@ export class ExactReviewQueue {
         Number(url.searchParams.get("hours") || "6"),
       );
       return result ? json(result) : json({ error: "invalid_github_egress_window" }, 400);
+    }
+    if (
+      request.method === "POST" &&
+      [
+        "/review-coverage/census/start",
+        "/review-coverage/census/next",
+        "/review-coverage/census/accept",
+        "/review-coverage/census/fail",
+      ].includes(url.pathname)
+    ) {
+      try {
+        const body = await request.json();
+        const result = url.pathname.endsWith("/start")
+          ? await this.coverageCensus.start(body)
+          : url.pathname.endsWith("/next")
+            ? this.coverageCensus.next(body)
+            : url.pathname.endsWith("/accept")
+              ? await this.coverageCensus.accept(body)
+              : this.coverageCensus.fail(body);
+        return json(result);
+      } catch {
+        return json({ error: "coverage_checkpoint_rejected" }, 409);
+      }
     }
     if (request.method === "POST" && url.pathname === "/review-coverage/inventory") {
       const inventory = normalizeReviewCoverageInventory(await request.json().catch(() => null));
@@ -4712,7 +4744,7 @@ export class ExactReviewQueue {
         ...this.directPublicationStore.reviewCoverageSummary(
           scan?.fleets ?? new Map(),
           now,
-          normalizeReviewCoverageInventory(this.storage.kv.get(REVIEW_COVERAGE_INVENTORY_KEY)),
+          this.coverageInventory(),
           undefined,
           scan?.scannedAt ?? Number.NaN,
         ),

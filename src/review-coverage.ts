@@ -19,21 +19,37 @@ export type ReviewCoverageObservationScope =
   | "fork"
   | "alias"
   | "historical";
+// Internal bounded item sources are never a v1 wire representation. The v1
+// intake still requires Array.isArray; only the canonical v2 owner supplies one.
+export type ReviewCoverageItemList = {
+  readonly length: number;
+  slice(start: number, end: number): ReviewCoverageOpenItem[];
+  some(predicate: (item: ReviewCoverageOpenItem) => unknown): boolean;
+  [Symbol.iterator](): IterableIterator<ReviewCoverageOpenItem>;
+};
 export type ReviewCoverageInventoryRepository = {
   observation_scope?: ReviewCoverageObservationScope;
   repo: string;
   repo_slug: string;
   open_issues: number | null;
   open_pull_requests: number | null;
+  collection_window?: {
+    started_at: string;
+    ended_at: string;
+    witness_observed_at: string;
+    published_at: string;
+  };
   counts_observed_at?: string | null;
   counts_qualification?: "identity_scan_drifted";
   visibility?: "public" | "unknown";
   reason?: string | undefined;
   missing_fields?: string[];
   complete?: boolean;
-  items?: ReviewCoverageOpenItem[];
+  items?: ReviewCoverageOpenItem[] | ReviewCoverageItemList;
 };
 export type ReviewCoverageInventorySnapshot = {
+  // Internal v2 cohort admission; never a partial identity denominator.
+  capacity_blocked?: boolean;
   generated_at: string;
   repositories: ReviewCoverageInventoryRepository[];
 };

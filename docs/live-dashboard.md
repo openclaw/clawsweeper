@@ -1599,3 +1599,238 @@ Attention lists from a complete corpus refresh sort by reviewer-assigned priorit
 flags, not verified unresolved work. Cached corpora built before priority collection
 retain newest-first ordering until the next corpus refresh; discarded older
 rows cannot be reconstructed by sorting the cache.
+
+
+### Resumable observational coverage census (v2)
+
+Owner: ClawSweeper maintainers / coverage producer and ExactReviewQueue derived
+read-model owner. Sources: src/review-coverage-census.ts,
+src/repair/review-coverage-census.ts, dashboard/review-coverage-census.ts,
+dashboard/exact-review-queue.ts, dashboard/worker.ts,
+dashboard/public-live-coverage.ts, and dashboard-site/src/pages/coverage.astro.
+Last source inspection: intended base 03e24309cf919bf866bb2ffe2551beca27fd9bb3;
+the executing changed-source hashes belong in the proof artifact, not this date.
+Update this contract whenever schema, authentication domains, witness semantics,
+population/visibility qualification, bounds, retention or projection changes.
+
+The coverage producer continues bounded read work in the existing canonical
+ExactReviewQueue Durable Object. Existing normal/hot publication opportunities
+(each scheduled every 20 minutes, offset by ten minutes) and configured audit
+invocations advance the SAME v2 checkpoint as the six-hour coverage command.
+One common CLI owner replaces legacy collection; no invocation runs both query
+budgets and no cron/concurrency/admission setting changes. The configured default
+is v2; --coverage-protocol v1 is an explicit legacy-only selection, never an
+automatic fallback after authentication, transport or unsupported-route errors.
+Legacy writes do not replace the initialized v2 read authority. It does not use the audit
+cursor, review admission state, canonical records or body-tiering/R2 as a second
+inventory authority. No queue alarm, concurrency, cadence, rate or admission
+setting changes. Bay remains retired and is not a census dependency.
+
+A generation is an **observational as-of collection window**, not a linearizable
+GitHub snapshot. Promotion requires two finished sweeps with matching full unique
+(kind, number) identity/relevant-field digests and terminal count witnesses.
+A cross-page re-observation after membership drift is retained once and makes
+that entire sweep ineligible for promotion, while its cursor can progress.
+Within-page duplicates and cursor cycles remain rejected without progress.
+Labels are complete and sorted, PR head and latest observed reopen are included,
+and future/malformed fields, duplicate identities and cursor cycles fail closed.
+Equal counts alone do not prove complete identity membership. A count change
+finishes its current bounded sweep instead of abandoning the prefix on the next
+ordinary invocation. Further sweeps reconcile membership and field changes.
+Static inputs complete finitely; finite/bounded changes converge after a stable
+consistency window. Under sustained changes the affected repository can remain
+Unknown while fair bounded progress and other repositories continue. This does
+not promise to eliminate every production Unknown warning.
+
+Refresh scheduling (20 minutes) is separate from evidence validity. A previous
+verified as-of generation can remain usable during a qualified unchanged refresh
+only while its conservative two-sweep collection-window start AND latest
+independent counts remain within the existing 12-hour bound, qualification/counts
+agree, and no observed identity/field/pagination/query/capacity drift invalidates
+that fallback. Enqueueing a refresh alone does not erase a valid as-of witness.
+Observed drift disables it until re-verification; stale evidence never becomes
+fresh by updating an attempt or counts timestamp. Promotion also requires the
+two agreeing sweeps to fit within that 12-hour collection window. Over-age passes
+finish progress but cannot promote; later recent sweeps can qualify without
+resetting the active generation. Generation attempt start is retained separately
+from the start of the two qualifying sweeps.
+
+Independent count observations, collection start/end, terminal witness and
+publication times remain distinct. A new producer attempt does not relabel an
+old generation or its counts as newly observed. Partial or invalid staging data
+never becomes a review denominator. Complete individual rows can remain numeric
+while any participating incomplete row keeps the fleet percentage Unknown.
+The UI counts complete/total against the same participating, current-visibility
+verified public population and explains the observational limitation.
+
+#### Storage, replay and limits
+
+The additive coverage_census_* SQLite tables contain repository metadata,
+identity chunks, cursor checks and bounded replay receipts only. Each repository
+has at most one active staging generation and its latest complete pointer.
+Superseded/invalidated chunks become inaccessible orphans before bounded cleanup;
+a new staging generation waits for its repository's prior orphans to clear.
+The existing v1 whole-snapshot intake and accepted/read clients remain supported.
+A v1 snapshot is never adopted as a resumable verified prefix. The v2 owner is
+preferred once initialized; it never flattens/truncates an oversized generation
+into a supposedly complete v1 value. Unsupported population/capacity is Unknown,
+not the previous complete subset masquerading as the new population.
+
+Limits are centralized in CENSUS in src/review-coverage-census.ts:
+
+- 25 GitHub queries per producer invocation; 100 nodes per connection page;
+  ten pages per connection **per invocation**, not per generation.
+- 512 repository metadata entries and 20,000 unique identities per logical
+  fleet copy. Retain no more than two 20,000-identity copies across latest,
+  staging and transient orphan chunks. Payload cap: 32 MiB per staging copy,
+  64 MiB total retained; byte accounting replaces an identity once, not on retry.
+- At most 64 KiB per identity chunk; a wire/control/page-accept body or query
+  result is at most 1,900,000 UTF-8 bytes. A response exceeding that bound fails
+  rather than being partially admitted.
+- Metadata is at most 16 KiB/repository (8 MiB for 512); 1,024 replay receipts
+  with short ASCII attempt/request IDs (64 characters maximum). Cursor-check
+  metadata is separately capped globally at 1,024 entries (about 1 MiB);
+  exhaustion finishes only the affected connection as an invalid witness, never
+  a complete one. A terminal pass releases its bounded cursor-check set.
+  A five-minute producer
+  lease can expire without losing accepted pages. An accepted progress timestamp,
+  not a new counts-only attempt, extends the seven-day staging expiry.
+- Cleanup removes at most 128 identity chunks and 32 receipt/expired metadata
+  entries per operation. Promotion prunes old-pass unseen rows in bounded next
+  steps before switching the complete pointer. No review-queue alarm is involved.
+- At most 200 next/control scheduling steps per invocation. First-page batches
+  have at most ten repository connections; alternating persisted continuation
+  preference prevents batches of small repositories from exhausting every run.
+  A separate persisted finalization frontier advances up to ten repositories per
+  operation under one shared 128-row cleanup budget, so periodic small-repo
+  refreshes cannot starve repositories waiting to finish verification.
+- Private canonical materialization uses the existing persisted facts/budgets.
+  V2 inventory lists stream partitions of at most 100 identities, with a
+  200-partition/20,000-identity ceiling per traversal. Existing projection needs
+  at most four traversals (800 bounded SQL partitions / 128 MiB traversed, not
+  retained together); only bounded chunks and the identity-number set stay in
+  memory, never a monolithic fleet inventory KV value. Before promotion, the
+  terminal-page preflight recomputes full SHA-256 sweep chains from current-pass
+  retained chunks in at most 200 partitions; generation/revision/cursor CAS is
+  rechecked after that asynchronous verification. Each stored payload also has a
+  four-byte non-authenticating corruption checksum checked by synchronous reads
+  (at most 160 KiB for 40,000 retained rows). HMAC and full SHA-256 chains remain
+  the authentication/witness authority, not that checksum. Corrupt prefixes
+  invalidate only their generation and cannot become a last-page retry trap.
+  Slice reads for existing
+  fact enrichment are bounded to 99 identities. Missing chunks fail Unknown.
+
+Raw GraphQL sourcePageInfo is retained separately from the internal resume
+cursor. A nonempty terminal page normally has hasNextPage=false with a non-null
+endCursor (its last node). The producer records that observation and normalizes
+ONLY its internal next cursor to null; nonterminal advancing/cycle guards remain.
+
+Page acceptance checks version, stable repository ID/canonical name,
+qualification revision, generation, pass, expected revision, cursor and lease.
+It atomically stores validated payloads, rolling digest, progress and receipt.
+Identical request replay returns its durable receipt without advancing twice;
+conflicting replay, stale attempts and stale CAS cannot overwrite progress.
+After a lost response the producer observes the receipt before another query or
+an exact retry. Failed repositories rotate and cool down without monopolizing
+other work. A twelve-hour interruption remains resumable; expiry is seven days.
+
+#### Count metadata is not identity storage admission
+
+Issue/PR count witnesses are closed, nonnegative safe integers and may exceed
+20,000. This does not widen page totals, item validation, stored identities or
+any collector budget. Fully validated, bounded signed metadata first makes an
+explicit capacity decision under the same transactional owner; a known valid
+20001-count observation must not fail parsing and leave an older complete fleet
+authoritative. No identity arrays are allocated from count values. Aggregate
+addition is checked before overflow, never rounded or replaced with zero.
+
+A fully represented over-capacity population retains its exact count witnesses,
+marks affected/new rows Unknown, preserves still-qualified unrelated as-of rows,
+and forces fleet completeness Unknown. Page work is paused. A population above
+the 512-row metadata bound or with an unrepresentable aggregate is unavailable,
+not truncated into a complete old subset. Malformed/missing/fractional/negative/
+nonfinite/unsafe counts reject before changing authority.
+
+Control start acknowledgements distinguish metadataAccepted from capacityBlocked;
+accepted unsupported metadata returns a bounded Unknown transition, not a scan
+or promotion. The producer stops before any identity query. Population observation
+timestamps and canonical fingerprints fence stale/ambiguous metadata replay;
+exact retries do not retimestamp counts or good generation windows. Empty
+populations require an explicit observation timestamp. The v1 read/intake contract
+remains separate, and current public visibility must still be verified at every
+build candidate union.
+
+#### Fixed control authentication and disclosure
+
+Only POST is accepted on these exact external paths, without query parameters:
+
+    /internal/review-coverage/census/start
+    /internal/review-coverage/census/next
+    /internal/review-coverage/census/accept
+    /internal/review-coverage/census/fail
+
+The signature input is the fixed domain followed by method, exact path and body:
+
+    clawsweeper-coverage-checkpoint-v2\nPOST\n<exact-path>\n<body>
+
+This is separate from the fixed private build-read signature and from legacy
+body-only mutation signatures. Wrong purpose/path/method, absent configuration,
+anonymous calls and oversized bodies do not gain control access. The Worker
+forwards only the corresponding fixed coverage route to the existing DO. No
+arbitrary path/table/operation proxy or CORS broadening is introduced.
+
+Anonymous endpoints remain aggregate-only: no repository names, item identities,
+checkpoint IDs, cursors or chunks. The private build still authorizes ONLY its
+fixed read and performs current GitHub visibility verification over the UNION
+of all candidate sources. Persisted public markers do not authorize disclosure.
+Private/404/renamed/error revocations remove every candidate branch, including
+staging/error and latest-complete-derived summaries, before public artifacts.
+There are no browser GitHub calls, mutation controls or operational buttons.
+
+#### Validation and contained proof command
+
+Host supporting checks (not the required final browser/container proof):
+
+    pnpm run build && pnpm run build:repair && pnpm run build:dashboard
+    node --test test/dashboard-review-coverage-census.test.ts test/dashboard-coverage-census-authority.test.ts test/dashboard-coverage-privacy.test.ts
+    node docs/proof/review-coverage-census/runtime.mjs
+    node docs/proof/review-coverage-census/runtime.mjs --bounded-churn
+    node docs/proof/review-coverage-census/runtime.mjs --two-incomplete
+    node docs/proof/review-coverage-census/mode-cadence.mjs
+    node docs/proof/review-coverage-census/mode-cadence.mjs --bounded-churn
+    node docs/proof/review-coverage-census/mode-cadence.mjs --two-incomplete
+    node docs/proof/review-coverage-census/capacity-transition.mjs
+
+The mode-cadence harness additionally invokes the actual CLI modes at explicit
+virtual 20-minute opportunities (with a six-hour coverage opportunity), retaining
+raw terminal pageInfo, internal resume cursors and unchanged as-of windows during
+refresh. Its clock is explicitly a controlled simulation, never a relabeled live
+observation. After the separate container grant, adding --browser connects that
+actual CLI flow to the built Astro page and Chromium. It keeps the original
+virtual snapshot timestamp, uses an explicit isolated build-child evaluation
+clock, displays a prominent CONTROLLED CLI CADENCE REPLAY notice, and leaves
+parent/browser wall time real. This must not be presented as current production
+observations. CENSUS_CADENCE_OUTPUT selects its artifact directory; the same
+clean-head/provider/image/lease gates below are required. A prepared harness or
+successful host run is not evidence that its browser gate passed.
+
+The runtime harness executes the actual producer -> signed Worker -> real
+ExactReviewQueue/SQLite checkpoints -> authenticated private build -> current
+visibility union filter. It retains invocation/page receipts, before/after
+source hashes, independent count/window metadata, API JSON and canonical tuple
+non-mutation evidence. Tests additionally exercise 950 x 3, 145 repositories with
+4,865 issues/2,881 PRs, interrupted and lost-response execution, finite changes,
+sustained field churn, replay/CAS/schema failures and revocation. Controlled
+GitHub/SQLite/R2 adapters do not establish deployed Cloudflare or live GitHub
+snapshot authority, and dependency egress is not zero total network.
+
+After the separate parent grant, execute the same harness with --browser in the
+approved clean committed Podman-backed Crabbox local-container (4 CPU/10 GiB,
+Node 24, pnpm 12.15, jq/Chromium, neutral /tmp), pinned image
+sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a.
+Provide CENSUS_CONTAINED_PROOF=1, CRABBOX_PROVIDER=local-container,
+CRABBOX_IMAGE, CRABBOX_LEASE, CENSUS_PROOF_HEAD, CENSUS_PROOF_OUTPUT and optionally
+CHROMIUM_EXECUTABLE. The script refuses a dirty or different executing head,
+builds the actual Astro site, serves it on loopback, inspects Chromium text and
+captures HTML/PNG, rejects browser egress and restores generated input afterward.
+Do not substitute host tests, static callback fixtures or CI for that held proof.
