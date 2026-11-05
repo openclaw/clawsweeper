@@ -85,19 +85,19 @@
     "crabbox:warmup": "crabbox warmup"
   },
   "dependencies": {
-    "markdown-it": "^15.0.2",
+    "markdown-it": "^15.0.3",
     "pako": "3.0.2",
-    "yaml": "^2.9.0",
+    "yaml": "^2.9.1",
     "yauzl": "3.4.0"
   },
   "devDependencies": {
-    "@types/node": "^24.13.4",
+    "@types/node": "^24.19.2",
     "@types/yauzl": "3.4.0",
-    "es-module-lexer": "3.0.3",
-    "oxfmt": "^0.67.0",
-    "oxlint": "^1.82.0",
-    "oxlint-tsgolint": "7.0.2001",
-    "playwright-core": "^1.63.0",
+    "es-module-lexer": "3.0.4",
+    "oxfmt": "^0.75.0",
+    "oxlint": "^1.90.0",
+    "oxlint-tsgolint": "7.0.2005",
+    "playwright-core": "^1.64.1",
     "typescript": "^7.0.2"
   },
   "engines": {
