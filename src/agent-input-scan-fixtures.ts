@@ -303,6 +303,8 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   // OpenClaw catalog-icon rejection fixture: observed native prefixes bind the complete source line.
   [17, "URI", "PLAIN", "580f7a7c0ff4d88005bb0a7ad56ab18f84dc6ba38060fd35914e020e8b581a6a", "02fcb6434869afdf5b29773aad1295172012f6445975eba685b873c79e4567b9", "6c9cdafa1ff07a62a8ffc88c6b8d5d377becfb6fc09c3709d997dcc9ca890469", "src/plugins/catalog-icon-registry.test.ts", "100644"],
   [17, "URI", "HTML", "580f7a7c0ff4d88005bb0a7ad56ab18f84dc6ba38060fd35914e020e8b581a6a", "02fcb6434869afdf5b29773aad1295172012f6445975eba685b873c79e4567b9", "6c9cdafa1ff07a62a8ffc88c6b8d5d377becfb6fc09c3709d997dcc9ca890469", "src/plugins/catalog-icon-registry.test.ts", "100644"],
+  // Website password-only URL rejection fixture: native 3.99.4 observed PLAIN only.
+  [17, "URI", "PLAIN", "040dc8c3fadea20ff28b67c13648a45e001f231c496b404a17de54426060d03d", "040dc8c3fadea20ff28b67c13648a45e001f231c496b404a17de54426060d03d", "2ac91a04945f735283120e3d37c3879183f5e7343dab5f45e605f19ffb76b3c2", "ui/src/lib/board/widgets/website.test.ts", "100644"],
   // OpenClaw SDK CDP fixtures: observed native PLAIN identities and complete source lines.
   [17, "URI", "PLAIN", "87c268ea768beeb60885ffe0d9168e807d77c7f512aea8823703046c734cbdbf", "87c268ea768beeb60885ffe0d9168e807d77c7f512aea8823703046c734cbdbf", "808983a7a484c49a6b2a47f9696e4e86ecff5880d1fd2d76b081734e75a9e7fc", "src/plugin-sdk/browser-subpaths.test.ts", "100644"],
   [17, "URI", "PLAIN", "d85938093727ccf6959e1199023569dcfaa302bf5e86a28aa3ea9e011b7c1224", "069a918f1609e9f5c0f688d50e234f9b021eae193b573c2312355703eb2fa414", "e22c3375ec9e03b63845c873a0aa46c844ef5c3c9afa087d0b93d53e0fc4af64", "src/plugin-sdk/browser-subpaths.test.ts", "100644"],
@@ -540,7 +542,8 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           Array.isArray(sourceSha256s) &&
           sourceSha256s.length === 1 &&
           sourceSha256s.every((digest) => sha256Pattern.test(digest))) ||
-        (source === "src/plugin-sdk/browser-subpaths.test.ts" &&
+        ((source === "src/plugin-sdk/browser-subpaths.test.ts" ||
+          source === "ui/src/lib/board/widgets/website.test.ts") &&
           detectorType === 17 &&
           detectorName === "URI" &&
           decoder === "PLAIN") ||

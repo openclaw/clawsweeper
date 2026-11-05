@@ -575,6 +575,13 @@ regular-file mode, and every committed base/head reference must match. Other
 decoders and changed source lines remain blocking; the WebSocket fixture has
 no qualification because the pinned scanner did not emit a finding for it.
 
+The website widget's password-only URL rejection fixture in
+`ui/src/lib/board/widgets/website.test.ts` qualifies only for its observed URI
+detector 17 `PLAIN` finding. Both raw-value digests, the complete source line,
+original path, regular-file mode, and committed base/head references must match.
+The username-only fixture has no qualification because the pinned scanner did
+not report it. See [the native before/after proof](docs/proof/website-url-fixture/README.md).
+
 The TypeSafe local-transport URL-rejection fixture in
 `extensions/typesafe/src/local.transport.test.ts` binds its exact URI detector 17
 identities, full source line, regular-file mode, and committed base/head references.
