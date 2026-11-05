@@ -1,0 +1,1 @@
+- Keep OpenClaw's own credentials, such as OPENCLAW_GATEWAY_TOKEN and OPENCLAW_GATEWAY_PASSWORD, out of the OpenClaw-runner review agent: its environment still receives OPENCLAW_* operational controls, but no longer any OPENCLAW_* name ending in _TOKEN, _PASSWORD, _SECRET, _API_KEY or _PRIVATE_KEY.

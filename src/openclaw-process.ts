@@ -416,12 +416,17 @@ const OPENCLAW_CHILD_ENV_ALLOWLIST = [
   "MISTRAL_API_KEY",
 ] as const;
 
+// OpenClaw's own secrets share its prefix, for example OPENCLAW_GATEWAY_TOKEN and
+// OPENCLAW_GATEWAY_PASSWORD on a host that also runs a Gateway.
+const OPENCLAW_CREDENTIAL_NAME = /_(?:TOKEN|PASSWORD|SECRET|API_KEY|PRIVATE_KEY)$/;
+
 function pickEnv(env: NodeJS.ProcessEnv, names: readonly string[]): NodeJS.ProcessEnv {
   const picked: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(env)) {
     // OPENCLAW_* carries operational controls (log level, test hooks), never
-    // workflow credentials; everything else must be explicitly allowlisted.
-    if (value !== undefined && (names.includes(name) || name.startsWith("OPENCLAW_"))) {
+    // workflow or OpenClaw credentials; everything else must be explicitly allowlisted.
+    const openclawControl = name.startsWith("OPENCLAW_") && !OPENCLAW_CREDENTIAL_NAME.test(name);
+    if (value !== undefined && (names.includes(name) || openclawControl)) {
       picked[name] = value;
     }
   }
