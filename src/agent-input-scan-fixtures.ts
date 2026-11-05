@@ -281,6 +281,11 @@ const OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Custom-endpoint rejection regression (OpenClaw 7775311d9860): reserved
+  // example host and fixed dummy userinfo. Native 3.99.4 emits either decoder
+  // for the identical full URI in source blobs and added/context patch lines.
+  [17, "URI", "PLAIN", "597eab0f9f33f6ee623768b183c5e349f6b5e94f4760d5e846c2e77fd193f977", "7efab902442b7a5718ca6037293710b1651a072ea24f11da9c6a9a5cadfb5fc3", "6532ea82ef6d753e323297804484e534857b597d5d82d161a1f14ab6ed606672", "src/gateway/server-methods/config-custom-endpoint.test.ts", "100644"],
+  [17, "URI", "HTML", "597eab0f9f33f6ee623768b183c5e349f6b5e94f4760d5e846c2e77fd193f977", "7efab902442b7a5718ca6037293710b1651a072ea24f11da9c6a9a5cadfb5fc3", "6532ea82ef6d753e323297804484e534857b597d5d82d161a1f14ab6ed606672", "src/gateway/server-methods/config-custom-endpoint.test.ts", "100644"],
   // MCP Apps sandbox-origin negative fixture: retain the legacy PLAIN witness.
   [17, "URI", "PLAIN", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4", "f7d672c72c5b3f9f67b09a5b0f15fdab1c565d36d534c62e3424c4cd1981bb06", "src/config/config-misc.test.ts", "100644"],
   // Native 3.99.4 observed both source-blob decoders for the exact four-space source line.
@@ -609,6 +614,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           source === "src/gateway/server.config-patch.test.ts" ||
           source === "test/helpers/openclaw-test-instance.test.ts" ||
           source === "src/infra/update-failure-report-config.test.ts" ||
+          source === "src/gateway/server-methods/config-custom-endpoint.test.ts" ||
           source === "skills/autoreview/tests/test_autoreview_hardening.py" ||
           source === ".agents/skills/autoreview/tests/test_autoreview_hardening.py") &&
           detectorType === 17 &&
