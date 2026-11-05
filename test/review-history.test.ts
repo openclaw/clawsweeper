@@ -19,6 +19,7 @@ import {
   previousClawSweeperReviewDigestFromReport,
 } from "../dist/clawsweeper-context-hydration.js";
 import { previousClawSweeperReviewDigest } from "../dist/clawsweeper-review-comments.js";
+import { withQuietReviewStartStatusLease } from "../dist/clawsweeper-review-comment-state.js";
 import {
   changelogReviewDecision,
   markedReviewCommentForTest,
@@ -30,6 +31,27 @@ import {
 
 const CURRENT_REVIEW_HEAD_SHA = "9999999999999999999999999999999999999999";
 const LATER_REVIEW_HEAD_SHA = "7777777777777777777777777777777777777777";
+
+test("an in-place start preserves the prior completed review and history projection", () => {
+  const body = previousDurableComment();
+  const leased = withQuietReviewStartStatusLease(body, {
+    number: 101,
+    kind: "pull_request",
+    title: "background fixture",
+    headSha: CURRENT_REVIEW_HEAD_SHA,
+    startedAt: "2026-06-21T10:00:00Z",
+    leaseExpiresAt: "2026-06-21T11:00:00Z",
+    leaseOwner: "fixture",
+  });
+  assert.deepEqual(
+    reviewHistoryCycleFromCommentBody(leased),
+    reviewHistoryCycleFromCommentBody(body),
+  );
+  const comment = { id: 20, user: { login: "clawsweeper[bot]" }, body };
+  const before = extractLatestClawSweeperReview([comment], 101);
+  const during = extractLatestClawSweeperReview([{ ...comment, body: leased }], 101);
+  assert.deepEqual(during, before);
+});
 
 function previousDurableComment(overrides: { reviewedAt?: string; sha?: string } = {}): string {
   const reviewedAt = overrides.reviewedAt ?? "2026-06-20T10:00:00.000Z";

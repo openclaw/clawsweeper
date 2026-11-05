@@ -1,10 +1,20 @@
+import {
+  clearInPlaceReviewStartStatus,
+  trailingHtmlComments,
+  REVIEW_STARTED_STATUS,
+} from "./review-comment-markers.js";
+import { reviewCommentMarker } from "./clawsweeper-review-comment-identity.js";
 import { randomUUID } from "node:crypto";
 import { sha256 } from "./content-hash.js";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import { PR_CLOSE_COVERAGE_PROOF_SECTION } from "./clawsweeper-policy.js";
-import type { CloseReason, ReviewArtifactDestination } from "./clawsweeper-types.js";
+import type {
+  AcquiredReviewStartLease,
+  CloseReason,
+  ReviewArtifactDestination,
+} from "./clawsweeper-types.js";
 import { parseGhJson } from "./github-json.js";
 import {
   isGitHubRequiresAuthenticationError,
@@ -20,7 +30,9 @@ import { closeAppliedCommentMarker } from "./clawsweeper-review-comment-identity
 import {
   markedReviewCommentBody,
   issueReviewComment,
+  losslessReviewComment,
   issueReviewCommentWithBody,
+  commentBody,
   commentUpdatedAt,
   commentId,
   commentUrl,
@@ -37,7 +49,7 @@ import { normalizedLabelSet } from "./clawsweeper-item-policy.js";
 import { sentence } from "./clawsweeper-review-presentation.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 
-const DURABLE_REVIEW_COMMENT_MAX_BYTES = 60 * 1024;
+export const DURABLE_REVIEW_COMMENT_MAX_BYTES = 60 * 1024;
 
 export class DurableReviewPublicationBlockedError extends Error {
   constructor(
@@ -235,9 +247,33 @@ export function upsertReviewComment(
   body: string,
   existing = issueReviewComment(number, [body]),
   mutationIdentity?: string,
-  options: { suppressAutomationMarkers?: boolean } = {},
+  options: {
+    suppressAutomationMarkers?: boolean;
+    preserveReviewStartLease?: AcquiredReviewStartLease | null;
+  } = {},
 ): Record<string, unknown> {
-  const markedBody = markedReviewCommentBody(number, body);
+  const lease = options.preserveReviewStartLease;
+  let inPlaceMarker: string | undefined;
+  if (lease && lease.commentId === commentId(existing)) {
+    const current = losslessReviewComment(lease.commentId);
+    const currentBody = commentBody(current) ?? "";
+    const marker = trailingHtmlComments(currentBody).at(-2) ?? "";
+    if (
+      clearInPlaceReviewStartStatus(currentBody, number) === currentBody ||
+      marker.match(/\bowner=([^\s>]+)/)?.[1] !== lease.owner ||
+      marker.match(/\bsha=([^\s>]+)/)?.[1] !== lease.headSha
+    ) {
+      throw new Error("in-place apply lease changed before review publication");
+    }
+    inPlaceMarker = marker;
+  }
+  const retainLease = (value: string): string => {
+    if (!inPlaceMarker) return value;
+    const clean = clearInPlaceReviewStartStatus(value, number);
+    const index = clean.lastIndexOf(reviewCommentMarker(number));
+    return `${REVIEW_STARTED_STATUS}\n\n${clean.slice(0, index)}${inPlaceMarker}\n\n${clean.slice(index)}`;
+  };
+  const markedBody = retainLease(markedReviewCommentBody(number, body));
   const bodyBytes = Buffer.byteLength(markedBody, "utf8");
   const oversized = bodyBytes > DURABLE_REVIEW_COMMENT_MAX_BYTES;
   if (oversized && options.suppressAutomationMarkers) {
@@ -246,7 +282,7 @@ export function upsertReviewComment(
     );
   }
   const publicationBody = oversized
-    ? oversizedReviewCommentFallback(number, markedBody, bodyBytes)
+    ? retainLease(oversizedReviewCommentFallback(number, markedBody, bodyBytes))
     : markedBody;
   const id = commentId(existing);
   if (id !== null && identitylessPublicationFallback(number, existing)) {

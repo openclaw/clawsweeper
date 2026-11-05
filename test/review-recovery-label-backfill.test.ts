@@ -7,6 +7,28 @@ import {
   runReviewRecoveryLabelBackfill,
 } from "../dist/review-recovery-label-backfill.js";
 import { isClawSweeperBotComment } from "../dist/review-placeholder-recovery.js";
+import { withQuietReviewStartStatusLease } from "../dist/clawsweeper-review-comment-state.js";
+
+test("in-place re-review retains the recovery label until a later completed publication", async () => {
+  const completed = completedReview(42, { reviewedAt: "2026-08-05T08:00:00Z" });
+  const active = {
+    ...completed,
+    updated_at: "2026-08-05T10:00:00Z",
+    body: withQuietReviewStartStatusLease(completed.body, {
+      number: 42,
+      kind: "issue",
+      title: "fixture",
+      headSha: "a".repeat(64),
+      leaseOwner: "fixture",
+      startedAt: "2026-08-05T10:00:00Z",
+      leaseExpiresAt: "2026-08-05T11:00:00Z",
+    }),
+  };
+  const fixture = githubFixture({ numbers: [42], comments: new Map([[42, [active]]]) });
+  const result = await runBackfill(fixture);
+  assert.equal(result.retained, 1);
+  assert.deepEqual(fixture.deletions, []);
+});
 
 const now = new Date("2026-08-05T12:00:00.000Z");
 const trustedBot = { login: "clawsweeper[bot]", type: "Bot" };

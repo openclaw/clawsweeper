@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   newerDurableReviewTupleVerified,
   staleReviewCommentSyncReason,
+  withQuietReviewStartStatusLease,
 } from "../dist/clawsweeper-review-comment-state.js";
 import type { ItemContext } from "../dist/clawsweeper-types.js";
 
@@ -158,3 +159,60 @@ test("a reused PR lease cannot bypass a changed reviewed head", () => {
   );
   assert.equal(newerDurableReviewTupleVerified(report, comment, 42), false);
 });
+
+for (const kind of ["issue", "pull_request"] as const) {
+  test(`${kind}: a completed in-place review fences an older higher-id POST lease`, () => {
+    const { report, comment, context } = tuple(kind, { reportAt: earlier, liveAt: later });
+    const completed = {
+      ...comment,
+      id: 20,
+      body: comment.body.replace("lease_comment_id=9100", "lease_comment_id=20"),
+    };
+    assert.match(
+      staleReviewCommentSyncReason(report, completed, 42, context) ?? "",
+      /in-place review is newer/,
+    );
+    assert.equal(newerDurableReviewTupleVerified(report, completed, 42), true);
+  });
+
+  test(`${kind}: in-place publication retains original lease proof after expiry`, () => {
+    const { report, comment, context } = tuple(kind);
+    const revision = "a".repeat(kind === "issue" ? 64 : 40);
+    const leased = {
+      ...comment,
+      id: 20,
+      body: withQuietReviewStartStatusLease(comment.body, {
+        number: 42,
+        kind,
+        title: "fixture",
+        headSha: revision,
+        leaseOwner: "current-owner",
+        startedAt: "2026-05-01T12:00:00Z",
+        leaseExpiresAt: "2026-05-01T13:00:00Z",
+      }),
+    };
+    const inPlaceReport = report.replace(
+      "review_lease_comment_id: 9100",
+      "review_lease_comment_id: 20",
+    );
+    assert.equal(staleReviewCommentSyncReason(inPlaceReport, leased, 42, context), null);
+    for (const body of [
+      comment.body,
+      leased.body.replace("owner=current-owner", "owner=other-owner"),
+      leased.body.replace("started_at=2026-05-01T12:00:00Z", "started_at=2026-05-03T12:00:00Z"),
+    ]) {
+      assert.ok(staleReviewCommentSyncReason(inPlaceReport, { ...leased, body }, 42, context));
+    }
+    const changedRevision = "b".repeat(kind === "issue" ? 64 : 40);
+    const changedReport = inPlaceReport.replaceAll(revision, changedRevision);
+    const changed = {
+      ...leased,
+      body: leased.body.replace(
+        `sha=${revision} started_at=`,
+        `sha=${changedRevision} started_at=`,
+      ),
+    };
+    const changedContext = { pullRequest: { head: { sha: changedRevision } } } as ItemContext;
+    assert.equal(staleReviewCommentSyncReason(changedReport, changed, 42, changedContext), null);
+  });
+}

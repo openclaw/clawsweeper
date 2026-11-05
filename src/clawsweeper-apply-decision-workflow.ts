@@ -457,6 +457,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       itemNumber: number;
       lease: AcquiredReviewStartLease;
     } | null = null;
+    const currentPublicationLease = (): AcquiredReviewStartLease | null =>
+      activeApplyMutationLease?.lease ?? null;
     const releaseActiveApplyMutationLease = (): void => {
       const active = activeApplyMutationLease;
       activeApplyMutationLease = null;
@@ -2363,7 +2365,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 markedReviewComment,
                 existingReviewComment,
                 undefined,
-                { suppressAutomationMarkers },
+                { suppressAutomationMarkers, preserveReviewStartLease: currentPublicationLease() },
               );
               oversizedActivityGuard?.recordOwnComment(syncedComment);
               if (oversizedActivityGuard) {
@@ -2806,7 +2808,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           // Finish only our pending notice; never replace a newer canonical review.
           if (!liveComment || !commentBodyMatches(liveComment, markedReviewComment)) return;
           const completedBody = markedReviewCommentForApply(renderReviewCommentFromReport(markdown, "oversized_pull_request", renderOptions));
-          const completedComment = upsertReviewComment(number, completedBody, liveComment, undefined, { suppressAutomationMarkers });
+          const completedComment = upsertReviewComment(number, completedBody, liveComment, undefined, { suppressAutomationMarkers, preserveReviewStartLease: currentPublicationLease() });
           markdown = updateReviewCommentMetadata(markdown, completedComment, completedBody);
           markdown = replaceSectionValue(markdown, REVIEW_SECTIONS.closeComment, completedBody);
           markdown = replaceFrontMatterValue(markdown, "close_comment_sha256", sha256(completedBody));
