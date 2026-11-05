@@ -458,7 +458,6 @@ const OPTIONAL_SECTION_TIMEOUT_MS = 6000;
 // Record the failing owner before projection; upstream messages can contain
 // private routes and must never enter the public status cache.
 const PUBLIC_STATUS_TELEMETRY_ERRORS = new Set([
-  "workflow_runs_unavailable",
   "completed_workflow_runs_unavailable",
   "active_runs_unavailable",
   "active_jobs_unavailable",
@@ -6808,11 +6807,9 @@ async function statusSnapshot(env) {
     .filter(Boolean);
   const budget = numberFrom(env.WORKER_BUDGET, 32);
   const activeRunErrors = [];
-  const [runs, completedRuns, activeRunCandidates] = await Promise.all([
-    github(`/repos/${repo}/actions/runs?per_page=100`).catch((error) => {
-      errors.push(statusTelemetryError("workflow_runs_unavailable", error));
-      return null;
-    }),
+  // The status-filtered reads cover every run state. An unfiltered listing is
+  // slow on this repository's run history and timed out the refresh deadline.
+  const [completedRuns, activeRunCandidates] = await Promise.all([
     github(`/repos/${repo}/actions/runs?status=completed&per_page=100`).catch((error) => {
       errors.push(statusTelemetryError("completed_workflow_runs_unavailable", error));
       return null;
@@ -6821,15 +6818,12 @@ async function statusSnapshot(env) {
   ]);
   const operationalRunCandidates = activeRunCandidates;
   errors.push(...activeRunErrors);
-  const workflowRuns = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
-  const completedWorkflowRuns = uniqueWorkflowRuns([
-    ...(Array.isArray(completedRuns?.workflow_runs) ? completedRuns.workflow_runs : []),
-    ...workflowRuns.filter((run) => run.status === "completed"),
-  ]).sort(newestWorkflowRunFirst);
-  const activeRuns = uniqueWorkflowRuns([
-    ...activeRunCandidates.filter((run) => isActiveWorkflowRun(run)),
-    ...workflowRuns.filter((run) => isActiveWorkflowRun(run)),
-  ]).sort(newestWorkflowRunFirst);
+  const completedWorkflowRuns = uniqueWorkflowRuns(
+    Array.isArray(completedRuns?.workflow_runs) ? completedRuns.workflow_runs : [],
+  ).sort(newestWorkflowRunFirst);
+  const activeRuns = uniqueWorkflowRuns(
+    activeRunCandidates.filter((run) => isActiveWorkflowRun(run)),
+  ).sort(newestWorkflowRunFirst);
   const workerRuns = activeRuns.filter((run) => !isSupportWorkflowRun(run));
   const supportRuns = activeRuns.filter((run) => isSupportWorkflowRun(run));
   const controlPlane = controlPlaneSnapshot(activeRuns);

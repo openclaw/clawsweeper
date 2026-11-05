@@ -221,7 +221,8 @@ test("dashboard polling ignores workflow snapshots without disabling other durab
     assert.equal(snapshot.operational_health.queued_over_threshold, 0);
     assert.equal(snapshot.health.attempts, 1);
     assert.equal(snapshot.health.successful_attempts, 1);
-    assert.equal(runReads, 7);
+    // One completed listing plus five active-status censuses.
+    assert.equal(runReads, 6);
     assert.equal(jobReads, 2);
     assert.ok(paths.some((pathname) => !pathname.startsWith("/github-read-model/")));
     assert.equal(
@@ -232,7 +233,7 @@ test("dashboard polling ignores workflow snapshots without disabling other durab
     await new Promise((resolve) => setTimeout(resolve, 2));
     const refreshed = await (await worker.fetch(request, env)).json();
     assert.ok(Date.parse(refreshed.generated_at) > Date.parse(generatedAt));
-    assert.equal(runReads, 14);
+    assert.equal(runReads, 12);
     assert.equal(jobReads, 2, "normal job caches remain enabled in poll mode");
     assert.equal(
       paths.some((pathname) => pathname.startsWith("/github-read-model/")),
@@ -1918,11 +1919,18 @@ test("dashboard stale refresh coalesces concurrent polling requests", async () =
   const fetchGate = new Promise<void>((resolve) => {
     releaseFetch = resolve;
   });
+  let completedRunRequests = 0;
   let unfilteredRunRequests = 0;
   globalThis.fetch = async (input) => {
     const url = new URL(String(input));
     await fetchGate;
     if (url.pathname.includes("/actions/")) {
+      if (
+        url.pathname.endsWith("/actions/runs") &&
+        url.searchParams.get("status") === "completed"
+      ) {
+        completedRunRequests += 1;
+      }
       if (url.pathname.endsWith("/actions/runs") && !url.searchParams.has("status")) {
         unfilteredRunRequests += 1;
       }
@@ -1973,7 +1981,8 @@ test("dashboard stale refresh coalesces concurrent polling requests", async () =
     caller.abort();
     releaseFetch();
     await Promise.all(waitUntilPromises);
-    assert.equal(unfilteredRunRequests, refreshes);
+    assert.equal(completedRunRequests, refreshes);
+    assert.equal(unfilteredRunRequests, 0, "status never lists the whole run history");
     assert.equal(queueReads, 2 * refreshes);
 
     const refreshed = await worker.fetch(request, env);

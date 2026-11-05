@@ -175,7 +175,7 @@ test("public status retains bounded producer failure codes through repeated proj
 
 test("public status retains only closed failure causes without changing warning counts", () => {
   const allowed = [
-    "workflow_runs_unavailable:http_403",
+    "completed_workflow_runs_unavailable:http_403",
     "completed_workflow_runs_unavailable:http_599",
     "active_runs_unavailable:census_incomplete",
     "active_jobs_unavailable:timeout",
@@ -184,13 +184,14 @@ test("public status retains only closed failure causes without changing warning 
     "pipeline_unavailable:invalid_json",
   ];
   const rejected = [
-    "workflow_runs_unavailable:http_200",
-    "workflow_runs_unavailable:http_600",
-    "workflow_runs_unavailable:http_403:private-detail",
+    "workflow_runs_unavailable:http_403",
+    "completed_workflow_runs_unavailable:http_200",
+    "completed_workflow_runs_unavailable:http_600",
+    "completed_workflow_runs_unavailable:http_403:private-detail",
     "pipeline_unavailable:census_incomplete",
     "worker_health_unavailable:https://example.invalid/private",
     "private_section:http_403",
-    "workflow_runs_unavailable:" + "x".repeat(1000),
+    "completed_workflow_runs_unavailable:" + "x".repeat(1000),
   ];
   const projected = publicStatusProjection({ diagnostics: { errors: [...allowed, ...rejected] } });
   assert.deepEqual(projected.diagnostics, {
