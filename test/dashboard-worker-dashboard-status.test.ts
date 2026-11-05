@@ -4048,6 +4048,12 @@ test("status timeout does not cancel shared GitHub App token acquisition", async
         return jsonResponse({ token: "synthetic-other-scope" });
       }
       tokenRequests += 1;
+      if (tokenRequests > 1) {
+        return jsonResponse({
+          token: "synthetic-reader-token",
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        });
+      }
       tokenSignal = init?.signal;
       tokenStarted.release();
       return tokenGate.promise;
@@ -4077,17 +4083,20 @@ test("status timeout does not cancel shared GitHub App token acquisition", async
     context.mock.timers.tick(STATUS_REFRESH_TIMEOUT_MS);
     const status = await (await statusRequest).json();
     assert.equal(status.public_projection_complete, false);
-    assert.equal(tokenRequests, 1);
-    assert.equal(tokenSignal?.aborted, false, "status owns the wait, not shared authentication");
+    assert.equal(tokenSignal?.aborted, false, "status owns the wait, not authentication");
+    // In-flight mints never cross requests: Workers cancels a request's I/O
+    // when it ends, so the other reader acquires its own token instead of
+    // waiting on the stalled status mint.
+    assert.deepEqual(await unscopedReader, { ok: true });
+    assert.equal(tokenRequests, 2);
     tokenGate.release(
       jsonResponse({
         token: "synthetic-status-token",
         expires_at: new Date(Date.now() + 3_600_000).toISOString(),
       }),
     );
-    assert.deepEqual(await unscopedReader, { ok: true });
     await worker.fetch(new Request("https://clawsweeper.openclaw.ai/api/status"), { ...env });
-    assert.equal(tokenRequests, 1, "subsequent status reuses the same value-keyed token");
+    assert.equal(tokenRequests, 2, "subsequent status reuses the settled value-keyed token");
   } finally {
     tokenGate.release(jsonResponse({ token: "synthetic-status-token" }));
     await statusTurn();

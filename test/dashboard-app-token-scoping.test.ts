@@ -243,3 +243,37 @@ test("dashboard token mints bind repository and permission sets and reuse only i
     "Bearer fixture-1",
   ]);
 });
+
+test("a token mint stranded by another request cannot stall later reads", async (t) => {
+  // Production: Workers cancels a request's I/O when it ends. A mint shared
+  // through the isolate-wide cache then never settled, and every later status
+  // refresh waited on it until the 18s deadline with github_auth pending.
+  let mints = 0;
+  let strandedStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    strandedStarted = resolve;
+  });
+  t.mock.method(globalThis, "fetch", async (input) => {
+    if (String(input).endsWith("/access_tokens")) {
+      mints += 1;
+      if (mints === 1) {
+        strandedStarted();
+        return new Promise<Response>(() => undefined);
+      }
+      return Response.json({
+        token: `stranded-${mints}`,
+        expires_at: new Date(Date.now() + 3600000).toISOString(),
+      });
+    }
+    return Response.json({ ok: true });
+  });
+  const env = appEnv("stranded");
+  githubJsonForTest(env, "/repos/openclaw/alpha/issues/1").catch(() => undefined);
+  await started;
+  const later = await Promise.race([
+    githubJsonForTest(env, "/repos/openclaw/alpha/issues/2"),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("later read stalled")), 10_000)),
+  ]);
+  assert.deepEqual(later, { ok: true });
+  assert.equal(mints, 2);
+});
