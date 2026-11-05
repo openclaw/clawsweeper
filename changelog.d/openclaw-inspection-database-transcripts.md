@@ -1,0 +1,1 @@
+- Let OpenClaw-runner reviews pass the checkout inspection on OpenClaw releases that keep session transcripts in their database: a small read-receipt plugin, loaded only into the inspection agent, records each transcript message through the before_message_write hook, and the inspection gets up to 120 seconds instead of 30 to cover a cold start in a fresh state directory.
