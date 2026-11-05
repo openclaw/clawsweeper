@@ -1165,11 +1165,14 @@ export class ExactReviewQueue {
       encodeReadModel,
     );
     // Keep every early schema under the same initialization/error barrier.
-    const initializeSchema = async () => {
+    const initializeSchema = async (initializeFullStorage = false) => {
       try {
         this.lifecycleProjectionStore.ensureSchemaSync();
         this.lifecycleTelemetryStore.ensureSchemaSync();
         this.coverageCensus.ensureSchemaSync();
+        // Invoke directly: fallback callers rely on the synchronous migration
+        // prefix before initializeStorage reaches its real async work.
+        if (initializeFullStorage) await this.initializeStorage();
       } catch (error) {
         rethrowQueueFailure(error, "initialize");
       }
@@ -1177,9 +1180,7 @@ export class ExactReviewQueue {
     if (typeof state.blockConcurrencyWhile === "function") {
       this.schemaReady = Promise.resolve(state.blockConcurrencyWhile(initializeSchema));
     } else {
-      this.schemaReady = this.ready = initializeSchema().then(() =>
-        this.initializeStorage().catch((error) => rethrowQueueFailure(error, "initialize")),
-      );
+      this.schemaReady = this.ready = initializeSchema(true);
     }
   }
 
