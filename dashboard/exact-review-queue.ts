@@ -6952,8 +6952,8 @@ export class ExactReviewQueue {
         recovery: item ? exactReviewFreshRecoveryFromPublicationItem(item) : null,
       };
     });
-    // Inventory needs only two membership checks per row, not every active
-    // item's retained artifact/decision payload. Keep work bounded by this page.
+    // Inventory needs only membership checks per row, not every active item's
+    // retained artifact/decision payload. Keep work bounded by this page.
     const keys = [
       ...new Set(
         candidates.flatMap(({ item, recovery }) =>
@@ -6961,13 +6961,24 @@ export class ExactReviewQueue {
         ),
       ),
     ];
+    const targets = [
+      ...new Set(candidates.flatMap(({ recovery }) => (recovery ? [recovery.key] : []))),
+    ];
+    // Guarded cleanup and fresh recovery also refuse a target while another
+    // publication of it is queued (`<target>@publish:...`). Read those keys by
+    // primary-key range so inventory reports the same fence the queue enforces.
     const activeKeys = new Set(
       keys.length
         ? Array.from(
             this.storage.sql.exec(
               `SELECT item_key FROM ${EXACT_REVIEW_QUEUE_ITEM_TABLE}
-          WHERE item_key IN (SELECT value FROM json_each(?))`,
+          WHERE item_key IN (SELECT value FROM json_each(?))
+         UNION
+         SELECT item.item_key FROM json_each(?) AS target
+           JOIN ${EXACT_REVIEW_QUEUE_ITEM_TABLE} AS item
+             ON item.item_key >= target.value || '@' AND item.item_key < target.value || 'A'`,
               JSON.stringify(keys),
+              JSON.stringify(targets),
             ) as Iterable<{ item_key: string }>,
             (row) => row.item_key,
           )
@@ -6978,6 +6989,9 @@ export class ExactReviewQueue {
       dead_letters: candidates.map(({ row, item, recovery }) => {
         const activePublication = item && activeKeys.has(item.key);
         const activeRecovery = recovery && activeKeys.has(recovery.key);
+        const activeTarget =
+          recovery &&
+          [...activeKeys].some((key) => key !== item?.key && key.startsWith(`${recovery.key}@`));
         const recoveryReason = !item
           ? "invalid_dead_letter_item"
           : !recovery
@@ -6986,9 +7000,11 @@ export class ExactReviewQueue {
               ? "publication_item_active"
               : activeRecovery
                 ? "fresh_review_already_active"
-                : !isExactReviewQueueTargetEnabled(recovery.decision, this.env)
-                  ? "target_not_enabled"
-                  : "eligible";
+                : activeTarget
+                  ? "target_item_active"
+                  : !isExactReviewQueueTargetEnabled(recovery.decision, this.env)
+                    ? "target_not_enabled"
+                    : "eligible";
         return {
           ...row,
           item,

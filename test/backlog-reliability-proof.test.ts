@@ -244,6 +244,7 @@ test(
         [null, "eligible"],
         [item.key, "publication_item_active"],
         ["openclaw/openclaw#792", "fresh_review_already_active"],
+        ["openclaw/openclaw#792@publish:7921:1", "target_item_active"],
       ]) {
         if (key)
           storage.sql.exec(
