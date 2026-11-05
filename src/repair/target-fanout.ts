@@ -1,5 +1,9 @@
 #!/usr/bin/env node
-import { readPublicCoverageSummary, renderPublicCoverageSummary } from "./coverage-summary.js";
+import {
+  readPublicCoverageSummary,
+  renderPublicCoverageSummary,
+  type CoverageSummaryRead,
+} from "./coverage-summary.js";
 import { requireRecord as record, errorSummary as errorMessage } from "../value-coerce.js";
 import { runCommand } from "./command-runner.js";
 import { createHmac, createHash } from "node:crypto";
@@ -210,16 +214,39 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     };
   };
   if (args._[0] === "coverage") {
-    const windowDays = positiveNumber(stringArg(args["window-days"], "7"), "window-days"),
-      openCounts = loadRepositoryOpenCounts(repositories);
+    const windowDays = positiveNumber(stringArg(args["window-days"], "7"), "window-days");
     if (publishUrl) {
-      const progress = await publishCoverage(openCounts);
-      console.error(JSON.stringify({ coverage_collection: progress }));
-      process.stdout.write(
-        renderPublicCoverageSummary(await readPublicCoverageSummary(publishUrl), windowDays),
-      );
+      let collectionFailure: { error: unknown } | undefined;
+      try {
+        const openCounts = loadRepositoryOpenCounts(repositories);
+        const progress = await publishCoverage(openCounts);
+        console.error(JSON.stringify({ coverage_collection: progress }));
+      } catch (error) {
+        collectionFailure = { error };
+        console.error(
+          "[target-fanout] coverage_collection_unavailable: retaining failure after report",
+        );
+      }
+      let summary: CoverageSummaryRead;
+      try {
+        summary = await readPublicCoverageSummary(publishUrl);
+      } catch {
+        summary = { available: false, reason: "unavailable" };
+      }
+      let reportFailure: { error: unknown } | undefined;
+      try {
+        process.stdout.write(
+          renderPublicCoverageSummary(summary, windowDays, Date.now(), Boolean(collectionFailure)),
+        );
+      } catch (error) {
+        reportFailure = { error };
+      }
+      // Reporting failures must never replace the original collection rejection.
+      if (collectionFailure) throw collectionFailure.error;
+      if (reportFailure) throw reportFailure.error;
       return;
     }
+    const openCounts = loadRepositoryOpenCounts(repositories);
     const now = Date.now(),
       snapshot = loadReviewCoverageInventory(repositories, openCounts, now);
     process.stdout.write(
@@ -1461,8 +1488,18 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  runTargetFanout(process.argv.slice(2)).catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
+  const argv = process.argv.slice(2);
+  runTargetFanout(argv).catch((error: unknown) => {
+    const args = parseArgs(argv);
+    const coveragePublication =
+      args._[0] === "coverage" && Boolean(stringArg(args["publish-url"], ""));
+    console.error(
+      coveragePublication
+        ? "[target-fanout] coverage_command_failed"
+        : error instanceof Error
+          ? error.message
+          : String(error),
+    );
     process.exitCode = 1;
   });
 }

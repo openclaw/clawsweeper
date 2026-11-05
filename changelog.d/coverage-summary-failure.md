@@ -1,0 +1,1 @@
+- Keep bounded coverage summaries available when count or census publication fails, while preserving the original failing exit and sanitized diagnostics.
