@@ -58,6 +58,7 @@ import {
 } from "./clawsweeper-report-helpers.js";
 import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
 import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
+import { hostedPreflightSource } from "./review-preflight-display.js";
 import {
   closeEvidenceLine,
   confidenceText,
@@ -494,6 +495,13 @@ function renderKeepOpenCommentFromReport(
     appendDetails("Security", securityLine || "None.");
     if (evidenceDetails.length) appendDetails("Evidence", ...evidenceDetails);
     if (prSurface) appendDetails("PR surface", prSurface);
+    if (
+      frontMatterValue(markdown, "review_status") === "complete" &&
+      reviewDecision.decision === "keep_open"
+    ) {
+      const preflightSource = hostedPreflightSource(markdown);
+      if (preflightSource) appendDetails("Preflight source", preflightSource);
+    }
     if (reviewMetrics.length) {
       appendDetails("Review metrics", renderReviewMetricsDigest(reviewMetrics));
     }

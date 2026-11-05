@@ -19,6 +19,7 @@ export const OWNED_REVIEW_SECTION_HEADINGS = new Set([
   "review findings",
   "security",
   "label changes",
+  "preflight source",
 ]);
 
 export function sectionLineValue(section: string, label: string): string | undefined {

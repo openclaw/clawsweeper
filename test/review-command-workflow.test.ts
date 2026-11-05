@@ -38,7 +38,11 @@ import { ReviewSourcePreparationError } from "../dist/review-source-preparation.
 import { ValidationRecoveryRequiredError } from "../dist/validation-recovery.js";
 import { reviewOutputItemBudget } from "../dist/review-output-policy.js";
 import { serializeReviewPreflightPayload } from "../dist/review-preflight-contract.js";
-import { withLocalPreflightSource } from "../dist/review-preflight-display.js";
+import {
+  withHostedPreflightSource,
+  withLocalPreflightSource,
+} from "../dist/review-preflight-display.js";
+import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 
 import { parseArgs } from "../dist/clawsweeper-args.js";
 import {
@@ -227,7 +231,13 @@ function testScheduledCacheScenario(
   scenario: string,
   publicationCase?: PublicationCacheCase,
   outputCase?: OutputBudgetCase,
-  preflightCase?: { local: boolean; missing?: boolean; metadata?: boolean },
+  preflightCase?: {
+    local: boolean;
+    missing?: boolean;
+    metadata?: boolean;
+    stale?: boolean;
+    hostedPrior?: boolean;
+  },
 ) {
   const name = preflightCase
     ? `preflight display ${scenario} ${JSON.stringify(preflightCase)}`
@@ -363,7 +373,7 @@ else {
             v: 1,
             repo: REPO,
             base: baseSha,
-            head: headSha,
+            head: preflightCase?.stale ? baseSha : headSha,
             tool: { name: "private-tool", version: "private-version" },
             completion: "failed",
             summary: "private-advisory-marker",
@@ -494,7 +504,9 @@ else {
       },
     );
     if (preflightCase)
-      priorMarkdown = withLocalPreflightSource(priorMarkdown, {
+      priorMarkdown = (
+        preflightCase.hostedPrior ? withHostedPreflightSource : withLocalPreflightSource
+      )(priorMarkdown, {
         repo: REPO,
         number: ITEM_NUMBER,
         targetDir: target,
@@ -925,7 +937,7 @@ process.exitCode = 1;
       reviewActionForDecision: () => ({ actionTaken: "none" }),
       markdownFor: ({ item: reviewItem, decision }) =>
         withReviewRecord(
-          `---\nrepository: ${reviewItem.repo}\nnumber: ${reviewItem.number}\ntype: ${reviewItem.kind}\n${preflightCase ? `pull_head_sha: ${headSha}\n` : ""}review_status: ${reviewStatusForDecision(decision)}\ndecision: keep_open\n---\nFresh Codex review\n${decision.reviewFindings.map((finding) => finding.title).join("\n")}\n${oversized}`,
+          `---\nrepository: ${reviewItem.repo}\nnumber: ${reviewItem.number}\ntype: ${reviewItem.kind}\n${preflightCase ? `pull_head_sha: ${headSha}\n` : ""}review_status: ${reviewStatusForDecision(decision)}\ndecision: ${decision.decision}\n---\nFresh Codex review\n${decision.reviewFindings.map((finding) => finding.title).join("\n")}\n${oversized}`,
           decision,
         ),
       selectCandidates: () => ({
@@ -1319,7 +1331,26 @@ process.exitCode = 1;
         if (preflightCase.local) {
           assert.match(report, preflightCase.missing ? /Source unknown\./ : /Source matches\./);
           assert.equal(report.match(/## Local preflight source/g)?.length, 1);
-        } else assert.doesNotMatch(report, /## Local preflight source/);
+          assert.doesNotMatch(report, /## Preflight source/);
+        } else {
+          assert.doesNotMatch(report, /## Local preflight source/);
+          const comment = renderReviewCommentFromReport(report, "none");
+          if (preflightCase.metadata) {
+            assert.doesNotMatch(report, /## Preflight source/);
+            assert.doesNotMatch(comment, /### Preflight source/);
+          } else {
+            const state = preflightCase.missing
+              ? "unknown"
+              : preflightCase.stale
+                ? "stale"
+                : "matches";
+            assert.match(report, new RegExp(`Source ${state}\\.`));
+            assert.equal(report.match(/## Preflight source/g)?.length, 1);
+            assert.match(comment, new RegExp(`### Preflight source\\n\\nSource ${state}\\.`));
+            assert.match(comment, /Completion is self-reported/);
+            assert.doesNotMatch(comment, /private-advisory-marker|private-tool|private-version/);
+          }
+        }
         assert.doesNotMatch(report, /private-advisory-marker|private-tool|private-version/);
         assert.equal(generationCalls, fresh && !preflightCase.metadata ? 1 : 0);
         assert.equal(
@@ -1493,6 +1524,17 @@ for (const scenario of ["changed-pr-clean", "structural-clean", "content-clean"]
   testScheduledCacheScenario(scenario, undefined, undefined, { local: true });
   testScheduledCacheScenario(scenario, undefined, undefined, { local: true, missing: true });
   testScheduledCacheScenario(scenario, undefined, undefined, { local: false });
+  testScheduledCacheScenario(scenario, undefined, undefined, {
+    local: false,
+    missing: true,
+    hostedPrior: true,
+  });
+  testScheduledCacheScenario(scenario, undefined, undefined, {
+    local: false,
+    stale: true,
+    hostedPrior: true,
+  });
+  testScheduledCacheScenario(scenario, undefined, undefined, { local: true, hostedPrior: true });
 }
 testScheduledCacheScenario("changed-pr-clean", undefined, undefined, {
   local: true,

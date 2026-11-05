@@ -1,0 +1,1 @@
+- Show an advisory source comparison in completed keep-open PR review details without treating local preflight summaries as review proof.

@@ -2,7 +2,7 @@
 
 - Status: proposed; available in this candidate, not deployed enforcement
 - Owner: ClawSweeper maintainers
-- Source: `src/review-preflight.ts`, `src/review-preflight-contract.ts`, `src/review-preflight-body.ts`, `src/review-preflight-display.ts`
+- Source: `src/review-preflight.ts`, `src/review-preflight-contract.ts`, `src/review-preflight-body.ts`, `src/review-preflight-display.ts`, `src/clawsweeper-review-command-workflow.ts`, `src/clawsweeper-report-comment-presentation.ts`
 - Update when: local output, source checks, block format, or hosted body handling changes
 
 ## Generate a summary
@@ -130,6 +130,23 @@ execution, or review quality. Ordinary review identity checks still apply.
 
 A contributor can edit this block; it grants no trusted execution claim, role,
 review exemption, or permission to bypass hosted review. General attachment,
-hosted comment/dashboard display, second-engine export, scheduling suppression,
+dashboard-specific display, second-engine export, scheduling suppression,
 and enforcement remain separate work. Local display adds no repository write
 and does not copy private payload text to a public surface.
+
+## Hosted source display
+
+Completed keep-open PR reviews show **Preflight source** inside **Agent review
+details**. It uses the same source comparison and qualifications as local output.
+The review workflow replaces the finite advisory on fresh reports and both cache
+carry paths using its observed raw PR snapshot. It never preserves a previous
+match without recomputing it. Local-only output stays local; issue, close,
+oversized, and failed reviews do not show this hosted advisory. Older reports
+without the projection make no source-match claim.
+
+Only `matches`, `stale`, or `unknown` and fixed qualification text reach the
+report and public comment. Contributor summaries, tool names, completion values,
+links, and report digests are not copied. Completion remains self-reported;
+policy, tests, execution, and report bytes are not verified. This display changes
+no review decision, proof assessment, admission, label, or reuse rule and adds no
+GitHub request, history download, scan, model call, or PR-body edit.
