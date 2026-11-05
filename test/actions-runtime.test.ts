@@ -55,7 +55,68 @@ test("cache actions use one runtime generation everywhere", () => {
   );
 });
 
+function coverageProbeInventoryException(
+  path: string,
+  jobName: string,
+  step: { id?: string; uses?: string; with?: unknown },
+): boolean {
+  if (
+    path !== ".github/workflows/coverage-credential-probe.yml" ||
+    jobName !== "paired-read" ||
+    step.id !== "inventory"
+  )
+    return false;
+  assert.equal(step.uses, appTokenRef.split(" ")[0]);
+  assert.deepEqual(step.with, {
+    "client-id": "Iv23liOECG0slfuhz093",
+    "private-key": "$" + "{{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}",
+    owner: "openclaw",
+    "permission-metadata": "read",
+  });
+  return true;
+}
+
+test("coverage probe inventory exception is exact and cannot widen ordinary App grants", () => {
+  const path = ".github/workflows/coverage-credential-probe.yml";
+  const job = "paired-read";
+  const step = {
+    id: "inventory",
+    uses: appTokenRef.split(" ")[0],
+    with: {
+      "client-id": "Iv23liOECG0slfuhz093",
+      "private-key": "$" + "{{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}",
+      owner: "openclaw",
+      "permission-metadata": "read",
+    },
+  };
+  assert.equal(coverageProbeInventoryException(path, job, step), true);
+  assert.equal(
+    coverageProbeInventoryException(".github/workflows/other-coverage.yml", job, step),
+    false,
+  );
+  assert.equal(coverageProbeInventoryException(path, "another-job", step), false);
+  assert.equal(coverageProbeInventoryException(path, job, { ...step, id: "another-step" }), false);
+  assert.throws(() =>
+    coverageProbeInventoryException(path, job, {
+      ...step,
+      uses: "actions/create-github-app-token@unapproved",
+    }),
+  );
+  for (const change of [
+    { owner: "another-owner" },
+    { "client-id": "another-app" },
+    { "private-key": "$" + "{{ secrets.ANOTHER_PRIVATE_KEY }}" },
+    { "permission-metadata": "write" },
+    { "permission-contents": "read" },
+    { repositories: "clawsweeper" },
+  ])
+    assert.throws(() =>
+      coverageProbeInventoryException(path, job, { ...step, with: { ...step.with, ...change } }),
+    );
+});
+
 test("App mint actions name repositories and stay within the minimal permission ceiling", async () => {
+  let coverageProbeInventorySeen = 0;
   const { default: YAML } = await import("yaml");
   const maximum = {
     metadata: "read",
@@ -74,7 +135,7 @@ test("App mint actions name repositories and stay within the minimal permission 
   ]);
   for (const path of referenceFiles(".github").filter((path) => /\.ya?ml$/.test(path))) {
     const workflow = YAML.parse(readFileSync(path, "utf8"));
-    for (const job of Object.values(workflow.jobs || { composite: workflow.runs })) {
+    for (const [jobName, job] of Object.entries(workflow.jobs || { composite: workflow.runs })) {
       for (const step of (job as { steps?: any[] } | undefined)?.steps || []) {
         if (!step.uses?.startsWith("actions/create-github-app-token@")) continue;
         const inputs = step.with;
@@ -83,7 +144,9 @@ test("App mint actions name repositories and stay within the minimal permission 
         if (path === ".github/workflows/target-fanout.yml" && inventoryExceptions.has(step.id)) {
           assert.deepEqual(permissions, [["permission-metadata", "read"]]);
           inventoryExceptions.delete(step.id);
-        } else assert.ok(inputs.repositories, `${path}:${step.id} must name its repositories`);
+        } else if (coverageProbeInventoryException(path, jobName, step))
+          coverageProbeInventorySeen++;
+        else assert.ok(inputs.repositories, `${path}:${step.id} must name its repositories`);
         for (const [key, value] of permissions) {
           const permission = key.slice("permission-".length);
           assert.ok(Object.hasOwn(maximum, permission), `${path}: unexpected ${key}`);
@@ -102,6 +165,7 @@ test("App mint actions name repositories and stay within the minimal permission 
     }
   }
   assert.equal(inventoryExceptions.size, 0);
+  assert.equal(coverageProbeInventorySeen, 1);
 });
 
 test("target publication tokens cannot write contents and state jobs omit unused grants", async () => {
