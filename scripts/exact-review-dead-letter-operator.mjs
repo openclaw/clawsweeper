@@ -283,6 +283,7 @@ async function main(argv) {
       pendingRecoveryTargetIds: new Set(),
       supersessionTargetIds: new Set(),
       terminalTargetRechecks: 0,
+      refundedTerminalRechecks: 0,
     };
     for (let refreshes = 0; refreshes <= MAX_RECONCILE_INVENTORY_REFRESHES; refreshes += 1) {
       try {
@@ -817,6 +818,14 @@ async function reconcileDeadLetters({
         aliases: groupAliases,
       });
       if (resolution.blocked) {
+        // A guarded resolve that the queue refuses is not cleanup progress. The
+        // same refused targets sort first on every run, so without a refund they
+        // spend the whole budget and later closed targets are never rechecked.
+        // Refunds get their own cap, keeping a run's rechecks bounded.
+        if (progress.refundedTerminalRechecks < MAX_TERMINAL_TARGET_RECHECKS) {
+          progress.refundedTerminalRechecks += 1;
+          progress.terminalTargetRechecks -= 1;
+        }
         continue;
       }
       summary.resolved_rows += resolution.resolved;

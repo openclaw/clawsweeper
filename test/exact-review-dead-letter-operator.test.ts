@@ -2564,6 +2564,66 @@ test("terminal target rechecks stay bounded for closed issues and pull requests"
   }
 });
 
+test("permanently blocked closed targets cannot starve later closed-target cleanup", async () => {
+  // Production: the same ten closed targets were refused by the guarded
+  // resolve on every scheduled run, used the whole terminal recheck budget,
+  // and left every later closed target at terminal_recheck_cap forever.
+  const targets = Array.from({ length: 12 }, (_, index) => index + 1);
+  const blocked = targets.slice(0, 10).map((number) => `closed-${number}`);
+  const scenario = await automaticReconcileScenario({
+    rows: targets.map((number) =>
+      row(
+        `closed-${number}`,
+        `publication:closed-${number}`,
+        number,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${number}`,
+      ),
+    ),
+    closedNumbers: targets,
+    blockedCleanupIds: blocked,
+    maxTargets: 100,
+    maxRecoveries: 10,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.closed_rows, 2, scenario.first.stdout);
+  assert.equal(summary.skip_reasons.terminal_recheck_cap, undefined, scenario.first.stdout);
+  assert.equal(summary.skip_reasons.blocked_alias, 10, scenario.first.stdout);
+});
+
+test("refunded terminal rechecks stay bounded when every closed target is blocked", async () => {
+  const targets = Array.from({ length: 30 }, (_, index) => index + 1);
+  const scenario = await automaticReconcileScenario({
+    rows: targets.map((number) =>
+      row(
+        `closed-${number}`,
+        `publication:closed-${number}`,
+        number,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${number}`,
+      ),
+    ),
+    closedNumbers: targets,
+    blockedCleanupIds: targets.map((number) => `closed-${number}`),
+    maxTargets: 100,
+    maxRecoveries: 10,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  // Ten refunded plus ten counted rechecks; the rest wait for a later run.
+  assert.equal(summary.closed_rows, 0, scenario.first.stdout);
+  assert.equal(scenario.resolutions.length, 20, scenario.first.stdout);
+  assert.equal(summary.skip_reasons.blocked_alias, 20, scenario.first.stdout);
+  assert.equal(summary.skip_reasons.terminal_recheck_cap, 10, scenario.first.stdout);
+});
+
 test("mid-sized closed pull-request inventories use GraphQL identity batching", async () => {
   for (const count of [32, 40]) {
     const targets = Array.from({ length: count }, (_, index) => index + 1);
