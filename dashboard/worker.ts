@@ -683,14 +683,11 @@ const PR_PROOF_VIEWS = [
   },
 ];
 
-const githubAppTokenCache = new Map<
-  string,
-  {
-    token: string;
-    expiresAtMs: number;
-    promise?: Promise<string>;
-  }
->();
+// Only settled tokens are shared across requests. Workers cancels a request's
+// I/O when that request ends, so an in-flight mint shared with a later request
+// can never settle and stalls every caller until its deadline. In-flight mints
+// are deduplicated only within one status collection, which owns their I/O.
+const githubAppTokenCache = new Map<string, { token: string; expiresAtMs: number }>();
 let statusRefresh: { key: string; promise: ReturnType<typeof refreshStatusCaches> } | null = null;
 // The body can fail after headers resolve. Retain its actual request signal
 // without keeping completed responses alive or confusing collection cancellation.
@@ -708,6 +705,7 @@ class StatusCollection {
   private readonly timer: ReturnType<typeof setTimeout>;
   private readonly cancelled: Promise<never>;
   private readonly pending = new Map<StatusCollectionPhase, number>();
+  readonly githubAppTokenMints = new Map<string, Promise<string>>();
 
   constructor(deadline = Date.now() + STATUS_REFRESH_TIMEOUT_MS) {
     this.deadline = deadline;
@@ -9591,24 +9589,22 @@ async function githubAuthToken(env, scope) {
     request,
   ]);
   for (const [key, entry] of githubAppTokenCache) {
-    if (!entry.promise && entry.expiresAtMs - GITHUB_APP_TOKEN_REFRESH_SKEW_MS <= now) {
+    if (entry.expiresAtMs - GITHUB_APP_TOKEN_REFRESH_SKEW_MS <= now)
       githubAppTokenCache.delete(key);
-    }
   }
   const cached = githubAppTokenCache.get(cacheKey);
-  if (cached?.expiresAtMs - GITHUB_APP_TOKEN_REFRESH_SKEW_MS > now) return cached.token;
-  if (cached?.promise) return cached.promise;
+  if (cached) return cached.token;
 
+  const mints = statusCollections.get(env)?.githubAppTokenMints;
+  const inFlight = mints?.get(cacheKey);
+  if (inFlight) return inFlight;
   const promise = createGithubAppInstallationToken(env, credentials, scope.repos, request)
     .then((result) => {
       githubAppTokenCache.set(cacheKey, result);
       return result.token;
     })
-    .catch((error) => {
-      githubAppTokenCache.delete(cacheKey);
-      throw error;
-    });
-  githubAppTokenCache.set(cacheKey, { token: "", expiresAtMs: 0, promise });
+    .finally(() => mints?.delete(cacheKey));
+  mints?.set(cacheKey, promise);
   return promise;
 }
 
