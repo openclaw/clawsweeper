@@ -12197,6 +12197,71 @@ test("guarded dead-letter recovery atomically rejects transferred active aliases
   assert.equal(state.items["openclaw/new#19"].state, "pending");
 });
 
+test("dead-letter inventory reports the target fence that guarded cleanup enforces", async () => {
+  // Production: rows for closed targets were listed as eligible while another
+  // publication of the same target stayed queued, so every scheduled guarded
+  // resolve was refused and spent the operator's terminal recheck budget.
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewPublicationItem(1795, "17950");
+  item.attempts = 2;
+  Object.assign(item, { publicationFailureAttempts: 2 });
+  const sibling = {
+    ...leasedExactReviewPublicationItem(1795, "17951"),
+    state: "pending" as const,
+    leaseId: undefined,
+    claimedRunId: undefined,
+  };
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [item.key]: item, [sibling.key]: sibling },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const completed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        completion_kind: "permanent_failure",
+        reason_code: "invalid_artifact",
+      }),
+    }),
+  );
+  assert.deepEqual(await completed.json(), { ok: true, requeued: false });
+  const list = async () =>
+    (
+      await queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/dead-letters/list", {
+          method: "POST",
+          body: JSON.stringify({ limit: 10 }),
+        }),
+      )
+    ).json();
+  const listed = await list();
+  assert.equal(listed.dead_letters.length, 1);
+  const [row] = listed.dead_letters;
+  assert.deepEqual(
+    { eligible: row.fresh_recovery.eligible, reason: row.fresh_recovery.reason },
+    { eligible: false, reason: "target_item_active" },
+  );
+  const resolved = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/dead-letters/resolve", {
+      method: "POST",
+      body: JSON.stringify({
+        ids: [row.dead_letter_id],
+        note: "fixture: guarded cleanup agrees with inventory",
+        resolution_aliases: [{ id: row.dead_letter_id, aliases: ["openclaw/openclaw#1795"] }],
+      }),
+    }),
+  );
+  assert.deepEqual(await resolved.json(), { ok: true, resolved: 0, skipped: 1, unparked: 0 });
+});
+
 test("guarded dead-letter recovery rejects inventory changes inside its transaction", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewPublicationItem(1794, "17940");

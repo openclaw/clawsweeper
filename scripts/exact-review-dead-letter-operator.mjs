@@ -29,7 +29,11 @@ const MAX_RECONCILE_INVENTORY_PAGES = 250;
 const MAX_RECONCILE_INVENTORY_REFRESHES = 2;
 const GRAPHQL_IDENTITY_BATCH_SIZE = 40;
 const MAX_CONSECUTIVE_GITHUB_THROTTLES = 3;
-const ACTIVE_RECOVERY_REASONS = new Set(["fresh_review_already_active", "publication_item_active"]);
+const ACTIVE_RECOVERY_REASONS = new Set([
+  "fresh_review_already_active",
+  "publication_item_active",
+  "target_item_active",
+]);
 const HEAD_MISMATCH_SUPERSEDE_EXCLUDED_REASONS = new Set(["workflow_cancelled"]);
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9:._-]{1,200}$/;
 const OPERATOR_REQUEST_TIMEOUT_MS = 20_000;
