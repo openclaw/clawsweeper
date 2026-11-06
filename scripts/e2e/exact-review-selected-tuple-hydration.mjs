@@ -347,8 +347,11 @@ export function runHydrationProof({
     const trace = join(root, "trace.jsonl");
     const bundles = join(root, "bundles");
     const configPath = join(root, "config.json");
+    // Two serial stalls prove progress after a timeout; healthy publication has
+    // separate scenarios using the regular preparation budget.
+    const numbers = mode === "read-timeout" ? [42] : [42, 43, 44, 45];
     const items = repos.flatMap((repo) =>
-      [42, 43, 44, 45].map((number) => member(repo, number, repos.indexOf(repo) * 4 + number - 42)),
+      numbers.map((number) => member(repo, number, repos.indexOf(repo) * 4 + number - 42)),
     );
     if (invalidDecision) {
       items.splice(1);
@@ -511,7 +514,7 @@ export function runHydrationProof({
       }
     } else {
       const failedRead = ["forbidden", "corrupt", "read-timeout"].includes(mode);
-      assert.equal(workers.length, items.length - (mode === "read-timeout" ? 2 : 0), diagnostics);
+      assert.equal(workers.length, mode === "read-timeout" ? 0 : items.length, diagnostics);
       for (const worker of workers) {
         const item = items.find((item) => item.itemKey === worker.itemKey);
         const selected = new Set(tuplePaths(item.decision.targetRepo, item.decision.itemNumber));
@@ -531,7 +534,11 @@ export function runHydrationProof({
           assert.ok(!publishers.some((entry) => entry.itemKey === item.itemKey));
         }
       }
-      if (mode === "read-timeout") assert.equal(telemetry.timeouts, 2);
+      if (mode === "read-timeout") {
+        assert.equal(telemetry.timeouts, 2);
+        assert.equal(events.filter((event) => event.kind === "download").length, 0);
+        assert.equal(publishers.length, 0);
+      }
       if (mode === "publication" || mode === "file-source") {
         assert.equal(publishers.length, items.length, diagnostics);
         for (const [index, publisher] of publishers.entries()) {
