@@ -188,18 +188,6 @@ try {
           findings[0].DecoderName = decoder;
         });
       }
-      for (const fixtureDigest of fixtureDigests.slice(1)) {
-        refuse(`unobserved head/PLAIN ${fixtureDigest}`, ({ findings, inputs }) => {
-          const finding = findings.find(
-            (entry) =>
-              hash(entry.RawV2) === fixtureDigest &&
-              inputs.get(entry.SourceMetadata.Data.Filesystem.file)?.id === identities[1][0],
-          );
-          assert.ok(finding, "capture must contain each head fixture");
-          assert.equal(finding.DecoderName, "ESCAPED_UNICODE");
-          finding.DecoderName = "PLAIN";
-        });
-      }
       refuse("verified credential", ({ findings, logs }) => {
         findings[0].Verified = true;
         logs.at(-1).verified_secrets = 1;
@@ -283,15 +271,11 @@ try {
     blob,
     decoder,
     count,
-    qualified:
-      count > 0 ||
-      (blob === identities[1][0] && decoder === "PLAIN" && fixtureDigest === fixtureDigests[0]),
+    qualified: count > 0 || (blob === identities[1][0] && decoder === "PLAIN"),
     evidence:
       count > 0
         ? "direct native observation"
-        : fixtureDigest === fixtureDigests[0]
-          ? "separate committed-range capture; see range-results.json"
-          : "unobserved; refused",
+        : "separate committed-range capture; see range-results.json",
   }));
   console.log(
     JSON.stringify(

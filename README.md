@@ -605,9 +605,8 @@ The OpenClaw Enterprise sign-in chart parity test has two URL-rejection fixtures
 qualified only in their two inspected complete source blobs. Each tuple binds the
 exact URI hashes, complete source line, regular-file path and mode, and PLAIN or
 ESCAPED_UNICODE decoding. Both fixtures qualify through either decoder in the
-base blob and through ESCAPED_UNICODE in the head blob. The newly observed PLAIN
-finding at head line 1478 also qualifies. The other head/PLAIN combination, other
-blobs and other decoders remain blocked. See the
+base and head blobs. Each of the eight fixture/blob/decoder combinations has a
+native observation. Other blobs and decoders remain blocked. See the
 [native capture and classifier proof](docs/proof/oce-sign-in-fixtures/README.md).
 
 One source path may contain multiple independently reviewed fixtures; each

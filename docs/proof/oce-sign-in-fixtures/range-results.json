@@ -3,7 +3,7 @@
   "targetHead": "3e29a60b00d2a4c6eb15d4ea2f1f283113592f74",
   "scannerSha256": "70b9108715250b19518b03acea56b2f4907a36dcfaaf77693444bdc007a761b1",
   "captureScriptSha256": "11289857f2e3ef32930de349c41dce385c4cb1da7f7fa6245396eec9fda72c9a",
-  "replayScriptSha256": "bd570b5714198f3135632502cf4e31e2f8436388d5a756bb932a0c2efb819dce",
+  "replayScriptSha256": "75fa52df702260fe7ae3ce0683e79cf15a13bb96200c0e23bc4fdb2b62fd5638",
   "nativeCallerResult": "Local Node scanner subprocess SIGKILL with no output; not a passing scanAgentInput execution.",
   "proofScope": "Direct native scan of all47 byte-identical staged source inputs, followed by complete stream classification. No hosted admission or model execution.",
   "baselineResults": [
@@ -14,11 +14,15 @@
     {
       "kind": "classified",
       "reason": null
+    },
+    {
+      "kind": "refused",
+      "reason": "source_not_reviewed"
     }
   ],
-  "candidateClassifierSha256": "2c6394045c478cfd3379875e5901e4da43be94b683de59666b027673b4bd6076",
-  "candidateResultSha256": "64e49e8f6d01715150b26d2511d24294f76666c5e899bc5d88bf13e774efeb15",
-  "baselineResultSha256": "d097fd656bed937f531d08c9c764653e5c463dd8393b5044c0348ec6fceca3ea",
+  "candidateClassifierSha256": "fd2deb27bd2ecad86efc2a17bb62f044c29bd686c50516ca1b371920756408c6",
+  "candidateResultSha256": "0b27ae9d411e11ae479f928f93d0a170c27f41aa30a14592602915cba5182d50",
+  "baselineResultSha256": "73cc88e505220616c87892454636c98953ac3ffe093fa76c6b88209b347367ef",
   "replayCorrectionControls": [
     {
       "case": "decoder",
@@ -173,7 +177,60 @@
     {"id": "prompt", "bytes": 47, "sha256": "68769832e77d6f9bd2a20ca83274c862678515835c5e37737ab9cf38848784ff"}
   ],
   "captures": [
-    {"stdoutSha256": "4c9b81f08f924ba918a53ffcd6176ae78c12ad76c3396473132924d98227e614", "stderrSha256": "30b98e9b7c928516707a9a86b18197aeb23bb629e391cd926a1ea8d7dab2412a", "inputs": 47, "candidateResult": "classified", "observed": [{"blob": "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e", "line": 1477, "rawSha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "rawV2Sha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "decoder": "ESCAPED_UNICODE"}, {"blob": "d51f4eae74f8a56cb0851482c6175f75c26c067b", "line": 1431, "rawSha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "rawV2Sha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "decoder": "ESCAPED_UNICODE"}, {"blob": "d51f4eae74f8a56cb0851482c6175f75c26c067b", "line": 1430, "rawSha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "rawV2Sha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "decoder": "PLAIN"}, {"blob": "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e", "line": 1478, "rawSha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "rawV2Sha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "decoder": "PLAIN"}], "controls": [{"name": "changed complete source", "reason": "source_not_reviewed"}, {"name": "invalid scanner line", "reason": "metadata_mismatch"}, {"name": "unknown decoder", "reason": "finding_not_reviewed"}, {"name": "verified credential", "reason": "finding_not_reviewed"}, {"name": "changed raw identity", "reason": "literal_not_reviewed"}, {"name": "missing verification error", "reason": "finding_not_reviewed"}, {"name": "foreign source", "reason": "source_not_reviewed"}, {"name": "executable source", "reason": "source_not_reviewed"}, {"name": "duplicate finding", "reason": "duplicate_finding"}, {"name": "additional unknown finding", "reason": "literal_not_reviewed"}, {"name": "unobserved other head PLAIN", "reason": "source_not_reviewed"}]},
-    {"stdoutSha256": "150a1ffd9b10a96efd4e223504fc17835556ed6b36cc971dc2a2fbbf9a706054", "stderrSha256": "de532ffbcba9967db3a477e7e5e20714bc4478ee55c976fd8ebaddee548509b4", "inputs": 47, "candidateResult": "classified", "observed": [{"blob": "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e", "line": 1477, "rawSha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "rawV2Sha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "decoder": "ESCAPED_UNICODE"}, {"blob": "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e", "line": 1478, "rawSha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "rawV2Sha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "decoder": "ESCAPED_UNICODE"}, {"blob": "d51f4eae74f8a56cb0851482c6175f75c26c067b", "line": 1431, "rawSha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "rawV2Sha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "decoder": "PLAIN"}, {"blob": "d51f4eae74f8a56cb0851482c6175f75c26c067b", "line": 1430, "rawSha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "rawV2Sha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "decoder": "PLAIN"}], "controls": [{"name": "changed complete source", "reason": "source_not_reviewed"}, {"name": "invalid scanner line", "reason": "metadata_mismatch"}, {"name": "unknown decoder", "reason": "finding_not_reviewed"}, {"name": "verified credential", "reason": "finding_not_reviewed"}, {"name": "changed raw identity", "reason": "literal_not_reviewed"}, {"name": "missing verification error", "reason": "finding_not_reviewed"}, {"name": "foreign source", "reason": "source_not_reviewed"}, {"name": "executable source", "reason": "source_not_reviewed"}, {"name": "duplicate finding", "reason": "duplicate_finding"}, {"name": "additional unknown finding", "reason": "literal_not_reviewed"}, {"name": "unobserved other head PLAIN", "reason": "source_not_reviewed"}]}
+    {"stdoutSha256": "4c9b81f08f924ba918a53ffcd6176ae78c12ad76c3396473132924d98227e614", "stderrSha256": "30b98e9b7c928516707a9a86b18197aeb23bb629e391cd926a1ea8d7dab2412a", "inputs": 47, "observed": [{"blob": "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e", "line": 1477, "rawSha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "rawV2Sha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "decoder": "ESCAPED_UNICODE"}, {"blob": "d51f4eae74f8a56cb0851482c6175f75c26c067b", "line": 1431, "rawSha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "rawV2Sha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "decoder": "ESCAPED_UNICODE"}, {"blob": "d51f4eae74f8a56cb0851482c6175f75c26c067b", "line": 1430, "rawSha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "rawV2Sha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "decoder": "PLAIN"}, {"blob": "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e", "line": 1478, "rawSha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "rawV2Sha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "decoder": "PLAIN"}], "controls": [{"name": "changed complete source", "reason": "source_not_reviewed"}, {"name": "invalid scanner line", "reason": "metadata_mismatch"}, {"name": "unknown decoder", "reason": "finding_not_reviewed"}, {"name": "verified credential", "reason": "finding_not_reviewed"}, {"name": "changed raw identity", "reason": "literal_not_reviewed"}, {"name": "missing verification error", "reason": "finding_not_reviewed"}, {"name": "foreign source", "reason": "source_not_reviewed"}, {"name": "executable source", "reason": "source_not_reviewed"}, {"name": "duplicate finding", "reason": "duplicate_finding"}, {"name": "additional unknown finding", "reason": "literal_not_reviewed"}, {"name": "changed complete source", "reason": "source_not_reviewed"}, {"name": "invalid scanner line", "reason": "metadata_mismatch"}, {"name": "unknown decoder", "reason": "finding_not_reviewed"}, {"name": "verified credential", "reason": "finding_not_reviewed"}, {"name": "changed raw identity", "reason": "literal_not_reviewed"}, {"name": "missing verification error", "reason": "finding_not_reviewed"}, {"name": "foreign source", "reason": "source_not_reviewed"}, {"name": "executable source", "reason": "source_not_reviewed"}, {"name": "duplicate finding", "reason": "duplicate_finding"}, {"name": "additional unknown finding", "reason": "literal_not_reviewed"}], "candidateResult": "classified"},
+    {"stdoutSha256": "150a1ffd9b10a96efd4e223504fc17835556ed6b36cc971dc2a2fbbf9a706054", "stderrSha256": "de532ffbcba9967db3a477e7e5e20714bc4478ee55c976fd8ebaddee548509b4", "inputs": 47, "observed": [{"blob": "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e", "line": 1477, "rawSha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "rawV2Sha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "decoder": "ESCAPED_UNICODE"}, {"blob": "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e", "line": 1478, "rawSha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "rawV2Sha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "decoder": "ESCAPED_UNICODE"}, {"blob": "d51f4eae74f8a56cb0851482c6175f75c26c067b", "line": 1431, "rawSha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "rawV2Sha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "decoder": "PLAIN"}, {"blob": "d51f4eae74f8a56cb0851482c6175f75c26c067b", "line": 1430, "rawSha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "rawV2Sha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "decoder": "PLAIN"}], "controls": [{"name": "changed complete source", "reason": "source_not_reviewed"}, {"name": "invalid scanner line", "reason": "metadata_mismatch"}, {"name": "unknown decoder", "reason": "finding_not_reviewed"}, {"name": "verified credential", "reason": "finding_not_reviewed"}, {"name": "changed raw identity", "reason": "literal_not_reviewed"}, {"name": "missing verification error", "reason": "finding_not_reviewed"}, {"name": "foreign source", "reason": "source_not_reviewed"}, {"name": "executable source", "reason": "source_not_reviewed"}, {"name": "duplicate finding", "reason": "duplicate_finding"}, {"name": "additional unknown finding", "reason": "literal_not_reviewed"}, {"name": "changed complete source", "reason": "source_not_reviewed"}, {"name": "invalid scanner line", "reason": "metadata_mismatch"}, {"name": "unknown decoder", "reason": "finding_not_reviewed"}, {"name": "verified credential", "reason": "finding_not_reviewed"}, {"name": "changed raw identity", "reason": "literal_not_reviewed"}, {"name": "missing verification error", "reason": "finding_not_reviewed"}, {"name": "foreign source", "reason": "source_not_reviewed"}, {"name": "executable source", "reason": "source_not_reviewed"}, {"name": "duplicate finding", "reason": "duplicate_finding"}, {"name": "additional unknown finding", "reason": "literal_not_reviewed"}], "candidateResult": "classified"},
+    {"stdoutSha256": "d71600318fe260ce7f52bd2418c459028f5280d6d53b9c6e553be209ebb50d1d", "stderrSha256": "8f089f5dc17a288efba5bc470f427f251fdc424b680e36bbc14416e56471b548", "inputs": 47, "observed": [{"blob": "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e", "line": 1478, "rawSha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "rawV2Sha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "decoder": "PLAIN"}, {"blob": "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e", "line": 1477, "rawSha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "rawV2Sha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "decoder": "PLAIN"}, {"blob": "d51f4eae74f8a56cb0851482c6175f75c26c067b", "line": 1431, "rawSha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "rawV2Sha256": "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "decoder": "PLAIN"}, {"blob": "d51f4eae74f8a56cb0851482c6175f75c26c067b", "line": 1430, "rawSha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "rawV2Sha256": "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "decoder": "PLAIN"}], "controls": [{"name": "changed complete source", "reason": "source_not_reviewed"}, {"name": "invalid scanner line", "reason": "metadata_mismatch"}, {"name": "unknown decoder", "reason": "finding_not_reviewed"}, {"name": "verified credential", "reason": "finding_not_reviewed"}, {"name": "changed raw identity", "reason": "literal_not_reviewed"}, {"name": "missing verification error", "reason": "finding_not_reviewed"}, {"name": "foreign source", "reason": "source_not_reviewed"}, {"name": "executable source", "reason": "source_not_reviewed"}, {"name": "duplicate finding", "reason": "duplicate_finding"}, {"name": "additional unknown finding", "reason": "literal_not_reviewed"}, {"name": "changed complete source", "reason": "source_not_reviewed"}, {"name": "invalid scanner line", "reason": "metadata_mismatch"}, {"name": "unknown decoder", "reason": "finding_not_reviewed"}, {"name": "verified credential", "reason": "finding_not_reviewed"}, {"name": "changed raw identity", "reason": "literal_not_reviewed"}, {"name": "missing verification error", "reason": "finding_not_reviewed"}, {"name": "foreign source", "reason": "source_not_reviewed"}, {"name": "executable source", "reason": "source_not_reviewed"}, {"name": "duplicate finding", "reason": "duplicate_finding"}, {"name": "additional unknown finding", "reason": "literal_not_reviewed"}], "candidateResult": "classified"}
+  ],
+  "additionalCaptureScriptSha256": "d308bb0a30293c0a52d3d4841953943d1f6fb284b52c59501fa3c3deef801126",
+  "complementaryTuplePriorResult": {
+    "head": "1ce34a5ba9f7ad7c02ad1b1e23c8dd0a190424c2",
+    "kind": "refused",
+    "reason": "source_not_reviewed",
+    "findingIndex": 1,
+    "receiptSha256": "c77036832064046eec0ab2e01d8ac39856be23e6a075e6399aa630728c1d0891"
+  },
+  "currentReplayControls": [
+    {
+      "case": "decoder",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "fixedDiagnostic": true,
+      "markerVisible": false
+    },
+    {
+      "case": "line",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "fixedDiagnostic": true,
+      "markerVisible": false
+    },
+    {
+      "case": "duplicate",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "fixedDiagnostic": true,
+      "markerVisible": false
+    },
+    {
+      "case": "missing_head1477_plain",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "fixedDiagnostic": true,
+      "markerVisible": false
+    },
+    {
+      "case": "missing_escaped",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "fixedDiagnostic": true,
+      "markerVisible": false
+    },
+    {
+      "case": "missing_plain",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "fixedDiagnostic": true,
+      "markerVisible": false
+    }
   ]
 }

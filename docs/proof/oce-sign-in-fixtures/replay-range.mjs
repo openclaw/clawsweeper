@@ -123,10 +123,7 @@ try {
     );
     const result = classifyReviewedFixtureScan(183, stdout, stderr, inputs);
     const newTuple = observed.some(
-      (f) =>
-        f.blob === "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e" &&
-        f.rawSha256 === "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925" &&
-        f.decoder === "PLAIN",
+      (f) => f.blob === "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e" && f.decoder === "PLAIN",
     );
     assert.equal(result.kind, mode === "baseline" && newTuple ? "refused" : "classified");
     if (result.kind === "refused") assert.equal(result.diagnostic.reason, "source_not_reviewed");
@@ -155,64 +152,60 @@ try {
         assert.equal(denied.kind, "refused");
         controls.push({ name, reason: denied.diagnostic.reason });
       };
-      const changed = (context) =>
-        context.findings.find(
-          (f) =>
-            hash(f.Raw) === "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925" &&
-            context.inputs.get(f.SourceMetadata.Data.Filesystem.file)?.id ===
-              "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e",
-        );
-      refuse("changed complete source", (c) => {
-        const f = changed(c);
-        const input = c.inputs.get(f.SourceMetadata.Data.Filesystem.file);
-        input.bytes = Buffer.concat([input.bytes, Buffer.from("\n")]);
-      });
-      refuse("invalid scanner line", (c) => {
-        changed(c).SourceMetadata.Data.Filesystem.line = 0;
-      });
-      refuse("unknown decoder", (c) => {
-        changed(c).DecoderName = "HTML";
-      });
-      refuse("verified credential", (c) => {
-        changed(c).Verified = true;
-        c.logs.at(-1).verified_secrets = 1;
-        c.logs.at(-1).unverified_secrets = 3;
-      });
-      refuse("changed raw identity", (c) => {
-        changed(c).Raw += "x";
-      });
-      refuse("missing verification error", (c) => {
-        delete changed(c).VerificationError;
-      });
-      refuse("foreign source", (c) => {
-        const f = changed(c);
-        c.inputs.get(f.SourceMetadata.Data.Filesystem.file).references[0].source = "test/other.mjs";
-      });
-      refuse("executable source", (c) => {
-        const f = changed(c);
-        c.inputs.get(f.SourceMetadata.Data.Filesystem.file).references[0].mode = "100755";
-      });
-      refuse("duplicate finding", (c) => {
-        c.findings.push(structuredClone(changed(c)));
-        c.logs.at(-1).unverified_secrets++;
-      });
-      refuse("additional unknown finding", (c) => {
-        const extra = structuredClone(changed(c));
-        extra.Raw += "x";
-        extra.RawV2 += "x";
-        c.findings.push(extra);
-        c.logs.at(-1).unverified_secrets++;
-      });
-      refuse("unobserved other head PLAIN", (c) => {
-        const f = c.findings.find(
-          (row) =>
-            hash(row.Raw) === "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b" &&
-            c.inputs.get(row.SourceMetadata.Data.Filesystem.file)?.id ===
-              "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e",
-        );
-        assert.ok(f);
-        f.DecoderName = "PLAIN";
-      });
+      for (const fixtureDigest of [
+        "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925",
+        "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b",
+      ]) {
+        const changed = (context) =>
+          context.findings.find(
+            (f) =>
+              hash(f.Raw) === fixtureDigest &&
+              context.inputs.get(f.SourceMetadata.Data.Filesystem.file)?.id ===
+                "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e",
+          );
+        refuse("changed complete source", (c) => {
+          const f = changed(c);
+          const input = c.inputs.get(f.SourceMetadata.Data.Filesystem.file);
+          input.bytes = Buffer.concat([input.bytes, Buffer.from("\n")]);
+        });
+        refuse("invalid scanner line", (c) => {
+          changed(c).SourceMetadata.Data.Filesystem.line = 0;
+        });
+        refuse("unknown decoder", (c) => {
+          changed(c).DecoderName = "HTML";
+        });
+        refuse("verified credential", (c) => {
+          changed(c).Verified = true;
+          c.logs.at(-1).verified_secrets = 1;
+          c.logs.at(-1).unverified_secrets = 3;
+        });
+        refuse("changed raw identity", (c) => {
+          changed(c).Raw += "x";
+        });
+        refuse("missing verification error", (c) => {
+          delete changed(c).VerificationError;
+        });
+        refuse("foreign source", (c) => {
+          const f = changed(c);
+          c.inputs.get(f.SourceMetadata.Data.Filesystem.file).references[0].source =
+            "test/other.mjs";
+        });
+        refuse("executable source", (c) => {
+          const f = changed(c);
+          c.inputs.get(f.SourceMetadata.Data.Filesystem.file).references[0].mode = "100755";
+        });
+        refuse("duplicate finding", (c) => {
+          c.findings.push(structuredClone(changed(c)));
+          c.logs.at(-1).unverified_secrets++;
+        });
+        refuse("additional unknown finding", (c) => {
+          const extra = structuredClone(changed(c));
+          extra.Raw += "x";
+          extra.RawV2 += "x";
+          c.findings.push(extra);
+          c.logs.at(-1).unverified_secrets++;
+        });
+      }
     }
     reports.push({
       inputs: inputs.size,
@@ -223,25 +216,31 @@ try {
       controls,
     });
   }
-  const hasHeadWitness = (report, decoder) =>
+  const hasHeadWitness = (report, rawSha256, decoder) =>
     report.observed.some(
       (finding) =>
         finding.blob === "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e" &&
-        finding.rawSha256 === "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925" &&
+        finding.rawSha256 === rawSha256 &&
         finding.decoder === decoder,
     );
-  assert.ok(
-    reports.some(
-      (plain) =>
-        hasHeadWitness(plain, "PLAIN") &&
-        reports.some(
-          (escaped) =>
-            plain.stdoutSha256 !== escaped.stdoutSha256 &&
-            hasHeadWitness(escaped, "ESCAPED_UNICODE"),
-        ),
-    ),
-    "missing distinct native decoder observations",
-  );
+  for (const rawSha256 of [
+    "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925",
+    "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b",
+  ]) {
+    assert.ok(
+      reports.some(
+        (plain) =>
+          hasHeadWitness(plain, rawSha256, "PLAIN") &&
+          reports.some(
+            (escaped) =>
+              plain.stdoutSha256 !== escaped.stdoutSha256 &&
+              hasHeadWitness(escaped, rawSha256, "ESCAPED_UNICODE"),
+          ),
+      ),
+      "missing distinct native decoder observations",
+    );
+  }
+
   console.log(
     JSON.stringify(
       { mode, base, head, classifierSha256: hash(readFileSync(classifier)), reports },

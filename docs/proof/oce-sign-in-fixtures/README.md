@@ -25,10 +25,12 @@ from lines 1430–1431 to 1477–1478 after a test insertion.
 The original three captures established six fixture/blob/decoder combinations.
 A subsequent [hosted scan](https://github.com/openclaw/clawsweeper/actions/runs/42233918446)
 refused the previously unobserved PLAIN attribution at head line 1478. A new
-local native capture independently reproduced that exact finding. This change
-adds only that seventh combination. The other fixture's head/PLAIN combination
-remains unobserved and refused. The classifier and patch-witness algorithms are
-unchanged.
+local native capture independently reproduced that exact finding. A bounded repeat
+scan also captured PLAIN at head line 1477. The policy
+now admits all eight fixture/blob/decoder combinations observed across the
+historical and full-range captures. The three full-range captures alone witness
+seven combinations. The classifier
+and patch-witness algorithms are unchanged.
 
 ## Current native capture
 
@@ -49,7 +51,7 @@ input. A process/signal trace showed successful execution followed by SIGKILL,
 without a parent kill syscall. The cause is unresolved; this is **not a passing
 `scanAgentInput` execution**.
 
-Two direct Python launches of the same native executable scanned byte-identical
+Four direct Python launches of the same native executable scanned byte-identical
 copies of all 47 staged inputs with the production arguments:
 
 ```text
@@ -61,8 +63,12 @@ paths. Verification remained enabled; no DNS, detector, concurrency, or network
 policy override was used. Each scan completed in approximately 2.6 seconds with
 exit 183 and four unknown URI findings. Capture one reported head line 1478 as
 PLAIN; capture two reported it as ESCAPED_UNICODE. Both reported head line 1477
-as ESCAPED_UNICODE. The variation is observed; these captures do not establish
-its cause.
+as ESCAPED_UNICODE. A bounded follow-up stopped after two more scans when the
+second produced PLAIN at head line 1477. That complete stream was refused by the
+prior seven-combination policy and is admitted by this change. All four native
+streams are retained; the replay below includes the two original captures and
+the newly observed variant. The variation is observed; these captures do not
+establish its cause.
 
 Keep native stdout, stderr, source bytes, and verification diagnostics private.
 The value-free [range results](range-results.json) record native stream hashes,
@@ -76,26 +82,26 @@ workspace dependencies. Each capture directory contains `input/`, `stdout`,
 `binarySha256`, `argv`, `stdoutSha256`, and `stderrSha256`.
 
 ```sh
-node docs/proof/oce-sign-in-fixtures/replay-range.mjs baseline /baseline/dist/agent-input-scan-fixtures.js /oce-checkout /private/capture-1 /private/capture-2
-node docs/proof/oce-sign-in-fixtures/replay-range.mjs candidate dist/agent-input-scan-fixtures.js /oce-checkout /private/capture-1 /private/capture-2
+node docs/proof/oce-sign-in-fixtures/replay-range.mjs baseline /baseline/dist/agent-input-scan-fixtures.js /oce-checkout /private/capture-1 /private/capture-2 /private/head-1477-plain
+node docs/proof/oce-sign-in-fixtures/replay-range.mjs candidate dist/agent-input-scan-fixtures.js /oce-checkout /private/capture-1 /private/capture-2 /private/head-1477-plain
 node --experimental-strip-types --test test/agent-input-scan-fixtures.test.ts
 ```
 
 The replay verifies every staged byte against the exact Git range, including
 all blob references, then passes the complete unchanged native streams and all
 47 inputs to the real classifier. It requires distinct native streams, exactly
-one finding per fixture/blob pair, and head-line-1478 PLAIN and ESCAPED_UNICODE
-witnesses in different captures. The baseline refuses capture one with
-`source_not_reviewed` and admits capture two. The candidate admits all four
+one finding per fixture/blob pair, and PLAIN and ESCAPED_UNICODE witnesses for
+each head fixture in different captures. The baseline refuses both captures
+containing head PLAIN findings with `source_not_reviewed` and admits capture two. The candidate admits all four
 findings from each capture. This proves classification of the complete captured
 range, without claiming successful native subprocess execution through the
 production caller or a hosted model review.
 
-Eleven negative controls per admitted capture mutate copies only: changed
+Ten negative controls for each fixture in each admitted capture mutate copies
+only: changed
 complete source, invalid scanner line, unknown decoder, verified credential,
 changed raw identity, missing verification error, foreign source path,
-executable mode, duplicate finding, additional unknown finding, and the other
-fixture's unobserved head/PLAIN combination. All remain refused. The complete
+executable mode, duplicate finding, and additional unknown finding. All remain refused. The complete
 source hash check protects changed fixture lines; this does not claim isolated
 line-check coverage. Scanner line coordinates are not themselves the literal
 witness used for decoded findings.
@@ -104,14 +110,16 @@ Malformed decoder and scanner-line fields are rejected before producing public
 observations. Harmless-marker controls reproduced their prior disclosure in
 baseline mode; the fixed runner exits 1 with no stdout and a fixed diagnostic.
 Duplicate captures and captures missing either required decoder are also refused.
-The same-report-only variant control remains refused. These controls mutate
-copies; neither positive native stream is edited.
+The current controls also refuse a replay that omits the newly captured
+head-line-1477 PLAIN witness. The same-report-only variant refusal is a retained
+predecessor result. These controls mutate copies; the three positive streams
+were replayed unchanged.
 
 The historical [results](results.json) preserve the original six-combination
 qualification against `e625d2ea5f08db0291bf5ccf3cb00fc640d7990c`. The original
 `replay.mjs` still replays those three captures and their remaining refusal
 controls. Its report distinguishes historical observations from the separately
-captured seventh combination. CLI failures retain the fixed diagnostic
+captured seventh and eighth combinations. CLI failures retain the fixed diagnostic
 `Fixture proof failed; private input values withheld.`; the range replay uses
 `Range proof failed; private input values withheld.`
 

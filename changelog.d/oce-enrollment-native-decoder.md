@@ -1,1 +1,1 @@
-- Recognize the newly observed native decoder variant of an already reviewed OCE sign-in fixture without widening its source or credential checks.
+- Recognize the newly observed native decoder variants of two already reviewed OCE sign-in fixtures without widening its source or credential checks.
