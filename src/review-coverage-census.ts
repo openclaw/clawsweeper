@@ -23,6 +23,7 @@ export const CENSUS = {
   projectionPages: 200,
 } as const;
 export const CENSUS_PATHS = [
+  "/internal/review-coverage/census/prepare",
   "/internal/review-coverage/census/start",
   "/internal/review-coverage/census/next",
   "/internal/review-coverage/census/accept",
@@ -39,6 +40,12 @@ export type CensusRepository = {
   pulls: number;
   countsAt: string;
 };
+// A server-issued query lower bound, never a query-completion/as-of timestamp.
+export type CensusObservationWindow = { id: string; startedAt: string };
+export function censusObservationWindow(value: unknown): CensusObservationWindow {
+  const v = censusRecord(value);
+  return { id: censusIdentifier(v.id), startedAt: censusDate(v.startedAt) };
+}
 export type CensusWork = {
   repo: string;
   id: string;
@@ -48,6 +55,7 @@ export type CensusWork = {
   pass: number;
   kind: CensusKind;
   cursor: string | null;
+  observationWindow?: CensusObservationWindow;
 };
 export type CensusPage = CensusWork & {
   items: ReviewCoverageOpenItem[];
@@ -55,7 +63,7 @@ export type CensusPage = CensusWork & {
   next: string | null;
   hasNext: boolean;
   sourcePageInfo?: { hasNextPage: boolean; endCursor: string | null };
-  observedAt: string;
+  observedAt: string | null;
 };
 export function censusRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -169,8 +177,13 @@ export function censusPage(value: unknown): CensusPage {
   const items = v.items.map((x) => censusItem(x, v.kind as CensusKind));
   if (new Set(items.map((x) => x.number)).size !== items.length)
     throw new Error("duplicate census identity");
-  const observedAt = censusDate(v.observedAt);
+  const observationWindow =
+    v.observationWindow === undefined ? undefined : censusObservationWindow(v.observationWindow);
+  if (observationWindow && v.observedAt !== null)
+    throw new Error("invalid census observation clock");
+  const observedAt = observationWindow ? null : censusDate(v.observedAt);
   if (
+    observedAt !== null &&
     items.some(
       (item) =>
         Date.parse(item.updated_at) > Date.parse(observedAt) ||
@@ -205,6 +218,7 @@ export function censusPage(value: unknown): CensusPage {
     next,
     hasNext: v.hasNext,
     observedAt,
+    ...(observationWindow ? { observationWindow } : {}),
     ...(sourcePageInfo ? { sourcePageInfo } : {}),
   };
 }

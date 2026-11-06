@@ -47,6 +47,8 @@ import {
   censusBytes,
   censusCursor,
   censusRecord,
+  censusObservationWindow,
+  type CensusObservationWindow,
   censusSignatureInput,
   censusToken,
   type CensusPage,
@@ -136,9 +138,42 @@ export function censusQueryPages(
       next: sourcePageInfo.hasNextPage ? sourcePageInfo.endCursor : null,
       hasNext: sourcePageInfo.hasNextPage,
       sourcePageInfo,
-      observedAt,
+      observedAt: w.observationWindow ? null : observedAt,
     };
   });
+}
+export type PreparedCensusObservation = {
+  attempt: string;
+  observationWindow: CensusObservationWindow;
+};
+// MUST precede the source count read. A 404 alone negotiates safe legacy fallback;
+// an advertised/prepared window is never silently downgraded after an error.
+export async function prepareCensusObservation(
+  options: Parameters<typeof censusHttpControl>[0],
+): Promise<PreparedCensusObservation | null> {
+  let unsupported = false;
+  const request = options.fetchImpl ?? fetch;
+  const control = censusHttpControl({
+    ...options,
+    fetchImpl: async (url, init) => {
+      const response = await request(url, init);
+      unsupported = response.status === 404;
+      return response;
+    },
+  });
+  const attempt = randomUUID();
+  try {
+    const result = await control("/internal/review-coverage/census/prepare", {
+      version: CENSUS.version,
+      attempt,
+    });
+    if (result.clock !== "server-query-window-v1")
+      throw new Error("invalid census observation clock");
+    return { attempt, observationWindow: censusObservationWindow(result.observationWindow) };
+  } catch (error) {
+    if (unsupported) return null;
+    throw error;
+  }
 }
 export async function runReviewCoverageCensus(options: {
   repositories: CensusRepository[];
@@ -146,9 +181,10 @@ export async function runReviewCoverageCensus(options: {
   query: (query: string) => unknown | Promise<unknown>;
   now?: () => number;
   attempt?: string;
+  observation?: PreparedCensusObservation | null;
   onDiagnostic?: (diagnostic: CensusProgressDiagnostic) => void;
 }) {
-  const attempt = options.attempt ?? randomUUID(),
+  const attempt = options.observation?.attempt ?? options.attempt ?? randomUUID(),
     now = options.now ?? Date.now;
   let queries = 0,
     accepted = 0,
@@ -180,8 +216,14 @@ export async function runReviewCoverageCensus(options: {
     }
   };
   const started = await call("start", {
-    repositories: options.repositories,
-    observedAt: new Date(now()).toISOString(),
+    repositories: options.observation
+      ? options.repositories.map((repository) => ({
+          ...repository,
+          countsAt: options.observation!.observationWindow.startedAt,
+        }))
+      : options.repositories,
+    observedAt: options.observation?.observationWindow.startedAt ?? new Date(now()).toISOString(),
+    ...(options.observation ? { observationWindow: options.observation.observationWindow } : {}),
   });
   if (started.capacityBlocked === true || started.metadataAccepted === false) {
     return {
@@ -289,7 +331,10 @@ export function censusHttpControl(options: {
     throw new Error("census control configuration missing");
   const request = options.fetchImpl ?? fetch;
   return async (path: string, value: Record<string, unknown>) => {
-    const expected = censusDiagnostic({ phase: path.split("/").at(-1), category: "unclassified" });
+    const expected = censusDiagnostic({
+      phase: path.endsWith("/prepare") ? "start" : path.split("/").at(-1),
+      category: "unclassified",
+    });
     try {
       const body = JSON.stringify(value);
       if (censusBytes(value) > CENSUS.wireBytes) throw new Error("census control byte bound");
