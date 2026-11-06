@@ -63,9 +63,19 @@ and the scanner invocation before passing unmodified streams to the production
 classifier. The baseline refuses both with `finding_not_reviewed`; the candidate
 classifies both. Each candidate replay also rejects 27 changed metadata,
 credential, provenance and native-completion cases. Four additional controls reject altered JDBC policy tuples.
-These controls mutate copies
-of the captured records; they do not replace the native positive proof.
+These controls mutate copies of the captured records; they do not replace the native positive proof.
+Malformed-input checks also exercise the replay CLI with a harmless marker in
+an invalid receipt and an invalid native stdout record. For the latter, update
+the private copy's receipt hash so parsing is reached. Both commands must fail
+without including the marker in stdout or stderr. The earlier script exposed
+the marker; the corrected script withholds it.
 [Results](results.json) bind the source and native-stream hashes without raw values.
+
+The focused fixture suite passed all 570 tests. The full check on the first
+candidate completed with 7,050 passes, 11 failures and 22 skips. Its failures
+include shell startup errors, a missing npm executable, and unresolved webhook,
+archive, workflow and bootstrap assertions. These remain validation gaps; the
+native replay does not establish a passing full check.
 
 ## Limits
 

@@ -15,6 +15,13 @@ const { classifyReviewedFixtureScan, validateReviewedAttributionPolicy } = await
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const encode = (records) =>
   Buffer.from(records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+const parse = (value) => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new Error("Invalid JSON in proof input; values withheld.");
+  }
+};
 const source = "tests/integration/configuration-controller.test.mjs";
 const identities = [
   [
@@ -36,7 +43,7 @@ validateReviewedAttributionPolicy();
 const results = [];
 for (const [index, capture] of captures.entries()) {
   const [blob, sourceHash, revision, role, line] = identities[index];
-  const receipt = JSON.parse(readFileSync(join(capture, "receipt.json"), "utf8"));
+  const receipt = parse(readFileSync(join(capture, "receipt.json"), "utf8"));
   assert.equal(receipt.exitCode, 183);
   assert.equal(
     receipt.binarySha256,
@@ -62,7 +69,7 @@ for (const [index, capture] of captures.entries()) {
   const stderr = readFileSync(join(capture, "native.stderr.jsonl"));
   assert.equal(hash(stdout), receipt["native.stdout.jsonl"].sha256);
   assert.equal(hash(stderr), receipt["native.stderr.jsonl"].sha256);
-  const findings = stdout.toString().trimEnd().split("\n").map(JSON.parse);
+  const findings = stdout.toString().trimEnd().split("\n").map(parse);
   assert.equal(findings.length, 1);
   const finding = findings[0];
   assert.equal(
@@ -135,7 +142,7 @@ for (const [index, capture] of captures.entries()) {
       ["missing provenance", { references: [] }],
     ])
       reject(name, findings, { ...input, ...change });
-    const logs = stderr.toString().trimEnd().split("\n").map(JSON.parse);
+    const logs = stderr.toString().trimEnd().split("\n").map(parse);
     const completed = (counts) =>
       encode(
         logs.map((entry) => (entry.msg === "finished scanning" ? { ...entry, ...counts } : entry)),

@@ -4,7 +4,7 @@
   "scannerVersion": "3.99.4",
   "scannerBinarySha256": "70b9108715250b19518b03acea56b2f4907a36dcfaaf77693444bdc007a761b1",
   "policySha256": "c406d30d3702a317a88a00a9a18c0dace2696b8d9ccdb2acbc25cf592c2f5df4",
-  "replaySha256": "a3a9f8d60157a4eff21887b62c471066bae454460b22324316c0b747a7dc5e7b",
+  "replaySha256": "7150339ae13651849f17cb1e483b0b47ad9d4656ad033b030b28a50de2e37b42",
   "baseline": {
     "mode": "baseline",
     "classifierSha256": "833a0348bca4aee962ddee2d13771820546867093a06ec5dc9b8b78b4167002b",
@@ -17,7 +17,8 @@
         "stdoutSha256": "cc17fc3bf89e0275fc76a26da8ad77b550bfadd10d367197886a42d56ea3db28",
         "stderrSha256": "a15856563598662934cb55226403d324fd5736adf5a32a8aa9610f17ec6c1165",
         "result": "refused",
-        "refused": []
+        "refused": [],
+        "rejectedPolicyChanges": []
       },
       {
         "blob": "f0e927f8cc0be7876b2ed845c5d5c9a95cf478c8",
@@ -27,7 +28,8 @@
         "stdoutSha256": "f29dc9d7946e50b85a7353995b445c2f4a4c5c783e776f06585ba658cd6773bf",
         "stderrSha256": "f499ebe58b1f1b546439ff7737a485e9c93fa39e7213119a0d67e7496c1a6037",
         "result": "refused",
-        "refused": []
+        "refused": [],
+        "rejectedPolicyChanges": []
       }
     ]
   },
@@ -119,5 +121,51 @@
         "rejectedPolicyChanges": []
       }
     ]
+  },
+  "malformedInputControls": [
+    {
+      "input": "receipt",
+      "version": "before",
+      "exitCode": 1,
+      "markerExposed": true,
+      "stderrSha256": "b257f0dc7e2897b399f1757d964ff875a8eed9850a3f5f44e9a266ba0c8dae6d"
+    },
+    {
+      "input": "receipt",
+      "version": "after",
+      "exitCode": 1,
+      "markerExposed": false,
+      "stderrSha256": "093eb8452071e07ce36fc90471e9acedca3748e79a43f27372129cf01bfe577e"
+    },
+    {
+      "input": "stdout",
+      "version": "before",
+      "exitCode": 1,
+      "markerExposed": true,
+      "stderrSha256": "d1810f8cba16ea6fd4830becd7ff64b606a9512b940f689b0d0fabc443681cc3"
+    },
+    {
+      "input": "stdout",
+      "version": "after",
+      "exitCode": 1,
+      "markerExposed": false,
+      "stderrSha256": "b051ef66d794a858cc5cd786bd2ed5d50455506745b72d83113f3f79b0ef4282"
+    }
+  ],
+  "supportingChecks": {
+    "focusedFixtureSuite": {
+      "tests": 570,
+      "passed": 570,
+      "failed": 0,
+      "skipped": 0
+    },
+    "fullCheck": {
+      "revision": "da8ffa3ac43d2f59f6e1ec814c8faa7b5f4e20d1",
+      "exitCode": 1,
+      "passed": 7050,
+      "failed": 11,
+      "skipped": 22,
+      "scope": "Completed before the proof JSON-error correction. Full-suite failures remain unresolved; native proof does not establish a passing full check."
+    }
   }
 }
