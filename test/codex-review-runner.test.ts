@@ -746,6 +746,141 @@ process.stdout.write(JSON.stringify({ payloads: [{ text }], meta: { stopReason: 
   }
 });
 
+test("runCodex reports the OpenClaw checkout inspection reason ahead of stderr warnings", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const openclawDir = join(root, "openclaw");
+  const workDir = join(root, "review-work");
+  const openclawPath = join(root, "fake-openclaw");
+  mkdirSync(openclawDir, { recursive: true });
+  initTrackedRepo(openclawDir);
+  const warning =
+    "[plugins] clawsweeper-read-receipt: OpenClaw can't verify where this plugin came from.";
+  writeFileSync(
+    openclawPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stderr.write(${JSON.stringify(warning)} + "\\n");
+const prompt = fs.readFileSync(process.argv[process.argv.indexOf("--message-file") + 1], "utf8");
+const relativePath = JSON.parse(prompt.match(/^Path: (.+)$/m)[1]);
+const challenged = fs.readFileSync(path.join(process.env.OPENCLAW_WORKSPACE_DIR, relativePath), "utf8").trim();
+process.stdout.write(JSON.stringify({ payloads: [{ text: challenged }], meta: { stopReason: "stop" } }));
+`,
+  );
+  chmodSync(openclawPath, 0o755);
+  const previous = {
+    CLAWSWEEPER_RUNNER: process.env.CLAWSWEEPER_RUNNER,
+    CLAWSWEEPER_OPENCLAW_BIN: process.env.CLAWSWEEPER_OPENCLAW_BIN,
+    CLAWSWEEPER_OPENCLAW_MODEL: process.env.CLAWSWEEPER_OPENCLAW_MODEL,
+    CODEX_BIN: process.env.CODEX_BIN,
+  };
+  process.env.CLAWSWEEPER_RUNNER = "openclaw";
+  process.env.CLAWSWEEPER_OPENCLAW_BIN = openclawPath;
+  process.env.CLAWSWEEPER_OPENCLAW_MODEL = "openai/gpt-5";
+  process.env.CODEX_BIN = join(root, "missing-codex");
+  try {
+    assert.throws(
+      () =>
+        runBoundedCodexForTest({
+          item: item({ number: 83396 }),
+          context: { issue: {}, comments: [], timeline: [] },
+          git: { mainSha: "abc123", latestRelease: null },
+          model: "internal",
+          openclawDir,
+          reasoningEffort: "high",
+          sandboxMode: "read-only",
+          serviceTier: "",
+          timeoutMs: 10_000,
+          workDir,
+          prompt: "Return a review decision.",
+        }),
+      (error: Error) => {
+        assert.match(
+          error.message,
+          /^Read-only checkout inspection failed for #83396: OpenClaw checkout inspection did not read the exact challenged path\.\n/,
+        );
+        assert.ok(error.message.includes(warning));
+        return true;
+      },
+    );
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const scenario of [
+  {
+    name: "leads with the Codex challenge mismatch",
+    sandbox: `process.stderr.write("codex progress log\\n"); process.stdout.write("wrong text\\n"); process.exit(0);`,
+    expected:
+      /^Read-only checkout inspection failed for #83395: Codex checkout inspection did not return the runner challenge\.\ncodex progress log/,
+  },
+  {
+    name: "keeps stderr for a failed Codex sandbox",
+    sandbox: `process.stderr.write("sandbox exploded\\n"); process.exit(1);`,
+    expected: /^Read-only checkout inspection failed for #83395: sandbox exploded\n?$/,
+  },
+]) {
+  test(`runCodex checkout inspection failure ${scenario.name}`, () => {
+    const root = mkdtempSync(tmpPrefix);
+    const openclawDir = join(root, "openclaw");
+    const workDir = join(root, "codex-work");
+    const binDir = join(root, "bin");
+    mkdirSync(openclawDir, { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    initTrackedRepo(openclawDir);
+    const codexPath = join(binDir, "codex");
+    writeFileSync(
+      codexPath,
+      `#!/usr/bin/env node
+if (process.argv[2] === "sandbox") {
+  ${scenario.sandbox}
+}
+process.exit(2);
+`,
+    );
+    chmodSync(codexPath, 0o755);
+    const previous = {
+      PATH: process.env.PATH,
+      CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS,
+    };
+    process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
+    process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS = "1";
+    try {
+      assert.throws(
+        () =>
+          runBoundedCodexForTest({
+            item: item({ number: 83395 }),
+            context: { issue: {}, comments: [], timeline: [] },
+            git: { mainSha: "abc123", latestRelease: null },
+            model: "model-test",
+            openclawDir,
+            reasoningEffort: "high",
+            sandboxMode: "read-only",
+            serviceTier: "",
+            timeoutMs: 10_000,
+            workDir,
+            prompt: "Return a review decision.",
+          }),
+        (error: Error) => {
+          assert.match(error.message, scenario.expected);
+          return true;
+        },
+      );
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test("runCodex reviews after an attested OpenClaw checkout challenge", () => {
   const root = mkdtempSync(tmpPrefix);
   const openclawDir = join(root, "openclaw");
