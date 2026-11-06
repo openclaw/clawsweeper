@@ -1,0 +1,1 @@
+- Normalize dashboard strict file paths to POSIX slashes so baseline checks match on Windows.
