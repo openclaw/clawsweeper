@@ -203,6 +203,10 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
       }),
       query: (query) =>
         JSON.parse(runGh(["api", "graphql", "-f", "query=" + query], publicInventoryEnv())),
+      onDiagnostic: (d) =>
+        console.warn(
+          `[target-fanout] coverage census failure phase=${d.phase} category=${d.category} queries=${d.queries} accepted=${d.accepted} failed=${d.failed}`,
+        ),
     });
     return {
       protocol: "v2",

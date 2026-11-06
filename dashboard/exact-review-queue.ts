@@ -1,5 +1,6 @@
 import { exactReviewWarningEvidence } from "./exact-review-warning-evidence.ts";
 import { ReviewCoverageCensusStore } from "./review-coverage-census.ts";
+import { censusFailureCategory, type CensusPhase } from "../src/coverage-census-diagnostics.ts";
 import { StoredJsonCorruptionError, encodeStoredJson } from "./stored-json.ts";
 import {
   ReadModelCompressionStore,
@@ -1384,8 +1385,16 @@ export class ExactReviewQueue {
               ? await this.coverageCensus.accept(body)
               : this.coverageCensus.fail(body);
         return json(result);
-      } catch {
-        return json({ error: "coverage_checkpoint_rejected" }, 409);
+      } catch (error) {
+        // This reply is behind the signed, private census control route.
+        const phase = url.pathname.split("/").at(-1) as CensusPhase;
+        return json(
+          {
+            error: "coverage_checkpoint_rejected",
+            diagnostic: { phase, category: censusFailureCategory(error) },
+          },
+          409,
+        );
       }
     }
     if (request.method === "POST" && url.pathname === "/review-coverage/inventory") {

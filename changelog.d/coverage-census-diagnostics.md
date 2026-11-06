@@ -1,0 +1,1 @@
+- Add privacy-safe phase, failure category, and bounded progress diagnostics for Coverage census failures while preserving failed-closed reporting and the original read failure when its checkpoint is rejected.

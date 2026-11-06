@@ -10,6 +10,66 @@ import {
   runReviewCoverageCensus,
 } from "../dist/repair/review-coverage-census.js";
 
+test("signed checkpoint replies expose phase and closed category, never SQL errors or source state", async () => {
+  const f = await authorityFixture();
+  const env = {
+    ...f.env,
+    EXACT_REVIEW_QUEUE: { idFromName: (id: string) => id, get: () => f.queue },
+  };
+  const before = JSON.stringify(f.canonicalState());
+  const request = async (suffix: string, body: Record<string, unknown>) => {
+    const path = "/internal/review-coverage/census/" + suffix;
+    const text = JSON.stringify(body);
+    return worker.fetch(
+      new Request("https://local.invalid" + path, {
+        method: "POST",
+        body: text,
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature":
+            "sha256=" +
+            createHmac("sha256", env.CLAWSWEEPER_WEBHOOK_SECRET)
+              .update(censusSignatureInput(path, text))
+              .digest("hex"),
+        },
+      }),
+      env,
+      {},
+    );
+  };
+  for (const phase of ["next", "accept", "fail"]) {
+    const rejected = await request(phase, { version: 2, attempt: "missing-lease" });
+    assert.equal(rejected.status, 409);
+    assert.deepEqual(await rejected.json(), {
+      error: "coverage_checkpoint_rejected",
+      diagnostic: { phase, category: phase === "accept" ? "invalid_checkpoint" : "lease" },
+    });
+  }
+  const original = f.storage.sql.exec;
+  const sentinel = "SENTINEL-private-repo-token-cursor-SQL";
+  f.storage.sql.exec = () => {
+    throw new Error(sentinel);
+  };
+  try {
+    const rejected = await request("start", {
+      version: 2,
+      attempt: "storage-fault",
+      repositories: [],
+      observedAt: f.snapshot.generated_at,
+    });
+    assert.equal(rejected.status, 409);
+    const reply = await rejected.text();
+    assert.ok(!reply.includes(sentinel));
+    assert.deepEqual(JSON.parse(reply), {
+      error: "coverage_checkpoint_rejected",
+      diagnostic: { phase: "start", category: "unclassified" },
+    });
+  } finally {
+    f.storage.sql.exec = original;
+  }
+  assert.equal(JSON.stringify(f.canonicalState()), before);
+});
+
 test("actual Worker checkpoint controls reject anonymous, wrong-purpose, cross-path and legacy signatures", async () => {
   const f = await authorityFixture(),
     path = "/internal/review-coverage/census/start",
