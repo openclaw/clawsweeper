@@ -209,7 +209,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
         JSON.parse(runGh(["api", "graphql", "-f", "query=" + query], publicInventoryEnv())),
       onDiagnostic: (d) =>
         console.warn(
-          `[target-fanout] coverage census failure phase=${d.phase} category=${d.category} queries=${d.queries} accepted=${d.accepted} failed=${d.failed}`,
+          `[target-fanout] coverage census failure phase=${d.phase} category=${d.category}${d.operation ? ` operation=${d.operation} fault=${d.fault}` : ""} queries=${d.queries} accepted=${d.accepted} failed=${d.failed}`,
         ),
     });
     return {

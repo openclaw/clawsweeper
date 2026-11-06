@@ -1,4 +1,8 @@
 import type { DurableStorage } from "./durable-storage.ts";
+import {
+  observeCensusAcceptFailure,
+  type CensusAcceptOperation,
+} from "../src/coverage-census-diagnostics.ts";
 import type {
   ReviewCoverageInventorySnapshot,
   ReviewCoverageOpenItem,
@@ -707,58 +711,73 @@ export class ReviewCoverageCensusStore {
     });
   }
   async accept(value: unknown, now = Date.now()) {
-    const v = censusRecord(value),
-      attempt = censusIdentifier(v.attempt),
-      requestId = censusIdentifier(v.requestId);
-    if (
-      v.version !== CENSUS.version ||
-      !Array.isArray(v.pages) ||
-      !v.pages.length ||
-      v.pages.length > 10 ||
-      censusBytes(v) > CENSUS.wireBytes
-    )
-      throw new Error("invalid census acceptance");
-    const pages = v.pages.map(censusPage),
-      digest = await censusDigest(pages);
-    if (new Set(pages.map((p) => p.repo)).size !== pages.length)
-      throw new Error("duplicate census page repository");
-    const hashes = await Promise.all(
-      pages.map(async (p) => ({
-        page: p,
-        hash: await censusDigest([
-          this.state(p.repo).active?.connections[p.kind].digest ?? "",
-          p.items,
-        ]),
-      })),
-    );
-    for (const { page, hash } of hashes) await this.verifyRetained(page, hash, now);
-    return this.storage.transactionSync(() => {
-      const receipt = this.rows(
-        "SELECT attempt,digest,result FROM coverage_census_receipts WHERE id=?",
-        requestId,
-      )[0];
-      if (receipt) {
-        if (receipt.attempt !== attempt || receipt.digest !== digest)
-          throw new Error("census replay conflict");
-        return { ok: true, ...(JSON.parse(String(receipt.result)) as object), replayed: true };
-      }
-      const control = this.lease(attempt, now);
-      if (this.meta<boolean>("blocked") === true) throw new Error("census capacity blocked");
-      for (const { page: p, hash } of hashes) this.acceptPage(p, hash, requestId, now);
-      const result = { accepted: true, requestId };
-      this.storage.sql.exec(
-        "INSERT INTO coverage_census_receipts(id,attempt,digest,result,created) VALUES(?,?,?,?,?)",
-        requestId,
-        attempt,
-        digest,
-        JSON.stringify(result),
-        now,
+    let operation: CensusAcceptOperation = "validate";
+    const observe = (next: CensusAcceptOperation) => {
+      operation = next;
+    };
+    try {
+      const v = censusRecord(value),
+        attempt = censusIdentifier(v.attempt),
+        requestId = censusIdentifier(v.requestId);
+      if (
+        v.version !== CENSUS.version ||
+        !Array.isArray(v.pages) ||
+        !v.pages.length ||
+        v.pages.length > 10 ||
+        censusBytes(v) > CENSUS.wireBytes
+      )
+        throw new Error("invalid census acceptance");
+      observe("digest");
+      const pages = v.pages.map(censusPage),
+        digest = await censusDigest(pages);
+      if (new Set(pages.map((p) => p.repo)).size !== pages.length)
+        throw new Error("duplicate census page repository");
+      const hashes = await Promise.all(
+        pages.map(async (p) => ({
+          page: p,
+          hash: await censusDigest([
+            this.state(p.repo).active?.connections[p.kind].digest ?? "",
+            p.items,
+          ]),
+        })),
       );
-      control.until = now + CENSUS.leaseMs;
-      this.putMeta("control", control);
-      this.cleanup(now);
-      return { ok: true, ...result };
-    });
+      observe("retained_verify");
+      for (const { page, hash } of hashes) await this.verifyRetained(page, hash, now);
+      return this.storage.transactionSync(() => {
+        observe("replay");
+        const receipt = this.rows(
+          "SELECT attempt,digest,result FROM coverage_census_receipts WHERE id=?",
+          requestId,
+        )[0];
+        if (receipt) {
+          if (receipt.attempt !== attempt || receipt.digest !== digest)
+            throw new Error("census replay conflict");
+          return { ok: true, ...(JSON.parse(String(receipt.result)) as object), replayed: true };
+        }
+        observe("lease");
+        const control = this.lease(attempt, now);
+        if (this.meta<boolean>("blocked") === true) throw new Error("census capacity blocked");
+        for (const { page: p, hash } of hashes) this.acceptPage(p, hash, requestId, now, observe);
+        observe("receipt");
+        const result = { accepted: true, requestId };
+        this.storage.sql.exec(
+          "INSERT INTO coverage_census_receipts(id,attempt,digest,result,created) VALUES(?,?,?,?,?)",
+          requestId,
+          attempt,
+          digest,
+          JSON.stringify(result),
+          now,
+        );
+        control.until = now + CENSUS.leaseMs;
+        this.putMeta("control", control);
+        observe("cleanup");
+        this.cleanup(now);
+        return { ok: true, ...result };
+      });
+    } catch (error) {
+      observeCensusAcceptFailure(error, operation);
+      throw error;
+    }
   }
   private checkedPayload(row: Record<string, unknown>): ReviewCoverageOpenItem {
     const payload = String(row.payload);
@@ -872,7 +891,14 @@ export class ReviewCoverageCensusStore {
       throw new Error("census retained accounting");
     return usage;
   }
-  private acceptPage(p: CensusPage, hash: string, receipt: string, now: number) {
+  private acceptPage(
+    p: CensusPage,
+    hash: string,
+    receipt: string,
+    now: number,
+    observe: (operation: CensusAcceptOperation) => void,
+  ) {
+    observe("checkpoint");
     const s = this.state(p.repo),
       g = s.active,
       c = g?.connections[p.kind];
@@ -919,6 +945,7 @@ export class ReviewCoverageCensusStore {
         }
       }
     }
+    observe("cursor");
     const cursorBound =
       !!p.cursor &&
       Number(this.rows("SELECT COUNT(*) AS n FROM coverage_census_cursors")[0]?.n ?? 0) >=
@@ -933,6 +960,7 @@ export class ReviewCoverageCensusStore {
         p.kind,
         p.cursor,
       );
+    observe("retained_usage");
     const usage = this.retainedUsage();
     const exceeds = (rows = 0, bytes = 0) =>
       usage.rows + rows > MAX_ROWS ||
@@ -943,6 +971,7 @@ export class ReviewCoverageCensusStore {
     // read/delete is additionally bounded to pageNodes metadata rows, not payloads.
     let reclaimRemaining = CENSUS.identities;
     let newlySeen = 0;
+    observe("items");
     for (const item of p.items) {
       const old = this.rows(
         "SELECT seen,bytes,slot FROM coverage_census_items WHERE repo=? AND generation=? AND kind=? AND number=?",
@@ -1033,6 +1062,7 @@ export class ReviewCoverageCensusStore {
       usage.bytes += byteDelta;
       usage.stagingBytes += byteDelta;
     }
+    observe("advance");
     const actual = this.retainedUsage();
     if (
       actual.rows !== usage.rows ||
@@ -1096,6 +1126,7 @@ export class ReviewCoverageCensusStore {
         g.id,
       );
     }
+    observe("save");
     this.save(s, now);
   }
   private promote(s: RepositoryState, now: number, cleanupBudget: number) {

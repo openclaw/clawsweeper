@@ -1,0 +1,1 @@
+- Add privacy-bounded Coverage ACCEPT operation and fault diagnostics while preserving original exceptions, checkpoint fences, and retry behavior; this improves diagnosis and does not itself recover failed censuses.
