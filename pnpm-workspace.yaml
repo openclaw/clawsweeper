@@ -1,6 +1,10 @@
 packages:
   - '.'
 
+allowBuilds:
+  esbuild: false
+  workerd: false
+
 minimumReleaseAge: 2880
 minimumReleaseAgeExclude:
   - '@typescript/typescript-aix-ppc64@7.0.2'
