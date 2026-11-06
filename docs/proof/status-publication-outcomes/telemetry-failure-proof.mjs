@@ -295,12 +295,14 @@ export async function proveWorkflowAttempts(preview, label, fixture, restart) {
     // Expire only the composed snapshot, retaining the real job and health caches.
     await new Promise((resolve) => setTimeout(resolve, 1_100));
     expose(scenario.after, scenario.latest);
-    await configure(10);
+    await configure();
     const observed = await status();
+    assert.equal(observed.cache, "miss", "the second attempt must actually be collected");
     const expected = label === "base" ? scenario.baseline : scenario.expected;
     assert.deepEqual(observed.metrics, expected, `${label}: ${scenario.name}`);
     const reads = fixture.observations();
     assert.deepEqual(reads.job_reads, label === "base" ? ["latest"] : [1, 2]);
+    await configure(10);
     assert.equal((await status()).cache, "fresh");
     if (index === 0) {
       current = await restart();
