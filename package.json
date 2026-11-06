@@ -94,6 +94,8 @@
     "@types/node": "^24.19.2",
     "@types/yauzl": "3.4.0",
     "es-module-lexer": "3.0.4",
+    "esbuild": "0.28.1",
+    "miniflare": "5.20260911.0-alpha",
     "oxfmt": "^0.76.0",
     "oxlint": "^1.90.0",
     "oxlint-tsgolint": "7.0.2005",
