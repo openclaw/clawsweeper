@@ -1319,14 +1319,16 @@ repository's 15-minute schedule remains the fallback if dispatch is delayed.
 Useful commands:
 
 ```bash
-gh api 'repos/openclaw/clawsweeper/actions/runs?per_page=100' \
-  --jq '.workflow_runs[] | select(.name == "ClawSweeper") | {id,name,display_title,event,status,conclusion,created_at,head_sha,html_url}'
+gh api 'repos/openclaw/clawsweeper/actions/workflows/sweep.yml/runs?per_page=100' \
+  --jq '.workflow_runs[] | {id,name,display_title,event,status,conclusion,created_at,head_sha,html_url}'
 
 gh run view <run-id> --repo openclaw/clawsweeper --json jobs \
   --jq '[.jobs[] | select(.name == "Review exact event item") | select(.status=="in_progress")] | length'
 
 gh api repos/openclaw/clawsweeper/readme --jq '.content' | base64 --decode
 ```
+
+Select the sweep workflow by filename; its run names vary with the task.
 
 Read the remote generated README, not only the local checkout, when checking the
 live dashboard. Generated dashboard state is published from GitHub Actions and
