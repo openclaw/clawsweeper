@@ -2926,7 +2926,8 @@ function contextPatchFixture(
     SourceMetadata: { Data: { Filesystem: { file, line: 7 } } },
   };
   const inputs = new Map<string, StagedScanInput>([
-    [file, { kind: "patch", id: "patch", bytes: Buffer.from(patch), from, to }],
+    // Match the host staging format; diagnostic IDs are closed, not arbitrary labels.
+    [file, { kind: "patch", id: "0", bytes: Buffer.from(patch), from, to }],
     [
       `/private/scanner/${beforeId}`,
       {
@@ -2974,11 +2975,25 @@ test("approved URI findings in unchanged patch context require both exact Git wi
   if (accepted.kind === "classified") {
     const witnesses = accepted.notices.flatMap((notice) => notice.findings);
     assert.equal(witnesses.length, 2);
-    assert.ok(witnesses.every((witness) => witness.blob === "patch" && witness.literalLine === 7));
+    assert.ok(witnesses.every((witness) => witness.blob === "0" && witness.literalLine === 7));
     assert.deepEqual(
       witnesses.map((witness) => witness.patch?.sourceBlob).sort(),
       [fixture.beforeId, fixture.afterId].sort(),
     );
+  }
+  // Inventory truncation must reserve the refusal, not a preceding qualified finding.
+  const laterRefusal = classify(fixture.inputs, [
+    fixture.finding,
+    ...Array.from({ length: 100 }, () => ({ DetectorType: 0, Raw: "DIAGNOSTIC_CANARY_A" })),
+  ]);
+  assert.equal(laterRefusal.kind, "refused");
+  if (laterRefusal.kind === "refused" && laterRefusal.diagnostic.kind === "unclassified_finding") {
+    const diagnostic = laterRefusal.diagnostic;
+    assert.equal(diagnostic.findingIndex, 1);
+    assert.equal(diagnostic.inventory.entries[0]?.findingIndex, 1);
+    assert.equal(diagnostic.inventory.totalCount, 101);
+    assert.ok(diagnostic.inventory.omittedCount > 0);
+    assert.equal(diagnostic.inventory.unattributedCount, 100);
   }
   // Decoder coordinates may shift; independently prove every literal occurrence.
   assert.equal(

@@ -60,8 +60,11 @@ allowed fields fail closed. Source paths remain hashes (`pathSha256`); no path,
 URL, excerpt, matched value, decoded value or environment content is projected.
 
 `unclassified_finding` means **requires classification**, not “confirmed secret”
-or “qualified fixture”. `findingCount` is the scan's total; `findingIndex` identifies
-the first refused finding, not a complete findings list. `verified: true` records
+or “qualified fixture”. `findingCount` is the scan's total; `findingIndex` still identifies
+the authoritative first refused finding. Additive `inventory.version: 1` contains a
+metadata-only sample of all findings (including any earlier qualified findings),
+not per-entry classification or permission to retry. Older artifacts without an
+inventory remain readable. `verified: true` records
 the scanner's verification state, not an operator conclusion. `native_contract`
 means the scanner did not satisfy its completion contract. A null `scan` means no
 structured attribution was available; do not infer one.
@@ -72,6 +75,23 @@ line**, especially for decoded findings and diffs. `sourceCoordinates` remains
 an authorized operator identify the input; the inspector does not convert them
 into source paths or line numbers. `referenceCount` can exceed the displayed
 reference list.
+
+The inventory reserves the first refusal before retaining other entries in original
+scan order, with original zero-based `findingIndex` values. It retains at most 16
+entries and 6 KiB of pretty-printed metadata including enclosing manifest
+indentation. `totalCount`, `retainedCount`, and `omittedCount` describe the whole
+scan/sample; `unattributedCount` counts findings across the **whole scan** without
+a validated staged material, including omitted entries. It does not count unknown
+source lines: source attribution is unavailable for **every** entry in this slice.
+Each entry has `sourceAttribution: unavailable` and an `attributionReason`:
+`unknown_material`, `decoded` (including unknown decoders), `ambiguous` (multiple
+material references), or `not_proven`. Even plain, single-reference blob findings
+are not independently proved source locations. Patch/raw-diff coordinates are
+never relabeled as base/head coordinates. Only closed scalar fields, validated
+staged identities, and bounded hashed references are retained; malformed material
+metadata is unavailable, not echoed.
+
+Controlled runtime proof and limitations: [finding inventory](proof/input-scan-finding-inventory/README.md).
 
 Inspection never releases `scanner_refused`, qualifies a fixture, disables
 verification, invokes a model or requests a retry. Follow the existing

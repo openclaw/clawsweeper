@@ -1,0 +1,1 @@
+- Retain a bounded metadata-only finding inventory in input-scan refusal diagnostics without changing refusal or fixture policy.

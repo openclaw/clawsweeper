@@ -9,6 +9,10 @@ import {
 } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { AGENT_INPUT_SCAN_FAILURE_REASONS } from "../dist/exact-review-failure-reason.js";
+import {
+  SCAN_FINDING_INVENTORY_MAX_BYTES,
+  SCAN_FINDING_INVENTORY_MAX_ENTRIES,
+} from "../dist/agent-input-scan-fixtures.js";
 
 const MAX_BYTES = 24 * 1024;
 const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -121,6 +125,85 @@ function scanProjection(scan) {
         }),
       });
     }
+  }
+  if (scan.inventory !== undefined) {
+    const inventory = scan.inventory;
+    requireValue(
+      inventory &&
+        inventory.version === 1 &&
+        inventory.totalCount === scan.findingCount &&
+        integer(inventory.retainedCount, 1, SCAN_FINDING_INVENTORY_MAX_ENTRIES) &&
+        integer(inventory.omittedCount) &&
+        inventory.retainedCount + inventory.omittedCount === inventory.totalCount &&
+        integer(inventory.unattributedCount, 0, inventory.totalCount) &&
+        Array.isArray(inventory.entries) &&
+        inventory.entries.length === inventory.retainedCount &&
+        Buffer.byteLength(JSON.stringify({ failure: { scan: { inventory } } }, null, 2)) <=
+          SCAN_FINDING_INVENTORY_MAX_BYTES,
+    );
+    const indices = new Set();
+    const entries = inventory.entries.map((entry) => {
+      requireValue(
+        entry &&
+          !indices.has(entry.findingIndex) &&
+          entry.sourceAttribution === "unavailable" &&
+          ["unknown_material", "decoded", "ambiguous", "not_proven"].includes(
+            entry.attributionReason,
+          ),
+      );
+      indices.add(entry.findingIndex);
+      // Reuse the closed scalar/material projection, never pass through entry JSON.
+      const projected = scanProjection({
+        kind: scan.kind,
+        reason: scan.reason,
+        findingCount: scan.findingCount,
+        findingIndex: entry.findingIndex,
+        detectorType: entry.detectorType,
+        decoder: entry.decoder,
+        verified: entry.verified,
+        scannerLine: entry.scannerLine,
+        material: entry.material,
+      });
+      const expectedReason = !projected.material
+        ? "unknown_material"
+        : projected.decoder !== "PLAIN"
+          ? "decoded"
+          : (projected.material.referenceCount ?? 0) > 1
+            ? "ambiguous"
+            : "not_proven";
+      requireValue(entry.attributionReason === expectedReason);
+      return {
+        findingIndex: projected.findingIndex,
+        detectorType: projected.detectorType,
+        decoder: projected.decoder,
+        verified: projected.verified,
+        scannerLine: projected.scannerLine,
+        material: projected.material,
+        sourceAttribution: "unavailable",
+        attributionReason: expectedReason,
+      };
+    });
+    requireValue(
+      entries[0].findingIndex === scan.findingIndex &&
+        entries[0].detectorType === result.detectorType &&
+        entries[0].decoder === result.decoder &&
+        entries[0].verified === result.verified &&
+        entries[0].scannerLine === result.scannerLine &&
+        JSON.stringify(entries[0].material) === JSON.stringify(result.material),
+    );
+    const unavailable = entries.filter((entry) => !entry.material).length;
+    requireValue(
+      inventory.unattributedCount >= unavailable &&
+        inventory.unattributedCount <= unavailable + inventory.omittedCount,
+    );
+    result.inventory = {
+      version: 1,
+      totalCount: inventory.totalCount,
+      retainedCount: entries.length,
+      omittedCount: inventory.omittedCount,
+      unattributedCount: inventory.unattributedCount,
+      entries,
+    };
   }
   return result;
 }
