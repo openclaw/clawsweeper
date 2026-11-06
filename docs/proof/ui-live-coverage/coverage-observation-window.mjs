@@ -439,6 +439,7 @@ for (const offset of [-120000, -500, 500, 120000]) await run({ name: "fixed-" + 
 await run({ name: "large-two-witness-fleet", offset: -500, fleet: true });
 await run({ name: "old-client-new-worker", client: "base", offset: 0, legacy: true });
 await run({ name: "new-client-old-worker", server: "base", offset: 0 });
+await persistedLegacyUpgrade();
 const behind = results.find((r) => r.name === "base-behind"),
   ahead = results.find((r) => r.name === "base-ahead");
 assert.ok(behind.trace.some((t) => t.response.diagnostic?.fault === "observation_window"));
@@ -512,4 +513,225 @@ function query(text, population) {
       }),
     ),
   };
+}
+
+async function persistedLegacyUpgrade() {
+  const statePath = resolve(output, "legacy-upgrade-state");
+  let mf,
+    serverOffset = 0,
+    outbound = 0;
+  const trace = [];
+  const population = [
+    {
+      repo: "fixture/upgrade",
+      id: "ID_upgrade",
+      revision: "policy-v1",
+      visibility: "public",
+      scope: "eligible",
+      issues: 101,
+      pulls: 1,
+      countsAt: new Date().toISOString(),
+    },
+  ];
+  const create = (source) =>
+    new Miniflare(
+      convertV4MiniflareOptions({
+        workers: [
+          {
+            name: "proof",
+            modules: true,
+            scriptPath: bundles[source].workerFile,
+            compatibilityDate: "2026-06-25",
+            bindings: { CLAWSWEEPER_WEBHOOK_SECRET: secret },
+            outboundService: () => {
+              outbound++;
+              return new Response("blocked", { status: 502 });
+            },
+            durableObjects: {
+              EXACT_REVIEW_QUEUE: { className: "ExactReviewQueue", useSQLite: true },
+            },
+          },
+        ],
+        resourcePersistencePath: statePath,
+        r2Buckets: [],
+      }),
+    );
+  const state = async () => (await mf.dispatchFetch("https://local/proof-state")).json();
+  const fetchImpl = async (url, init) => {
+    await mf.dispatchFetch("https://local/proof-clock", {
+      headers: { "x-proof-clock-offset": String(serverOffset) },
+    });
+    const response = await mf.dispatchFetch(url, init);
+    trace.push({
+      path: new URL(url).pathname,
+      status: response.status,
+      serverAt: Number(response.headers.get("x-proof-server-time")),
+      request: JSON.parse(init.body),
+      response: await response.clone().json(),
+    });
+    return response;
+  };
+  try {
+    mf = create("base");
+    const legacy = bundles.base.producer,
+      current = bundles.candidate.producer;
+    const oldControl = legacy.censusHttpControl({ baseUrl: "https://local", secret, fetchImpl });
+    await oldControl("/internal/review-coverage/census/next", {
+      version: 2,
+      attempt: "bootstrap",
+    }).catch(() => {});
+    const before = await state();
+    const attempt = "deployed-legacy-v2";
+    await oldControl("/internal/review-coverage/census/start", {
+      version: 2,
+      attempt,
+      repositories: population,
+      observedAt: new Date().toISOString(),
+    });
+    const first = await oldControl("/internal/review-coverage/census/next", {
+      version: 2,
+      attempt,
+    });
+    const firstPages = legacy.censusQueryPages(
+      query(legacy.censusQuery(first.work), population),
+      first.work,
+      new Date().toISOString(),
+    );
+    await oldControl("/internal/review-coverage/census/accept", {
+      version: 2,
+      attempt,
+      requestId: "legacy-persisted-page",
+      pages: firstPages,
+    });
+    const pending = await oldControl("/internal/review-coverage/census/next", {
+      version: 2,
+      attempt,
+    });
+    const oldPages = legacy.censusQueryPages(
+      query(legacy.censusQuery(pending.work), population),
+      pending.work,
+      new Date().toISOString(),
+    );
+    const persisted = await state();
+    const oldState = JSON.parse(persisted.tables.coverage_census_repositories[0].state);
+    assert.equal(oldState.active.connections.issue.cursor, "c100");
+    assert.equal(oldState.complete, null);
+    assert.equal(persisted.tables.coverage_census_items.length, 100);
+    assert.ok(!oldState.active.connections.issue.observationWindow);
+    await writeFile(
+      resolve(output, "persisted-legacy-v2.json"),
+      JSON.stringify(persisted, null, 2),
+    );
+    await mf.dispose();
+    // Genuine engine restart: the same workerd SQLite files and DO identity, new Worker code.
+    mf = create("candidate");
+    const loaded = await state();
+    assert.deepEqual(loaded.tables, persisted.tables);
+    assert.deepEqual(loaded.kv, persisted.kv);
+    assert.equal(loaded.alarm, persisted.alarm);
+    const control = current.censusHttpControl({ baseUrl: "https://local", secret, fetchImpl });
+    serverOffset += 6 * 60_000; // Expire the existing lease through time, never a state reset.
+    const observation = await current.prepareCensusObservation({
+      baseUrl: "https://local",
+      secret,
+      fetchImpl,
+    });
+    await sleep(10); // Actual metadata source read is after server preparation.
+    const repositories = population.map((r) => ({
+      ...r,
+      countsAt: observation.observationWindow.startedAt,
+    }));
+    await control("/internal/review-coverage/census/start", {
+      version: 2,
+      ...observation,
+      observedAt: observation.observationWindow.startedAt,
+      repositories,
+    });
+    const upgraded = await state(),
+      checkpoint = JSON.parse(upgraded.tables.coverage_census_repositories[0].state);
+    assert.equal(checkpoint.active.id, oldState.active.id);
+    assert.equal(checkpoint.active.pass, oldState.active.pass);
+    assert.equal(checkpoint.active.connections.issue.cursor, "c100");
+    // This is deliberately BEFORE next issues any new window: persisted legacy work cannot
+    // select the legacy branch merely by omitting a witness under a negotiated lease.
+    await assert.rejects(
+      control("/internal/review-coverage/census/accept", {
+        version: 2,
+        attempt: observation.attempt,
+        requestId: "legacy-cross-mode-replay",
+        pages: oldPages,
+      }),
+      { message: "coverage_checkpoint_rejected" },
+    );
+    await assert.rejects(
+      oldControl("/internal/review-coverage/census/accept", {
+        version: 2,
+        attempt,
+        requestId: "expired-legacy-attempt",
+        pages: oldPages,
+      }),
+      { message: "coverage_checkpoint_rejected" },
+    );
+    // Receipts remain durable and idempotent across the binary upgrade.
+    const receipt = await oldControl("/internal/review-coverage/census/accept", {
+      version: 2,
+      attempt,
+      requestId: "legacy-persisted-page",
+      pages: firstPages,
+    });
+    assert.equal(receipt.replayed, true);
+    const totals = await current.runReviewCoverageCensus({
+      observation,
+      repositories,
+      control,
+      now: () => Date.now() - 500,
+      query: async (text) => {
+        await sleep(20);
+        serverOffset += 1000;
+        return query(text, population);
+      },
+    });
+    assert.equal(totals.failed, 0);
+    const after = await state(),
+      complete = JSON.parse(after.tables.coverage_census_repositories[0].state).complete;
+    assert.ok(complete);
+    assert.equal(complete.issues, 101);
+    assert.equal(complete.pulls, 1);
+    assert.equal(complete.generation, oldState.active.id);
+    assert.equal(after.tables.coverage_census_items.length, 102);
+    assert.deepEqual(nonCensus(after), nonCensus(before));
+    assert.equal(Object.keys(nonCensus(after)).length, 58);
+    assert.deepEqual(after.kv, before.kv);
+    assert.equal(after.alarm, null);
+    assert.equal(outbound, 0);
+    await writeFile(resolve(output, "upgraded-negotiated-v2.json"), JSON.stringify(after, null, 2));
+    results.push({
+      name: "persisted-legacy-v2-upgrade",
+      server: "base-to-candidate",
+      client: "legacy-to-negotiated",
+      statePath,
+      loadedUnchanged: true,
+      retainedCursor: "c100",
+      retainedGeneration: oldState.active.id,
+      retainedItemsBefore: 100,
+      finalItems: 102,
+      durableReceiptReplayed: true,
+      missingWindowBeforeNextRejected: true,
+      oldAttemptRejected: true,
+      totals,
+      complete: 1,
+      nonCensusTables: 58,
+      immutable: true,
+      outbound,
+      trace,
+    });
+  } catch (error) {
+    await writeFile(
+      resolve(output, "legacy-upgrade-failure.json"),
+      JSON.stringify({ error: String(error), trace, state: mf ? await state() : null }, null, 2),
+    );
+    throw error;
+  } finally {
+    if (mf) await mf.dispose();
+  }
 }

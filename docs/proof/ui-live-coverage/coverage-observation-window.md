@@ -78,6 +78,21 @@ stale windows, future identities, mismatched pass/revision/generation/cursor,
 previous metadata epochs, HMAC/method rejection, receipt replay, an update during
 a two-second query, and the unchanged 25,000-identity capacity rejection. Focused
 regression tests additionally exercise downgrade and old lease/assignment cases.
+
+The accepted ClawSweeper data-model compatibility blocker and its matching
+Rank-up move are exercised by a genuine same-store cold restart: base 066e625
+accepts and persists 100 legacy-v2 identities plus a c100 continuation cursor and
+receipt, then its workerd process is disposed. Candidate workerd reopens the same
+SQLite files/DO identity unchanged, expires the lease by advancing only the test
+clock, and negotiates server windows while preserving the generation and cursor.
+Old-attempt and cross-mode in-flight pages are rejected even BEFORE next issues a
+new window; the durable old receipt still replays idempotently. The candidate
+continues both witnesses and promotes all 102 identities without resetting state.
+This additionally exposed and closed a missing-witness downgrade at that specific
+legacy-state boundary. In pinned Miniflare v5, real disk persistence uses
+resourcePersistencePath; the removed v4 durableObjectsPersist key is not accepted
+as evidence of cold-restart persistence. Artifacts retain the actual SQLite files
+and complete before/after snapshots, with the same non-census/KV/alarm fences.
 The canonical pre-existing proof preserves its 145/8,149 workload and identity
 bound counterfactual; no old fixture/error identity is weakened.
 

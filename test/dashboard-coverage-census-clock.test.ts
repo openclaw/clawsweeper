@@ -154,3 +154,55 @@ test("only explicit old-Worker 404 negotiates legacy, never lease/auth/checkpoin
     else await assert.rejects(call);
   }
 });
+
+test("persisted legacy v2 partial checkpoints cannot downgrade a newly negotiated lease", async () => {
+  const f = censusFixture([{ name: "clock", issues: 101, pulls: 1 }]);
+  const attempt = "deployed-legacy";
+  await f.store.start(
+    {
+      version: 2,
+      attempt,
+      repositories: f.population(),
+      observedAt: new Date(f.time).toISOString(),
+    },
+    f.time,
+  );
+  const first = f.store.next({ version: 2, attempt }, f.time).work;
+  const firstPages = censusQueryPages(
+    f.query(censusQuery(first)),
+    first,
+    new Date(f.time).toISOString(),
+  );
+  await f.store.accept(
+    { version: 2, attempt, requestId: "legacy-page", pages: firstPages },
+    f.time,
+  );
+  const inFlight = f.store.next({ version: 2, attempt }, f.time).work;
+  const oldPages = censusQueryPages(
+    f.query(censusQuery(inFlight)),
+    inFlight,
+    new Date(f.time).toISOString(),
+  );
+  assert.equal(f.states()[0].state.active.connections.issue.cursor, "c100");
+  const generation = f.states()[0].state.active.id;
+  f.restart();
+  const observation = prepared(f, "upgraded-producer");
+  await start(f, observation);
+  assert.equal(f.states()[0].state.active.id, generation);
+  assert.equal(f.states()[0].state.active.connections.issue.cursor, "c100");
+  await assert.rejects(
+    accept(f, observation, oldPages, "cross-mode-page"),
+    /observation window conflict/,
+  );
+  const result = await runReviewCoverageCensus({
+    observation,
+    repositories: f.population(),
+    control: f.control,
+    query: f.query,
+    now: () => f.time - 500,
+  });
+  assert.equal(result.failed, 0);
+  assert.ok(f.states()[0].state.complete);
+  assert.equal(f.states()[0].state.complete.issues, 101);
+  assert.equal(f.states()[0].state.complete.pulls, 1);
+});

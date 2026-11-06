@@ -829,7 +829,7 @@ export class ReviewCoverageCensusStore {
         const control = this.lease(attempt, now);
         if (this.meta<boolean>("blocked") === true) throw new Error("census capacity blocked");
         for (const { page: p, hash } of hashes)
-          this.acceptPage(p, hash, requestId, now, observe, attempt);
+          this.acceptPage(p, hash, requestId, now, observe, attempt, control.serverClock === true);
         observe("receipt");
         const result = { accepted: true, requestId };
         this.storage.sql.exec(
@@ -970,6 +970,7 @@ export class ReviewCoverageCensusStore {
     now: number,
     observe: (operation: CensusAcceptOperation) => void,
     attempt: string,
+    serverClock: boolean,
   ) {
     observe("checkpoint");
     const s = this.state(p.repo),
@@ -987,7 +988,7 @@ export class ReviewCoverageCensusStore {
       c.done
     )
       throw new Error("census checkpoint conflict");
-    if (p.observationWindow || c.observationWindow) {
+    if (serverClock || p.observationWindow || c.observationWindow) {
       const expected = c.observationWindow,
         received = p.observationWindow;
       if (
