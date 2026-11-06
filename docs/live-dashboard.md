@@ -2,7 +2,7 @@
 
 - Status: active observer and operator reference
 - Owner: ClawSweeper maintainers and the designated Cloudflare operator
-- Source of truth: `dashboard/worker.ts`, `dashboard/exact-review-queue.ts`,
+- Source of truth: `dashboard/entry.ts`, `dashboard/worker.ts`, `dashboard/exact-review-queue.ts`,
   `dashboard/wrangler.toml`, dashboard tests, and deployed read-only endpoints
 - Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: routes, public fields, queue projections, capacity, alerts,
@@ -43,6 +43,10 @@ remote transport replaces the original stack before the outer Worker sees it.
 These logs exclude error messages, SQL, private paths, and raw stacks.
 
 ## Deployment
+
+Wrangler loads `dashboard/entry.ts`, which exports only the Worker handler and
+bound Durable Object classes. Shared implementation and Node test helpers remain
+in `dashboard/worker.ts`; helper exports are not deployable Worker entry points.
 
 Cloudflare account:
 

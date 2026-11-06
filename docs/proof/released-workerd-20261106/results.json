@@ -1,0 +1,276 @@
+{
+  "base": "066e625998e61b8045704618e21d3ab9d73d7329",
+  "pairedSourceNote": "Same deploy-entry repair on old dependencies, isolating dependency effect. Original entry fails both versions. Initial public website redirect led outside allowed proxy routes; separate example.com replay passes.",
+  "verifiedTlsKeyCount": 6,
+  "observedIncidentSpkis": [
+    "43bffa19d6ef651451f6841e019931e96f6f2eaeff28ab4b6f1ce4576de2717b",
+    "49dd353dc2b919a3770645117d0e60c16115e7d1bc259eefe734b00ea434fe5f",
+    "5c0660a2b164910d8ff589c18e14552e9e0ec237dcefe2cb736d41a4811f81a0",
+    "63ecefee431d49523bc1136c4e72d0206a477086caf606cd5cf025686c109cf8",
+    "e0254c7fcdc265e2f0f8a428dabb75ab4ae039b4872d62f5ee57f0877d5a8a41",
+    "ebed6475c2c2d80fcb199f3fe8dd6e6b3ce60b77eb15d4e42c3dec0c6f5b5105"
+  ],
+  "results": [
+    {
+      "target": "https://dv-g3b-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    },
+    {
+      "target": "https://dv-g3c-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    },
+    {
+      "target": "https://ov-g3b-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    },
+    {
+      "target": "https://ov-g3c-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    },
+    {
+      "target": "https://ev-g3b-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    },
+    {
+      "target": "https://ev-g3c-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    },
+    {
+      "target": "https://dv-g3b-aaa-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    },
+    {
+      "target": "https://dv-g3c-aaa-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    },
+    {
+      "target": "https://ov-g3b-aaa-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    },
+    {
+      "target": "https://ov-g3c-aaa-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    },
+    {
+      "target": "https://ev-g3b-aaa-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    },
+    {
+      "target": "https://ev-g3c-aaa-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    },
+    {
+      "target": "https://dv-g3b-noct-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    },
+    {
+      "target": "https://dv-g3b-aaa-noct-emudhra.we-have-a-problem.com",
+      "baselineHttpStatus": 200,
+      "candidateHttpStatus": 500,
+      "candidateCertDistrustedCount": 1
+    }
+  ],
+  "candidateControls": {
+    "publicHttps": {
+      "status": 200,
+      "bodySha256": "25ddf2c883e0d1958ea971d279a7e4f0fd446724ee3db7db19dadabd4a62e484",
+      "bodyPreview": "<!doctype html><html lang=en><head><meta charset=utf-8><link rel=icon href=data:,><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Example Domain</title><style>html{color-scheme:light dark;background:light-dark(#eee,#222)}body{font:16px/1.6 system-ui,sans-serif;max-width:26em;"
+    },
+    "privateCaHttps": {
+      "status": 200,
+      "bodySha256": "1431f756e19231cc2e6722a48fca3a7f6deda138724a14d4f606009f231e19e6",
+      "bodyPreview": "<!doctype html><title>Overview \u00b7 ClawSweeper</title><a href=\"/queue/\">task private HTTPS</a>"
+    },
+    "api": {
+      "health": {
+        "status": 200,
+        "bodySha256": "f491fa10587125faf5f23f85fa0b0b0375945006dadecb9eb90c9ab653c832db",
+        "bodyPreview": "{\n  \"ok\": true,\n  \"service\": \"clawsweeper-status\",\n  \"deployment_sha\": null\n}"
+      },
+      "queue": {
+        "status": 200,
+        "bodySha256": "2bf309d48bc02038ce6f6afe52d5c51261b67030a2cc078f56e10b2f740c094a",
+        "bodyPreview": "{\n  \"collection\": {\n    \"state\": \"complete\"\n  },\n  \"generated_at\": \"2026-11-06T21:00:45.776Z\",\n  \"pending\": 0,\n  \"ready_pending\": 0,\n  \"admissible_pending\": 0,\n  \"shed_since_reset\": 0,\n  \"dispatching\": 0,\n  \"leased\": 0,\n  \"oldest_pending_at\": null,\n  \"oldest_pending_age_seconds\": null,\n  \"oldest_dis"
+      },
+      "unsignedWrite": {
+        "status": 401,
+        "bodySha256": "6fd1539fe70bd16792719c257a41dec2ebef11ffd466e7b158f2f848eef7cc3a",
+        "bodyPreview": "{\n  \"error\": \"invalid_signature\"\n}"
+      }
+    }
+  },
+  "baselinePublicCorrection": {
+    "status": 200,
+    "bodySha256": "25ddf2c883e0d1958ea971d279a7e4f0fd446724ee3db7db19dadabd4a62e484",
+    "bodyPreview": "<!doctype html><html lang=en><head><meta charset=utf-8><link rel=icon href=data:,><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Example Domain</title><style>html{color-scheme:light dark;background:light-dark(#eee,#222)}body{font:16px/1.6 system-ui,sans-serif;max-width:26em;"
+  },
+  "artifacts": [
+    {
+      "path": "baseline/node_modules/.pnpm/@cloudflare+workerd-linux-64@1.20260911.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd",
+      "sha256": "caf8ce67240e4349e50c839cd06b29b6eea6ff3867ade44ce1b287649f282242",
+      "bytes": 155631992,
+      "version": "workerd 2026-09-11"
+    },
+    {
+      "path": "candidate/.github/workflows/dashboard-site.yml",
+      "sha256": "44f5da601172c9e0cf7d67d09c0932c48c556b781bded171a97b1b6546f0f917",
+      "bytes": 6682
+    },
+    {
+      "path": "candidate/.github/workflows/dashboard.yml",
+      "sha256": "a13947d1f08467615e2087dbcda2a0a16067e7d0ab39778907481475d21ce84f",
+      "bytes": 5570
+    },
+    {
+      "path": "candidate/changelog.d/released-workerd-20261106.md",
+      "sha256": "1bb01a68d3d1a54e2be64a1e71f635f8e479774a1b46fa810b46025e655ae32a",
+      "bytes": 118
+    },
+    {
+      "path": "candidate/dashboard/entry.ts",
+      "sha256": "7fc9c1ab917a3b6e112c3a97b64988c790f27e79639f1d1354b9a258f0195c72",
+      "bytes": 168
+    },
+    {
+      "path": "candidate/dashboard/wrangler.toml",
+      "sha256": "d1f22754f15ca994a553258e4d3ffe991d0932e4d8623b93699ccec8e2b434a0",
+      "bytes": 6463
+    },
+    {
+      "path": "candidate/docs/live-dashboard.md",
+      "sha256": "a82e757afaf152cebfd2e5d89e2fecab05c1e7df7d22e93c7e33ded86087a375",
+      "bytes": 125380
+    },
+    {
+      "path": "candidate/node_modules/.pnpm/@cloudflare+workerd-linux-64@1.20261103.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd",
+      "sha256": "315a009480729fa1f365e649cb34bf898e39df6c7d1a133f74c736ef201221b9",
+      "bytes": 157046088,
+      "version": "workerd 2026-11-03"
+    },
+    {
+      "path": "candidate/package.json",
+      "sha256": "6532c959b6d34ca014df7ebf9bf01086ebd1fd3f6218400e579fb3bd500be9b1",
+      "bytes": 6858
+    },
+    {
+      "path": "candidate/pnpm-lock.yaml",
+      "sha256": "958fe08afc76ad5ca4a3272c5f7dfb12e335c9c4fdd1bb9661db3ee97e6bdd3f",
+      "bytes": 59274
+    },
+    {
+      "path": "candidate/test/dashboard-entrypoint.test.ts",
+      "sha256": "4d9e771470c3ae784f07f4944439b5e621dfce7b6690da66bf9f1653a99d7493",
+      "bytes": 895
+    },
+    {
+      "path": "fixtures/combined-ca.pem",
+      "sha256": "6d8fa37f6c9330caecaa1e424ee327648ce3a93c5eeb81cc140896dc27156317",
+      "bytes": 219925
+    },
+    {
+      "path": "fixtures/dashboard-native-proof.py",
+      "sha256": "d6e817536ad3040e993e47594fa58dd5ad81a593dffca46a1de638860779c796",
+      "bytes": 9292
+    },
+    {
+      "path": "fixtures/historical-explicit-ca.pem",
+      "sha256": "c3aa6ce83618c247fdeb0afad3a4eb1d01da2eb9035defe70f74c4bbaaca986f",
+      "bytes": 218786
+    },
+    {
+      "path": "fixtures/private-ca.pem",
+      "sha256": "de28412823ab11cdcb9deb6ff9e71c25cbe64119cfd837bdee50ce76e74393f9",
+      "bytes": 1139
+    },
+    {
+      "path": "miniflare-build/entry.js",
+      "sha256": "46a5cd5f57af16b0e122cf2353857ee7df245bc5a6db5faba764eccb82cb7b56",
+      "bytes": 1915666
+    },
+    {
+      "path": "node-v24.22.1-linux-x64/bin/node",
+      "sha256": "e32e2d16081cf644f88392934288086e7662529d0d43277c34f7aad2207cfafb",
+      "bytes": 126879696
+    },
+    {
+      "path": "node-v24.22.1-linux-x64/bin/pnpm",
+      "missing": true,
+      "note": "Unused bootstrap symlink to obsolete pnpm.cjs filename; executed manager was the recorded Corepack shim and pnpm.mjs 12.15.0."
+    },
+    {
+      "path": "npx-cache-baseline/_npx/c4e09ea4da0c6ba2/node_modules/@cloudflare/workerd-linux-64/bin/workerd",
+      "sha256": "caf8ce67240e4349e50c839cd06b29b6eea6ff3867ade44ce1b287649f282242",
+      "bytes": 155631992,
+      "version": "workerd 2026-09-11"
+    },
+    {
+      "path": "npx-cache-candidate/_npx/66a96b86f9ecd1db/node_modules/@cloudflare/workerd-linux-64/bin/workerd",
+      "sha256": "315a009480729fa1f365e649cb34bf898e39df6c7d1a133f74c736ef201221b9",
+      "bytes": 157046088,
+      "version": "workerd 2026-11-03"
+    },
+    {
+      "path": "pnpm.tgz",
+      "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+      "bytes": 1054122
+    },
+    {
+      "path": "wrangler-build/entry.js",
+      "sha256": "632852b8dab9b9471f4e0ffec30bc65ecc4cb07917f96ca7c5ca9bc1b1a6d3dc",
+      "bytes": 1992119
+    }
+  ],
+  "packageManagerSelection": {
+    "selected": "Corepack shim honoring packageManager pnpm@12.15.0",
+    "nodePath": "/tmp/clawsweeper-workerd-20261106/node-v24.22.1-linux-x64/bin/node",
+    "artifacts": [
+      {
+        "path": "/opt/hostedtoolcache/node/24.19.0/x64/lib/node_modules/corepack/dist/pnpm.js",
+        "sha256": "7c2a67995976b5b592b611d8b236e3b0633bd654fb49aedd96c6eb7ce04c9cbb",
+        "bytes": 186
+      },
+      {
+        "path": "/tmp/clawsweeper-workerd-20261106/cache-candidate/node/corepack/v1/pnpm/12.15.0/bin/pnpm.mjs",
+        "sha256": "34449bb50fd01f9d93855ee2ab00843bd62fc8b6efae1309c5c9e5a1fb0f3f58",
+        "bytes": 11836
+      },
+      {
+        "path": "/tmp/clawsweeper-workerd-20261106/cache-baseline/node/corepack/v1/pnpm/12.15.0/bin/pnpm.mjs",
+        "sha256": "34449bb50fd01f9d93855ee2ab00843bd62fc8b6efae1309c5c9e5a1fb0f3f58",
+        "bytes": 11836
+      },
+      {
+        "path": "/tmp/clawsweeper-workerd-20261106/cache/node/corepack/v1/pnpm/12.15.0/bin/pnpm.mjs",
+        "sha256": "34449bb50fd01f9d93855ee2ab00843bd62fc8b6efae1309c5c9e5a1fb0f3f58",
+        "bytes": 11836
+      }
+    ],
+    "unusedPreparedLauncher": "Task bootstrap prepared a pnpm.cjs symlink, but official package uses pnpm.mjs. Shell skipped that non-executable/missing target and selected the existing Corepack shim. Actual install outputs record pnpm 12.15.0. This unused prepared tarball is not claimed as the executed launcher."
+  }
+}
