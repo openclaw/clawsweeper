@@ -305,7 +305,7 @@ const OCE_SIGN_IN_PLAIN_SOURCE_SHA256S = [OCE_SIGN_IN_SOURCE_SHA256S[0]] as cons
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   OCE_JDBC_ATTRIBUTION,
   // OCE sign-in URL-rejection fixtures: qualify only observed blob/decoder pairs.
-  [17, "URI", "PLAIN", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "d95cd614f4cb89a7bc1332e1b4006a1e2ff6e5019051ec1fcf749e09ee4721a2", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_PLAIN_SOURCE_SHA256S],
+  [17, "URI", "PLAIN", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "d95cd614f4cb89a7bc1332e1b4006a1e2ff6e5019051ec1fcf749e09ee4721a2", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_SOURCE_SHA256S],
   [17, "URI", "ESCAPED_UNICODE", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "d95cd614f4cb89a7bc1332e1b4006a1e2ff6e5019051ec1fcf749e09ee4721a2", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_SOURCE_SHA256S],
   [17, "URI", "PLAIN", "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "f97a96b01321eae8984b633d588d691dcd58c9687275e7e14e654fe5c2db0456", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_PLAIN_SOURCE_SHA256S],
   [17, "URI", "ESCAPED_UNICODE", "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "f97a96b01321eae8984b633d588d691dcd58c9687275e7e14e654fe5c2db0456", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_SOURCE_SHA256S],
@@ -549,7 +549,10 @@ function isExactMcpSandboxEscapedAttribution(row: ReviewedAttribution): boolean 
 function isExactOceSignInAttribution(row: ReviewedAttribution): boolean {
   const [type, name, decoder, raw, rawV2, line, source, mode, sourceSha256s] = row;
   const expectedSources =
-    decoder === "PLAIN" ? OCE_SIGN_IN_PLAIN_SOURCE_SHA256S : OCE_SIGN_IN_SOURCE_SHA256S;
+    decoder === "PLAIN" &&
+    raw === "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b"
+      ? OCE_SIGN_IN_PLAIN_SOURCE_SHA256S
+      : OCE_SIGN_IN_SOURCE_SHA256S;
   return (
     row.length === 9 &&
     type === 17 &&

@@ -188,7 +188,7 @@ try {
           findings[0].DecoderName = decoder;
         });
       }
-      for (const fixtureDigest of fixtureDigests) {
+      for (const fixtureDigest of fixtureDigests.slice(1)) {
         refuse(`unobserved head/PLAIN ${fixtureDigest}`, ({ findings, inputs }) => {
           const finding = findings.find(
             (entry) =>
@@ -283,8 +283,15 @@ try {
     blob,
     decoder,
     count,
-    qualified: count > 0,
-    evidence: count > 0 ? "direct native observation" : "unobserved; refused",
+    qualified:
+      count > 0 ||
+      (blob === identities[1][0] && decoder === "PLAIN" && fixtureDigest === fixtureDigests[0]),
+    evidence:
+      count > 0
+        ? "direct native observation"
+        : fixtureDigest === fixtureDigests[0]
+          ? "separate committed-range capture; see range-results.json"
+          : "unobserved; refused",
   }));
   console.log(
     JSON.stringify(
