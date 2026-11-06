@@ -15,8 +15,8 @@ interface ReviewedFixture {
 export type ScanSourceRole = "base" | "head" | "index" | "tree" | "worktree";
 
 export type ReviewedAttribution = readonly [
-  detectorType: 17 | 895 | 899 | 938 | 968,
-  detectorName: "URI" | "MongoDB" | "FTP" | "Privacy" | "Postgres",
+  detectorType: 10 | 17 | 895 | 899 | 938 | 968,
+  detectorName: "JDBC" | "URI" | "MongoDB" | "FTP" | "Privacy" | "Postgres",
   decoder: "PLAIN" | "HTML" | "ESCAPED_UNICODE" | "BASE64",
   rawSha256: string,
   rawV2Sha256: string,
@@ -279,8 +279,25 @@ const OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S = [
   "fa7f7f34b57faf013f53bbd8824cf9a2263c02a42a481282ae3d7d8be29184a2",
 ] as const;
 
+// OCE's password-free JDBC value tests an @ outside URL authority, not database access.
+const OCE_JDBC_ATTRIBUTION: ReviewedAttribution = [
+  10,
+  "JDBC",
+  "PLAIN",
+  "7f73c5b7c4cb379bbcc944971cff2c6a15ac0b0398b4c66ded6c8fb5db2c1833",
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "c5ad319a5dfbb0625c064799b1b534ffaf3ae6f42552bcff67bff122bc30e5b5",
+  "tests/integration/configuration-controller.test.mjs",
+  "100644",
+  [
+    "4fb0781a6e0e4663293fe38f5cb2a8919d934f071f1c6d0e4087550aa3583248",
+    "e635d55d005c55600ef11b138a739497728bb5fcdd314ca5f064be6e76c57010",
+  ],
+];
+
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  OCE_JDBC_ATTRIBUTION,
   // Custom-endpoint rejection regression (OpenClaw 7775311d9860): reserved
   // example host and fixed dummy userinfo. Native 3.99.4 emits either decoder
   // for the identical full URI in source blobs and added/context patch lines.
@@ -494,6 +511,7 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
 const detectorNames = {
+  10: "JDBC",
   17: "URI",
   895: "MongoDB",
   899: "FTP",
@@ -523,13 +541,16 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
     const [detectorType, detectorName, decoder, raw, rawV2, line, source, mode, sourceSha256s] =
       row;
     const lines = typeof line === "string" ? [line] : line;
+    const exactJdbc = JSON.stringify(row) === JSON.stringify(OCE_JDBC_ATTRIBUTION);
     if (
+      (detectorType === 10 && !exactJdbc) ||
       row.length !== (sourceSha256s === undefined ? 8 : 9) ||
       detectorNames[detectorType] !== detectorName ||
       !Array.isArray(lines) ||
       !lines.length ||
       ![raw, rawV2, ...lines].every((digest) => sha256Pattern.test(digest)) ||
       !(
+        exactJdbc ||
         (source === ".grilltrack/events.jsonl" &&
           detectorType === 938 &&
           detectorName === "Privacy" &&
@@ -1206,7 +1227,16 @@ function classifyReviewedFindings(
         if (matchingMetadata.length === 0) return refuse("source_not_reviewed");
       }
       const parts = object(finding.SecretParts);
-      if (detectorType === 17) {
+      if (detectorType === 10) {
+        if (
+          rawV2 !== "" ||
+          !exactStringRecord(parts, ["connection_string"]) ||
+          parts?.connection_string !== raw ||
+          finding.ExtraData !== null ||
+          finding.VerificationError !== "missing host or password in connection string"
+        )
+          return refuse("metadata_mismatch");
+      } else if (detectorType === 17) {
         let uri: ReturnType<typeof nativeUriParts>;
         try {
           uri = nativeUriParts(rawV2);
@@ -1273,7 +1303,7 @@ function classifyReviewedFindings(
       const sourceLiteral =
         detectorType === 17
           ? rawV2
-          : detectorType === 899 || detectorType === 938
+          : detectorType === 10 || detectorType === 899 || detectorType === 938
             ? raw
             : undefined;
       while (lineStart <= text.length) {
@@ -1308,7 +1338,11 @@ function classifyReviewedFindings(
       const matchesWitness = (lines: readonly string[]) =>
         lines.length === witnessDigests.length &&
         lines.every((digest, index) => digest === witnessDigests[index]);
-      if (witnessLineNumber === undefined || !expectedDigests.some(matchesWitness))
+      if (
+        witnessLineNumber === undefined ||
+        !expectedDigests.some(matchesWitness) ||
+        (detectorType === 10 && scannerLine !== witnessLineNumber)
+      )
         return refuse("literal_mismatch");
       if (
         !staged.references.length ||
