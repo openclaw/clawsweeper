@@ -1,0 +1,1 @@
+- Qualify the synthetic OCE model-endpoint rejection URL only in the exact historical source blobs needed to review OCE #2518.
