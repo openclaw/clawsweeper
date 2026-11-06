@@ -1,5 +1,22 @@
 import { createHmac, randomUUID } from "node:crypto";
 import {
+  censusDiagnostic,
+  censusFailureCategory,
+  type CensusDiagnostic,
+  type CensusPhase,
+} from "../coverage-census-diagnostics.js";
+
+export interface CensusProgressDiagnostic extends CensusDiagnostic {
+  queries: number;
+  accepted: number;
+  failed: number;
+}
+function diagnosticError(diagnostic: CensusDiagnostic, cause: unknown): Error {
+  return new Error(`census_failed phase=${diagnostic.phase} category=${diagnostic.category}`, {
+    cause,
+  });
+}
+import {
   CENSUS,
   censusBytes,
   censusCursor,
@@ -103,15 +120,37 @@ export async function runReviewCoverageCensus(options: {
   query: (query: string) => unknown | Promise<unknown>;
   now?: () => number;
   attempt?: string;
+  onDiagnostic?: (diagnostic: CensusProgressDiagnostic) => void;
 }) {
   const attempt = options.attempt ?? randomUUID(),
     now = options.now ?? Date.now;
-  const call = (suffix: string, body: Record<string, unknown>) =>
-    options.control("/internal/review-coverage/census/" + suffix, {
-      version: CENSUS.version,
-      attempt,
-      ...body,
-    });
+  let queries = 0,
+    accepted = 0,
+    failed = 0;
+  const report = (diagnostic: CensusDiagnostic) => {
+    try {
+      options.onDiagnostic?.({ ...diagnostic, queries, accepted, failed });
+    } catch {
+      // Observability must not alter collection or replace its original failure.
+    }
+  };
+  const call = async (suffix: Exclude<CensusPhase, "query">, body: Record<string, unknown>) => {
+    try {
+      return await options.control("/internal/review-coverage/census/" + suffix, {
+        version: CENSUS.version,
+        attempt,
+        ...body,
+      });
+    } catch (error) {
+      const diagnostic =
+        error instanceof CensusControlError
+          ? (error.diagnostic ?? { phase: suffix, category: "unclassified" as const })
+          : { phase: suffix, category: censusFailureCategory(error) };
+      report(diagnostic);
+      // Observing a control failure must not change its exception identity.
+      throw error;
+    }
+  };
   const started = await call("start", {
     repositories: options.repositories,
     observedAt: new Date(now()).toISOString(),
@@ -130,9 +169,6 @@ export async function runReviewCoverageCensus(options: {
   }
   const counts = new Map<string, number>(),
     trace: { repo: string; kind: string; cursor: string | null; pass: number }[] = [];
-  let queries = 0,
-    accepted = 0,
-    failed = 0;
   let controlSteps = 0;
   while (queries < CENSUS.queries && controlSteps++ < CENSUS.controlSteps) {
     const excluded = [...counts]
@@ -154,13 +190,31 @@ export async function runReviewCoverageCensus(options: {
     }
     queries++;
     let pages: CensusPage[];
+    let reading = true;
     try {
       const value = await options.query(censusQuery(work));
+      reading = false;
       if (censusBytes(value) > CENSUS.wireBytes) throw new Error("census query byte bound");
       pages = censusQueryPages(value, work, new Date(now()).toISOString());
-    } catch {
+    } catch (error) {
+      const diagnostic: CensusDiagnostic = {
+        phase: "query",
+        category: reading
+          ? error instanceof SyntaxError
+            ? "json"
+            : "read_failed"
+          : error instanceof Error && error.message === "census GraphQL errors"
+            ? "graphql"
+            : "schema",
+      };
+      report(diagnostic);
       failed++;
-      await call("fail", { work });
+      try {
+        await call("fail", { work });
+      } catch {
+        // A reporting rejection must not replace the original read failure.
+        throw diagnosticError(diagnostic, error);
+      }
       continue;
     }
     const requestId = randomUUID(),
@@ -197,6 +251,18 @@ export async function runReviewCoverageCensus(options: {
     stale: false,
   };
 }
+class CensusControlError extends Error {
+  constructor(
+    code: string,
+    readonly diagnostic: CensusDiagnostic | null,
+    cause?: unknown,
+  ) {
+    super(code + (diagnostic ? ` phase=${diagnostic.phase} category=${diagnostic.category}` : ""), {
+      cause,
+    });
+  }
+}
+
 export function censusHttpControl(options: {
   baseUrl: string;
   secret: string;
@@ -207,39 +273,63 @@ export function censusHttpControl(options: {
     throw new Error("census control configuration missing");
   const request = options.fetchImpl ?? fetch;
   return async (path: string, value: Record<string, unknown>) => {
-    const body = JSON.stringify(value);
-    if (censusBytes(value) > CENSUS.wireBytes) throw new Error("census control byte bound");
-    const signature =
-      "sha256=" +
-      createHmac("sha256", options.secret).update(censusSignatureInput(path, body)).digest("hex");
-    const response = await request(base + path, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-clawsweeper-exact-review-signature": signature,
-      },
-      body,
-      signal: AbortSignal.timeout(20_000),
-    });
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("census control response missing");
-    const decoder = new TextDecoder();
-    let bytes = 0,
-      text = "";
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      bytes += chunk.value.byteLength;
-      if (bytes > CENSUS.wireBytes) {
-        await reader.cancel();
-        throw new Error("census control response bound");
+    const expected = censusDiagnostic({ phase: path.split("/").at(-1), category: "unclassified" });
+    try {
+      const body = JSON.stringify(value);
+      if (censusBytes(value) > CENSUS.wireBytes) throw new Error("census control byte bound");
+      const signature =
+        "sha256=" +
+        createHmac("sha256", options.secret).update(censusSignatureInput(path, body)).digest("hex");
+      const response = await request(base + path, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": signature,
+        },
+        body,
+        signal: AbortSignal.timeout(20_000),
+      });
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("census control response missing");
+      const decoder = new TextDecoder();
+      let bytes = 0,
+        text = "";
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        bytes += chunk.value.byteLength;
+        if (bytes > CENSUS.wireBytes) {
+          await reader.cancel();
+          throw new Error("census control response bound");
+        }
+        text += decoder.decode(chunk.value, { stream: true });
       }
-      text += decoder.decode(chunk.value, { stream: true });
+      text += decoder.decode();
+      let decoded: unknown;
+      try {
+        decoded = JSON.parse(text);
+      } catch {
+        throw new CensusControlError(
+          "census_control_failed",
+          expected ? { ...expected, category: "json" } : null,
+        );
+      }
+      const result = censusRecord(decoded);
+      if (!response.ok || result.ok !== true) {
+        const received = censusDiagnostic(result.diagnostic);
+        const diagnostic = received?.phase === expected?.phase ? received : expected;
+        const code =
+          result.error === "coverage_checkpoint_rejected"
+            ? "coverage_checkpoint_rejected"
+            : "census_control_failed";
+        throw new CensusControlError(code, diagnostic);
+      }
+      return result;
+    } catch (error) {
+      if (error instanceof CensusControlError) throw error;
+      // Transport/decoder errors may contain response text or URLs. Keep them
+      // as a private cause, never in the operational message.
+      throw new CensusControlError("census_control_failed", expected, error);
     }
-    text += decoder.decode();
-    const result = censusRecord(JSON.parse(text));
-    if (!response.ok || result.ok !== true)
-      throw new Error(String(result.error ?? "census control failed"));
-    return result;
   };
 }

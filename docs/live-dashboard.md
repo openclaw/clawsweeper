@@ -441,7 +441,7 @@ Engine positions are one-based within each tuple:
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `index1`            | `target_repo`                                                                                                                                                                                         |
 | `blob1`–`blob8`     | `target_repo`, `item_kind`, `outcome`, `trigger_lane` (default empty), `service_tier` (default `standard`, including empty input), `reasoning_effort` (default empty), `run_id`, string `item_number` |
-| `double1`–`double8` | `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `duration_ms`, `usage_present`, `core_usage_present` |
+| `double1`–`double8` | `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `duration_ms`, `usage_present`, `core_usage_present`                                   |
 
 `double7` is 1 only when all five counters are known. `double8` is 1 when the
 four core counters are known, including when cache writes are unknown. Unknown
@@ -1600,7 +1600,6 @@ flags, not verified unresolved work. Cached corpora built before priority collec
 retain newest-first ordering until the next corpus refresh; discarded older
 rows cannot be reconstructed by sorting the cache.
 
-
 ### Resumable observational coverage census (v2)
 
 Owner: ClawSweeper maintainers / coverage producer and ExactReviewQueue derived
@@ -1697,6 +1696,19 @@ Limits are centralized in CENSUS in src/review-coverage-census.ts:
   drift also invalidates pending verification/promotion certificates atomically
   with the checkpoint revision; capacity becoming free or a stale ACK cannot
   publish evidence contradicted by that metadata.
+- Census checkpoint rejections keep the legacy HTTP 409
+  `coverage_checkpoint_rejected` code. The signed private control reply adds only
+  an allowlisted operation phase and closed error category; unknown exceptions
+  remain `unclassified`, never raw GitHub/SQL messages or stack traces. Producer
+  stderr records these closed fields and bounded query/accepted/failed counters,
+  including recovered accept failures and failures to record a failed read.
+  Query diagnostics distinguish subprocess/read, JSON decode, GraphQL errors,
+  and response-schema validation without logging responses, repository identities,
+  cursors, credentials, or headers. A failed-read checkpoint rejection retains the
+  original read failure as the primary cause; report failure cannot turn collection
+  into success. These diagnostics do not establish the cause of a production
+  failure or repair its census: current Unknown/fail-closed publication and
+  nonblocking scheduled fanout semantics are unchanged.
 - The explicit `coverage --publish-url` command keeps human-readable
   trailing-week Markdown on stdout independently of its one collection/publication
   attempt. A discovery/count/control publication failure still emits the bounded report,
