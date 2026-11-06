@@ -927,8 +927,8 @@ function materialDiagnostic(input: StagedScanInput): ScanMaterialDiagnostic | un
         ordinal.test(input.id) &&
         !/[\s\p{C}]/u.test(input.id))
     ) ||
-    (["patch", "raw_diff", "raw_diff_proof"].includes(input.kind) &&
-      (!("from" in input) || !oid(input.from) || !oid(input.to))) ||
+    (["patch", "raw_diff", "raw_diff_proof"].includes(input.kind) && !("from" in input)) ||
+    ("from" in input && (!oid(input.from) || !oid(input.to))) ||
     (["blob", "worktree"].includes(input.kind) && !("references" in input)) ||
     ("references" in input &&
       (!Array.isArray(input.references) ||

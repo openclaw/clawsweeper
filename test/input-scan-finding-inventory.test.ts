@@ -104,6 +104,12 @@ test("entry and byte bounds retain the authoritative refusal and exact omitted c
     Buffer.byteLength(JSON.stringify({ failure: { scan: { inventory } } }, null, 2)) <=
       SCAN_FINDING_INVENTORY_MAX_BYTES,
   );
+  const unknown = scan(
+    Array.from({ length: 100 }, () => finding({ SourceMetadata: null })),
+  ).inventory;
+  assert.equal(unknown.retainedCount, SCAN_FINDING_INVENTORY_MAX_ENTRIES);
+  assert.equal(unknown.omittedCount, 100 - SCAN_FINDING_INVENTORY_MAX_ENTRIES);
+  assert.equal(unknown.unattributedCount, 100);
 });
 
 test("unknown, plain, decoded, ambiguous and patch material never invent source coordinates", () => {
@@ -154,6 +160,8 @@ test("malformed and oversized metadata is omitted or closed, never echoed", () =
   assert.equal(entry.scannerLine, null);
   for (const staged of [
     { ...input, id: "UNTRUSTED_PATH_CANARY" },
+    { kind: "prompt", id: "prompt", from: "UNTRUSTED_PATH_CANARY", to: "a".repeat(40) },
+    { ...input, id: "a".repeat(40) + "\n" },
     {
       ...input,
       references: [
