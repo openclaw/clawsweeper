@@ -15,8 +15,8 @@ interface ReviewedFixture {
 export type ScanSourceRole = "base" | "head" | "index" | "tree" | "worktree";
 
 export type ReviewedAttribution = readonly [
-  detectorType: 17 | 895 | 899 | 938 | 968,
-  detectorName: "URI" | "MongoDB" | "FTP" | "Privacy" | "Postgres",
+  detectorType: 10 | 17 | 895 | 899 | 938 | 968,
+  detectorName: "JDBC" | "URI" | "MongoDB" | "FTP" | "Privacy" | "Postgres",
   decoder: "PLAIN" | "HTML" | "ESCAPED_UNICODE" | "BASE64",
   rawSha256: string,
   rawV2Sha256: string,
@@ -279,6 +279,22 @@ const OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S = [
   "fa7f7f34b57faf013f53bbd8824cf9a2263c02a42a481282ae3d7d8be29184a2",
 ] as const;
 
+// OCE's password-free JDBC value tests an @ outside URL authority, not database access.
+const OCE_JDBC_ATTRIBUTION: ReviewedAttribution = [
+  10,
+  "JDBC",
+  "PLAIN",
+  "7f73c5b7c4cb379bbcc944971cff2c6a15ac0b0398b4c66ded6c8fb5db2c1833",
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "c5ad319a5dfbb0625c064799b1b534ffaf3ae6f42552bcff67bff122bc30e5b5",
+  "tests/integration/configuration-controller.test.mjs",
+  "100644",
+  [
+    "4fb0781a6e0e4663293fe38f5cb2a8919d934f071f1c6d0e4087550aa3583248",
+    "e635d55d005c55600ef11b138a739497728bb5fcdd314ca5f064be6e76c57010",
+  ],
+];
+
 const OCE_SIGN_IN_SOURCE_SHA256S = [
   "436f584bec32e8609ff5534ba172b90b4955b32fde3bb6a4a4117e7ce3979bee",
   "3dc7c2044c566407e91e8983c040e2dfe9255484a18cce82de320042059e56fd",
@@ -287,6 +303,7 @@ const OCE_SIGN_IN_PLAIN_SOURCE_SHA256S = [OCE_SIGN_IN_SOURCE_SHA256S[0]] as cons
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  OCE_JDBC_ATTRIBUTION,
   // OCE sign-in URL-rejection fixtures: qualify only observed blob/decoder pairs.
   [17, "URI", "PLAIN", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "d95cd614f4cb89a7bc1332e1b4006a1e2ff6e5019051ec1fcf749e09ee4721a2", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_PLAIN_SOURCE_SHA256S],
   [17, "URI", "ESCAPED_UNICODE", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "d95cd614f4cb89a7bc1332e1b4006a1e2ff6e5019051ec1fcf749e09ee4721a2", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_SOURCE_SHA256S],
@@ -505,6 +522,7 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
 const detectorNames = {
+  10: "JDBC",
   17: "URI",
   895: "MongoDB",
   899: "FTP",
@@ -556,13 +574,16 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
     const [detectorType, detectorName, decoder, raw, rawV2, line, source, mode, sourceSha256s] =
       row;
     const lines = typeof line === "string" ? [line] : line;
+    const exactJdbc = JSON.stringify(row) === JSON.stringify(OCE_JDBC_ATTRIBUTION);
     if (
+      (detectorType === 10 && !exactJdbc) ||
       row.length !== (sourceSha256s === undefined ? 8 : 9) ||
       detectorNames[detectorType] !== detectorName ||
       !Array.isArray(lines) ||
       !lines.length ||
       ![raw, rawV2, ...lines].every((digest) => sha256Pattern.test(digest)) ||
       !(
+        exactJdbc ||
         isExactOceSignInAttribution(row) ||
         (source === ".grilltrack/events.jsonl" &&
           detectorType === 938 &&
@@ -1240,7 +1261,16 @@ function classifyReviewedFindings(
         if (matchingMetadata.length === 0) return refuse("source_not_reviewed");
       }
       const parts = object(finding.SecretParts);
-      if (detectorType === 17) {
+      if (detectorType === 10) {
+        if (
+          rawV2 !== "" ||
+          !exactStringRecord(parts, ["connection_string"]) ||
+          parts?.connection_string !== raw ||
+          finding.ExtraData !== null ||
+          finding.VerificationError !== "missing host or password in connection string"
+        )
+          return refuse("metadata_mismatch");
+      } else if (detectorType === 17) {
         let uri: ReturnType<typeof nativeUriParts>;
         try {
           uri = nativeUriParts(rawV2);
@@ -1307,7 +1337,7 @@ function classifyReviewedFindings(
       const sourceLiteral =
         detectorType === 17
           ? rawV2
-          : detectorType === 899 || detectorType === 938
+          : detectorType === 10 || detectorType === 899 || detectorType === 938
             ? raw
             : undefined;
       while (lineStart <= text.length) {
@@ -1342,7 +1372,11 @@ function classifyReviewedFindings(
       const matchesWitness = (lines: readonly string[]) =>
         lines.length === witnessDigests.length &&
         lines.every((digest, index) => digest === witnessDigests[index]);
-      if (witnessLineNumber === undefined || !expectedDigests.some(matchesWitness))
+      if (
+        witnessLineNumber === undefined ||
+        !expectedDigests.some(matchesWitness) ||
+        (detectorType === 10 && scannerLine !== witnessLineNumber)
+      )
         return refuse("literal_mismatch");
       if (
         !staged.references.length ||

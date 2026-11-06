@@ -595,6 +595,12 @@ qualify only through their exact URI-17 PLAIN/HTML attribution, both value
 digests, complete source lines, regular-file mode and committed source references.
 No whole test file is exempt. See [the native source-admission proof](docs/proof/native-worker-fixtures/README.md).
 
+The password-free OCE JDBC configuration fixture has an exact attribution limited
+to its two reviewed source blobs and observed PLAIN finding. Complete literal,
+source-line and source hashes, native metadata, and committed provenance must
+match; other JDBC findings remain blocking. See the
+[native capture and replay proof](docs/proof/oce-jdbc-fixture/README.md).
+
 The OpenClaw Enterprise sign-in chart parity test has two URL-rejection fixtures
 qualified only in their two inspected complete source blobs. Each tuple binds the
 exact URI hashes, complete source line, regular-file path and mode, and PLAIN or
