@@ -1,0 +1,1 @@
+- Restore the measured four-core allocation for repair containment smoke jobs after the Blacksmith runner capacity change.
