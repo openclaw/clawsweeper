@@ -2386,6 +2386,118 @@ test("dashboard reuses live PR CI hydration within one status snapshot", async (
   }
 });
 
+test("dashboard reconciles workflow observations before deriving lifecycle views", async (t) => {
+  const row = {
+    ...completedReviewRun(42, 101, "failure", 60_000),
+    run_attempt: 1,
+    updated_at: isoAgo(20_000),
+  };
+  const running = { ...row, status: "in_progress", conclusion: null };
+  const queued = { ...running, status: "queued", updated_at: isoAgo(30_000) };
+  const completed = { ...row, updated_at: isoAgo(10_000) };
+  const cases = [
+    { name: "stale queued feed", active: [running, queued], done: [], winner: running },
+    { name: "completed", active: [running], done: [completed], winner: completed },
+    {
+      name: "rerun generation precedes timestamp",
+      active: [{ ...running, run_attempt: 2 }],
+      done: [completed],
+      winner: running,
+    },
+    {
+      name: "equal-second completion",
+      active: [running],
+      done: [{ ...completed, updated_at: running.updated_at }],
+      winner: completed,
+    },
+    {
+      name: "exact tie retains first feed",
+      active: [running, { ...queued, updated_at: running.updated_at }],
+      done: [],
+      winner: running,
+    },
+    {
+      name: "known generation precedes missing metadata",
+      active: [running, { ...queued, run_attempt: undefined, updated_at: undefined }],
+      done: [],
+      winner: running,
+    },
+    {
+      name: "overlapping active filters",
+      active: [running, { ...queued, updated_at: isoAgo(5_000) }],
+      done: [],
+      winner: queued,
+    },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (t) => {
+      const originalFetch = globalThis.fetch;
+      const originalCaches = globalThis.caches;
+      t.after(() => {
+        globalThis.fetch = originalFetch;
+        Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+      });
+      Object.defineProperty(globalThis, "caches", {
+        configurable: true,
+        value: { default: new MemoryCache() },
+      });
+      globalThis.fetch = async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+          const status = url.searchParams.get("status");
+          assert.ok(status, "workflow reads must remain status-filtered");
+          const rows =
+            status === "completed"
+              ? scenario.done
+              : scenario.active.filter((run) => run.status === status);
+          return jsonResponse({ total_count: rows.length, workflow_runs: rows });
+        }
+        if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/42/jobs") {
+          return jsonResponse({
+            total_count: 1,
+            jobs: [
+              {
+                id: 420,
+                run_id: 42,
+                name: "Review shard",
+                status: scenario.winner.status,
+                conclusion: scenario.winner.conclusion,
+                started_at: row.created_at,
+                completed_at: scenario.winner.status === "completed" ? row.updated_at : null,
+                steps: [],
+              },
+            ],
+          });
+        }
+        if (url.pathname.includes("/actions/workflows/"))
+          return jsonResponse({ total_count: 0, workflow_runs: [] });
+        if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+        if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
+        throw new Error(`unexpected fetch ${url}`);
+      };
+      const response = await worker.fetch(
+        new Request("https://clawsweeper.openclaw.ai/api/status"),
+        { STATUS_STORE: new MemoryKv(), CACHE_TTL_SECONDS: "-1" },
+      );
+      const status = await response.json();
+      const terminal = scenario.winner.status === "completed";
+      const waiting = scenario.winner.status === "queued";
+      assert.equal(response.status, 200);
+      assert.deepEqual(status.diagnostics.errors, []);
+      assert.equal(status.fleet.active_workflow_runs, terminal ? 0 : 1);
+      assert.equal(status.fleet.queued_workflow_runs, waiting ? 1 : 0);
+      assert.equal(status.fleet.failed_recent_runs, terminal ? 1 : 0);
+      assert.equal(status.operational_health.oldest_running_minutes > 0, !terminal && !waiting);
+      assert.equal(status.operational_health.queued_runs, waiting ? 1 : 0);
+      assert.equal(status.health.sampled_runs, terminal ? 1 : 0);
+      assert.deepEqual(
+        status.pipeline.map((run) => run.status),
+        terminal ? [] : [scenario.winner.status],
+      );
+    });
+  }
+});
+
 test("dashboard counts active runs that are older than the latest unfiltered page", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;

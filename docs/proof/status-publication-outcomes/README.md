@@ -81,6 +81,33 @@ is not changed or certified by this composition repair.
 
 ## Status telemetry failure retention
 
+### Workflow observation reconciliation
+
+The dashboard collector selects a single observation per workflow run before
+deriving active and completed views. Run attempts take precedence over update
+timestamps; equal attempt/timestamp observations prefer completed state, then
+retain the first filtered feed. GitHub documents that reruns retain their run ID and advance
+their [attempt number](https://docs.github.com/en/actions/reference/workflows-and-actions/variables).
+
+```sh
+node docs/proof/status-publication-outcomes/run-proof.mjs 0318620fb1134a8a0f9aadccbc886be05310919e --workflow-observations
+```
+
+This paired proof exercises queued-to-running, active-to-completed and
+completed-to-rerun transitions with both HTTP response orders: six scenarios,
+twelve baseline/candidate runs. It checks fleet counts, operational queue counts
+and running age, pipeline states, health sampling, warm-cache reuse and one
+SQLite restart per revision.
+The receipt is `workflow-observations-summary.json`. The synthetic queue binding
+is unavailable, so the proof does not claim healthy queue/Bay composition or a
+cause or fix for production request timeouts. The source capsule procedure below
+also applies to this mode. Update this recipe when observation selection,
+projections or the fixture changes; exact source identities are in each receipt.
+
+Named follow-up: workflow-job cache entries are keyed by run ID without binding
+the rerun attempt. This proof uses isolated job caches and does not certify that
+separate cache-lifecycle boundary.
+
 Run the paired cold collection, warm snapshot, health-cache reuse, SQLite
 restart, and recovery scenarios without production credentials:
 
