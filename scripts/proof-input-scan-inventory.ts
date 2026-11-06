@@ -41,7 +41,7 @@ try {
     bin,
     String.raw`
 for (const marker of ['DIAGNOSTIC_CANARY_A', 'DIAGNOSTIC_CANARY_B']) {
-  const input = inputs.find(({ name, bytes }) => /^[a-f0-9]{40}$/.test(name) && bytes.toString() === marker + '\n');
+  const input = inputs.find(({ name, bytes }) => /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(name) && bytes.toString() === marker + '\n');
   assert.ok(input);
   process.stdout.write(JSON.stringify({
     DetectorType: 0, DecoderName: 'PLAIN', Verified: false, Raw: marker, RawV2: marker,

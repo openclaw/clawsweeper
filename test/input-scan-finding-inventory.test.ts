@@ -193,17 +193,21 @@ test(
   "controlled runtime emits inventory in the real failure manifest with no provider or replay effects",
   { skip: process.platform === "win32" },
   () => {
-    const result = JSON.parse(
-      execFileSync(process.execPath, ["scripts/proof-input-scan-inventory.ts"], {
-        encoding: "utf8",
-        timeout: 60_000,
-      }),
-    );
-    assert.equal(result.refusal, "findings");
-    assert.equal(result.providerCalls, 0);
-    assert.equal(result.canaryOrPrivatePathInManifest, false);
-    assert.equal(result.inventory.totalCount, 2);
-    assert.equal(result.inventory.retainedCount, 2);
-    assert.equal(result.inventory.omittedCount, 0);
+    for (const format of ["sha1", "sha256"]) {
+      const result = JSON.parse(
+        execFileSync(process.execPath, ["scripts/proof-input-scan-inventory.ts"], {
+          encoding: "utf8",
+          timeout: 60_000,
+          env: { ...process.env, GIT_DEFAULT_HASH: format },
+        }),
+      );
+      assert.equal(result.refusal, "findings");
+      assert.equal(result.providerCalls, 0);
+      assert.equal(result.canaryOrPrivatePathInManifest, false);
+      assert.equal(result.inventory.totalCount, 2);
+      assert.equal(result.inventory.retainedCount, 2);
+      assert.equal(result.inventory.omittedCount, 0);
+      assert.equal(result.inventory.entries[0].material.id.length, format === "sha1" ? 40 : 64);
+    }
   },
 );

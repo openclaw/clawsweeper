@@ -27,7 +27,11 @@ Synthetic run selectors exercise identity matching, not real Actions provenance.
 ```sh
 pnpm run build
 node scripts/proof-input-scan-inventory.ts
+GIT_DEFAULT_HASH=sha256 node scripts/proof-input-scan-inventory.ts
 ```
+
+The after proof was repeated with SHA-1 and SHA-256 disposable Git repositories;
+the synthetic scanner accepts both supported object-name lengths.
 
 ## Observed before / after
 
