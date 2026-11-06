@@ -595,6 +595,14 @@ qualify only through their exact URI-17 PLAIN/HTML attribution, both value
 digests, complete source lines, regular-file mode and committed source references.
 No whole test file is exempt. See [the native source-admission proof](docs/proof/native-worker-fixtures/README.md).
 
+The OpenClaw Enterprise sign-in chart parity test has two URL-rejection fixtures
+qualified only in their two inspected complete source blobs. Each tuple binds the
+exact URI hashes, complete source line, regular-file path and mode, and PLAIN or
+ESCAPED_UNICODE decoding. PLAIN is qualified only for the base blob;
+ESCAPED_UNICODE is qualified for both. Both head/PLAIN combinations, other blobs
+and other decoders remain blocked. See the
+[native capture and classifier proof](docs/proof/oce-sign-in-fixtures/README.md).
+
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.

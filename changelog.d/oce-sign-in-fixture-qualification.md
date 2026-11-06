@@ -1,0 +1,1 @@
+- Qualify the exact OpenClaw Enterprise sign-in URL-rejection fixtures while keeping changed source, other findings, and unobserved decoders blocked.

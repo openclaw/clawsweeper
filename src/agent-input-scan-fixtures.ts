@@ -279,8 +279,19 @@ const OCE_KUBERNETES_COMPUTE_SOURCE_SHA256S = [
   "fa7f7f34b57faf013f53bbd8824cf9a2263c02a42a481282ae3d7d8be29184a2",
 ] as const;
 
+const OCE_SIGN_IN_SOURCE_SHA256S = [
+  "436f584bec32e8609ff5534ba172b90b4955b32fde3bb6a4a4117e7ce3979bee",
+  "3dc7c2044c566407e91e8983c040e2dfe9255484a18cce82de320042059e56fd",
+] as const;
+const OCE_SIGN_IN_PLAIN_SOURCE_SHA256S = [OCE_SIGN_IN_SOURCE_SHA256S[0]] as const;
+
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // OCE sign-in URL-rejection fixtures: qualify only observed blob/decoder pairs.
+  [17, "URI", "PLAIN", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "d95cd614f4cb89a7bc1332e1b4006a1e2ff6e5019051ec1fcf749e09ee4721a2", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_PLAIN_SOURCE_SHA256S],
+  [17, "URI", "ESCAPED_UNICODE", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "d95cd614f4cb89a7bc1332e1b4006a1e2ff6e5019051ec1fcf749e09ee4721a2", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_SOURCE_SHA256S],
+  [17, "URI", "PLAIN", "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "f97a96b01321eae8984b633d588d691dcd58c9687275e7e14e654fe5c2db0456", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_PLAIN_SOURCE_SHA256S],
+  [17, "URI", "ESCAPED_UNICODE", "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b", "f97a96b01321eae8984b633d588d691dcd58c9687275e7e14e654fe5c2db0456", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_SOURCE_SHA256S],
   // Custom-endpoint rejection regression (OpenClaw 7775311d9860): reserved
   // example host and fixed dummy userinfo. Native 3.99.4 emits either decoder
   // for the identical full URI in source blobs and added/context patch lines.
@@ -517,6 +528,28 @@ function isExactMcpSandboxEscapedAttribution(row: ReviewedAttribution): boolean 
   );
 }
 
+function isExactOceSignInAttribution(row: ReviewedAttribution): boolean {
+  const [type, name, decoder, raw, rawV2, line, source, mode, sourceSha256s] = row;
+  const expectedSources =
+    decoder === "PLAIN" ? OCE_SIGN_IN_PLAIN_SOURCE_SHA256S : OCE_SIGN_IN_SOURCE_SHA256S;
+  return (
+    row.length === 9 &&
+    type === 17 &&
+    name === "URI" &&
+    (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE") &&
+    raw === rawV2 &&
+    ((raw === "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925" &&
+      line === "d95cd614f4cb89a7bc1332e1b4006a1e2ff6e5019051ec1fcf749e09ee4721a2") ||
+      (raw === "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b" &&
+        line === "f97a96b01321eae8984b633d588d691dcd58c9687275e7e14e654fe5c2db0456")) &&
+    source === "tests/integration/sign-in-chart-parity.test.mjs" &&
+    mode === "100644" &&
+    Array.isArray(sourceSha256s) &&
+    sourceSha256s.length === expectedSources.length &&
+    sourceSha256s.every((digest, index) => digest === expectedSources[index])
+  );
+}
+
 function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): void {
   const seen = new Set<string>();
   for (const row of rows) {
@@ -530,6 +563,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
       !lines.length ||
       ![raw, rawV2, ...lines].every((digest) => sha256Pattern.test(digest)) ||
       !(
+        isExactOceSignInAttribution(row) ||
         (source === ".grilltrack/events.jsonl" &&
           detectorType === 938 &&
           detectorName === "Privacy" &&
