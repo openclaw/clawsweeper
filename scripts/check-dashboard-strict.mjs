@@ -121,7 +121,7 @@ function main() {
 }
 
 function normalizeFile(file) {
-  return path.normalize(file).replace(/^\.\//, "");
+  return path.normalize(file).replace(/^\.\//, "").replaceAll("\\", "/");
 }
 
 function runTsc(args) {
