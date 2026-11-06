@@ -3,7 +3,7 @@
   "targetHead": "3e29a60b00d2a4c6eb15d4ea2f1f283113592f74",
   "scannerSha256": "70b9108715250b19518b03acea56b2f4907a36dcfaaf77693444bdc007a761b1",
   "captureScriptSha256": "11289857f2e3ef32930de349c41dce385c4cb1da7f7fa6245396eec9fda72c9a",
-  "replayScriptSha256": "890a8174a99fa0168373d8ba5fd5f941b0b1d1a3ef64e76ac14bab414ccbe9da",
+  "replayScriptSha256": "bd570b5714198f3135632502cf4e31e2f8436388d5a756bb932a0c2efb819dce",
   "nativeCallerResult": "Local Node scanner subprocess SIGKILL with no output; not a passing scanAgentInput execution.",
   "proofScope": "Direct native scan of all47 byte-identical staged source inputs, followed by complete stream classification. No hosted admission or model execution.",
   "baselineResults": [
@@ -19,6 +19,110 @@
   "candidateClassifierSha256": "2c6394045c478cfd3379875e5901e4da43be94b683de59666b027673b4bd6076",
   "candidateResultSha256": "64e49e8f6d01715150b26d2511d24294f76666c5e899bc5d88bf13e774efeb15",
   "baselineResultSha256": "d097fd656bed937f531d08c9c764653e5c463dd8393b5044c0348ec6fceca3ea",
+  "replayCorrectionControls": [
+    {
+      "case": "decoder",
+      "version": "before",
+      "exit": 0,
+      "stdoutBytes": 7140,
+      "markerVisible": true,
+      "fixedDiagnostic": false
+    },
+    {
+      "case": "decoder",
+      "version": "after",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "markerVisible": false,
+      "fixedDiagnostic": true
+    },
+    {
+      "case": "line",
+      "version": "before",
+      "exit": 0,
+      "stdoutBytes": 7143,
+      "markerVisible": true,
+      "fixedDiagnostic": false
+    },
+    {
+      "case": "line",
+      "version": "after",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "markerVisible": false,
+      "fixedDiagnostic": true
+    },
+    {
+      "case": "duplicate",
+      "version": "before",
+      "exit": 0,
+      "stdoutBytes": 9181,
+      "markerVisible": false,
+      "fixedDiagnostic": false
+    },
+    {
+      "case": "duplicate",
+      "version": "after",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "markerVisible": false,
+      "fixedDiagnostic": true
+    },
+    {
+      "case": "missing_escaped",
+      "version": "before",
+      "exit": 0,
+      "stdoutBytes": 4712,
+      "markerVisible": false,
+      "fixedDiagnostic": false
+    },
+    {
+      "case": "missing_escaped",
+      "version": "after",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "markerVisible": false,
+      "fixedDiagnostic": true
+    },
+    {
+      "case": "missing_plain",
+      "version": "before",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "markerVisible": false,
+      "fixedDiagnostic": true
+    },
+    {
+      "case": "missing_plain",
+      "version": "after",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "markerVisible": false,
+      "fixedDiagnostic": true
+    }
+  ],
+  "sameReportControl": [
+    {
+      "version": "before",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "fixedDiagnostic": true
+    },
+    {
+      "version": "after",
+      "exit": 1,
+      "stdoutBytes": 0,
+      "fixedDiagnostic": true
+    }
+  ],
+  "priorFullCheck": {
+    "head": "6a95af5315b165f01e491ff1aac85a0ff5cbc59d",
+    "pass": 7061,
+    "skip": 22,
+    "fail": 0,
+    "cancel": 0,
+    "commandExit": "unobserved after supervisor termination; final candidate check required"
+  },
   "inputIdentities": [
     {"id": "0", "bytes": 3254, "sha256": "01885e988c32c7604cd466f668468981e3e248b085728835b8feb64bdf7d5087"},
     {"id": "1", "bytes": 101419, "sha256": "adbb12556a7f2938339ff451c032aee0319893e491c633f58f5449844e310aa1"},

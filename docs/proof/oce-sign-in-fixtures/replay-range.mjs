@@ -47,6 +47,7 @@ try {
     }
   }
   const reports = [];
+  const capturedStreams = new Set();
   for (const capture of captures) {
     const receipt = JSON.parse(readFileSync(join(capture, "receipt.json")));
     assert.equal(receipt.exitCode, 183);
@@ -83,6 +84,8 @@ try {
     const stdout = readFileSync(join(capture, "stdout"));
     const stderr = readFileSync(join(capture, "stderr"));
     assert.equal(hash(stdout), receipt.stdoutSha256);
+    assert.ok(!capturedStreams.has(hash(stdout)), "duplicate native stream");
+    capturedStreams.add(hash(stdout));
     assert.equal(hash(stderr), receipt.stderrSha256);
     const findings = stdout.toString().trim().split("\n").map(JSON.parse);
     const logs = stderr.toString().trim().split("\n").map(JSON.parse);
@@ -90,6 +93,22 @@ try {
     const observed = findings.map((f) => {
       const input = inputs.get(f.SourceMetadata.Data.Filesystem.file);
       assert.ok(input?.kind === "blob");
+      assert.ok(
+        [
+          "d51f4eae74f8a56cb0851482c6175f75c26c067b",
+          "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e",
+        ].includes(input.id),
+      );
+      assert.ok(["PLAIN", "ESCAPED_UNICODE"].includes(f.DecoderName));
+      assert.ok(Number.isSafeInteger(f.SourceMetadata.Data.Filesystem.line));
+      assert.ok(f.SourceMetadata.Data.Filesystem.line > 0);
+      assert.ok(
+        [
+          "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925",
+          "80867135981e495d05f129ebfdc5b945fe8f6d532000571afaf68371867b8b5b",
+        ].includes(hash(f.Raw)),
+      );
+      assert.equal(hash(f.Raw), hash(f.RawV2));
       return {
         blob: input.id,
         line: f.SourceMetadata.Data.Filesystem.line,
@@ -98,6 +117,10 @@ try {
         decoder: f.DecoderName,
       };
     });
+    assert.equal(
+      new Set(observed.map((finding) => `${finding.blob}:${finding.rawSha256}`)).size,
+      4,
+    );
     const result = classifyReviewedFixtureScan(183, stdout, stderr, inputs);
     const newTuple = observed.some(
       (f) =>
@@ -200,15 +223,24 @@ try {
       controls,
     });
   }
+  const hasHeadWitness = (report, decoder) =>
+    report.observed.some(
+      (finding) =>
+        finding.blob === "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e" &&
+        finding.rawSha256 === "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925" &&
+        finding.decoder === decoder,
+    );
   assert.ok(
-    reports.some((r) =>
-      r.observed.some(
-        (f) =>
-          f.blob === "708e8b9af0e78f0c4d6a41a7883155f9e08fbe4e" &&
-          f.rawSha256 === "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925" &&
-          f.decoder === "PLAIN",
-      ),
+    reports.some(
+      (plain) =>
+        hasHeadWitness(plain, "PLAIN") &&
+        reports.some(
+          (escaped) =>
+            plain.stdoutSha256 !== escaped.stdoutSha256 &&
+            hasHeadWitness(escaped, "ESCAPED_UNICODE"),
+        ),
     ),
+    "missing distinct native decoder observations",
   );
   console.log(
     JSON.stringify(

@@ -83,7 +83,9 @@ node --experimental-strip-types --test test/agent-input-scan-fixtures.test.ts
 
 The replay verifies every staged byte against the exact Git range, including
 all blob references, then passes the complete unchanged native streams and all
-47 inputs to the real classifier. The baseline refuses capture one with
+47 inputs to the real classifier. It requires distinct native streams, exactly
+one finding per fixture/blob pair, and head-line-1478 PLAIN and ESCAPED_UNICODE
+witnesses in different captures. The baseline refuses capture one with
 `source_not_reviewed` and admits capture two. The candidate admits all four
 findings from each capture. This proves classification of the complete captured
 range, without claiming successful native subprocess execution through the
@@ -97,6 +99,13 @@ fixture's unobserved head/PLAIN combination. All remain refused. The complete
 source hash check protects changed fixture lines; this does not claim isolated
 line-check coverage. Scanner line coordinates are not themselves the literal
 witness used for decoded findings.
+
+Malformed decoder and scanner-line fields are rejected before producing public
+observations. Harmless-marker controls reproduced their prior disclosure in
+baseline mode; the fixed runner exits 1 with no stdout and a fixed diagnostic.
+Duplicate captures and captures missing either required decoder are also refused.
+The same-report-only variant control remains refused. These controls mutate
+copies; neither positive native stream is edited.
 
 The historical [results](results.json) preserve the original six-combination
 qualification against `e625d2ea5f08db0291bf5ccf3cb00fc640d7990c`. The original
