@@ -601,6 +601,14 @@ source-line and source hashes, native metadata, and committed provenance must
 match; other JDBC findings remain blocking. See the
 [native capture and replay proof](docs/proof/oce-jdbc-fixture/README.md).
 
+The OpenClaw Enterprise sign-in chart parity test has two URL-rejection fixtures
+qualified only in their two inspected complete source blobs. Each tuple binds the
+exact URI hashes, complete source line, regular-file path and mode, and PLAIN or
+ESCAPED_UNICODE decoding. PLAIN is qualified only for the base blob;
+ESCAPED_UNICODE is qualified for both. Both head/PLAIN combinations, other blobs
+and other decoders remain blocked. See the
+[native capture and classifier proof](docs/proof/oce-sign-in-fixtures/README.md).
+
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.
