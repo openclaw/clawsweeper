@@ -1,0 +1,1 @@
+- Normalize test runner target file paths to POSIX slashes so test targets and child arguments match across platforms.
