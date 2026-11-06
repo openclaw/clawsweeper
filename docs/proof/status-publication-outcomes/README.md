@@ -104,9 +104,29 @@ cause or fix for production request timeouts. The source capsule procedure below
 also applies to this mode. Update this recipe when observation selection,
 projections or the fixture changes; exact source identities are in each receipt.
 
-Named follow-up: workflow-job cache entries are keyed by run ID without binding
-the rerun attempt. This proof uses isolated job caches and does not certify that
-separate cache-lifecycle boundary.
+### Workflow attempt cache lifecycle
+
+```sh
+node docs/proof/status-publication-outcomes/run-proof.mjs d2194cade55ff8c69b669c6f1b87d82bf90cba74 --workflow-attempts
+```
+
+This mode retains one real SQLite store across each attempt transition. A
+completed first attempt must not hide an active rerun. A selected completed
+second attempt must supply its health sample even when the latest endpoint
+has already advanced to a third attempt. It checks cold collection, warm reuse
+and SQLite restart through `/api/status`, with distinct jobs and outcomes per
+attempt. The receipt is `workflow-attempts-summary.json`.
+
+Job requests use GitHub's [attempt-specific endpoint](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt).
+The shared job cache is bound to the selected run and attempt; the repository
+health aggregate is reusable only for the same completed-attempt sample.
+Unbound transient job caches expire normally and are not migrated. Missing
+attempt identity reports unavailable telemetry instead of guessing the latest
+attempt. Pagination limits, timeouts and retry policy are unchanged.
+This proves the cache lifecycle, not the cause or recovery of a production
+timeout. The dashboard status owner maintains this recipe; update it when job
+binding, health sampling or the fixture changes. Each receipt records its exact
+source revisions.
 
 Run the paired cold collection, warm snapshot, health-cache reuse, SQLite
 restart, and recovery scenarios without production credentials:

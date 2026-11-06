@@ -115,7 +115,7 @@ export function githubEgressRouteTemplate(value: string): GitHubEgressRouteTempl
     return "commit_metadata";
   }
   if (/^\/repos\/[^/]+\/[^/]+\/actions\/runs\/?$/.test(path)) return "actions_runs";
-  if (/^\/repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/jobs\/?$/.test(path)) {
+  if (/^\/repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/(?:attempts\/\d+\/)?jobs\/?$/.test(path)) {
     return "actions_run_jobs";
   }
   if (/^\/repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/artifacts\/?$/.test(path)) {

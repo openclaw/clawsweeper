@@ -59,6 +59,36 @@ test("ETag keys fence credential pool, media type, query, and page", () => {
   assert.equal(page2.route, "/repos/openclaw/openclaw/issues/42/comments?page=2&per_page=100");
 });
 
+test("dashboard job ETags isolate workflow attempts and pages", () => {
+  const key = (attempt: number, page = 1) =>
+    githubEtagCacheKey({
+      credentialPool: "repository_actions",
+      route: `/repos/openclaw/clawsweeper/actions/runs/42/attempts/${attempt}/jobs?per_page=100&page=${page}`,
+      surface: "dashboard",
+    });
+  const first = key(1)!;
+  assert.ok(first);
+  assert.notEqual(first.cacheKey, key(2)?.cacheKey);
+  assert.notEqual(first.cacheKey, key(1, 2)?.cacheKey);
+  assert.notEqual(
+    first.cacheKey,
+    githubEtagCacheKey({
+      credentialPool: "repository_actions",
+      route: "/repos/openclaw/clawsweeper/actions/runs/42/jobs?per_page=100&page=1",
+      surface: "dashboard",
+    })?.cacheKey,
+  );
+  assert.equal(key(1, 2)?.page, 2);
+  assert.equal(
+    githubEtagCacheKey({
+      credentialPool: "repository_actions",
+      route: first.route,
+      surface: "apply",
+    }),
+    null,
+  );
+});
+
 test("projected GitHub reads bypass the durable ETag broker", (t) => {
   const keys = ["EXACT_EVENT_PUBLICATION", "EXACT_REVIEW_QUEUE_URL", "CLAWSWEEPER_WEBHOOK_SECRET"];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
