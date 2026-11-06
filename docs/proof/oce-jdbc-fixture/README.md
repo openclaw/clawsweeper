@@ -64,11 +64,15 @@ classifier. The baseline refuses both with `finding_not_reviewed`; the candidate
 classifies both. Each candidate replay also rejects 27 changed metadata,
 credential, provenance and native-completion cases. Four additional controls reject altered JDBC policy tuples.
 These controls mutate copies of the captured records; they do not replace the native positive proof.
-Malformed-input checks also exercise the replay CLI with a harmless marker in
-an invalid receipt and an invalid native stdout record. For the latter, update
-the private copy's receipt hash so parsing is reached. Both commands must fail
-without including the marker in stdout or stderr. The earlier script exposed
-the marker; the corrected script withholds it.
+The replay withholds private input from every failure, including JSON parsing,
+assertions, file reads and classifier loading. Eleven CLI controls cover
+malformed receipts and native streams, plus valid JSON with unexpected scanner
+arguments, source paths or lines, exit codes, binary pins and stream hashes.
+They also cover a missing source file. Each uses a harmless marker and must
+fail without including it in stdout or stderr. For changed native streams,
+update the private receipt's stream hash so the intended validation is reached.
+The prior script exposed markers in the eight valid-input controls; the fixed
+failure boundary withholds them in all eleven.
 [Results](results.json) bind the source and native-stream hashes without raw values.
 
 The focused fixture suite passed all 570 tests. The full check on the first
