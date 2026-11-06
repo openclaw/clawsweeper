@@ -91,6 +91,15 @@ and wrong exit status. The edited-line control first hits the complete-source
 hash check; it proves refusal, not independent isolation of the line check.
 Positive proof never rewrites native output.
 
+The replay command withholds input values on failure, including receipt parsing,
+argument validation, source reads and classifier loading. These input failures exit 1
+with no stdout and only `Fixture proof failed; private input values withheld.` on
+stderr. Nine synthetic CLI controls cover malformed receipts and native streams,
+unexpected receipt fields and flags, and missing input or classifier paths.
+Seven exposed the synthetic marker before the boundary was added; all nine now
+return the fixed diagnostic without the marker. The successful baseline and
+candidate outputs remain byte-for-byte unchanged.
+
 The local replay uses the repository's pinned TypeScript 7.0.2 build on Node
 24.22.1 with the existing matching dependency graph. The compact [results](results.json)
 bind policy, script, native streams and source inputs without publishing raw

@@ -2,7 +2,7 @@
   "scope": "Unchanged native scanner streams through the real compiled classifier; not a hosted full-input review",
   "baselineRevision": "e625d2ea5f08db0291bf5ccf3cb00fc640d7990c",
   "policySha256": "2db1a69a07a1bbba2f1574e81b94d8b2d6586880f3e6ebc4bd8b9068fe0c4b30",
-  "replaySha256": "9c6b35a70db4c28bbed9b80aa292df8286e2fb5ac86fc1ef3bf932b3a6f8591b",
+  "replaySha256": "cfdc20739f44093eb274b58392f4943fa473f66af2095a4454ae588fdad64f1e",
   "baselineClassifierSha256": "833a0348bca4aee962ddee2d13771820546867093a06ec5dc9b8b78b4167002b",
   "candidateClassifierSha256": "16c9d844887274af45b4072349686257db12a0c30d1695f889749b35f641145d",
   "environment": {
@@ -179,5 +179,27 @@
     "previousCandidateClassifierSha256": "926c414ca5a25726f478290f96f3f5b95fbe4e02ba594812fed830a1e3790b19",
     "before": "The previous candidate admits head/PLAIN and fails the new refusal control.",
     "after": "Both head/PLAIN controls refuse with source_not_reviewed in all three retained captures."
+  },
+  "proofOutputControls": {
+    "scope": "Synthetic CLI error inputs; no real credentials or new native scans.",
+    "beforeReplaySha256": "9c6b35a70db4c28bbed9b80aa292df8286e2fb5ac86fc1ef3bf932b3a6f8591b",
+    "caseCount": 9,
+    "beforeMarkerExposures": 7,
+    "afterMarkerExposures": 0,
+    "allAfterExitCode": 1,
+    "allAfterStdoutBytes": 0,
+    "fixedDiagnostic": "Fixture proof failed; private input values withheld.",
+    "cases": [
+      "malformed-receipt",
+      "receipt-exit",
+      "receipt-binary",
+      "argv-option",
+      "source-read-path",
+      "classifier-import-path",
+      "malformed-stdout",
+      "malformed-stderr",
+      "missing-receipt"
+    ],
+    "positiveBaselineAndCandidateOutputs": "Byte-for-byte identical to the six-observed-combination replay before the output boundary."
   }
 }
