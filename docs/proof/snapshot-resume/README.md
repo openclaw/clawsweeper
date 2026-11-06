@@ -10,7 +10,8 @@
   registration, or reader hydration changes
 
 Run `node docs/proof/snapshot-resume/run-proof.mjs` with Node 24+ and Corepack.
-It starts pinned Wrangler 4.131.1 locally against the production Worker, queue
+Install the frozen repository dependencies first. It starts the installed
+Wrangler locally against the production Worker, queue
 export, signed upload route and snapshot registration over real workerd SQLite
 and R2. The fixture route writes records the way canonical publication does:
 each write takes the next revision from the single monotonic counter.

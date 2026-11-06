@@ -1,0 +1,1 @@
+- Use the frozen patched Wrangler toolchain for maintained local Worker proofs instead of downloading older runtimes.

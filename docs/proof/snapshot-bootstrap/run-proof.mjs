@@ -16,8 +16,7 @@ const port = reservation.address().port;
 await new Promise((resolve) => reservation.close(resolve));
 const baseUrl = `http://127.0.0.1:${port}`;
 const nonce = randomUUID();
-const child = spawn("corepack", ["pnpm", "dlx", "--allow-build", "esbuild", "--allow-build", "sharp",
-  "--allow-build", "workerd", "wrangler@4.131.1", "dev", "--config",
+const child = spawn("corepack", ["pnpm", "exec", "wrangler", "dev", "--config",
   "docs/proof/snapshot-bootstrap/wrangler.toml", "--local", "--persist-to", path.join(root, "state"),
   "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0", "--var", `PROOF_NONCE:${nonce}`],
 { detached: true, stdio: ["ignore", "pipe", "pipe"], env: {

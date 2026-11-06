@@ -17,8 +17,7 @@ const port = reservation.address().port;
 await new Promise((resolve) => reservation.close(resolve));
 const baseUrl = `http://127.0.0.1:${port}`;
 const nonce = randomUUID();
-const child = spawn("corepack", ["pnpm", "dlx", "--allow-build", "esbuild", "--allow-build", "sharp",
-  "--allow-build", "workerd", "wrangler@4.131.1", "dev", "--config",
+const child = spawn("corepack", ["pnpm", "exec", "wrangler", "dev", "--config",
   "docs/proof/snapshot-resume/wrangler.toml", "--local", "--persist-to", path.join(root, "state"),
   "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0", "--var", `PROOF_NONCE:${nonce}`],
 { detached: true, stdio: ["ignore", "pipe", "pipe"], env: {
@@ -131,7 +130,7 @@ try {
   assert.ok(runs.length > 1, "the backlog needed more than one budgeted run");
   console.log(JSON.stringify({ source: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
     sourceDigest: createHash("sha256").update(readFileSync("scripts/worker-records.ts")).digest("hex"),
-    runtime: "workerd local SQLite/R2 via wrangler 4.131.1 dev --local", node: process.version,
+    runtime: "workerd local SQLite/R2 via installed Wrangler dev --local", node: process.version,
     backlogChanges: 6000, syntheticExportPageDelayMs: 300, concurrentWritesPerRun: 50, budgetSeconds: 2, runs: runs.length,
     finalLiveRecords: truth.size, finalFileCount: final.fileCount, everyReaderExact: true,
     elapsedMs: Date.now() - unbudgetedReplay, perRun: runs,

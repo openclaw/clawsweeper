@@ -1,6 +1,6 @@
 // Simulated-hour proof for scheduled admission with bounded organic debt.
 // Usage: node scripts/proof-scheduled-budget.mjs BASE_REF TOOL_PREFIX FRESH_OUTPUT_DIR
-// TOOL_PREFIX must contain miniflare and esbuild (for example wrangler@4.107.0).
+// TOOL_PREFIX must contain the qualified Miniflare/esbuild pair for this scenario.
 // FRESH_OUTPUT_DIR must not already exist; the harness never removes caller data.
 // Drives the real ExactReviewQueue Durable Object (workerd + SQLite) with a fake
 // clock: organic new items (some closed before dispatch), superseding revisions

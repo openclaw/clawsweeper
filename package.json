@@ -45,8 +45,8 @@
     "repair:update-review-status": "node dist/repair/update-review-status.js",
     "workflow": "node dist/repair/workflow-utils.js",
     "target-fanout": "node dist/repair/target-fanout.js",
-    "dashboard:deploy": "npx wrangler@4.157.0 deploy --config dashboard/wrangler.toml",
-    "dashboard:dev": "npx wrangler@4.157.0 dev --config dashboard/wrangler.toml",
+    "dashboard:deploy": "wrangler deploy --config dashboard/wrangler.toml",
+    "dashboard:dev": "wrangler dev --config dashboard/wrangler.toml",
     "dashboard:refresh-ci": "node scripts/dashboard-refresh-ci.mjs",
     "dashboard:smoke": "node scripts/dashboard-smoke.mjs",
     "test": "pnpm run build:all && pnpm run test:no-build",
@@ -100,7 +100,8 @@
     "oxlint": "^1.90.0",
     "oxlint-tsgolint": "7.0.2005",
     "playwright-core": "^1.64.1",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "wrangler": "4.157.0"
   },
   "engines": {
     "node": ">=24"

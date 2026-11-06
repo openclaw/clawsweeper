@@ -9,8 +9,8 @@
 - Update when: snapshot producer admission, export, upload, or hydration changes
 
 Run `node docs/proof/snapshot-bootstrap/run-proof.mjs` on the repository's
-qualified Crabbox route with Node 24+ and Corepack. It starts pinned Wrangler
-4.131.1 locally, seeds 2,001 synthetic records in real workerd SQLite, observes
+qualified Crabbox route with Node 24+ and Corepack. It starts the frozen repository
+Wrangler locally, seeds 2,001 synthetic records in real workerd SQLite, observes
 ordinary hydration refuse, runs the actual snapshot-upload CLI against signed
 loopback HTTP, registers its multipart archive in local R2, and verifies every
 restored byte. Results go to stdout; temporary state and the child process are
