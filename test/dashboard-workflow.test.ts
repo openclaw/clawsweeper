@@ -61,16 +61,21 @@ test("dashboard verification exposes only the existing signing secret to the smo
 });
 
 test("dashboard verification validates its revision before invoking the existing smoke", () => {
+  // Node's piped stdin can trigger Bash's remote-shell startup detection.
   const run = (sha: string, secret = "synthetic-signing-secret") =>
-    spawnSync("bash", ["-c", `node() { printf '%s\\n' "$*"; }\n${smoke.run}`], {
-      encoding: "utf8",
-      env: {
-        PATH: process.env.PATH,
-        CLAWSWEEPER_STATUS_URL: smoke.env.CLAWSWEEPER_STATUS_URL,
-        CLAWSWEEPER_EXPECTED_DEPLOY_SHA: sha,
-        CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    spawnSync(
+      "bash",
+      ["--noprofile", "--norc", "-c", `node() { printf '%s\\n' "$*"; }\n${smoke.run}`],
+      {
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          CLAWSWEEPER_STATUS_URL: smoke.env.CLAWSWEEPER_STATUS_URL,
+          CLAWSWEEPER_EXPECTED_DEPLOY_SHA: sha,
+          CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        },
       },
-    });
+    );
   const valid = run("a".repeat(40));
   assert.equal(valid.status, 0, valid.stderr);
   assert.equal(valid.stdout, "scripts/dashboard-smoke.mjs https://clawsweeper.openclaw.ai\n");
