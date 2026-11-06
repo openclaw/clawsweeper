@@ -896,8 +896,14 @@ ${extra}
     if (checkoutInspection.error || checkoutInspection.status !== 0) {
       const stderr = redactedOutputTail(checkoutInspection.stderr);
       const stdout = redactedOutputTail(checkoutInspection.stdout);
+      // The runner reason leads: OpenClaw prints unrelated plugin warnings to stderr.
+      const reason = redactedOutputTail(checkoutInspection.error?.message, 2000);
+      const output = stderr || stdout;
+      const detail = reason
+        ? [reason, output.slice(-2000)].filter(Boolean).join("\n")
+        : output || "unknown sandbox failure";
       throw new CodexReviewError({
-        message: `Read-only checkout inspection failed for #${options.item.number}: ${stderr || stdout || checkoutInspection.error?.message || "unknown sandbox failure"}`,
+        message: `Read-only checkout inspection failed for #${options.item.number}: ${detail}`,
         status: checkoutInspection.status,
         stdout,
         stderr,
