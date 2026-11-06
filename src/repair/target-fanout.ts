@@ -7,7 +7,11 @@ import {
 import { requireRecord as record, errorSummary as errorMessage } from "../value-coerce.js";
 import { runCommand } from "./command-runner.js";
 import { createHmac, createHash } from "node:crypto";
-import { censusHttpControl, runReviewCoverageCensus } from "./review-coverage-census.js";
+import {
+  censusHttpControl,
+  censusOperationalFailure,
+  runReviewCoverageCensus,
+} from "./review-coverage-census.js";
 import { CENSUS } from "../review-coverage-census.js";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -289,7 +293,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
       } catch (error) {
         console.error(
           "[target-fanout] WARNING: live review inventory did not publish; continuing without blocking scheduled fanout work: " +
-            errorMessage(error),
+            censusOperationalFailure(error),
         );
       }
     }
@@ -313,7 +317,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     } catch (error) {
       console.error(
         "[target-fanout] WARNING: live review inventory did not publish; continuing without blocking scheduled fanout work: " +
-          errorMessage(error),
+          censusOperationalFailure(error),
       );
     }
   }

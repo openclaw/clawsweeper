@@ -1705,7 +1705,10 @@ Limits are centralized in CENSUS in src/review-coverage-census.ts:
   Query diagnostics distinguish subprocess/read, JSON decode, GraphQL errors,
   and response-schema validation without logging responses, repository identities,
   cursors, credentials, or headers. A failed-read checkpoint rejection retains the
-  original read failure as the primary cause; report failure cannot turn collection
+  original read failure as the primary cause. Control/transport throws retain their
+  original identity, constructor and message; private weak metadata supplies closed
+  operational output without mutating errors or breaking lost-ACK recovery.
+  Report failure cannot turn collection
   into success. These diagnostics do not establish the cause of a production
   failure or repair its census: current Unknown/fail-closed publication and
   nonblocking scheduled fanout semantics are unchanged.

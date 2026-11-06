@@ -1,11 +1,130 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { CENSUS } from "../../src/review-coverage-census.ts";
 import {
   censusHttpControl,
+  censusOperationalFailure,
   runReviewCoverageCensus,
 } from "../../dist/repair/review-coverage-census.js";
 
 const sentinel = "SENTINEL-secret-private-repo-cursor-sql";
+
+for (const [name, original] of [
+  ["transport Error", new Error(sentinel, { cause: new Error("private-cause") })],
+  ["abort", new DOMException(sentinel, "AbortError")],
+  ["deadline", new DOMException(sentinel, "TimeoutError")],
+  ["frozen Error", Object.freeze(new Error(sentinel))],
+  ["arbitrary object", Object.freeze({ private: sentinel })],
+  ["string", sentinel],
+  ["symbol", Symbol(sentinel)],
+  ["null", null],
+]) {
+  for (const surface of ["fetch", "body-read", "body-cancel"]) {
+    test(`${surface} preserves ${name} exactly without publishing private fields`, async () => {
+      const descriptors =
+        original && typeof original === "object"
+          ? Object.getOwnPropertyDescriptors(original)
+          : null;
+      const control = censusHttpControl({
+        baseUrl: "https://local.invalid",
+        secret: "local-only",
+        fetchImpl: async () => {
+          if (surface === "fetch") throw original;
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                if (surface === "body-read") controller.error(original);
+                else controller.enqueue(new Uint8Array(CENSUS.wireBytes + 1));
+              },
+              cancel() {
+                throw original;
+              },
+            }),
+          );
+        },
+      });
+      let rejected = false;
+      try {
+        await control("/internal/review-coverage/census/next", {});
+      } catch (error) {
+        rejected = true;
+        assert.equal(error, original);
+        if (descriptors) assert.deepEqual(Object.getOwnPropertyDescriptors(original), descriptors);
+        assert.ok(!censusOperationalFailure(error).includes(sentinel));
+      }
+      assert.equal(rejected, true);
+    });
+  }
+}
+
+test("same transport error reused across calls reports the actual current phase", async () => {
+  const error = new Error(sentinel);
+  const control = censusHttpControl({
+    baseUrl: "https://local.invalid",
+    secret: "local-only",
+    fetchImpl: async () => {
+      throw error;
+    },
+  });
+  for (const phase of ["start", "next", "accept", "fail"]) {
+    await assert.rejects(
+      control("/internal/review-coverage/census/" + phase, {}),
+      (value) => value === error,
+    );
+    assert.match(
+      censusOperationalFailure(error),
+      new RegExp(`phase=${phase} category=unclassified`),
+    );
+  }
+});
+
+test("diagnostic classification never invokes caller-owned Error getters or replaces throws", async () => {
+  let reads = 0;
+  const original = new Error();
+  Object.defineProperty(original, "message", {
+    get() {
+      reads++;
+      throw new Error(sentinel);
+    },
+  });
+  const diagnostics = [];
+  await assert.rejects(
+    runReviewCoverageCensus({
+      repositories,
+      query: () => null,
+      onDiagnostic: (value) => diagnostics.push(value),
+      control: async () => {
+        throw original;
+      },
+    }),
+    (error) => error === original,
+  );
+  assert.equal(reads, 0);
+  assert.deepEqual(diagnostics, [
+    { phase: "start", category: "unclassified", queries: 0, accepted: 0, failed: 0 },
+  ]);
+});
+
+test("control-created protocol failures retain baseline Error constructors and messages", async () => {
+  for (const [value, message] of [
+    [{}, "census control failed"],
+    [{ error: sentinel }, sentinel],
+    [{ error: "coverage_checkpoint_rejected" }, "coverage_checkpoint_rejected"],
+  ]) {
+    const control = censusHttpControl({
+      baseUrl: "https://local.invalid",
+      secret: "local-only",
+      fetchImpl: async () => Response.json(value, { status: 409 }),
+    });
+    await assert.rejects(control("/internal/review-coverage/census/start", {}), (error) => {
+      assert.equal(error.constructor, Error);
+      assert.equal(error.message, message);
+      assert.equal(error.cause, undefined);
+      assert.ok(!censusOperationalFailure(error).includes(sentinel));
+      return true;
+    });
+  }
+});
 const work = {
   repo: "fixture/core",
   id: "repo-id",
@@ -117,8 +236,10 @@ test("HTTP checkpoint rejection retains generic error and closed diagnostic only
   });
   await assert.rejects(control("/internal/review-coverage/census/fail", {}), (error) => {
     assert.match(error.message, /coverage_checkpoint_rejected/);
-    assert.match(error.message, /phase=fail category=lease/);
-    assert.ok(!String(error).includes(sentinel));
+    assert.equal(error.constructor, Error);
+    assert.equal(error.message, "coverage_checkpoint_rejected");
+    assert.match(censusOperationalFailure(error), /phase=fail category=lease/);
+    assert.ok(!censusOperationalFailure(error).includes(sentinel));
     return true;
   });
 });
@@ -134,8 +255,10 @@ test("malicious control fields and arbitrary error strings are never logged", as
       ),
   });
   await assert.rejects(control("/internal/review-coverage/census/start", {}), (error) => {
-    assert.ok(!String(error).includes(sentinel));
-    assert.match(error.message, /census_control_failed/);
+    assert.ok(!censusOperationalFailure(error).includes(sentinel));
+    assert.equal(error.message, sentinel);
+    assert.equal(error.constructor, Error);
+    assert.match(censusOperationalFailure(error), /phase=start category=unclassified/);
     return true;
   });
 });
@@ -154,14 +277,16 @@ test("malformed control JSON is closed and response phase cannot spoof the calls
       fetchImpl: async () => new Response(body, { status: 409 }),
     });
     await assert.rejects(control("/internal/review-coverage/census/start", {}), (error) => {
-      assert.match(error.message, new RegExp(`phase=start category=${category}`));
-      assert.ok(!String(error).includes(sentinel));
+      assert.equal(error.constructor, category === "json" ? SyntaxError : Error);
+      if (category !== "json") assert.equal(error.message, sentinel);
+      assert.match(censusOperationalFailure(error), new RegExp(`phase=start category=${category}`));
+      assert.ok(!censusOperationalFailure(error).includes(sentinel));
       return true;
     });
   }
 });
 
-test("control transport errors keep their cause private and injected control exceptions retain identity", async () => {
+test("control transport errors and injected control exceptions retain identity", async () => {
   const original = new Error(sentinel);
   const control = censusHttpControl({
     baseUrl: "https://local.invalid",
@@ -171,8 +296,11 @@ test("control transport errors keep their cause private and injected control exc
     },
   });
   await assert.rejects(control("/internal/review-coverage/census/next", {}), (error) => {
-    assert.equal(error.cause, original);
-    assert.ok(!String(error).includes(sentinel));
+    assert.equal(error, original);
+    assert.equal(error.constructor, Error);
+    assert.equal(error.message, sentinel);
+    assert.equal(error.cause, undefined);
+    assert.ok(!censusOperationalFailure(error).includes(sentinel));
     return true;
   });
   const diagnostics = [];
@@ -214,7 +342,7 @@ test("query failure and rejected fail checkpoint retain primary failure and boun
     (error) => {
       assert.equal(error.cause, original);
       assert.match(error.message, /phase=query category=read_failed/);
-      assert.ok(!String(error).includes(sentinel));
+      assert.ok(!censusOperationalFailure(error).includes(sentinel));
       return true;
     },
   );
@@ -279,7 +407,7 @@ test("throwing diagnostic observer cannot replace the primary control failure", 
     }),
     (error) => {
       assert.equal(error, original);
-      assert.ok(!String(error).includes(sentinel));
+      assert.ok(!censusOperationalFailure(error).includes(sentinel));
       return true;
     },
   );

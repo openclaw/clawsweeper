@@ -4,6 +4,38 @@ import { coverageCliFixture } from "../fixtures/review-coverage-cli.ts";
 
 const twentyMinutes = 20 * 60_000,
   sixHours = 6 * 60 * 60_000;
+
+for (const mode of ["normal-review", "hot-intake", "audit"]) {
+  test(`${mode} keeps raw control failures private while remaining nonblocking`, async () => {
+    const sentinel = "SENTINEL_PRIVATE_ERROR_TOKEN_repository_cursor";
+    const f = await coverageCliFixture([{ name: "core", issues: 2, pulls: 1 }]);
+    const fixtureFetch = globalThis.fetch;
+    const originalWarn = console.warn;
+    const warnings = [];
+    console.warn = (...values) => warnings.push(values.join(" "));
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname.endsWith("/census/start"))
+        return Response.json(
+          { error: sentinel, diagnostic: { phase: "start", category: "unclassified" } },
+          { status: 409 },
+        );
+      return fixtureFetch(input, init);
+    };
+    try {
+      await f.run(mode);
+      const operational = [...f.logs, ...warnings].join("\n");
+      assert.ok(!operational.includes(sentinel));
+      assert.match(operational, /census_failed phase=start category=unclassified/);
+      assert.match(operational, /queries=0 accepted=0 failed=0/);
+      assert.match(operational, /continuing without blocking scheduled fanout work/);
+    } finally {
+      console.warn = originalWarn;
+      f.close();
+    }
+  });
+}
+
 test("coverage, normal, hot and audit CLI modes share one v2 collector without v1 writes or cursor mutation", async () => {
   const f = await coverageCliFixture([{ name: "core", issues: 2, pulls: 1 }]);
   try {

@@ -11,10 +11,36 @@ export interface CensusProgressDiagnostic extends CensusDiagnostic {
   accepted: number;
   failed: number;
 }
+// Diagnostics are observational metadata, never a change to a caller-owned throw.
+const failureDiagnostics = new WeakMap<object, CensusDiagnostic>();
+function failureKey(error: unknown): object | null {
+  return error !== null && (typeof error === "object" || typeof error === "function")
+    ? error
+    : null;
+}
+function failureDiagnostic(error: unknown): CensusDiagnostic | null {
+  const key = failureKey(error);
+  return key ? (failureDiagnostics.get(key) ?? null) : null;
+}
+function associateDiagnostic(error: unknown, diagnostic: CensusDiagnostic | null): void {
+  const key = failureKey(error);
+  if (key && diagnostic) failureDiagnostics.set(key, diagnostic);
+}
+export function censusOperationalFailure(error: unknown): string {
+  const diagnostic = failureDiagnostic(error);
+  return diagnostic
+    ? `census_failed phase=${diagnostic.phase} category=${diagnostic.category}`
+    : "census_failed category=unclassified";
+}
 function diagnosticError(diagnostic: CensusDiagnostic, cause: unknown): Error {
-  return new Error(`census_failed phase=${diagnostic.phase} category=${diagnostic.category}`, {
-    cause,
-  });
+  const error = new Error(
+    `census_failed phase=${diagnostic.phase} category=${diagnostic.category}`,
+    {
+      cause,
+    },
+  );
+  associateDiagnostic(error, diagnostic);
+  return error;
 }
 import {
   CENSUS,
@@ -142,10 +168,12 @@ export async function runReviewCoverageCensus(options: {
         ...body,
       });
     } catch (error) {
+      const observed = failureDiagnostic(error);
       const diagnostic =
-        error instanceof CensusControlError
-          ? (error.diagnostic ?? { phase: suffix, category: "unclassified" as const })
+        observed?.phase === suffix
+          ? observed
           : { phase: suffix, category: censusFailureCategory(error) };
+      associateDiagnostic(error, diagnostic);
       report(diagnostic);
       // Observing a control failure must not change its exception identity.
       throw error;
@@ -251,18 +279,6 @@ export async function runReviewCoverageCensus(options: {
     stale: false,
   };
 }
-class CensusControlError extends Error {
-  constructor(
-    code: string,
-    readonly diagnostic: CensusDiagnostic | null,
-    cause?: unknown,
-  ) {
-    super(code + (diagnostic ? ` phase=${diagnostic.phase} category=${diagnostic.category}` : ""), {
-      cause,
-    });
-  }
-}
-
 export function censusHttpControl(options: {
   baseUrl: string;
   secret: string;
@@ -308,28 +324,23 @@ export function censusHttpControl(options: {
       let decoded: unknown;
       try {
         decoded = JSON.parse(text);
-      } catch {
-        throw new CensusControlError(
-          "census_control_failed",
-          expected ? { ...expected, category: "json" } : null,
-        );
+      } catch (error) {
+        associateDiagnostic(error, expected ? { ...expected, category: "json" } : null);
+        throw error;
       }
       const result = censusRecord(decoded);
       if (!response.ok || result.ok !== true) {
         const received = censusDiagnostic(result.diagnostic);
         const diagnostic = received?.phase === expected?.phase ? received : expected;
-        const code =
-          result.error === "coverage_checkpoint_rejected"
-            ? "coverage_checkpoint_rejected"
-            : "census_control_failed";
-        throw new CensusControlError(code, diagnostic);
+        const error = new Error(String(result.error ?? "census control failed"));
+        associateDiagnostic(error, diagnostic);
+        throw error;
       }
       return result;
     } catch (error) {
-      if (error instanceof CensusControlError) throw error;
-      // Transport/decoder errors may contain response text or URLs. Keep them
-      // as a private cause, never in the operational message.
-      throw new CensusControlError("census_control_failed", expected, error);
+      const observed = failureDiagnostic(error);
+      associateDiagnostic(error, observed?.phase === expected?.phase ? observed : expected);
+      throw error;
     }
   };
 }

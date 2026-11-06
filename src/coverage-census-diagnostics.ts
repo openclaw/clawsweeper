@@ -27,9 +27,17 @@ export function censusDiagnostic(value: unknown): CensusDiagnostic | null {
 }
 
 export function censusFailureCategory(error: unknown): CensusCategory {
-  if (!(error instanceof Error)) return "unclassified";
+  let message: unknown;
+  try {
+    if (!(error instanceof Error)) return "unclassified";
+    // Never invoke a caller-owned message getter while observing a failure.
+    const descriptor = Object.getOwnPropertyDescriptor(error, "message");
+    message = descriptor && "value" in descriptor ? descriptor.value : undefined;
+  } catch {
+    return "unclassified";
+  }
   // Exact owning-code constants, not substring matches on GitHub/SQL messages.
-  switch (error.message) {
+  switch (message) {
     case "census lease conflict":
       return "lease";
     case "census replay conflict":
