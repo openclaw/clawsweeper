@@ -787,6 +787,31 @@ interface ScanMaterialDiagnostic {
   references?: { revision: string; pathSha256: string; mode: string; role: ScanSourceRole }[];
 }
 
+// Metadata only: neither an inventory entry nor a staged material proves a source line.
+export interface ScanFindingInventoryEntry {
+  findingIndex: number;
+  detectorType: number | null;
+  decoder: "PLAIN" | "HTML" | "ESCAPED_UNICODE" | "OTHER";
+  verified: boolean | null;
+  scannerLine: number | null;
+  material?: ScanMaterialDiagnostic;
+  sourceAttribution: "unavailable";
+  attributionReason: "unknown_material" | "decoded" | "ambiguous" | "not_proven";
+}
+
+export const SCAN_FINDING_INVENTORY_MAX_ENTRIES = 16;
+export const SCAN_FINDING_INVENTORY_MAX_BYTES = 6 * 1024;
+
+export interface ScanFindingInventory {
+  version: 1;
+  totalCount: number;
+  retainedCount: number;
+  omittedCount: number;
+  // Across the whole scan, not just retained entries: no validated staged material.
+  unattributedCount: number;
+  entries: ScanFindingInventoryEntry[];
+}
+
 export type ScanRefusalDiagnostic =
   | {
       kind: "native_contract";
@@ -815,6 +840,7 @@ export type ScanRefusalDiagnostic =
       verified: boolean | null;
       scannerLine: number | null;
       material?: ScanMaterialDiagnostic;
+      inventory: ScanFindingInventory;
     };
 
 export interface ReviewedFixtureNotice {
@@ -883,9 +909,40 @@ function exactStringRecord(value: unknown, keys: readonly string[]): boolean {
   );
 }
 
-function materialDiagnostic(input: StagedScanInput): ScanMaterialDiagnostic {
-  // Only host-staged identities leave the scanner boundary. Bound reference
-  // fanout and hash paths; raw finding values and provider strings never leave.
+function materialDiagnostic(input: StagedScanInput): ScanMaterialDiagnostic | undefined {
+  // Validate even host-staged identities before serialization. Never echo scanner paths,
+  // free-form IDs, modes, roles or revisions; paths are hashed, references bounded.
+  const oid = (value: unknown): value is string =>
+    typeof value === "string" &&
+    /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value) &&
+    !/[\s\p{C}]/u.test(value);
+  const ordinal = /^(?:0|[1-9][0-9]{0,9})$/;
+  if (
+    !(
+      (input.kind === "prompt" && input.id === "prompt") ||
+      (input.kind === "schema" && input.id === "schema") ||
+      (input.kind === "blob" && oid(input.id)) ||
+      (["additional", "worktree", "patch", "raw_diff", "raw_diff_proof"].includes(input.kind) &&
+        typeof input.id === "string" &&
+        ordinal.test(input.id) &&
+        !/[\s\p{C}]/u.test(input.id))
+    ) ||
+    (["patch", "raw_diff", "raw_diff_proof"].includes(input.kind) && !("from" in input)) ||
+    ("from" in input && (!oid(input.from) || !oid(input.to))) ||
+    (["blob", "worktree"].includes(input.kind) && !("references" in input)) ||
+    ("references" in input &&
+      (!Array.isArray(input.references) ||
+        input.references.some(
+          (reference) =>
+            !reference ||
+            !oid(reference.revision) ||
+            !["100644", "100755", "120000"].includes(reference.mode) ||
+            !["base", "head", "index", "tree", "worktree"].includes(reference.role) ||
+            typeof reference.source !== "string" ||
+            reference.source.length > 4096,
+        )))
+  )
+    return undefined;
   return {
     kind: input.kind,
     id: input.id,
@@ -901,6 +958,94 @@ function materialDiagnostic(input: StagedScanInput): ScanMaterialDiagnostic {
           })),
         }
       : {}),
+  };
+}
+
+function findingMetadata(
+  finding: Record<string, unknown>,
+  inputs: ReadonlyMap<string, StagedScanInput>,
+): Pick<
+  ScanFindingInventoryEntry,
+  "detectorType" | "decoder" | "verified" | "scannerLine" | "material"
+> {
+  const source = object(object(object(finding.SourceMetadata)?.Data)?.Filesystem);
+  const staged = typeof source?.file === "string" ? inputs.get(source.file) : undefined;
+  const material = staged ? materialDiagnostic(staged) : undefined;
+  return {
+    detectorType:
+      typeof finding.DetectorType === "number" &&
+      Number.isInteger(finding.DetectorType) &&
+      finding.DetectorType >= 0 &&
+      finding.DetectorType <= 2_147_483_647
+        ? finding.DetectorType
+        : null,
+    decoder:
+      finding.DecoderName === "PLAIN" ||
+      finding.DecoderName === "HTML" ||
+      finding.DecoderName === "ESCAPED_UNICODE"
+        ? finding.DecoderName
+        : ("OTHER" as const),
+    verified: typeof finding.Verified === "boolean" ? finding.Verified : null,
+    scannerLine:
+      typeof source?.line === "number" && Number.isSafeInteger(source.line) && source.line > 0
+        ? source.line
+        : null,
+    ...(material ? { material } : {}),
+  };
+}
+
+function findingInventory(
+  findings: Record<string, unknown>[],
+  firstRefusalIndex: number,
+  inputs: ReadonlyMap<string, StagedScanInput>,
+): ScanFindingInventory {
+  const entries: ScanFindingInventoryEntry[] = [];
+  let unattributedCount = 0;
+  // Reserve the authoritative refusal first, including when earlier findings qualified.
+  // Remaining entries retain original indices in scan order; no classification is implied.
+  const retain = (findingIndex: number, metadata: ReturnType<typeof findingMetadata>) => {
+    if (entries.length >= SCAN_FINDING_INVENTORY_MAX_ENTRIES) return;
+    const entry: ScanFindingInventoryEntry = {
+      findingIndex,
+      ...metadata,
+      sourceAttribution: "unavailable",
+      attributionReason: !metadata.material
+        ? "unknown_material"
+        : metadata.decoder !== "PLAIN"
+          ? "decoded"
+          : (metadata.material.referenceCount ?? 0) > 1
+            ? "ambiguous"
+            : "not_proven",
+    };
+    // Include manifest indentation and counts in the byte budget. Use the largest
+    // possible unattributed count while collecting entries, so the final fits too.
+    const candidate = {
+      version: 1,
+      totalCount: findings.length,
+      retainedCount: entries.length + 1,
+      omittedCount: findings.length - entries.length - 1,
+      unattributedCount: findings.length,
+      entries: [...entries, entry],
+    };
+    if (
+      Buffer.byteLength(JSON.stringify({ failure: { scan: { inventory: candidate } } }, null, 2)) <=
+      SCAN_FINDING_INVENTORY_MAX_BYTES
+    )
+      entries.push(entry);
+  };
+  retain(firstRefusalIndex, findingMetadata(findings[firstRefusalIndex]!, inputs));
+  for (const [index, finding] of findings.entries()) {
+    const metadata = findingMetadata(finding, inputs);
+    if (!metadata.material) unattributedCount++;
+    if (index !== firstRefusalIndex) retain(index, metadata);
+  }
+  return {
+    version: 1,
+    totalCount: findings.length,
+    retainedCount: entries.length,
+    omittedCount: findings.length - entries.length,
+    unattributedCount,
+    entries,
   };
 }
 
@@ -1016,22 +1161,8 @@ function classifyReviewedFindings(
         reason,
         findingCount: findings.length,
         findingIndex,
-        detectorType:
-          typeof finding.DetectorType === "number" &&
-          Number.isInteger(finding.DetectorType) &&
-          finding.DetectorType >= 0 &&
-          finding.DetectorType <= 2_147_483_647
-            ? finding.DetectorType
-            : null,
-        decoder:
-          finding.DecoderName === "PLAIN" ||
-          finding.DecoderName === "HTML" ||
-          finding.DecoderName === "ESCAPED_UNICODE"
-            ? finding.DecoderName
-            : "OTHER",
-        verified: typeof finding.Verified === "boolean" ? finding.Verified : null,
-        scannerLine,
-        ...(staged ? { material: materialDiagnostic(staged) } : {}),
+        ...findingMetadata(finding, inputs),
+        inventory: findingInventory(findings, findingIndex, inputs),
       },
     });
     const raw = typeof finding.Raw === "string" ? finding.Raw : undefined;

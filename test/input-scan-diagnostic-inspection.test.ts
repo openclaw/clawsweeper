@@ -77,6 +77,82 @@ test("inspector projects bounded safe metadata and pointer without promoting sca
   assert.doesNotMatch(output.summary, /literal_not_reviewed|detector|scannerLine|cccc/);
   assert.doesNotMatch(JSON.stringify(output), /CANARY/);
 });
+test("inspector reads bounded inventory without raw metadata, and refuses inconsistent entries", (t) => {
+  const { read } = fixture(t);
+  const withInventory = () => {
+    const value: any = manifest();
+    const { findingIndex, detectorType, decoder, verified, scannerLine, material } =
+      value.failure.scan;
+    value.failure.scan.inventory = {
+      version: 1,
+      totalCount: 2,
+      retainedCount: 2,
+      omittedCount: 0,
+      unattributedCount: 1,
+      entries: [
+        {
+          findingIndex,
+          detectorType,
+          decoder,
+          verified,
+          scannerLine,
+          material,
+          sourceAttribution: "unavailable",
+          attributionReason: "decoded",
+          Raw: "OMITTED_CANARY",
+        },
+        {
+          findingIndex: 1,
+          detectorType: null,
+          decoder: "OTHER",
+          verified: null,
+          scannerLine: null,
+          sourceAttribution: "unavailable",
+          attributionReason: "unknown_material",
+        },
+      ],
+    };
+    return value;
+  };
+  const projected = read(withInventory());
+  assert.equal(projected.diagnostic.failure.scan.inventory.retainedCount, 2);
+  assert.doesNotMatch(JSON.stringify(projected), /OMITTED_CANARY/);
+  assert.deepEqual(projected, read(withInventory()));
+  for (const mutate of [
+    (i: any) => {
+      i.version = 2;
+    },
+    (i: any) => {
+      i.omittedCount = 1;
+    },
+    (i: any) => {
+      i.unattributedCount = 0;
+    },
+    (i: any) => {
+      i.entries[1].findingIndex = 0;
+    },
+    (i: any) => {
+      i.entries[1].scannerLine = -1;
+    },
+    (i: any) => {
+      i.entries[0].detectorType = 18;
+    },
+    (i: any) => {
+      i.entries[0].sourceAttribution = "head";
+    },
+    (i: any) => {
+      i.entries[0].attributionReason = "not_proven";
+    },
+    (i: any) => {
+      i.entries[0].Raw = "OVERSIZED_CANARY".repeat(1000);
+    },
+  ]) {
+    const value = withInventory();
+    mutate(value.failure.scan.inventory);
+    assert.throws(() => read(value));
+  }
+});
+
 test("inspector refuses missing, oversized, malformed and symlink manifests", (t) => {
   const { root, path } = fixture(t);
   const inspect = (manifestPath = path) =>
