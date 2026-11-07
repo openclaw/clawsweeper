@@ -23,11 +23,11 @@ the Chromium build matching `playwright-core` available locally:
 node docs/proof/status-publication-outcomes/run-proof.mjs 49446cd30622e642efceb80e1c0347b2602a0117
 ```
 
-The runner archives the baseline, starts isolated local Wrangler 4.131.1
-previews, and compares them with the candidate. It writes receipts and
-desktop/mobile PNGs to `.artifacts/status-publication-outcomes/`.
+The runner archives the baseline, starts isolated local previews using the
+repository's frozen Wrangler dependency, and compares them with the candidate.
+It writes receipts and desktop/mobile PNGs to `.artifacts/status-publication-outcomes/`.
 It closes its browsers, process groups and temporary state on success or failure.
-The npm tool acquisition may need network; Worker outbound fetch is denied,
+The frozen dependency installation may need network; Worker outbound fetch is denied,
 browser requests are restricted to the local preview, and production config,
 credentials and bindings are not supplied.
 
@@ -39,7 +39,8 @@ from this mode must be recorded separately; the Worker receipt does not claim
 browser validation.
 An already installed Wrangler can be selected with
 `PUBLICATION_PROOF_WRANGLER=/absolute/path/to/wrangler`; its reported version is
-recorded in the receipt, avoiding a new package download for each preview.
+recorded in the receipt. The default executable is the frozen dependency in this
+checkout, resolved before changing to temporary state.
 
 ## Automated harness coverage
 

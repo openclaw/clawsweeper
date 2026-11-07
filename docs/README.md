@@ -120,6 +120,18 @@ everything else requires human comparison with current main.
 `docs/proof/**` contains inspectable artifacts for specific changes. Those
 files support their recorded claim but do not override current runbooks.
 
+The active controlled fixtures for PR read-model identity, snapshot bootstrap,
+resumable snapshots, and publication status use the installed Wrangler selected
+by `package.json` and `pnpm-lock.yaml`. Install frozen dependencies before running
+them; they do not acquire a separate toolchain. The retained Wrangler
+4.107.0/4.131.1 launchers outside these active fixtures are historical
+change-specific evidence. Do not run those retained launchers as current
+qualification. If a historical scenario is needed again, qualify it explicitly
+with the current frozen toolchain and record new results separately, preserving
+the original artifacts. `scripts/proof-scheduled-budget.mjs` accepts caller-owned
+tooling rather than downloading a runtime; its historical Miniflare API usage
+needs separate qualification before replay with the current dependency pair.
+
 ### Proof media retention
 
 Commit lightweight, diffable proof records: the claim and limits, exact source

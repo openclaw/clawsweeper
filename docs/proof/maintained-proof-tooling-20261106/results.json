@@ -1,0 +1,304 @@
+{
+  "base": "51e006973ca9bb79dea2b0d874fa57db6bcdc4fa",
+  "testedSource": "base plus candidate file identities below; final commit binding is in campaign report",
+  "platform": "native Linux x64",
+  "provider": "AWS Crabbox",
+  "lease": "cbx_1228a8e2a11f",
+  "ami": "ami-04beed173f1785931",
+  "requestedType": "c7a.xlarge",
+  "observedCpus": 4,
+  "observedMemoryMiB": 7730,
+  "node": "v24.22.1",
+  "pnpm": "12.15.0",
+  "wrangler": "4.157.0",
+  "miniflare": "5.20261103.0-beta",
+  "workerd": "1.20261103.1",
+  "workerdBinarySha256": "315a009480729fa1f365e649cb34bf898e39df6c7d1a133f74c736ef201221b9",
+  "testedFileSha256": {
+    "package.json": "6456254fe9ffba4692e52fc1442b69de8f2ed1e7215d05f67d6d60b20c250135",
+    "pnpm-lock.yaml": "ccf587d97a1266015f083ae59f068777753ae00053d2d12d8ed1cb74330f18db",
+    "docs/proof/pr-read-model-kind/run-proof.mjs": "5b11f26e29b0cdd7fd3a32409bd82d30d1d6957c615ed47107150bf77d126326",
+    "docs/proof/snapshot-bootstrap/run-proof.mjs": "a28ba8383a2f1f42a819cff05b2a0b3a832ffaf08b5bc8f3b00f62f134f9b823",
+    "docs/proof/snapshot-resume/run-proof.mjs": "a9478e084ed8e2e6c5fcadb39aa1140378b122756eb7e5ff5faeea52cd474701",
+    "docs/proof/status-publication-outcomes/run-proof.mjs": "b8d6c82792386a171ba777da4e8953b7f31cf830a5d7185114922acb17c4d68f",
+    "scripts/e2e/manual-review-publication.mjs": "e4bfc8b217ebbeafd11e7281c627064dd14cdf8730a1cb6f9355c49037cdc066"
+  },
+  "activeFixtures": [
+    {
+      "source": "51e006973ca9bb79dea2b0d874fa57db6bcdc4fa",
+      "sourceDigests": {
+        "dashboard/github-webhook-read-model.ts": "67facd362332343a96719495fb29fc7b2a924fdbc0c2c1bec7c19bdb046f0a03",
+        "src/clawsweeper-review-planning-inventory.ts": "364c5bd0f5892d9d2ca71be2863ecf7cbb4d6ed2403dfcde5f790998032e1a6d",
+        "src/clawsweeper-report-actions.ts": "cbc8029791eb914e8a21efe65cb7c43b8dadd6acbf72eafe8fdbda8a0c0f3cef",
+        "src/clawsweeper-command-operations.ts": "9303a48d690738a29c9bc973c921012b4935d9be44409d543634001a241d9b67",
+        "docs/proof/pr-read-model-kind/run-proof.mjs": "5b11f26e29b0cdd7fd3a32409bd82d30d1d6957c615ed47107150bf77d126326",
+        "docs/proof/pr-read-model-kind/worker.ts": "ef2561988156fb063986eb34c2a8493b2a27c6915c6aa0ad8ea02157f91f6901"
+      },
+      "runtime": "workerd local SQLite + signed HTTP",
+      "node": "v24.22.1",
+      "rawPrHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "driftedPrHead": "cccccccccccccccccccccccccccccccccccccccc",
+      "reservations": 1,
+      "oldRowKind": "pull_request",
+      "markerMetadata": "preserved",
+      "issueRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "unsignedRead": "rejected",
+      "limit": "synthetic GitHub head and comment receiver; no live publication"
+    },
+    {
+      "source": "51e006973ca9bb79dea2b0d874fa57db6bcdc4fa",
+      "sourceDigest": "265fef77331ba4f4fca13c3ff6659d548768a6345a57565828ed5ecf9313f0eb",
+      "runtime": "workerd local SQLite/R2",
+      "node": "v24.22.1",
+      "records": 2001,
+      "coldReader": "refused",
+      "snapshotCli": "registered",
+      "hydratedBytes": "exact",
+      "revisionWatermark": 2001,
+      "limit": "controlled loopback fixture; no production Cloudflare throughput claim"
+    },
+    {
+      "source": "51e006973ca9bb79dea2b0d874fa57db6bcdc4fa",
+      "sourceDigest": "265fef77331ba4f4fca13c3ff6659d548768a6345a57565828ed5ecf9313f0eb",
+      "runtime": "workerd local SQLite/R2 via installed Wrangler dev --local",
+      "node": "v24.22.1",
+      "backlogChanges": 6000,
+      "syntheticExportPageDelayMs": 300,
+      "concurrentWritesPerRun": 50,
+      "budgetSeconds": 2,
+      "runs": 6,
+      "finalLiveRecords": 5967,
+      "finalFileCount": 5967,
+      "everyReaderExact": true,
+      "elapsedMs": 38644,
+      "perRun": [
+        {
+          "revisionWatermark": 3209,
+          "complete": false,
+          "replayedRecords": 1200,
+          "fileCount": 2000,
+          "readerDelta": 4803,
+          "hydrateMs": 2038
+        },
+        {
+          "revisionWatermark": 4427,
+          "complete": false,
+          "replayedRecords": 1200,
+          "fileCount": 2421,
+          "readerDelta": 3613,
+          "hydrateMs": 2051
+        },
+        {
+          "revisionWatermark": 5659,
+          "complete": false,
+          "replayedRecords": 1200,
+          "fileCount": 3621,
+          "readerDelta": 2437,
+          "hydrateMs": 2038
+        },
+        {
+          "revisionWatermark": 6889,
+          "complete": false,
+          "replayedRecords": 1200,
+          "fileCount": 4821,
+          "readerDelta": 1266,
+          "hydrateMs": 2078
+        },
+        {
+          "revisionWatermark": 8143,
+          "complete": false,
+          "replayedRecords": 1200,
+          "fileCount": 5949,
+          "readerDelta": 106,
+          "hydrateMs": 2108
+        },
+        {
+          "revisionWatermark": 8300,
+          "complete": true,
+          "replayedRecords": 155,
+          "fileCount": 5967,
+          "readerDelta": 0,
+          "hydrateMs": 555
+        }
+      ],
+      "limit": "controlled loopback fixture; proves resume correctness and convergence, not production throughput"
+    }
+  ],
+  "statusComparison": {
+    "base": "c9248c60fcfb060e332193bf6fed926758c5f5f7",
+    "pairedScenarios": 28,
+    "runs": 56,
+    "passed": true,
+    "mode": "--cache-paths; Worker only; no browser"
+  },
+  "tls": {
+    "verifiedIncidentTlsKeys": 6,
+    "incidentSpkis": [
+      "43bffa19d6ef651451f6841e019931e96f6f2eaeff28ab4b6f1ce4576de2717b",
+      "49dd353dc2b919a3770645117d0e60c16115e7d1bc259eefe734b00ea434fe5f",
+      "5c0660a2b164910d8ff589c18e14552e9e0ec237dcefe2cb736d41a4811f81a0",
+      "63ecefee431d49523bc1136c4e72d0206a477086caf606cd5cf025686c109cf8",
+      "e0254c7fcdc265e2f0f8a428dabb75ab4ae039b4872d62f5ee57f0877d5a8a41",
+      "ebed6475c2c2d80fcb199f3fe8dd6e6b3ce60b77eb15d4e42c3dec0c6f5b5105"
+    ],
+    "results": [
+      {
+        "label": "public-default",
+        "target": "https://example.com",
+        "extraCa": false,
+        "status": 200,
+        "bodySha256": "25ddf2c883e0d1958ea971d279a7e4f0fd446724ee3db7db19dadabd4a62e484",
+        "CertDistrusted": 0,
+        "privateControlMatches": false
+      },
+      {
+        "label": "private-extra",
+        "target": "https://localhost:19401",
+        "extraCa": true,
+        "status": 200,
+        "bodySha256": "1431f756e19231cc2e6722a48fca3a7f6deda138724a14d4f606009f231e19e6",
+        "CertDistrusted": 0,
+        "privateControlMatches": true
+      },
+      {
+        "label": "incident-0",
+        "target": "https://dv-g3b-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "74894c781dfd078fcb05dd71bcaafacdbaa85ba3b8c296471d077081cab0215a",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      },
+      {
+        "label": "incident-1",
+        "target": "https://dv-g3c-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "08a03b08ca0066689210083956f41fb182cec690df8aecdedbd0a98bb5d42b94",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      },
+      {
+        "label": "incident-2",
+        "target": "https://ov-g3b-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "9c84aa0ac2db1f5aec9a1123afd4d0ba8167a5b6c62a171c45cbbed343e41e5b",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      },
+      {
+        "label": "incident-3",
+        "target": "https://ov-g3c-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "8f7144338d367ea003bdd6106b40892789bb77acae00ee3d0aa45c2b3ab9a6c9",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      },
+      {
+        "label": "incident-4",
+        "target": "https://ev-g3b-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "d5abd737892db6c3a5e462f5e8275dd4d6f739b16dbe014f41cefaf56b365380",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      },
+      {
+        "label": "incident-5",
+        "target": "https://ev-g3c-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "ec4ef5d7dbf70088e6a5da660988597b84120d44be2cbb5c31d2474632aa8669",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      },
+      {
+        "label": "incident-6",
+        "target": "https://dv-g3b-aaa-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "05cc2980e4d3ca1d2ec4747b62f9a34dbe551f4b800fbb98f9462e9bdf02e20e",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      },
+      {
+        "label": "incident-7",
+        "target": "https://dv-g3c-aaa-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "45a1eb33c60f71dc330d91fc56c59885bc38913ff7d334aa08168fbba8a82e5e",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      },
+      {
+        "label": "incident-8",
+        "target": "https://ov-g3b-aaa-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "db2d508905e52ae04e1ef5934e76fcd6c28bd1aa8949b2f9bb9db7376f196458",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      },
+      {
+        "label": "incident-9",
+        "target": "https://ov-g3c-aaa-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "e01f0c56d4771b8af946ec8cd640d3e808716fe2aa98c0b8dee3f4aa0c967353",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      },
+      {
+        "label": "incident-10",
+        "target": "https://ev-g3b-aaa-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "d93e197855eb75afb561af2c2f00751360ae6fccc3bac3a15516c6b2e6ad118e",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      },
+      {
+        "label": "incident-11",
+        "target": "https://ev-g3c-aaa-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "99a75730d859bfbd8fb3af1c4578dfe56ad63ca1d325e91ed2cd924a3890f8b6",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      },
+      {
+        "label": "incident-12",
+        "target": "https://dv-g3b-noct-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "a7464945f15cf6b40f4fec53b4c237eb1af760e12cc2b500371dedae2b7867bd",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      },
+      {
+        "label": "incident-13",
+        "target": "https://dv-g3b-aaa-noct-emudhra.we-have-a-problem.com",
+        "extraCa": true,
+        "status": 500,
+        "bodySha256": "0df017f8d69073cea21e92a95f4c59c3f1f9269f2d9ef5562861415b8c76cfb5",
+        "CertDistrusted": 1,
+        "privateControlMatches": false
+      }
+    ]
+  },
+  "classification": {
+    "oldPinDocsDrivers": 33,
+    "explicitActiveMigrated": 4,
+    "retainedChangeSpecificDrivers": 29,
+    "externalInvocationUnverified": true
+  },
+  "limits": [
+    "Native Linux x64 only; no deployment or publication",
+    "No browser/UI qualification claimed",
+    "No full historical manual-publication scenario replay",
+    "Scheduled-budget Miniflare v4 API compatibility with current pair remains unqualified",
+    "No universal alternate-chain or code-signing-key product proof"
+  ]
+}

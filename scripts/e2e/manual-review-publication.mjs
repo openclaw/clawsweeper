@@ -80,7 +80,11 @@ assert.ok(
 for (const name of ["PROVIDER", "LEASE", "IMAGE"])
   assert.ok(process.env[`MANUAL_PUBLICATION_${name}`], `${name} is required`);
 assert.ok(wrangler?.startsWith("/"), "installed Wrangler path required");
-assert.match(execFileSync(wrangler, ["--version"], { encoding: "utf8" }), /4\.107\.0/);
+assert.equal(
+  execFileSync(wrangler, ["--version"], { encoding: "utf8" }).trim(),
+  JSON.parse(readFileSync(join(source, "package.json"), "utf8")).devDependencies.wrangler,
+  "use the frozen repository Wrangler version",
+);
 const output = resolve(
   process.env.MANUAL_PUBLICATION_OUTPUT || ".artifacts/manual-review-publication",
 );

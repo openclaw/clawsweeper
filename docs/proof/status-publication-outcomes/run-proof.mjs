@@ -37,10 +37,9 @@ assert.ok(
   !lifetime || !workerOnly,
   "--lifetime cannot combine with --worker-only or --serve-browser",
 );
-const wranglerBin = process.env.PUBLICATION_PROOF_WRANGLER;
-const wranglerVersion = wranglerBin
-  ? execFileSync(wranglerBin, ["--version"], { encoding: "utf8" }).trim()
-  : "4.131.1";
+const wranglerBin =
+  process.env.PUBLICATION_PROOF_WRANGLER || path.join(root, "node_modules/.bin/wrangler");
+const wranglerVersion = execFileSync(wranglerBin, ["--version"], { encoding: "utf8" }).trim();
 assert.match(base ?? "", /^[a-f0-9]{40}$/, "pass the full approved baseline SHA");
 const proofPath = "docs/proof/status-publication-outcomes";
 const artifacts = path.join(root, ".artifacts/status-publication-outcomes");
@@ -513,9 +512,8 @@ async function startWorker(label, source) {
   const logPath = path.join(scratch, `${label}.log`);
   const log = createWriteStream(logPath);
   const child = spawn(
-    wranglerBin || "npx",
+    wranglerBin,
     [
-      ...(wranglerBin ? [] : ["--yes", "wrangler@4.131.1"]),
       "dev",
       "--local",
       "--config",

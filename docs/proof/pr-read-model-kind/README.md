@@ -11,8 +11,8 @@
 
 After building on the qualified remote backend, run
 `node docs/proof/pr-read-model-kind/run-proof.mjs`. Node 24+, Corepack, curl,
-and pinned Wrangler 4.131.1 are required. The driver creates temporary workerd
-SQLite state and an isolated Wrangler home, then deletes both on exit.
+and frozen repository dependencies are required. The driver creates temporary
+workerd SQLite state and an isolated Wrangler home, then deletes both on exit.
 
 The fixture sends signed raw PR events into the actual read-model store and
 consumes signed item responses through the actual runner client, inventory,
