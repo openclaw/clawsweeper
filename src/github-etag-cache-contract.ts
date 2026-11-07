@@ -96,7 +96,7 @@ function etagRouteTemplate(path: string): string {
     return "pull_reviews";
   }
   if (/^\/repos\/[^/]+\/[^/]+\/actions\/runs\/?$/.test(path)) return "actions_runs";
-  if (/^\/repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/jobs\/?$/.test(path)) {
+  if (/^\/repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/(?:attempts\/\d+\/)?jobs\/?$/.test(path)) {
     return "actions_run_jobs";
   }
   return "unknown";

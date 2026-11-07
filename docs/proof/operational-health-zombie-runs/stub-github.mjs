@@ -32,7 +32,7 @@ const server = http.createServer(async (request, response) => {
       total_count: status === "queued" || status === null ? workflowRuns.length : 0,
       workflow_runs: status === "queued" || status === null ? workflowRuns : [],
     };
-  } else if (/\/actions\/runs\/\d+\/jobs$/.test(url.pathname)) {
+  } else if (/\/actions\/runs\/\d+\/(?:attempts\/\d+\/)?jobs$/.test(url.pathname)) {
     payload = { total_count: 0, jobs: [] };
   } else if (/\/actions\/workflows\/[^/]+\/runs$/.test(url.pathname)) {
     payload = { total_count: 0, workflow_runs: [] };
@@ -65,6 +65,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 function workflowRun(id, status, createdAtMs) {
   return {
     id,
+    run_attempt: 1,
     name: "ClawSweeper",
     display_title: `proof run ${id}`,
     status,

@@ -7776,7 +7776,7 @@ async function activeWorkerSnapshot(
     fetchConcurrency,
     async (run) => {
       try {
-        const jobSnapshot = await workflowJobsForRunSnapshot(env, repo, run.id, github, run);
+        const jobSnapshot = await workflowJobsForRunSnapshot(env, repo, run, github);
         const jobs = jobSnapshot.jobs;
         const activeJobs = jobs.filter((job) => isActiveWorkflowJob(job));
         return {
@@ -7877,22 +7877,28 @@ async function recentWorkerHealth(
   github: GithubJsonReader = (path) => githubJson(env, path),
 ) {
   const cacheKey = `worker-health:v3:${String(repo || "").toLowerCase()}`;
-  const cached = await readStoredJson(env, cacheKey);
-  if (cached) return workerHealthStorageProjection(cached);
-
   const completedRuns = recentWorkerHealthRunSample(runs);
+  const sampleKey = JSON.stringify(
+    completedRuns.map((run) => [String(run.id), run.run_attempt]).sort(),
+  );
+  const cached = await readStoredJson(env, cacheKey);
+  // The repository slot may outlive a rerun. Reuse its aggregate only while
+  // the selected completed attempts are unchanged, or old failures survive it.
+  if (cached?.sample_key === sampleKey) return workerHealthStorageProjection(cached);
+
   const fetchConcurrency = workerHealthFetchConcurrency(env);
   const results = await mapWithConcurrency(
     completedRuns,
     fetchConcurrency,
     async (run) => {
       try {
+        const jobSnapshot = await workflowJobsForRunSnapshot(env, repo, run, github);
         return {
-          attempts: (await workflowJobsForRun(env, repo, run.id, github, run))
+          attempts: jobSnapshot.jobs
             .filter((job) => isCodexWorkerJob(job))
             .map((job) => workerHealthAttempt(run, job))
             .filter(Boolean),
-          error: null,
+          error: jobSnapshot.complete ? null : "worker_health_unavailable",
         };
       } catch (error) {
         return {
@@ -7952,7 +7958,7 @@ async function recentWorkerHealth(
   await writeStoredJson(
     env,
     cacheKey,
-    workerHealthStorageProjection(health),
+    { ...workerHealthStorageProjection(health), sample_key: sampleKey },
     numberFrom(env.WORKER_HEALTH_CACHE_TTL_SECONDS, WORKER_HEALTH_CACHE_TTL_SECONDS),
   );
   return health;
@@ -8224,17 +8230,11 @@ async function mapWithConcurrency<Item, Result>(
   return results;
 }
 
-async function workflowJobsForRun(
-  env,
-  repo,
-  runId,
-  github: GithubJsonReader = (path) => githubJson(env, path),
-  run?: WorkflowRunSummary,
+function boundedWorkflowJobCensus(
+  value: unknown,
+  run: WorkflowRunSummary,
+  claimedComplete: boolean,
 ) {
-  return (await workflowJobsForRunSnapshot(env, repo, runId, github, run)).jobs;
-}
-
-function boundedWorkflowJobCensus(value: unknown, runId, claimedComplete: boolean) {
   const source = Array.isArray(value) ? value : [];
   const limit = WORKER_JOB_PAGE_LIMIT * 100;
   const bounded = source.slice(0, limit);
@@ -8246,7 +8246,8 @@ function boundedWorkflowJobCensus(value: unknown, runId, claimedComplete: boolea
       !Number.isSafeInteger(record.id) ||
       Number(record.id) <= 0 ||
       !Number.isSafeInteger(record.run_id) ||
-      Number(record.run_id) !== Number(runId) ||
+      Number(record.run_id) !== Number(run.id) ||
+      (record.run_attempt !== undefined && record.run_attempt !== run.run_attempt) ||
       seenJobIds.has(Number(record.id))
     ) {
       return false;
@@ -8261,17 +8262,17 @@ function boundedWorkflowJobCensus(value: unknown, runId, claimedComplete: boolea
 export async function workflowJobsForRunSnapshot(
   env,
   repo,
-  runId,
+  run: WorkflowRunSummary,
   github: GithubJsonReader = (path) => githubJson(env, path),
-  run?: WorkflowRunSummary,
 ) {
-  const key = `workflow-jobs:${repo}:${runId}`;
-  const cached = await readStoredJson(env, key);
-  if (Array.isArray(cached)) return boundedWorkflowJobCensus(cached, runId, false);
-  const cachedRecord = objectValue(cached);
-  if (cachedRecord.schema_version === 1 && Array.isArray(cachedRecord.jobs)) {
-    return boundedWorkflowJobCensus(cachedRecord.jobs, runId, false);
+  if (!Number.isSafeInteger(run.run_attempt) || Number(run.run_attempt) < 1) {
+    throw new Error("Workflow run attempt unavailable");
   }
+  const runId = run.id;
+  // Reruns keep their run ID. Bind both caches and pagination to the selected
+  // attempt so a prior terminal job or a newer rerun cannot replace its workers.
+  const key = `workflow-jobs:${repo}:${runId}:${run.run_attempt}`;
+  const cachedRecord = objectValue(await readStoredJson(env, key));
   if (
     cachedRecord.schema_version === 2 &&
     Array.isArray(cachedRecord.jobs) &&
@@ -8283,7 +8284,7 @@ export async function workflowJobsForRunSnapshot(
         : null;
     return boundedWorkflowJobCensus(
       cachedRecord.jobs,
-      runId,
+      run,
       cachedRecord.complete === true &&
         totalCount !== null &&
         cachedRecord.jobs.length === totalCount,
@@ -8294,7 +8295,7 @@ export async function workflowJobsForRunSnapshot(
   let expectedTotalCount: number | null = null;
   for (let page = 1; page <= WORKER_JOB_PAGE_LIMIT; page += 1) {
     const payload = await github(
-      `/repos/${repo}/actions/runs/${runId}/jobs?filter=latest&per_page=100&page=${page}`,
+      `/repos/${repo}/actions/runs/${runId}/attempts/${run.run_attempt}/jobs?per_page=100&page=${page}`,
     );
     if (!Array.isArray(payload?.jobs)) break;
     const pageJobs = payload.jobs;
@@ -8315,7 +8316,7 @@ export async function workflowJobsForRunSnapshot(
     }
     if (jobs.length > expectedTotalCount || pageJobs.length < 100) break;
   }
-  const census = boundedWorkflowJobCensus(jobs, runId, complete);
+  const census = boundedWorkflowJobCensus(jobs, run, complete);
   const hasActiveWorker = census.jobs.some(
     (job) => isActiveWorkflowJob(job) && isDashboardWorkerJob(job, run),
   );

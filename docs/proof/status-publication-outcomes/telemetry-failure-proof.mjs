@@ -11,10 +11,12 @@ export async function startGithubFixture() {
   let workflowCase = null;
   let workflowReads = 0;
   let responseOrder = [];
+  let jobReads = [];
   const pending = new Map();
   const now = new Date().toISOString();
   const run = (id, status) => ({
     id,
+    run_attempt: 1,
     name: "Review ClawSweeper items",
     display_title: "Review synthetic telemetry fixture",
     status,
@@ -98,8 +100,17 @@ export async function startGithubFixture() {
           return;
         }
       }
-    } else if (/\/actions\/runs\/(101|202)\/jobs$/.test(url.pathname)) {
-      const id = Number(url.pathname.split("/").at(-2));
+    } else if (/\/actions\/runs\/(101|202)\/(?:attempts\/\d+\/)?jobs$/.test(url.pathname)) {
+      const [, runId, attempt] = url.pathname.match(/\/runs\/(\d+)\/(?:attempts\/(\d+)\/)?jobs$/);
+      const id = Number(runId);
+      jobReads.push(attempt ? Number(attempt) : "latest");
+      if (workflowCase?.jobs) {
+        const job = workflowCase.jobs[attempt || workflowCase.latest];
+        assert.ok(job, "fixture must define the requested attempt");
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ total_count: 1, jobs: [job] }));
+        return;
+      }
       if (id === 101) {
         healthReads += 1;
         if (!healthy) {
@@ -158,6 +169,7 @@ export async function startGithubFixture() {
       workflowCase = null;
       workflowReads = 0;
       responseOrder = [];
+      jobReads = [];
       pending.clear();
     },
     recover() {
@@ -179,6 +191,7 @@ export async function startGithubFixture() {
       failure_reads: failureReads,
       workflow_reads: workflowReads,
       response_order: [...responseOrder],
+      job_reads: [...jobReads],
     }),
     close: () =>
       new Promise((resolve) => {
@@ -186,6 +199,128 @@ export async function startGithubFixture() {
         server.closeAllConnections();
       }),
   };
+}
+
+export async function proveWorkflowAttempts(preview, label, fixture, restart) {
+  const now = new Date().toISOString();
+  const run = (attempt, status, conclusion = null) => ({
+    id: 202,
+    run_attempt: attempt,
+    name: "Review ClawSweeper items",
+    display_title: "Review synthetic workflow attempts",
+    status,
+    conclusion,
+    created_at: now,
+    updated_at: now,
+  });
+  const job = (attempt, status, conclusion = null) => ({
+    id: 20200 + attempt,
+    run_id: 202,
+    name: "Review shard",
+    status,
+    conclusion,
+    started_at: now,
+    completed_at: status === "completed" ? now : null,
+    steps: [],
+  });
+  const cases = [
+    {
+      name: "terminal-to-active",
+      before: run(1, "completed", "failure"),
+      after: run(2, "in_progress"),
+      latest: 2,
+      jobs: { 1: job(1, "completed", "failure"), 2: job(2, "in_progress") },
+      expected: [1, 0, 0],
+      baseline: [0, 0, 1],
+    },
+    {
+      name: "active-to-completed-with-newer-latest",
+      before: run(1, "in_progress"),
+      after: run(2, "completed", "success"),
+      latest: 3,
+      jobs: {
+        1: job(1, "in_progress"),
+        2: job(2, "completed", "success"),
+        3: job(3, "completed", "failure"),
+      },
+      expected: [0, 1, 0],
+      baseline: [0, 0, 0],
+    },
+  ];
+  let current = preview;
+  const results = [];
+  for (const [index, scenario] of cases.entries()) {
+    fixture.reset();
+    const generation = 90 + index;
+    const configure = async (ttl = 1) => {
+      const response = await fetch(current.origin + "/__proof/telemetry", {
+        method: "POST",
+        body: JSON.stringify({ origin: fixture.origin, scenario: generation, ttl }),
+      });
+      assert.equal(response.status, 200);
+    };
+    const expose = (observed, latest) =>
+      fixture.workflows({
+        active: observed.status === "completed" ? [] : [observed],
+        completed: observed.status === "completed" ? [observed] : [],
+        sources: [],
+        jobs: scenario.jobs,
+        latest,
+      });
+    const status = async () => {
+      const response = await fetch(current.origin + "/api/status");
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      assert.deepEqual(body.diagnostics.errors, []);
+      assert.equal(body.public_projection_complete, true);
+      assert.equal(body.operational_health.telemetry_complete, true);
+      return {
+        metrics: [
+          body.fleet.active_codex_jobs,
+          body.health.successful_attempts,
+          body.health.failed_attempts,
+        ],
+        cache: response.headers.get("x-clawsweeper-cache"),
+      };
+    };
+    expose(scenario.before, 1);
+    await configure();
+    await status();
+    const seeded = fixture.observations().job_reads;
+    assert.deepEqual(seeded, [label === "base" ? "latest" : 1]);
+    if (index === 1) {
+      current = await restart();
+      await configure();
+    }
+    // Expire only the composed snapshot, retaining the real job and health caches.
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    expose(scenario.after, scenario.latest);
+    await configure();
+    const observed = await status();
+    assert.equal(observed.cache, "miss", "the second attempt must actually be collected");
+    const expected = label === "base" ? scenario.baseline : scenario.expected;
+    assert.deepEqual(observed.metrics, expected, `${label}: ${scenario.name}`);
+    const reads = fixture.observations();
+    assert.deepEqual(reads.job_reads, label === "base" ? ["latest"] : [1, 2]);
+    await configure(10);
+    assert.equal((await status()).cache, "fresh");
+    if (index === 0) {
+      current = await restart();
+      await configure(10);
+      assert.deepEqual((await status()).metrics, expected);
+    }
+    assert.deepEqual(fixture.observations().job_reads, reads.job_reads);
+    assert.equal(reads.unexpected_routes, 0);
+    results.push({
+      revision: label,
+      scenario: scenario.name,
+      metrics: expected,
+      job_reads: reads.job_reads,
+      warm_reused: true,
+      sqlite_restart: true,
+    });
+  }
+  return results;
 }
 
 export async function proveWorkflowObservations(preview, label, fixture, restart) {
