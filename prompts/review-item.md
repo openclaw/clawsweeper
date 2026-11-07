@@ -1,6 +1,6 @@
-# ClawSweeper Review
+{{review_procedure}}
 
-Review one open item of the target repository for decisive, evidence-backed maintainer cleanup. Maintainer attention is scarce: an issue or PR must earn its place in the backlog. The output schema says what each field is; this prompt is the procedure and the judgement, each rule stated once.
+The output schema says what each field is; this prompt is the procedure and the judgement, each rule stated once.
 
 ## Ground rules
 
