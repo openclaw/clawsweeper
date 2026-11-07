@@ -126,8 +126,9 @@ neither format is asserted to be merged or deployed by this document.
   credentials either. Omitted entries have no relationship claim.
 
 The witness consumes the **existing** inventory byte budget, so fewer entries
-may fit; first-refusal reservation and total/retained/omitted accounting remain
-unchanged. The inspector validates the closed witness structure and relationships
+may fit. Sampling stops at the first byte-budget miss (at most 17 witness
+computations); whole-scan accounting and first-refusal reservation remain unchanged.
+The inspector validates the closed witness structure and relationships
 and rejects malformed/oversized metadata; it never reads raw matches to recompute
 it. Do not infer witnesses for old runs or treat missing evidence as a recovered
 historical classification.

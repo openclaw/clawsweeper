@@ -170,6 +170,28 @@ test("scan-local raw tuple equality correlates blob/patch without claiming occur
   assert.equal(repeated.correlation.status, "scan_local_identity");
 });
 
+test("witness hashing/search work stops when the ordered inventory sample fills", () => {
+  const input = blob(a + "x".repeat(1024 * 1024 - a.length));
+  const bytes = input.bytes!;
+  let reads = 0;
+  Object.defineProperty(input, "bytes", {
+    get() {
+      reads++;
+      return bytes;
+    },
+  });
+  const result = scan(
+    Array.from({ length: 512 }, () => finding()),
+    input,
+  );
+  const inventory = result.diagnostic.inventory;
+  assert.ok(inventory.omittedCount > 0);
+  assert.equal(inventory.totalCount, 512);
+  assert.equal(inventory.retainedCount + inventory.omittedCount, 512);
+  assert.ok(reads <= inventory.retainedCount + 1);
+  assert.ok(reads <= 17);
+});
+
 test("unknown, decoded, ambiguous, changed identities and unsupported material remain unavailable", () => {
   const cases: [Record<string, unknown>, StagedScanInput, string][] = [
     [finding(a, "UNKNOWN_PATH_CANARY"), blob(), "unknown_material"],

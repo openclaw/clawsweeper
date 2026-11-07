@@ -32,7 +32,9 @@ or classification bug. The pending dependency already has real native inventory
 proof; its inventory limitation is not claimed as a new discovery here. Existing
 policy, first-refusal authority, fixture eligibility, scanner flags, refusal exit,
 provider boundary, artifact visibility and retention are unchanged. Witnesses use
-the existing 6 KiB inventory budget and can reduce retained counts.
+the existing 6 KiB inventory budget and can reduce retained counts. Sampling stops
+at its first byte-budget miss, bounding expensive witness computation to at most
+17 candidates while accounting for all findings.
 
 ## Executable behavior contract
 
@@ -118,8 +120,18 @@ An old dependency-only inspector also reads the new manifest successfully while
 ignoring its optional witness. Native concurrency can reorder results; no fresh
 scan byte-repeatability or universal retained-count claim is made.
 
-Focused inventory/witness/inspection validation: **17/17 pass**, zero skipped or
-cancelled. An initial full check stopped at documentation validation because the
+Initial focused inventory/witness/inspection validation: **17/17 pass**, zero skipped or
+cancelled. A subsequent exact-head source/security/privacy review accepted one P2:
+omitted findings could keep triggering blob hashing after the byte budget filled.
+The producer now stops witness work at the first budget miss. A separate 512-finding,
+1 MiB blob regression counts byte accesses instead of using a timing assertion;
+its bound is retained entries plus one (at most 17). That regression fails on
+pre-fix built source and passes after repair. Final focused suites: **18/18 pass**,
+zero skipped/cancelled. All four candidate native scenarios were rerun after the
+repair, against the same pinned baseline/fixtures; final receipts above are current.
+The superseded lower-concurrency full run was cancelled after this accepted source
+change invalidated its head; it is not reported as a complete or green result.
+Terminal final check/review receipts must identify the final reviewed head. An initial full check stopped at documentation validation because the
 new linked proof was not staged yet; staging it resolved that check. A subsequent
 full run passed static/build/lint but was **not green**: 6,697 pass, 4 fail, 9
 cancelled, 31 skipped (6,741 reported). Several entire test files timed out; this

@@ -66,7 +66,7 @@
     "exit": 79,
     "scan": {
       "kind": "unclassified_finding",
-      "reason": "material_not_reviewed",
+      "reason": "literal_not_reviewed",
       "findingCount": 4,
       "firstFindingIndex": 0,
       "detectorType": 17,
@@ -87,6 +87,19 @@
         "sourceAttribution": "unavailable",
         "witnesses": [
           {
+            "material": "blob",
+            "version": 1,
+            "location": {
+              "status": "unique_blob_start",
+              "line": 1,
+              "byteColumn": 21
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 0
+            }
+          },
+          {
             "material": "patch",
             "version": 1,
             "location": {
@@ -95,16 +108,15 @@
             },
             "correlation": {
               "status": "scan_local_identity",
-              "group": 0
+              "group": 1
             }
           },
           {
-            "material": "blob",
+            "material": "patch",
             "version": 1,
             "location": {
-              "status": "unique_blob_start",
-              "line": 1,
-              "byteColumn": 21
+              "status": "unavailable",
+              "reason": "patch_source_unproven"
             },
             "correlation": {
               "status": "scan_local_identity",
@@ -121,27 +133,15 @@
             },
             "correlation": {
               "status": "scan_local_identity",
-              "group": 2
-            }
-          },
-          {
-            "material": "patch",
-            "version": 1,
-            "location": {
-              "status": "unavailable",
-              "reason": "patch_source_unproven"
-            },
-            "correlation": {
-              "status": "scan_local_identity",
-              "group": 2
+              "group": 1
             }
           }
         ]
       }
     },
     "providerCalls": 0,
-    "manifestSha256": "78121560fef8e16fb3a7df6138072e4b2747d618b0716dc6190b0074b9c958b8",
-    "inspectionSha256": "e5f9f0645bd171802f2054f36dcd69e5ef378589e585fbc88aac94aac590df0e",
+    "manifestSha256": "7fe83ede26953173a51cfac8f99d6f25485ebc99d0f0107363440ecdf348df74",
+    "inspectionSha256": "9e8ecb8c387a4a010b2f72c5cd7128dc9f6f10f28b13b095b7f09c0ee4062a66",
     "inspectionReplays": 2,
     "wrongHeadRejected": true,
     "identicalInspection": true,
@@ -244,7 +244,7 @@
     "exit": 79,
     "scan": {
       "kind": "unclassified_finding",
-      "reason": "material_not_reviewed",
+      "reason": "literal_not_reviewed",
       "findingCount": 4,
       "firstFindingIndex": 0,
       "detectorType": 17,
@@ -265,30 +265,6 @@
         "sourceAttribution": "unavailable",
         "witnesses": [
           {
-            "material": "patch",
-            "version": 1,
-            "location": {
-              "status": "unavailable",
-              "reason": "patch_source_unproven"
-            },
-            "correlation": {
-              "status": "scan_local_identity",
-              "group": 0
-            }
-          },
-          {
-            "material": "patch",
-            "version": 1,
-            "location": {
-              "status": "unavailable",
-              "reason": "patch_source_unproven"
-            },
-            "correlation": {
-              "status": "scan_local_identity",
-              "group": 1
-            }
-          },
-          {
             "material": "blob",
             "version": 1,
             "location": {
@@ -298,7 +274,7 @@
             },
             "correlation": {
               "status": "scan_local_identity",
-              "group": 1
+              "group": 0
             }
           },
           {
@@ -311,6 +287,30 @@
             },
             "correlation": {
               "status": "scan_local_identity",
+              "group": 1
+            }
+          },
+          {
+            "material": "patch",
+            "version": 1,
+            "location": {
+              "status": "unavailable",
+              "reason": "patch_source_unproven"
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 1
+            }
+          },
+          {
+            "material": "patch",
+            "version": 1,
+            "location": {
+              "status": "unavailable",
+              "reason": "patch_source_unproven"
+            },
+            "correlation": {
+              "status": "scan_local_identity",
               "group": 0
             }
           }
@@ -318,8 +318,8 @@
       }
     },
     "providerCalls": 0,
-    "manifestSha256": "74fc121588a4738a467a6b2c7faddddc7b16df827121d5d2410fdf9410ce27e3",
-    "inspectionSha256": "9dc8f94d02e268b9b8a6fc6d6ee8fb6886da8ad92b811360de23faa901d153b3",
+    "manifestSha256": "ccd8d21ec1295d36c01f4ef50f1dbdb0407659f3bbb78fd4429128100434722f",
+    "inspectionSha256": "d342353fb6219b74f62e23dff75ad49b5286a7665c7253517b98f7c6ee38642a",
     "inspectionReplays": 2,
     "wrongHeadRejected": true,
     "identicalInspection": true,
@@ -437,8 +437,8 @@
       }
     },
     "providerCalls": 0,
-    "manifestSha256": "69de406ed1ce601fcbe7767a5d9496bf8ad8263e35e7f64abc2c2f9d53ae3213",
-    "inspectionSha256": "338874828d649b6b8748e37dfd36acaac0c757adc67dcda1ceaf90e5325813f8",
+    "manifestSha256": "55f45f113cf4268fa86b79f6e0af5429a5d4bd3585b95322c34d00dbfa781670",
+    "inspectionSha256": "ba028480c72973b9a91eb79d423ae82425b3027b4cd9fbf13572b4b7a9e27810",
     "inspectionReplays": 2,
     "wrongHeadRejected": true,
     "identicalInspection": true,

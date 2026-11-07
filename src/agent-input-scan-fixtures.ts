@@ -1008,11 +1008,14 @@ function findingInventory(
 ): ScanFindingInventory {
   const entries: ScanFindingInventoryEntry[] = [];
   const retainedWitnesses: WitnessCandidate[] = [];
+  let sampleFull = false;
   let unattributedCount = 0;
   // Reserve the authoritative refusal first, including when earlier findings qualified.
   // Remaining entries retain original indices in scan order; no classification is implied.
   const retain = (findingIndex: number, metadata: ReturnType<typeof findingMetadata>) => {
-    if (entries.length >= SCAN_FINDING_INVENTORY_MAX_ENTRIES) return;
+    // Stop at the first byte-budget miss. Continuing to seek smaller entries
+    // would repeatedly hash/search attacker-controlled blobs after the sample fills.
+    if (sampleFull || entries.length >= SCAN_FINDING_INVENTORY_MAX_ENTRIES) return;
     const finding = findings[findingIndex]!;
     const source = object(object(object(finding.SourceMetadata)?.Data)?.Filesystem);
     const candidateWitness = findingWitnessCandidate(
@@ -1050,7 +1053,7 @@ function findingInventory(
     ) {
       entries.push(entry);
       retainedWitnesses.push(candidateWitness);
-    }
+    } else sampleFull = true;
   };
   retain(firstRefusalIndex, findingMetadata(findings[firstRefusalIndex]!, inputs));
   for (const [index, finding] of findings.entries()) {
