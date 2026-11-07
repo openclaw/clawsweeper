@@ -3,6 +3,12 @@ import { basename } from "node:path";
 import { TRUFFLEHOG_VERSION } from "./review-tool-bootstrap.js";
 import { resolvePatchWitnesses } from "./agent-input-scan-patch.js";
 import { resolveGitObjectMetadata } from "./agent-input-scan-git-metadata.js";
+import {
+  findingWitnessCandidate,
+  retainFindingWitness,
+  type ScanFindingWitness,
+  type WitnessCandidate,
+} from "./agent-input-scan-witness.js";
 
 interface ReviewedFixture {
   fixtureSha256: string;
@@ -797,6 +803,7 @@ export interface ScanFindingInventoryEntry {
   material?: ScanMaterialDiagnostic;
   sourceAttribution: "unavailable";
   attributionReason: "unknown_material" | "decoded" | "ambiguous" | "not_proven";
+  witness?: ScanFindingWitness;
 }
 
 export const SCAN_FINDING_INVENTORY_MAX_ENTRIES = 16;
@@ -1000,12 +1007,22 @@ function findingInventory(
   inputs: ReadonlyMap<string, StagedScanInput>,
 ): ScanFindingInventory {
   const entries: ScanFindingInventoryEntry[] = [];
+  const retainedWitnesses: WitnessCandidate[] = [];
   let unattributedCount = 0;
   // Reserve the authoritative refusal first, including when earlier findings qualified.
   // Remaining entries retain original indices in scan order; no classification is implied.
   const retain = (findingIndex: number, metadata: ReturnType<typeof findingMetadata>) => {
     if (entries.length >= SCAN_FINDING_INVENTORY_MAX_ENTRIES) return;
+    const finding = findings[findingIndex]!;
+    const source = object(object(object(finding.SourceMetadata)?.Data)?.Filesystem);
+    const candidateWitness = findingWitnessCandidate(
+      finding,
+      typeof source?.file === "string" ? inputs.get(source.file) : undefined,
+      metadata.material !== undefined,
+      metadata.scannerLine,
+    );
     const entry: ScanFindingInventoryEntry = {
+      witness: retainFindingWitness(candidateWitness, retainedWitnesses),
       findingIndex,
       ...metadata,
       sourceAttribution: "unavailable",
@@ -1030,8 +1047,10 @@ function findingInventory(
     if (
       Buffer.byteLength(JSON.stringify({ failure: { scan: { inventory: candidate } } }, null, 2)) <=
       SCAN_FINDING_INVENTORY_MAX_BYTES
-    )
+    ) {
       entries.push(entry);
+      retainedWitnesses.push(candidateWitness);
+    }
   };
   retain(firstRefusalIndex, findingMetadata(findings[firstRefusalIndex]!, inputs));
   for (const [index, finding] of findings.entries()) {

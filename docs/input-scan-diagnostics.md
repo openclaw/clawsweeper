@@ -82,16 +82,58 @@ entries and 6 KiB of pretty-printed metadata including enclosing manifest
 indentation. `totalCount`, `retainedCount`, and `omittedCount` describe the whole
 scan/sample; `unattributedCount` counts findings across the **whole scan** without
 a validated staged material, including omitted entries. It does not count unknown
-source lines: source attribution is unavailable for **every** entry in this slice.
+source lines: legacy source attribution remains unavailable; the optional witness below
+has its own narrower location contract.
 Each entry has `sourceAttribution: unavailable` and an `attributionReason`:
 `unknown_material`, `decoded` (including unknown decoders), `ambiguous` (multiple
-material references), or `not_proven`. Even plain, single-reference blob findings
-are not independently proved source locations. Patch/raw-diff coordinates are
+material references), or `not_proven`. These legacy fields alone do not prove source locations. Patch/raw-diff coordinates are
 never relabeled as base/head coordinates. Only closed scalar fields, validated
 staged identities, and bounded hashed references are retained; malformed material
 metadata is unavailable, not echoed.
 
-Controlled runtime proof and limitations: [finding inventory](proof/input-scan-finding-inventory/README.md).
+### Optional prospective witness
+
+An inventory entry may additionally carry `witness.version: 1`. Artifacts without
+this member (or without inventory) remain readable. This extension depends on the
+pending inventory format in https://github.com/openclaw/clawsweeper/pull/2179;
+neither format is asserted to be merged or deployed by this document.
+
+- `location.status: unique_blob_start` reports a one-based `line` and UTF-8
+  **byte** `byteColumn` for the start of a unique literal in the exact staged Git
+  blob. Its object hash must match its bytes, it must have one regular-file
+  reference, native source type must be filesystem, the decoder must be PLAIN,
+  and the literal must occur exactly once with a matching scanner line. Only
+  materials up to 1 MiB and native identities up to 64 KiB are considered.
+- This is a start location, not a semantic field identity. No field/key name,
+  source text, end offset, value length or match digest is retained. An authorized
+  source owner can distinguish two fields on one line using the byte starts;
+  the manifest does not parse or name those fields. Legacy `sourceCoordinates`
+  and `sourceAttribution` are unchanged; use the explicit witness, not those
+  legacy unavailable fields, for the narrower location claim.
+- All other locations are `unavailable` with a closed reason. Decoded, unknown,
+  ambiguous, unsupported, mismatched, repeated or unbound inputs never receive
+  a unique location. **Every patch source location remains unavailable** as
+  `patch_source_unproven`; a patch input line is not a source-file line.
+- `correlation.status: scan_local_identity` supplies a bounded numeric `group`
+  ordinal allocated only among retained entries. It compares native detector ID,
+  Raw and RawV2 **in memory**, for PLAIN matches present in validated staged
+  blob/patch material. Repeated literals can share a native identity without a
+  unique location. No match hash, stable cross-scan fingerprint, key, or length
+  is serialized. All other correlations remain `unavailable` with a closed reason.
+  Group numbers are scan-local, order-dependent labels, never durable identities.
+  Equal groups do **not** prove the same source occurrence, the same credential,
+  fixture eligibility or harmlessness; distinct groups do not prove distinct
+  credentials either. Omitted entries have no relationship claim.
+
+The witness consumes the **existing** inventory byte budget, so fewer entries
+may fit; first-refusal reservation and total/retained/omitted accounting remain
+unchanged. The inspector validates the closed witness structure and relationships
+and rejects malformed/oversized metadata; it never reads raw matches to recompute
+it. Do not infer witnesses for old runs or treat missing evidence as a recovered
+historical classification.
+
+Controlled runtime proof and limitations: [finding inventory](proof/input-scan-finding-inventory/README.md)
+and [prospective witness](proof/input-scan-witness/README.md).
 
 Inspection never releases `scanner_refused`, qualifies a fixture, disables
 verification, invokes a model or requests a retry. Follow the existing

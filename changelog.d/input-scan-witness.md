@@ -1,0 +1,1 @@
+- Add optional bounded PLAIN literal-start and scan-local native-identity witnesses to refusal diagnostics without changing scanner admission, fixture policy or first-refusal authority.

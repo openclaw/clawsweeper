@@ -1,0 +1,457 @@
+{
+  "before": {
+    "proof": "real-native-shipped-entry-manifest-inspector",
+    "node": "v26.11.1",
+    "scanner": {
+      "version": "3.99.4",
+      "binarySha256": "e05963636bce6c5a48e0c780b26c98eb851ec8f87ab6efce8167753a9141b893"
+    },
+    "fixture": {
+      "base": "c6b5339c52e53a4cd8f692aac5a9a896b60f62ef",
+      "head": "764d8a24bda2c96839fa7f2c0e86dc88eba18428",
+      "canaryFiles": 1,
+      "scenario": "nested"
+    },
+    "exit": 79,
+    "scan": {
+      "kind": "unclassified_finding",
+      "reason": "material_not_reviewed",
+      "findingCount": 4,
+      "firstFindingIndex": 0,
+      "detectorType": 17,
+      "decoder": "PLAIN",
+      "verified": false,
+      "inventory": {
+        "totalCount": 4,
+        "retainedCount": 4,
+        "omittedCount": 0,
+        "unattributedCount": 0,
+        "indices": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "formattedBytes": 2777,
+        "sourceAttribution": "unavailable"
+      }
+    },
+    "providerCalls": 0,
+    "manifestSha256": "154ddbafc790329666ce84a8f6dde50d9d74da1e5b906152f38aa17fc77b02a0",
+    "inspectionSha256": "19fa82fd66d28449a01072a60f74518f361178caf0cf8177ad36215e329890b1",
+    "inspectionReplays": 2,
+    "wrongHeadRejected": true,
+    "identicalInspection": true,
+    "manifestUnchanged": true,
+    "networkDenied": {
+      "mechanism": "sandbox-exec deny network*",
+      "activeProbe": "EPERM",
+      "scannerArgumentsUnmodified": true
+    },
+    "limitations": "Local macOS controlled fixture; synthetic read-only GitHub transport and run identity, real unmodified native scanner. No provider, hosted queue, publication, fixture qualification, logical field-name or patch source-coordinate proof, deployment or maintainer approval."
+  },
+  "after": {
+    "proof": "real-native-shipped-entry-manifest-inspector",
+    "node": "v26.11.1",
+    "scanner": {
+      "version": "3.99.4",
+      "binarySha256": "e05963636bce6c5a48e0c780b26c98eb851ec8f87ab6efce8167753a9141b893"
+    },
+    "fixture": {
+      "base": "c6b5339c52e53a4cd8f692aac5a9a896b60f62ef",
+      "head": "764d8a24bda2c96839fa7f2c0e86dc88eba18428",
+      "canaryFiles": 1,
+      "scenario": "nested"
+    },
+    "exit": 79,
+    "scan": {
+      "kind": "unclassified_finding",
+      "reason": "material_not_reviewed",
+      "findingCount": 4,
+      "firstFindingIndex": 0,
+      "detectorType": 17,
+      "decoder": "PLAIN",
+      "verified": false,
+      "inventory": {
+        "totalCount": 4,
+        "retainedCount": 4,
+        "omittedCount": 0,
+        "unattributedCount": 0,
+        "indices": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "formattedBytes": 4118,
+        "sourceAttribution": "unavailable",
+        "witnesses": [
+          {
+            "material": "patch",
+            "version": 1,
+            "location": {
+              "status": "unavailable",
+              "reason": "patch_source_unproven"
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 0
+            }
+          },
+          {
+            "material": "blob",
+            "version": 1,
+            "location": {
+              "status": "unique_blob_start",
+              "line": 1,
+              "byteColumn": 21
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 0
+            }
+          },
+          {
+            "material": "blob",
+            "version": 1,
+            "location": {
+              "status": "unique_blob_start",
+              "line": 1,
+              "byteColumn": 102
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 2
+            }
+          },
+          {
+            "material": "patch",
+            "version": 1,
+            "location": {
+              "status": "unavailable",
+              "reason": "patch_source_unproven"
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 2
+            }
+          }
+        ]
+      }
+    },
+    "providerCalls": 0,
+    "manifestSha256": "78121560fef8e16fb3a7df6138072e4b2747d618b0716dc6190b0074b9c958b8",
+    "inspectionSha256": "e5f9f0645bd171802f2054f36dcd69e5ef378589e585fbc88aac94aac590df0e",
+    "inspectionReplays": 2,
+    "wrongHeadRejected": true,
+    "identicalInspection": true,
+    "manifestUnchanged": true,
+    "networkDenied": {
+      "mechanism": "sandbox-exec deny network*",
+      "activeProbe": "EPERM",
+      "scannerArgumentsUnmodified": true
+    },
+    "limitations": "Local macOS controlled fixture; synthetic read-only GitHub transport and run identity, real unmodified native scanner. No provider, hosted queue, publication, fixture qualification, logical field-name or patch source-coordinate proof, deployment or maintainer approval."
+  },
+  "repeated": {
+    "proof": "real-native-shipped-entry-manifest-inspector",
+    "node": "v26.11.1",
+    "scanner": {
+      "version": "3.99.4",
+      "binarySha256": "e05963636bce6c5a48e0c780b26c98eb851ec8f87ab6efce8167753a9141b893"
+    },
+    "fixture": {
+      "base": "c6b5339c52e53a4cd8f692aac5a9a896b60f62ef",
+      "head": "8c5aaecd7690c1559224ebf196a1594b67ead4a0",
+      "canaryFiles": 1,
+      "scenario": "repeated"
+    },
+    "exit": 79,
+    "scan": {
+      "kind": "unclassified_finding",
+      "reason": "material_not_reviewed",
+      "findingCount": 2,
+      "firstFindingIndex": 0,
+      "detectorType": 17,
+      "decoder": "PLAIN",
+      "verified": false,
+      "inventory": {
+        "totalCount": 2,
+        "retainedCount": 2,
+        "omittedCount": 0,
+        "unattributedCount": 0,
+        "indices": [
+          0,
+          1
+        ],
+        "formattedBytes": 2155,
+        "sourceAttribution": "unavailable",
+        "witnesses": [
+          {
+            "material": "patch",
+            "version": 1,
+            "location": {
+              "status": "unavailable",
+              "reason": "patch_source_unproven"
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 0
+            }
+          },
+          {
+            "material": "blob",
+            "version": 1,
+            "location": {
+              "status": "unavailable",
+              "reason": "repeated_literal"
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 0
+            }
+          }
+        ]
+      }
+    },
+    "providerCalls": 0,
+    "manifestSha256": "9d62c33567829f025b68418068ade6da9053a8a98136cc3a95defffb2fbcc144",
+    "inspectionSha256": "1c54a2815c71a51bb11162fdf4932108f0b41e9a9dc651ae6c0078df84635fa6",
+    "inspectionReplays": 2,
+    "wrongHeadRejected": true,
+    "identicalInspection": true,
+    "manifestUnchanged": true,
+    "networkDenied": {
+      "mechanism": "sandbox-exec deny network*",
+      "activeProbe": "EPERM",
+      "scannerArgumentsUnmodified": true
+    },
+    "limitations": "Local macOS controlled fixture; synthetic read-only GitHub transport and run identity, real unmodified native scanner. No provider, hosted queue, publication, fixture qualification, logical field-name or patch source-coordinate proof, deployment or maintainer approval."
+  },
+  "neighbor": {
+    "proof": "real-native-shipped-entry-manifest-inspector",
+    "node": "v26.11.1",
+    "scanner": {
+      "version": "3.99.4",
+      "binarySha256": "e05963636bce6c5a48e0c780b26c98eb851ec8f87ab6efce8167753a9141b893"
+    },
+    "fixture": {
+      "base": "c6b5339c52e53a4cd8f692aac5a9a896b60f62ef",
+      "head": "5dbe6cd87528cac5684bc93e64d4ac3e0f654fa1",
+      "canaryFiles": 1,
+      "scenario": "neighbor"
+    },
+    "exit": 79,
+    "scan": {
+      "kind": "unclassified_finding",
+      "reason": "material_not_reviewed",
+      "findingCount": 4,
+      "firstFindingIndex": 0,
+      "detectorType": 17,
+      "decoder": "PLAIN",
+      "verified": false,
+      "inventory": {
+        "totalCount": 4,
+        "retainedCount": 4,
+        "omittedCount": 0,
+        "unattributedCount": 0,
+        "indices": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "formattedBytes": 4118,
+        "sourceAttribution": "unavailable",
+        "witnesses": [
+          {
+            "material": "patch",
+            "version": 1,
+            "location": {
+              "status": "unavailable",
+              "reason": "patch_source_unproven"
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 0
+            }
+          },
+          {
+            "material": "patch",
+            "version": 1,
+            "location": {
+              "status": "unavailable",
+              "reason": "patch_source_unproven"
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 1
+            }
+          },
+          {
+            "material": "blob",
+            "version": 1,
+            "location": {
+              "status": "unique_blob_start",
+              "line": 1,
+              "byteColumn": 102
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 1
+            }
+          },
+          {
+            "material": "blob",
+            "version": 1,
+            "location": {
+              "status": "unique_blob_start",
+              "line": 1,
+              "byteColumn": 21
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 0
+            }
+          }
+        ]
+      }
+    },
+    "providerCalls": 0,
+    "manifestSha256": "74fc121588a4738a467a6b2c7faddddc7b16df827121d5d2410fdf9410ce27e3",
+    "inspectionSha256": "9dc8f94d02e268b9b8a6fc6d6ee8fb6886da8ad92b811360de23faa901d153b3",
+    "inspectionReplays": 2,
+    "wrongHeadRejected": true,
+    "identicalInspection": true,
+    "manifestUnchanged": true,
+    "networkDenied": {
+      "mechanism": "sandbox-exec deny network*",
+      "activeProbe": "EPERM",
+      "scannerArgumentsUnmodified": true
+    },
+    "limitations": "Local macOS controlled fixture; synthetic read-only GitHub transport and run identity, real unmodified native scanner. No provider, hosted queue, publication, fixture qualification, logical field-name or patch source-coordinate proof, deployment or maintainer approval."
+  },
+  "many": {
+    "proof": "real-native-shipped-entry-manifest-inspector",
+    "node": "v26.11.1",
+    "scanner": {
+      "version": "3.99.4",
+      "binarySha256": "e05963636bce6c5a48e0c780b26c98eb851ec8f87ab6efce8167753a9141b893"
+    },
+    "fixture": {
+      "base": "c6b5339c52e53a4cd8f692aac5a9a896b60f62ef",
+      "head": "5848f1f6015ea1dfcae0b17a4f3b677102d4b6d5",
+      "canaryFiles": 12,
+      "scenario": "separate"
+    },
+    "exit": 79,
+    "scan": {
+      "kind": "unclassified_finding",
+      "reason": "literal_not_reviewed",
+      "findingCount": 24,
+      "firstFindingIndex": 0,
+      "detectorType": 17,
+      "decoder": "PLAIN",
+      "verified": false,
+      "inventory": {
+        "totalCount": 24,
+        "retainedCount": 5,
+        "omittedCount": 19,
+        "unattributedCount": 0,
+        "indices": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "formattedBytes": 5797,
+        "sourceAttribution": "unavailable",
+        "witnesses": [
+          {
+            "material": "blob",
+            "version": 1,
+            "location": {
+              "status": "unique_blob_start",
+              "line": 1,
+              "byteColumn": 1
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 0
+            }
+          },
+          {
+            "material": "blob",
+            "version": 1,
+            "location": {
+              "status": "unique_blob_start",
+              "line": 1,
+              "byteColumn": 1
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 1
+            }
+          },
+          {
+            "material": "blob",
+            "version": 1,
+            "location": {
+              "status": "unique_blob_start",
+              "line": 1,
+              "byteColumn": 1
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 2
+            }
+          },
+          {
+            "material": "blob",
+            "version": 1,
+            "location": {
+              "status": "unique_blob_start",
+              "line": 1,
+              "byteColumn": 1
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 3
+            }
+          },
+          {
+            "material": "blob",
+            "version": 1,
+            "location": {
+              "status": "unique_blob_start",
+              "line": 1,
+              "byteColumn": 1
+            },
+            "correlation": {
+              "status": "scan_local_identity",
+              "group": 4
+            }
+          }
+        ]
+      }
+    },
+    "providerCalls": 0,
+    "manifestSha256": "69de406ed1ce601fcbe7767a5d9496bf8ad8263e35e7f64abc2c2f9d53ae3213",
+    "inspectionSha256": "338874828d649b6b8748e37dfd36acaac0c757adc67dcda1ceaf90e5325813f8",
+    "inspectionReplays": 2,
+    "wrongHeadRejected": true,
+    "identicalInspection": true,
+    "manifestUnchanged": true,
+    "networkDenied": {
+      "mechanism": "sandbox-exec deny network*",
+      "activeProbe": "EPERM",
+      "scannerArgumentsUnmodified": true
+    },
+    "limitations": "Local macOS controlled fixture; synthetic read-only GitHub transport and run identity, real unmodified native scanner. No provider, hosted queue, publication, fixture qualification, logical field-name or patch source-coordinate proof, deployment or maintainer approval."
+  },
+  "compatibility": {
+    "oldInspectorReadsNewManifest": true,
+    "oldInspectorIgnoresWitness": true
+  }
+}

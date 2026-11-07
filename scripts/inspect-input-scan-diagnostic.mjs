@@ -54,6 +54,97 @@ function matches(value, pattern) {
 function integer(value, min = 0, max = Number.MAX_SAFE_INTEGER) {
   return Number.isSafeInteger(value) && value >= min && value <= max;
 }
+const WITNESS_REASONS = [
+  "unknown_material",
+  "decoded",
+  "ambiguous",
+  "unsupported_material",
+  "material_identity_mismatch",
+  "unbound_identity",
+  "not_proven",
+  "repeated_literal",
+  "scanner_line_mismatch",
+  "patch_source_unproven",
+];
+function exactKeys(value, keys) {
+  return (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).sort().join("\0") === [...keys].sort().join("\0")
+  );
+}
+function witnessProjection(witness, entry, position, previous) {
+  requireValue(exactKeys(witness, ["version", "location", "correlation"]) && witness.version === 1);
+  const { location, correlation } = witness;
+  const plainMaterial =
+    entry.decoder === "PLAIN" &&
+    entry.material &&
+    ["blob", "patch"].includes(entry.material.kind) &&
+    (entry.material.kind !== "blob" ||
+      (entry.material.referenceCount === 1 &&
+        entry.material.references.length === 1 &&
+        ["100644", "100755"].includes(entry.material.references[0].mode)));
+  const unavailable = (value) => {
+    requireValue(
+      exactKeys(value, ["status", "reason"]) &&
+        value.status === "unavailable" &&
+        WITNESS_REASONS.includes(value.reason),
+    );
+    return { status: "unavailable", reason: value.reason };
+  };
+  let projectedLocation;
+  if (location?.status === "unique_blob_start") {
+    requireValue(
+      exactKeys(location, ["status", "line", "byteColumn"]) &&
+        plainMaterial &&
+        entry.material.kind === "blob" &&
+        integer(location.line, 1, 1048576) &&
+        location.line === entry.scannerLine &&
+        integer(location.byteColumn, 1, 1048576),
+    );
+    projectedLocation = {
+      status: location.status,
+      line: location.line,
+      byteColumn: location.byteColumn,
+    };
+  } else projectedLocation = unavailable(location);
+  let projectedCorrelation;
+  if (correlation?.status === "scan_local_identity") {
+    requireValue(
+      exactKeys(correlation, ["status", "group"]) &&
+        plainMaterial &&
+        integer(entry.detectorType, 0, 2147483647) &&
+        integer(entry.scannerLine, 1) &&
+        integer(correlation.group, 0, position),
+    );
+    if (correlation.group < position) {
+      const first = previous[correlation.group];
+      requireValue(
+        first?.witness?.correlation?.status === "scan_local_identity" &&
+          first.witness.correlation.group === correlation.group &&
+          first.detectorType === entry.detectorType,
+      );
+    }
+    requireValue(
+      projectedLocation.status === "unique_blob_start" ||
+        (entry.material.kind === "patch" && projectedLocation.reason === "patch_source_unproven") ||
+        (entry.material.kind === "blob" && projectedLocation.reason === "repeated_literal"),
+    );
+    projectedCorrelation = { status: correlation.status, group: correlation.group };
+  } else {
+    projectedCorrelation = unavailable(correlation);
+    requireValue(
+      projectedLocation.status === "unavailable" &&
+        projectedLocation.reason === projectedCorrelation.reason,
+    );
+  }
+  if (!entry.material) requireValue(projectedLocation.reason === "unknown_material");
+  else if (entry.decoder !== "PLAIN") requireValue(projectedLocation.reason === "decoded");
+  else if (entry.material.referenceCount !== undefined && entry.material.referenceCount !== 1)
+    requireValue(projectedLocation.reason === "ambiguous");
+  return { version: 1, location: projectedLocation, correlation: projectedCorrelation };
+}
 function scanProjection(scan) {
   if (scan === undefined) return null;
   requireValue(scan && typeof scan === "object");
@@ -142,7 +233,8 @@ function scanProjection(scan) {
           SCAN_FINDING_INVENTORY_MAX_BYTES,
     );
     const indices = new Set();
-    const entries = inventory.entries.map((entry) => {
+    const entries = [];
+    for (const entry of inventory.entries) {
       requireValue(
         entry &&
           !indices.has(entry.findingIndex) &&
@@ -172,7 +264,7 @@ function scanProjection(scan) {
             ? "ambiguous"
             : "not_proven";
       requireValue(entry.attributionReason === expectedReason);
-      return {
+      const safeEntry = {
         findingIndex: projected.findingIndex,
         detectorType: projected.detectorType,
         decoder: projected.decoder,
@@ -182,7 +274,10 @@ function scanProjection(scan) {
         sourceAttribution: "unavailable",
         attributionReason: expectedReason,
       };
-    });
+      if (entry.witness !== undefined)
+        safeEntry.witness = witnessProjection(entry.witness, safeEntry, entries.length, entries);
+      entries.push(safeEntry);
+    }
     requireValue(
       entries[0].findingIndex === scan.findingIndex &&
         entries[0].detectorType === result.detectorType &&

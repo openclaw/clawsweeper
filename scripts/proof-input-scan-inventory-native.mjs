@@ -12,11 +12,18 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 
-const [sourceArg, scannerArg, outputArg, countArg = "2", expected = "inventory"] =
-  process.argv.slice(2);
+const [
+  sourceArg,
+  scannerArg,
+  outputArg,
+  countArg = "2",
+  expected = "inventory",
+  fixture = "separate",
+] = process.argv.slice(2);
+assert.ok(["separate", "nested", "repeated", "neighbor"].includes(fixture));
 assert.ok(
-  ["inventory", "legacy"].includes(expected),
-  "Expected inventory or explicit legacy baseline.",
+  ["inventory", "legacy", "witness"].includes(expected),
+  "Expected inventory, witness, or explicit legacy baseline.",
 );
 assert.ok(
   sourceArg && scannerArg && outputArg,
@@ -70,6 +77,7 @@ writeFileSync(join(target, "README.md"), "Controlled invalid diagnostic canaries
 git("add", ".");
 git("commit", "-qm", "base");
 const base = git("rev-parse", "HEAD");
+const canaries = [];
 for (let index = 0; index < count; index++) {
   // Construct disposable invalid URI-detector inputs only in this private fixture.
   // No raw input or scanner match is printed or retained in public evidence.
@@ -78,7 +86,19 @@ for (let index = 0; index < count; index++) {
   url.username = canary;
   // Reuse the explicit public canary marker; never embed a password literal.
   url.password = canary;
-  writeFileSync(join(target, `canary-${index}.txt`), `${url}\n`, { mode: 0o600 });
+  canaries.push(String(url));
+  if (fixture === "separate")
+    writeFileSync(join(target, `canary-${index}.txt`), `${url}\n`, { mode: 0o600 });
+}
+if (fixture !== "separate") {
+  // Two values on the same nested-field line; only numeric starts may escape.
+  const values = fixture === "repeated" ? [canaries[0], canaries[0]] : [...canaries];
+  if (fixture === "neighbor") values[1] = values[1].replace("diagnostic-1", "neighbor-1");
+  writeFileSync(
+    join(target, "nested.json"),
+    JSON.stringify({ nested: { first: values[0], second: values[1] } }) + "\n",
+    { mode: 0o600 },
+  );
 }
 git("add", ".");
 git("commit", "-qm", "disposable invalid canaries");
@@ -216,7 +236,8 @@ const manifest = readFileSync(manifestPath);
 const scan = JSON.parse(manifest).failure.scan;
 assert.equal(scan.kind, "unclassified_finding");
 assert.ok(["literal_not_reviewed", "material_not_reviewed"].includes(scan.reason));
-assert.equal(scan.findingCount, count * 2);
+if (fixture !== "repeated") assert.equal(scan.findingCount, count * 2);
+else assert.ok(scan.findingCount >= 2);
 assert.equal(scan.findingIndex, 0);
 assert.equal(scan.detectorType, 17);
 assert.equal(scan.decoder, "PLAIN");
@@ -226,7 +247,7 @@ assert.equal(manifest.includes(Buffer.from(root)), false);
 const inventory = scan.inventory;
 assert.equal(
   Boolean(inventory),
-  expected === "inventory",
+  expected !== "legacy",
   "Inventory presence must match the selected source contract.",
 );
 let inventorySummary = null;
@@ -242,7 +263,31 @@ if (inventory) {
   assert.ok(formattedBytes <= 6144);
   assert.equal(inventory.unattributedCount, 0);
   for (const entry of inventory.entries) assert.equal(entry.sourceAttribution, "unavailable");
-  if (count === 2) assert.equal(inventory.retainedCount, 4);
+  if (count === 2 && fixture !== "repeated") assert.equal(inventory.retainedCount, 4);
+  if (expected === "witness") {
+    const blobs = inventory.entries.filter((entry) => entry.material?.kind === "blob");
+    const patches = inventory.entries.filter((entry) => entry.material?.kind === "patch");
+    if (count === 2) assert.ok(blobs.length > 0 && patches.length > 0);
+    for (const entry of blobs) {
+      assert.equal(entry.witness.version, 1);
+      if (fixture === "repeated") assert.equal(entry.witness.location.reason, "repeated_literal");
+      else assert.equal(entry.witness.location.status, "unique_blob_start");
+    }
+    for (const entry of patches) {
+      assert.equal(entry.witness.location.status, "unavailable");
+      assert.equal(entry.witness.location.reason, "patch_source_unproven");
+    }
+    for (const entry of inventory.entries)
+      assert.equal(entry.witness.correlation.status, "scan_local_identity");
+    if (fixture === "nested" || fixture === "neighbor") {
+      assert.equal(new Set(blobs.map((e) => e.witness.location.byteColumn)).size, 2);
+      assert.equal(new Set(inventory.entries.map((e) => e.witness.correlation.group)).size, 2);
+      for (const entry of blobs)
+        assert.ok(
+          patches.some((p) => p.witness.correlation.group === entry.witness.correlation.group),
+        );
+    }
+  }
   if (count === 12) assert.ok(inventory.omittedCount > 0);
   inventorySummary = {
     totalCount: inventory.totalCount,
@@ -252,6 +297,14 @@ if (inventory) {
     indices: inventory.entries.map((entry) => entry.findingIndex),
     formattedBytes,
     sourceAttribution: "unavailable",
+    ...(expected === "witness"
+      ? {
+          witnesses: inventory.entries.map((entry) => ({
+            material: entry.material.kind,
+            ...entry.witness,
+          })),
+        }
+      : {}),
   };
 }
 const inspections = [];
@@ -274,8 +327,34 @@ for (let index = 0; index < 2; index++) {
   );
   assert.equal(result.status, 0);
   writeFileSync(join(root, `inspection-${index}.json`), result.stdout, { mode: 0o600 });
+  if (expected === "witness") {
+    const projected = JSON.parse(result.stdout).failure.scan.inventory;
+    assert.deepEqual(
+      projected.entries.map((entry) => entry.witness),
+      inventory.entries.map((entry) => entry.witness),
+    );
+  }
   inspections.push(result.stdout);
 }
+const mismatch = sandbox(
+  [
+    join(source, "scripts/inspect-input-scan-diagnostic.mjs"),
+    "--inspect",
+    manifestPath,
+    "openclaw/clawsweeper",
+    "pull_request",
+    "1",
+    "f".repeat(40),
+    "example/diagnostic-proof",
+    "1",
+    "1",
+  ],
+  {},
+  10_000,
+);
+assert.equal(mismatch.status, 1);
+assert.equal(mismatch.stdout, "");
+assert.ok(mismatch.stderr.includes("Diagnostic identity mismatch"));
 assert.equal(inspections[0], inspections[1]);
 assert.equal(readFileSync(manifestPath, "utf8"), manifest.toString());
 assert.equal(existsSync(providerCalls), false);
@@ -283,7 +362,7 @@ const summary = {
   proof: "real-native-shipped-entry-manifest-inspector",
   node: process.version,
   scanner: { version: "3.99.4", binarySha256: scannerSha256 },
-  fixture: { base, head, canaryFiles: count },
+  fixture: { base, head, canaryFiles: fixture === "separate" ? count : 1, scenario: fixture },
   exit: execution.status,
   scan: {
     kind: scan.kind,
@@ -299,6 +378,7 @@ const summary = {
   manifestSha256: sha256(manifest),
   inspectionSha256: sha256(inspections[0]),
   inspectionReplays: 2,
+  wrongHeadRejected: true,
   identicalInspection: true,
   manifestUnchanged: true,
   networkDenied: {
@@ -307,7 +387,7 @@ const summary = {
     scannerArgumentsUnmodified: true,
   },
   limitations:
-    "Local macOS controlled fixture; synthetic read-only GitHub transport and run identity, real unmodified native scanner. No provider, hosted queue, publication, fixture qualification, source-coordinate proof, deployment or maintainer approval.",
+    "Local macOS controlled fixture; synthetic read-only GitHub transport and run identity, real unmodified native scanner. No provider, hosted queue, publication, fixture qualification, logical field-name or patch source-coordinate proof, deployment or maintainer approval.",
 };
 writeFileSync(join(root, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 });
 console.log(JSON.stringify(summary, null, 2));
