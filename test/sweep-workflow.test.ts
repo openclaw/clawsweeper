@@ -36,6 +36,19 @@ import { scheduledReviewSemanticSourceRevision } from "../dist/scheduled-review-
 import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../dist/media-proof-budget.js";
 import { runExactReviewDirectPublicationFromEnv } from "../dist/repair/exact-review-direct-publication.js";
 
+function evaluateWorkflowExpression(template: string, values: Record<string, string>) {
+  const expression = template
+    .replace(/^\s*\$\{\{\s*|\s*\}\}\s*$/g, "")
+    .replace(/\balways\(\)/g, "true")
+    .replace(/\bcancelled\(\)/g, "false")
+    .replace(
+      /steps\.([a-z0-9-]+)\.(outputs\.([a-z0-9_]+)|outcome)/g,
+      (_match, stepId: string, access: string, output?: string) =>
+        JSON.stringify(values[`${stepId}.${output ?? access}`] ?? ""),
+    );
+  return Function(`"use strict"; return (${expression});`)();
+}
+
 test("review completion forwards admission holds and preserves locked and oversized holds", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
   const completions = Object.values(workflow.jobs).flatMap((job: any) =>
@@ -551,17 +564,7 @@ test("exact review failure annotation follows logical generation and preserves t
   const failure = workflow.jobs["event-review-apply"].steps.find(
     (entry: { name?: string }) => entry.name === "Fail unsuccessful exact review generation",
   );
-  const evaluate = (template: string, values: Record<string, string>) => {
-    const expression = template
-      .replace(/^\s*\$\{\{\s*|\s*\}\}\s*$/g, "")
-      .replace(/\balways\(\)/g, "true")
-      .replace(
-        /steps\.([a-z0-9-]+)\.(outputs\.([a-z0-9_]+)|outcome)/g,
-        (_match, stepId: string, access: string, output?: string) =>
-          JSON.stringify(values[`${stepId}.${output ?? access}`] ?? ""),
-      );
-    return Function(`"use strict"; return (${expression});`)();
-  };
+  const evaluate = evaluateWorkflowExpression;
   // Exhaust the independent gate facts; raw process outcome must not override
   // typed deferrals or content failures reported after an exit-zero process.
   for (let mask = 0; mask < 256; mask += 1) {
@@ -632,8 +635,46 @@ test("exact review failure annotation follows logical generation and preserves t
       completion: "failure",
       expected: "codex_or_content_failure",
     },
+    ...[
+      "create-exact-review-bundle",
+      "direct-setup-state",
+      "prepare-direct-exact-review-publication",
+      "direct-exact-review-publication",
+      "finalize-direct-exact-review-lifecycle",
+      "upload-exact-review-bundle",
+      "queue-exact-review-publication",
+    ].map((publicationStep) => ({
+      name: `${publicationStep} after successful review`,
+      generation: "failure",
+      process: "success",
+      retry: "",
+      reservation: "posted",
+      completion: "skipped",
+      publicationStep,
+      expected: "publication_failure",
+    })),
+    {
+      name: "recovered publication followed by completion failure",
+      generation: "success",
+      process: "success",
+      retry: "",
+      reservation: "posted",
+      completion: "failure",
+      publicationStep: "prepare-direct-exact-review-publication",
+      expected: "queue_completion_failure",
+    },
+    {
+      name: "publication throttle followed by completion failure",
+      generation: "failure",
+      process: "success",
+      retry: "throttle",
+      reservation: "posted",
+      completion: "failure",
+      publicationStep: "prepare-direct-exact-review-publication",
+      expected: "queue_completion_failure",
+    },
   ]) {
-    const values = {
+    const values: Record<string, string> = {
       "claim-exact-review-queue.claimed": "true",
       "direct-exact-review-publication.accepted": "false",
       "exact-review-generation-result.outcome": scenario.generation,
@@ -643,6 +684,9 @@ test("exact review failure annotation follows logical generation and preserves t
       "complete-exact-review-queue.outcome": scenario.completion,
       "reserve-exact-review-lease.status": scenario.reservation,
     };
+    if ("publicationStep" in scenario) {
+      values[`${scenario.publicationStep}.outcome`] = "failure";
+    }
     assert.equal(evaluate(failure.if, values), true, scenario.name);
     const env = Object.fromEntries(
       Object.entries(failure.env).map(([key, value]) => [
@@ -658,6 +702,167 @@ test("exact review failure annotation follows logical generation and preserves t
       new RegExp(`queue_completion=${scenario.completion}`),
       scenario.name,
     );
+  }
+});
+
+test("failed router handoff retains publication recovery and reports the failed owner", async () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs["event-review-apply"].steps;
+  const step = (name: string) => steps.find((candidate: any) => candidate.name === name);
+  const lifecycle = step("Finalize direct exact review lifecycle");
+  const generation = step("Export exact review generation result");
+  const failure = step("Fail unsuccessful exact review generation");
+  const root = mkdtempSync(`${tmpPrefix}router-handoff-failure-`);
+  const requests: string[] = [];
+  const server = createServer((req, res) => {
+    requests.push(`${req.method} ${req.url}`);
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end('{"message":"Internal Server Error"}');
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    // Exercise the workflow body against a failed GitHub boundary without
+    // dispatching a real workflow or consuming the production queue lease.
+    writeFileSync(
+      join(bin, "gh"),
+      '#!/bin/sh\nexec curl --fail --silent --show-error --request POST "$GITHUB_API_FIXTURE/repos/openclaw/clawsweeper/actions/workflows/repair-comment-router.yml/dispatches"\n',
+    );
+    chmodSync(join(bin, "gh"), 0o700);
+    const directOutcome = join(root, "direct-outcome.json");
+    writeFileSync(
+      directOutcome,
+      JSON.stringify({
+        kind: "eligible",
+        disposition: { routableSyncExpected: true },
+      }),
+    );
+    const child = spawn("bash", ["-c", lifecycle.run], {
+      env: {
+        ...process.env,
+        PATH: `${bin}${delimiter}${process.env.PATH}`,
+        GITHUB_API_FIXTURE: `http://127.0.0.1:${address.port}`,
+        GITHUB_REPOSITORY: "openclaw/clawsweeper",
+        TARGET_REPO: "openclaw/clawsweeper",
+        TARGET_BRANCH: "main",
+        ITEM_NUMBER: "1",
+        DIRECT_OUTCOME: directOutcome,
+        DIRECT_PUBLICATION_SUPERSEDED: "false",
+        CLAIM_DECISION: JSON.stringify({ sourceAction: "opened" }),
+        QUEUE_URL: "https://queue.invalid",
+        CLAWSWEEPER_WEBHOOK_SECRET: "fixture-only",
+        CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: "180",
+        CLAWSWEEPER_COMMENT_MAX_COMMENTS: "1000",
+        GITHUB_OUTPUT: join(root, "lifecycle-output"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 15_000,
+    });
+    let trace = "";
+    child.stdout.on("data", (chunk) => {
+      trace += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      trace += chunk;
+    });
+    const exit = await new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    assert.notEqual(exit, 0, trace);
+    assert.match(trace, /500/);
+    assert.deepEqual(requests, [
+      "POST /repos/openclaw/clawsweeper/actions/workflows/repair-comment-router.yml/dispatches",
+    ]);
+
+    const output = join(root, "generation-output");
+    execFileSync("bash", ["-c", generation.run], {
+      env: {
+        ...process.env,
+        ADMISSION_RETRY: "false",
+        RETRY_KIND: "",
+        RETRY_AT: "",
+        TARGET_ENABLED: "true",
+        LIVE_OUTCOME: "success",
+        REVIEW_OUTCOME: "success",
+        REVIEW_SUPERSEDED: "false",
+        SCHEDULED_SEMANTIC_NOOP: "false",
+        COMMAND_TERMINAL_STATE: "false",
+        COMMAND_AUTHORITY_SUPERSEDED: "false",
+        RESERVATION_STATUS: "posted",
+        DIRECT_PUBLICATION_FAILURE_KIND: "",
+        DIRECT_PUBLICATION_RETRY_AT: "",
+        DIRECT_PUBLICATION_ACCEPTED: "true",
+        DIRECT_LIFECYCLE_OUTCOME: "failure",
+        DIRECT_LIFECYCLE_REQUEUE: "false",
+        PUBLICATION_QUEUE_OUTCOME: "success",
+        GITHUB_OUTPUT: output,
+      },
+    });
+    assert.match(readText(output), /^outcome=failure$/m);
+    const values = {
+      "claim-exact-review-queue.claimed": "true",
+      "create-exact-review-bundle.outcome": "success",
+      "direct-exact-review-publication.accepted": "true",
+      "finalize-direct-exact-review-lifecycle.outcome": "failure",
+      "exact-review-generation-result.outcome": "failure",
+      "review-exact-event-item.outcome": "success",
+      "review-exact-event-item.exit_code": "0",
+      "queue-exact-review-publication.outcome": "success",
+      "complete-exact-review-queue.outcome": "skipped",
+      "reserve-exact-review-lease.status": "posted",
+    };
+    assert.equal(
+      evaluateWorkflowExpression(step("Upload exact review artifact bundle").if, values),
+      true,
+    );
+    assert.equal(
+      evaluateWorkflowExpression(step("Complete exact-review queue lease").if, values),
+      false,
+    );
+    assert.equal(evaluateWorkflowExpression(failure.if, values), true);
+    const env = Object.fromEntries(
+      Object.entries(failure.env).map(([key, value]) => [
+        key,
+        String(evaluateWorkflowExpression(String(value), values)),
+      ]),
+    );
+    const annotation = spawnSync("bash", ["-c", failure.run], { env, encoding: "utf8" });
+    assert.equal(annotation.status, 1);
+    assert.match(
+      annotation.stdout,
+      /classification=publication_failure .*review_outcome=success review_exit=0 .*direct_lifecycle=failure/,
+    );
+    const proofDir = process.env.CLAWSWEEPER_PUBLICATION_FAILURE_PROOF_DIR;
+    if (proofDir) {
+      mkdirSync(proofDir, { recursive: true });
+      writeFileSync(
+        join(proofDir, "summary.json"),
+        `${JSON.stringify(
+          {
+            head: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+            requests,
+            lifecycleExit: exit,
+            generation: readText(output).trim().split("\n"),
+            annotation: annotation.stdout.trim(),
+            artifactUploadAuthorized: true,
+            queueCompletionAuthorized: false,
+            surface: "production workflow lifecycle, generation-result and annotation shell bodies",
+            limits: "Controlled GitHub HTTP boundary; no production mutation or model review.",
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
