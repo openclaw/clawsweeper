@@ -69,7 +69,11 @@ maintainer-facing comment, runtime metadata, and GitHub snapshot hash.
 PR checkout preparation captures only the recursive tree's entry types, object
 IDs, sizes, and truncation flag from the GitHub CLI. This keeps path and URL
 metadata from exhausting the response buffer while preserving the existing
-checkout size limits and rejection of incomplete or malformed trees.
+checkout size limits and rejection of incomplete or malformed trees. When GitHub
+truncates a recursive response, metadata acquisition expands complete shallow
+trees and retries smaller subtrees instead of admitting partial data. The
+fallback shares the existing deadline and aggregate entry limit, caches repeated
+tree requests, and stops after 64 requests.
 
 Media proof preparation recognizes image/video filename extensions and GitHub
 attachment URLs, including legacy repository asset links. Attachments are fetched

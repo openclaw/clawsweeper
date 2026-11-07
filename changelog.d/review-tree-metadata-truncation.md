@@ -1,0 +1,1 @@
+- Fix exact reviews failing before code review when GitHub truncates recursive tree metadata. Resolve complete smaller subtrees within the existing metadata deadline and aggregate entry limit; keep incomplete and malformed source fail-closed.

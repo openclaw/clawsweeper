@@ -30,6 +30,7 @@ const REVIEW_ATTRIBUTE_BLOB_MAX_BYTES = 16 * 1024 * 1024;
 const REVIEW_ATTRIBUTE_INDEX_MAX_FILES = 2;
 const REVIEW_ATTRIBUTE_INDEX_MAX_BYTES = 128 * 1024 * 1024;
 const REVIEW_TREE_METADATA_DEADLINE_MS = 30_000;
+const REVIEW_TREE_METADATA_MAX_REQUESTS = 64;
 const REVIEW_FETCH_ATTEMPT_MS = 60_000;
 const REVIEW_FETCH_DEADLINE_MS = 120_000;
 const GIT_NULL_DEVICE = process.platform === "win32" ? "NUL" : devNull;
@@ -1273,10 +1274,12 @@ export function githubReviewTreeBlobSizes({
   repository,
   headSha,
   request,
+  timeoutMs = REVIEW_TREE_METADATA_DEADLINE_MS,
 }: {
   repository: string;
   headSha: string;
-  request: (path: string) => unknown;
+  request: (path: string, timeoutMs: number) => unknown;
+  timeoutMs?: number;
 }): ReadonlyMap<string, number> {
   const match = repository.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
   if (
@@ -1289,33 +1292,109 @@ export function githubReviewTreeBlobSizes({
   ) {
     throw new Error("invalid bounded review tree metadata request");
   }
-  const response = request(`repos/${match[1]}/${match[2]}/git/trees/${headSha}?recursive=1`) as {
-    truncated?: unknown;
-    tree?: unknown;
+
+  const deadlineAt = Date.now() + Math.min(timeoutMs, REVIEW_TREE_METADATA_DEADLINE_MS);
+  const remainingMs = () => {
+    const remaining = deadlineAt - Date.now();
+    if (!Number.isFinite(remaining) || remaining <= 0) {
+      throw new AgentInputScanError("deadline");
+    }
+    return remaining;
   };
-  if (response.truncated !== false || !Array.isArray(response.tree)) {
-    throw new Error("incomplete bounded review tree metadata response");
-  }
-  if (response.tree.length > REVIEW_TREE_MAX_FILES) {
-    throw new Error("bounded review tree metadata response exceeded its entry limit");
-  }
+  type TreeResponse = { truncated: boolean; tree: unknown[] };
+  const responses = new Map<string, TreeResponse>();
   const sizes = new Map<string, number>();
-  for (const value of response.tree) {
-    if (!value || typeof value !== "object") {
-      throw new Error("invalid bounded review tree metadata entry");
+  let entryCount = 0;
+  const readTree = (sha: string, recursive: boolean): TreeResponse => {
+    const path =
+      "repos/" +
+      match[1] +
+      "/" +
+      match[2] +
+      "/git/trees/" +
+      sha +
+      (recursive ? "?recursive=1" : "");
+    const cached = responses.get(path);
+    if (cached) return cached;
+    // The caller retains its shared metadata deadline across every request.
+    if (responses.size >= REVIEW_TREE_METADATA_MAX_REQUESTS) {
+      throw new Error("bounded review tree metadata request limit exceeded");
     }
-    const entry = value as { type?: unknown; sha?: unknown; size?: unknown };
-    if (entry.type !== "blob") continue;
+    const response = request(path, remainingMs()) as Partial<TreeResponse> | null;
+    remainingMs();
     if (
-      typeof entry.sha !== "string" ||
-      !GIT_OBJECT_ID.test(entry.sha) ||
-      typeof entry.size !== "number" ||
-      !Number.isSafeInteger(entry.size) ||
-      entry.size < 0
+      !response ||
+      typeof response !== "object" ||
+      typeof response.truncated !== "boolean" ||
+      !Array.isArray(response.tree)
     ) {
-      throw new Error("invalid bounded review tree blob metadata");
+      throw new Error("incomplete bounded review tree metadata response");
     }
-    sizes.set(entry.sha, entry.size);
+    if (response.tree.length > REVIEW_TREE_MAX_FILES) {
+      throw new Error("bounded review tree metadata response exceeded its entry limit");
+    }
+    const result = {
+      truncated: response.truncated,
+      tree: response.truncated ? [] : response.tree,
+    };
+    responses.set(path, result);
+    return result;
+  };
+  const collect = (tree: unknown[]) => {
+    // Count repeated subtree occurrences too, even when their response is cached.
+    entryCount += tree.length;
+    if (entryCount > REVIEW_TREE_MAX_FILES) {
+      throw new Error("bounded review tree metadata response exceeded its entry limit");
+    }
+    for (const value of tree) {
+      if (!value || typeof value !== "object") {
+        throw new Error("invalid bounded review tree metadata entry");
+      }
+      const entry = value as { type?: unknown; sha?: unknown; size?: unknown };
+      if (entry.type !== "blob") continue;
+      if (
+        typeof entry.sha !== "string" ||
+        !GIT_OBJECT_ID.test(entry.sha) ||
+        !Number.isSafeInteger(entry.size) ||
+        (entry.size as number) < 0
+      ) {
+        throw new Error("invalid bounded review tree blob metadata");
+      }
+      const previous = sizes.get(entry.sha);
+      if (previous !== undefined && previous !== entry.size) {
+        throw new Error("inconsistent bounded review tree blob metadata");
+      }
+      sizes.set(entry.sha, entry.size as number);
+    }
+  };
+
+  const pending = [{ sha: headSha, ancestors: new Set<string>() }];
+  while (pending.length > 0) {
+    const { sha, ancestors } = pending.pop()!;
+    if (ancestors.has(sha)) {
+      throw new Error("cyclic bounded review tree metadata");
+    }
+    const recursive = readTree(sha, true);
+    if (!recursive.truncated) {
+      collect(recursive.tree);
+      continue;
+    }
+    // Never admit a partial recursive response. Expand only a complete shallow
+    // tree, then independently obtain complete metadata for each child tree.
+    const shallow = readTree(sha, false);
+    if (shallow.truncated) {
+      throw new Error("incomplete bounded review tree metadata response");
+    }
+    collect(shallow.tree);
+    const nextAncestors = new Set(ancestors).add(sha);
+    for (const value of shallow.tree) {
+      const entry = value as { type?: unknown; sha?: unknown };
+      if (entry.type !== "tree") continue;
+      if (typeof entry.sha !== "string" || !GIT_OBJECT_ID.test(entry.sha)) {
+        throw new Error("invalid bounded review subtree metadata");
+      }
+      pending.push({ sha: entry.sha, ancestors: nextAncestors });
+    }
   }
   return sizes;
 }

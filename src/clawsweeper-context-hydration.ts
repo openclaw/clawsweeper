@@ -896,7 +896,8 @@ export function materializePullRequestReviewTree(
       remoteTreeSizes ??= githubReviewTreeBlobSizes({
         repository: targetRepo(),
         headSha: options.headSha,
-        request: (path) => ghJsonOnce(reviewTreeMetadataArgs(path), timeoutMs),
+        timeoutMs,
+        request: (path, remainingMs) => ghJsonOnce(reviewTreeMetadataArgs(path), remainingMs),
       });
       return new Map(
         objectIds.flatMap((objectId) => {
