@@ -671,6 +671,7 @@ function completedReviewRun(id: number, itemNumber: number, conclusion: string, 
   const now = Date.now();
   return {
     id,
+    run_attempt: 1,
     name: "Review ClawSweeper items",
     display_title: `Review event item openclaw/openclaw#${itemNumber}`,
     status: "completed",
@@ -683,14 +684,19 @@ function completedReviewRun(id: number, itemNumber: number, conclusion: string, 
 
 async function activePrFetch(input: RequestInfo | URL) {
   const url = String(input);
+  const pathname = new URL(url).pathname;
   if (url.includes("/actions/workflows/repair-cluster-worker.yml/runs")) {
     return jsonResponse({ workflow_runs: [] });
   }
-  if (url.includes("/repos/openclaw/clawsweeper/actions/runs")) {
+  if (/^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/attempts\/1\/jobs$/.test(pathname)) {
+    return jsonResponse({ total_count: 0, jobs: [] });
+  }
+  if (pathname === "/repos/openclaw/clawsweeper/actions/runs") {
     return jsonResponse({
       workflow_runs: [
         {
           id: 1,
+          run_attempt: 1,
           name: "ClawSweeper",
           display_title: "Review event item openclaw/openclaw#80609",
           status: "in_progress",

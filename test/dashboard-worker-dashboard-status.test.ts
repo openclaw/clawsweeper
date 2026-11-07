@@ -166,7 +166,7 @@ test("dashboard polling ignores workflow snapshots without disabling other durab
                 : [],
         });
       }
-      const jobMatch = /\/actions\/runs\/(41|42)\/jobs$/.exec(url.pathname);
+      const jobMatch = /\/actions\/runs\/(41|42)\/attempts\/1\/jobs$/.exec(url.pathname);
       if (jobMatch) {
         jobReads += 1;
         const run = jobMatch[1] === "42" ? active : completed;
@@ -264,20 +264,20 @@ test("polling job censuses preserve versioned caches, incomplete pages, and erro
     const first = await workflowJobsForRunSnapshot(
       env,
       "generated-owner/generated-repo",
-      41,
+      { id: 41, run_attempt: 1 },
       github,
     );
     assert.equal(first.complete, totalCount === 1);
     assert.equal(first.jobs.length, 1);
     const record = JSON.parse(
-      String(await store.get("workflow-jobs:generated-owner/generated-repo:41")),
+      String(await store.get("workflow-jobs:generated-owner/generated-repo:41:1")),
     );
     assert.equal(record.schema_version, 2);
     assert.equal(record.complete, totalCount === 1);
     const cached = await workflowJobsForRunSnapshot(
       env,
       "generated-owner/generated-repo",
-      41,
+      { id: 41, run_attempt: 1 },
       async () => {
         throw new Error("polling must retain the normal job cache");
       },
@@ -285,12 +285,86 @@ test("polling job censuses preserve versioned caches, incomplete pages, and erro
     assert.deepEqual(cached, first);
     assert.equal(queueReads, 0);
     await assert.rejects(
-      workflowJobsForRunSnapshot(env, "generated-owner/generated-repo", 42, async () => {
-        throw new Error("synthetic GitHub failure");
-      }),
+      workflowJobsForRunSnapshot(
+        env,
+        "generated-owner/generated-repo",
+        { id: 42, run_attempt: 1 },
+        async () => {
+          throw new Error("synthetic GitHub failure");
+        },
+      ),
       /synthetic GitHub failure/,
     );
     assert.equal(queueReads, 0);
+  }
+});
+
+test("worker job caches isolate attempts across reruns, overlapping reads and restart", async () => {
+  const store = new MemoryKv();
+  const repo = "generated-owner/generated-repo";
+  const paths: string[] = [];
+  const release = statusGate<void>();
+  const github = async (path: string) => {
+    paths.push(path);
+    const attempt = Number(path.match(/\/attempts\/(\d+)\/jobs/)?.[1]);
+    assert.ok(attempt > 0, "the selected attempt must be explicit on every page");
+    if (attempt === 2) await release.promise;
+    return {
+      total_count: 1,
+      jobs: [{ id: attempt, run_id: 41, status: attempt === 2 ? "in_progress" : "completed" }],
+    };
+  };
+  // Unbound transient caches must not qualify as evidence for any attempt.
+  await store.put(
+    `workflow-jobs:${repo}:41`,
+    JSON.stringify({
+      schema_version: 2,
+      complete: true,
+      total_count: 0,
+      jobs: [],
+    }),
+  );
+  const read = (run_attempt: number) =>
+    workflowJobsForRunSnapshot({ STATUS_STORE: store }, repo, { id: 41, run_attempt }, github);
+  assert.equal((await read(1)).jobs[0].id, 1);
+  const rerun = read(2);
+  assert.equal((await read(3)).jobs[0].id, 3);
+  release.release();
+  const active = await rerun;
+  assert.equal(active.complete, true);
+  assert.equal(active.jobs[0].id, 2);
+  assert.equal(active.jobs[0].status, "in_progress");
+  assert.deepEqual(
+    paths.map((path) => path.match(/\/attempts\/(\d+)\//)?.[1]),
+    ["1", "2", "3"],
+  );
+  for (const attempt of [1, 2, 3]) {
+    const restarted = await workflowJobsForRunSnapshot(
+      { STATUS_STORE: store },
+      repo,
+      { id: 41, run_attempt: attempt },
+      async () => {
+        throw new Error("each attempt cache must survive restart independently");
+      },
+    );
+    assert.equal(restarted.jobs[0].id, attempt);
+    assert.equal(restarted.complete, true);
+  }
+});
+
+test("worker job reads cannot guess a missing or invalid workflow attempt", async () => {
+  for (const run_attempt of [undefined, 0, -1, 1.5, NaN]) {
+    await assert.rejects(
+      workflowJobsForRunSnapshot(
+        {},
+        "generated-owner/generated-repo",
+        { id: 41, run_attempt },
+        async () => {
+          assert.fail("invalid workflow identity must not request latest jobs");
+        },
+      ),
+      /Workflow run attempt unavailable/,
+    );
   }
 });
 
@@ -310,7 +384,7 @@ test("worker job pagination marks a capped census incomplete across cache reuse"
   const first = await workflowJobsForRunSnapshot(
     { STATUS_STORE: statusStore },
     "generated-owner/generated-repo",
-    41,
+    { id: 41, run_attempt: 1 },
     github,
   );
   assert.equal(first.jobs.length, 300);
@@ -320,7 +394,7 @@ test("worker job pagination marks a capped census incomplete across cache reuse"
   const restarted = await workflowJobsForRunSnapshot(
     { STATUS_STORE: statusStore },
     "generated-owner/generated-repo",
-    41,
+    { id: 41, run_attempt: 1 },
     async () => {
       throw new Error("cached incomplete census should not fetch");
     },
@@ -332,10 +406,11 @@ test("worker job pagination marks a capped census incomplete across cache reuse"
 test("worker job cache cannot claim a complete malformed or cross-run census", async () => {
   const statusStore = new MemoryKv();
   await statusStore.put(
-    "workflow-jobs:generated-owner/generated-repo:41",
+    "workflow-jobs:generated-owner/generated-repo:41:1",
     JSON.stringify({
-      schema_version: 1,
+      schema_version: 2,
       complete: true,
+      total_count: 3,
       jobs: [
         null,
         { id: 1, run_id: 99, name: "synthetic unrelated job" },
@@ -346,7 +421,7 @@ test("worker job cache cannot claim a complete malformed or cross-run census", a
   const cached = await workflowJobsForRunSnapshot(
     { STATUS_STORE: statusStore },
     "generated-owner/generated-repo",
-    41,
+    { id: 41, run_attempt: 1 },
     async () => {
       throw new Error("malformed cached census should fail closed without a source read");
     },
@@ -358,20 +433,19 @@ test("worker job cache cannot claim a complete malformed or cross-run census", a
 test("worker job cache requires an exact versioned total before claiming completion", async () => {
   const job = { id: 2, run_id: 41, name: "synthetic matching job" };
   for (const [record, expectedComplete] of [
-    [{ schema_version: 1, complete: true, jobs: [job] }, false],
     [{ schema_version: 2, complete: true, total_count: 1, jobs: [job] }, true],
     [{ schema_version: 2, complete: true, total_count: 2, jobs: [job] }, false],
     [{ schema_version: 2, complete: true, total_count: "1", jobs: [job] }, false],
   ]) {
     const statusStore = new MemoryKv();
     await statusStore.put(
-      "workflow-jobs:generated-owner/generated-repo:41",
+      "workflow-jobs:generated-owner/generated-repo:41:1",
       JSON.stringify(record),
     );
     const cached = await workflowJobsForRunSnapshot(
       { STATUS_STORE: statusStore },
       "generated-owner/generated-repo",
-      41,
+      { id: 41, run_attempt: 1 },
       async () => {
         throw new Error("cached census should not fetch");
       },
@@ -396,7 +470,7 @@ test("live worker job fetch versions its complete cache without repairing webhoo
       }),
     },
     "generated-owner/generated-repo",
-    41,
+    { id: 41, run_attempt: 1 },
     async () => ({
       total_count: 1,
       jobs: [
@@ -410,7 +484,7 @@ test("live worker job fetch versions its complete cache without repairing webhoo
   );
   assert.equal(live.complete, true);
   const stored = JSON.parse(
-    String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41")),
+    String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41:1")),
   );
   assert.equal(stored.schema_version, 2);
   assert.equal(stored.complete, true);
@@ -419,7 +493,7 @@ test("live worker job fetch versions its complete cache without repairing webhoo
   const restarted = await workflowJobsForRunSnapshot(
     { STATUS_STORE: statusStore },
     "generated-owner/generated-repo",
-    41,
+    { id: 41, run_attempt: 1 },
     async () => {
       throw new Error("versioned complete census should survive restart");
     },
@@ -445,7 +519,7 @@ test("live worker job fetch cannot claim a complete malformed or cross-run censu
       CLAWSWEEPER_WEBHOOK_SECRET: "synthetic-secret",
     },
     "generated-owner/generated-repo",
-    41,
+    { id: 41, run_attempt: 1 },
     async () => ({
       total_count: 3,
       jobs: [
@@ -472,7 +546,7 @@ test("live worker job fetch cannot claim a complete malformed or cross-run censu
   );
 
   const stored = JSON.parse(
-    String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41")),
+    String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41:1")),
   );
   assert.equal(stored.complete, false);
   assert.deepEqual(
@@ -486,6 +560,7 @@ test("live worker job fetch rejects malformed pages and ambiguous job identities
   const cases = [
     { payload: { jobs: null, total_count: 0 }, retained: 0 },
     { payload: { jobs: [{ id: "2", run_id: 41 }], total_count: 1 }, retained: 0 },
+    { payload: { jobs: [{ id: 2, run_id: 41, run_attempt: 2 }], total_count: 1 }, retained: 0 },
     {
       payload: {
         jobs: [
@@ -502,13 +577,13 @@ test("live worker job fetch rejects malformed pages and ambiguous job identities
     const live = await workflowJobsForRunSnapshot(
       { STATUS_STORE: statusStore },
       "generated-owner/generated-repo",
-      41,
+      { id: 41, run_attempt: 1 },
       async () => payload,
     );
     assert.equal(live.complete, false);
     assert.equal(live.jobs.length, retained);
     const stored = JSON.parse(
-      String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41")),
+      String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41:1")),
     );
     assert.equal(stored.complete, false);
     assert.equal(stored.jobs.length, retained);
@@ -540,12 +615,12 @@ test("live worker job fetch requires a strict stable total before completion", a
         }),
       },
       "generated-owner/generated-repo",
-      41,
+      { id: 41, run_attempt: 1 },
       async () => payload,
     );
     assert.equal(live.complete, false);
     const stored = JSON.parse(
-      String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41")),
+      String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41:1")),
     );
     assert.equal(stored.complete, false);
     assert.deepEqual(repairBodies, []);
@@ -556,7 +631,7 @@ test("live worker job fetch requires a strict stable total before completion", a
   const changedTotal = await workflowJobsForRunSnapshot(
     { STATUS_STORE: statusStore },
     "generated-owner/generated-repo",
-    41,
+    { id: 41, run_attempt: 1 },
     async () => {
       page += 1;
       return page === 1
@@ -574,7 +649,7 @@ test("live worker job fetch requires a strict stable total before completion", a
   assert.equal(changedTotal.complete, false);
   assert.equal(changedTotal.jobs.length, 100);
   const stored = JSON.parse(
-    String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41")),
+    String(await statusStore.get("workflow-jobs:generated-owner/generated-repo:41:1")),
   );
   assert.equal(stored.complete, false);
   assert.equal(stored.jobs.length, 100);
@@ -596,6 +671,7 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
     display_title: "Review event item openclaw/openclaw#92521",
     status: "in_progress",
     conclusion: null,
+    run_attempt: 1,
     html_url: "https://github.com/openclaw/clawsweeper/actions/runs/42",
     created_at: isoAgo(120_000),
     updated_at: isoAgo(10_000),
@@ -606,6 +682,7 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
     display_title: "Review event item openclaw/openclaw#92523",
     status: "queued",
     conclusion: null,
+    run_attempt: 1,
     html_url: "https://github.com/openclaw/clawsweeper/actions/runs/43",
     created_at: isoAgo(30_000),
     updated_at: isoAgo(5_000),
@@ -616,6 +693,7 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
     display_title: "Publish exact review batch",
     status: "queued",
     conclusion: null,
+    run_attempt: 1,
     html_url: "https://github.com/openclaw/clawsweeper/actions/runs/44",
     created_at: isoAgo(20_000),
     updated_at: isoAgo(2_000),
@@ -650,7 +728,7 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
               : [],
       });
     }
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/42/jobs") {
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/42/attempts/1/jobs") {
       return jsonResponse({
         total_count: 3,
         jobs: [
@@ -732,10 +810,10 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
         ],
       });
     }
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/43/jobs") {
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/43/attempts/1/jobs") {
       return jsonResponse({ total_count: 0, jobs: [] });
     }
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/44/jobs") {
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/44/attempts/1/jobs") {
       return jsonResponse({
         total_count: 1,
         jobs: [
@@ -1009,6 +1087,7 @@ test("dashboard keeps control-plane workflow fallbacks out of Codex capacity", a
     display_title: displayTitle,
     status,
     conclusion: null,
+    run_attempt: 1,
     html_url: `https://github.com/openclaw/clawsweeper/actions/runs/${id}`,
     created_at: isoAgo(Number(id) * 1_000),
     updated_at: isoAgo(500),
@@ -1021,7 +1100,9 @@ test("dashboard keeps control-plane workflow fallbacks out of Codex capacity", a
         workflow_runs: !status ? runs : runs.filter((run) => run.status === status),
       });
     }
-    if (/^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/jobs$/.test(url.pathname)) {
+    if (
+      /^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/attempts\/1\/jobs$/.test(url.pathname)
+    ) {
       return jsonResponse({ jobs: [] });
     }
     if (
@@ -1085,6 +1166,7 @@ test("dashboard bounds worker job detail request concurrency", async () => {
     display_title: `Review event item openclaw/openclaw#${9000 + index}`,
     status: "in_progress",
     conclusion: null,
+    run_attempt: 1,
     html_url: `https://github.com/openclaw/clawsweeper/actions/runs/${1000 + index}`,
     created_at: isoAgo((index + 1) * 1000),
     updated_at: isoAgo(1000),
@@ -1098,8 +1180,10 @@ test("dashboard bounds worker job detail request concurrency", async () => {
       const status = url.searchParams.get("status");
       return jsonResponse({ workflow_runs: !status || status === "in_progress" ? runs : [] });
     }
-    if (/^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/jobs$/.test(url.pathname)) {
-      const runId = Number(url.pathname.split("/").at(-2));
+    if (
+      /^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/attempts\/1\/jobs$/.test(url.pathname)
+    ) {
+      const runId = Number(url.pathname.split("/").at(-4));
       activeJobRequests += 1;
       maxActiveJobRequests = Math.max(maxActiveJobRequests, activeJobRequests);
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -1203,6 +1287,7 @@ test("dashboard paginates worker jobs beyond GitHub's first page", async () => {
     display_title: "Review event item openclaw/openclaw#500",
     status: "in_progress",
     conclusion: null,
+    run_attempt: 1,
     html_url: "https://github.com/openclaw/clawsweeper/actions/runs/500",
     created_at: isoAgo(60_000),
     updated_at: isoAgo(5_000),
@@ -1216,7 +1301,7 @@ test("dashboard paginates worker jobs beyond GitHub's first page", async () => {
         workflow_runs: !status || status === "in_progress" ? [run] : [],
       });
     }
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/500/jobs") {
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/500/attempts/1/jobs") {
       const page = Number(url.searchParams.get("page") || "1");
       requestedPages.push(page);
       const count = page === 1 ? 100 : 28;
@@ -1310,7 +1395,7 @@ test("dashboard reports worker health without treating worker jobs as lifecycle 
       });
     }
     const jobMatch = url.pathname.match(
-      /^\/repos\/openclaw\/clawsweeper\/actions\/runs\/(\d+)\/jobs$/,
+      /^\/repos\/openclaw\/clawsweeper\/actions\/runs\/(\d+)\/attempts\/1\/jobs$/,
     );
     if (jobMatch) {
       jobRequests += 1;
@@ -1410,58 +1495,82 @@ test("dashboard reports worker health without treating worker jobs as lifecycle 
   }
 });
 
-test("dashboard retains worker-health failure codes when its aggregate is cached", async () => {
-  const originalFetch = globalThis.fetch;
-  const originalCaches = globalThis.caches;
-  Object.defineProperty(globalThis, "caches", {
-    configurable: true,
-    value: { default: new MemoryCache() },
-  });
-  const run = completedReviewRun(101, 42, "success", 60_000);
-  let jobRequests = 0;
-  globalThis.fetch = async (input) => {
-    const url = new URL(String(input));
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
-      return jsonResponse({
-        total_count: url.searchParams.get("status") === "completed" ? 1 : 0,
-        workflow_runs: url.searchParams.get("status") === "completed" ? [run] : [],
-      });
-    }
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/101/jobs") {
-      jobRequests += 1;
-      return new Response("synthetic private upstream detail", { status: 503 });
-    }
-    if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
-    if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
-    if (url.pathname.includes("/actions/workflows/")) return jsonResponse({ workflow_runs: [] });
-    throw new Error(`unexpected fetch ${url}`);
-  };
-  try {
-    const store = new MemoryKv();
-    const env = { STATUS_STORE: store };
-    const background: Promise<unknown>[] = [];
-    const ctx = { waitUntil: (promise: Promise<unknown>) => background.push(promise) };
-    const request = new Request("https://clawsweeper.openclaw.ai/api/status");
-    const first = await (await worker.fetch(request, env, ctx)).json();
-    await Promise.allSettled(background);
-    assert.deepEqual(first.diagnostics.errors, ["worker_health_unavailable:http_503"]);
-    assert.equal(first.diagnostics.error_count, 1);
-    assert.equal(JSON.stringify(first).includes("synthetic private upstream detail"), false);
+for (const failure of ["http_503", "missing_attempt", "wrong_attempt"] as const)
+  test(`dashboard retains cached worker-health failures: ${failure}`, async () => {
+    const originalFetch = globalThis.fetch;
+    const originalCaches = globalThis.caches;
+    Object.defineProperty(globalThis, "caches", {
+      configurable: true,
+      value: { default: new MemoryCache() },
+    });
+    const run = {
+      ...completedReviewRun(101, 42, "success", 60_000),
+      run_attempt: failure === "missing_attempt" ? undefined : 1,
+    };
+    const expectedError =
+      failure === "http_503" ? "worker_health_unavailable:http_503" : "worker_health_unavailable";
+    let jobRequests = 0;
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+        return jsonResponse({
+          total_count: url.searchParams.get("status") === "completed" ? 1 : 0,
+          workflow_runs: url.searchParams.get("status") === "completed" ? [run] : [],
+        });
+      }
+      if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/101/attempts/1/jobs") {
+        jobRequests += 1;
+        return failure === "wrong_attempt"
+          ? jsonResponse({
+              total_count: 1,
+              jobs: [
+                {
+                  id: 1011,
+                  run_id: 101,
+                  run_attempt: 2,
+                  name: "Review shard",
+                  status: "completed",
+                  conclusion: "success",
+                },
+              ],
+            })
+          : new Response("synthetic private upstream detail", { status: 503 });
+      }
+      if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+      if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
+      if (url.pathname.includes("/actions/workflows/")) return jsonResponse({ workflow_runs: [] });
+      throw new Error(`unexpected fetch ${url}`);
+    };
+    try {
+      const store = new MemoryKv();
+      const env = { STATUS_STORE: store };
+      const background: Promise<unknown>[] = [];
+      const ctx = { waitUntil: (promise: Promise<unknown>) => background.push(promise) };
+      const request = new Request("https://clawsweeper.openclaw.ai/api/status");
+      const first = await (await worker.fetch(request, env, ctx)).json();
+      await Promise.allSettled(background);
+      assert.deepEqual(first.diagnostics.errors, [expectedError]);
+      assert.equal(first.diagnostics.error_count, 1);
+      assert.equal(JSON.stringify(first).includes("synthetic private upstream detail"), false);
 
-    // Expire the composed snapshot while leaving its younger health aggregate cached.
-    await store.put(
-      "snapshot:bay-scope:v2:_",
-      JSON.stringify({ ...first, generated_at: new Date(Date.now() - 901_000).toISOString() }),
-    );
-    const second = await (await worker.fetch(request, env, ctx)).json();
-    await Promise.allSettled(background);
-    assert.deepEqual(second.diagnostics, first.diagnostics);
-    assert.equal(jobRequests, 1, "the failure must survive reuse without a new GitHub request");
-  } finally {
-    globalThis.fetch = originalFetch;
-    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
-  }
-});
+      // Expire the composed snapshot while leaving its younger health aggregate cached.
+      await store.put(
+        "snapshot:bay-scope:v2:_",
+        JSON.stringify({ ...first, generated_at: new Date(Date.now() - 901_000).toISOString() }),
+      );
+      const second = await (await worker.fetch(request, env, ctx)).json();
+      await Promise.allSettled(background);
+      assert.deepEqual(second.diagnostics, first.diagnostics);
+      assert.equal(
+        jobRequests,
+        failure === "missing_attempt" ? 0 : 1,
+        "the failure must survive reuse without a new GitHub request",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+    }
+  });
 
 test("dashboard cold-cache status bounds a stalled forty-run worker-health refresh", async () => {
   const originalFetch = globalThis.fetch;
@@ -1486,7 +1595,9 @@ test("dashboard cold-cache status bounds a stalled forty-run worker-health refre
               : runs,
       });
     }
-    if (/^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/jobs$/.test(url.pathname)) {
+    if (
+      /^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/attempts\/1\/jobs$/.test(url.pathname)
+    ) {
       stalledJobRequests += 1;
       return new Promise<Response>(() => undefined);
     }
@@ -1719,6 +1830,7 @@ test("dashboard reads stored CI status for active PR rows", async () => {
             display_title: "Review event item openclaw/openclaw#80609",
             status: "in_progress",
             conclusion: null,
+            run_attempt: 1,
             html_url: "https://github.com/openclaw/clawsweeper/actions/runs/1",
             created_at: new Date(Date.now() - 60_000).toISOString(),
             updated_at: new Date().toISOString(),
@@ -2239,6 +2351,7 @@ test("dashboard keeps workflow CI status when live PR checks fail", async () => 
             display_title: "Review event item openclaw/openclaw#80609",
             status: "in_progress",
             conclusion: null,
+            run_attempt: 1,
             html_url: "https://github.com/openclaw/clawsweeper/actions/runs/1",
             created_at: new Date(Date.now() - 60_000).toISOString(),
             updated_at: new Date().toISOString(),
@@ -2291,6 +2404,7 @@ test("dashboard reuses live PR CI hydration within one status snapshot", async (
       display_title: "Review event item openclaw/openclaw#80609",
       status: "in_progress",
       conclusion: null,
+      run_attempt: 1,
       html_url: "https://github.com/openclaw/clawsweeper/actions/runs/8060901",
       created_at: isoAgo(120_000),
       updated_at: isoAgo(10_000),
@@ -2301,6 +2415,7 @@ test("dashboard reuses live PR CI hydration within one status snapshot", async (
       display_title: "Review event item openclaw/openclaw#80609",
       status: "in_progress",
       conclusion: null,
+      run_attempt: 1,
       html_url: "https://github.com/openclaw/clawsweeper/actions/runs/8060902",
       created_at: isoAgo(90_000),
       updated_at: isoAgo(5_000),
@@ -2314,7 +2429,9 @@ test("dashboard reuses live PR CI hydration within one status snapshot", async (
       const status = url.searchParams.get("status");
       return jsonResponse({ workflow_runs: !status || status === "in_progress" ? runs : [] });
     }
-    if (/^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/jobs$/.test(url.pathname)) {
+    if (
+      /^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/attempts\/1\/jobs$/.test(url.pathname)
+    ) {
       return jsonResponse({ jobs: [] });
     }
     if (url.pathname === "/repos/openclaw/openclaw/pulls/80609") {
@@ -2452,7 +2569,11 @@ test("dashboard reconciles workflow observations before deriving lifecycle views
               : scenario.active.filter((run) => run.status === status);
           return jsonResponse({ total_count: rows.length, workflow_runs: rows });
         }
-        if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs/42/jobs") {
+        if (
+          /^\/repos\/openclaw\/clawsweeper\/actions\/runs\/42\/attempts\/[12]\/jobs$/.test(
+            url.pathname,
+          )
+        ) {
           return jsonResponse({
             total_count: 1,
             jobs: [
@@ -2523,6 +2644,7 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
               display_title: "recent completed run",
               status: "completed",
               conclusion: "success",
+              run_attempt: 1,
               html_url: "https://github.com/openclaw/clawsweeper/actions/runs/1",
               created_at: "2026-05-14T06:40:00Z",
               updated_at: "2026-05-14T06:41:00Z",
@@ -2539,6 +2661,7 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
               display_title: "Review event item openclaw/openclaw#81001",
               status: "in_progress",
               conclusion: null,
+              run_attempt: 1,
               html_url: "https://github.com/openclaw/clawsweeper/actions/runs/2",
               created_at: isoAgo(25 * 60_000),
               updated_at: isoAgo(20 * 60_000),
@@ -2549,6 +2672,7 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
               display_title: "Commit review openclaw/openclaw@abc123",
               status: "in_progress",
               conclusion: null,
+              run_attempt: 1,
               html_url: "https://github.com/openclaw/clawsweeper/actions/runs/3",
               created_at: isoAgo(20 * 60_000),
               updated_at: isoAgo(15 * 60_000),
@@ -2559,6 +2683,7 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
               display_title: "github_activity",
               status: "in_progress",
               conclusion: null,
+              run_attempt: 1,
               html_url: "https://github.com/openclaw/clawsweeper/actions/runs/5",
               created_at: isoAgo(18 * 60_000),
               updated_at: isoAgo(16 * 60_000),
@@ -2569,6 +2694,7 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
               display_title: "ClawSweeper Live Dashboard CI Status",
               status: "in_progress",
               conclusion: null,
+              run_attempt: 1,
               html_url: "https://github.com/openclaw/clawsweeper/actions/runs/6",
               created_at: isoAgo(17 * 60_000),
               updated_at: isoAgo(15 * 60_000),
@@ -2585,6 +2711,7 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
               display_title: "Review event item openclaw/openclaw#81002",
               status: "queued",
               conclusion: null,
+              run_attempt: 1,
               html_url: "https://github.com/openclaw/clawsweeper/actions/runs/4",
               created_at: isoAgo(30 * 60_000),
               updated_at: isoAgo(29 * 60_000),
@@ -2595,6 +2722,7 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
               display_title: "github_activity",
               status: "queued",
               conclusion: null,
+              run_attempt: 1,
               html_url: "https://github.com/openclaw/clawsweeper/actions/runs/7",
               created_at: isoAgo(31 * 60_000),
               updated_at: isoAgo(30 * 60_000),
@@ -2785,6 +2913,7 @@ test("dashboard surfaces stale queue ghosts as zombies without active cards", as
               display_title: "clawsweeper_commit_review",
               status: "queued",
               conclusion: null,
+              run_attempt: 1,
               html_url: "https://github.com/openclaw/clawsweeper/actions/runs/1",
               created_at: isoAgo(7 * 24 * 60 * 60_000),
               updated_at: isoAgo(7 * 24 * 60 * 60_000),
@@ -2795,6 +2924,7 @@ test("dashboard surfaces stale queue ghosts as zombies without active cards", as
               display_title: "Review event item openclaw/openclaw#81002",
               status: "queued",
               conclusion: null,
+              run_attempt: 1,
               html_url: "https://github.com/openclaw/clawsweeper/actions/runs/2",
               created_at: isoAgo(10 * 60_000),
               updated_at: isoAgo(9 * 60_000),
@@ -3929,6 +4059,7 @@ test("cold status deadline releases its owner and stops additional job waves and
   const background: Promise<unknown>[] = [];
   const runs = Array.from({ length: 13 }, (_, index) => ({
     id: 8000 + index,
+    run_attempt: 1,
     name: "Review ClawSweeper items",
     display_title: `Review event item openclaw/openclaw#${9000 + index}`,
     status: "in_progress",

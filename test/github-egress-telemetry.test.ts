@@ -275,6 +275,7 @@ test("descriptor exposes only closed method, operation, and route dimensions", (
       ["/repos/o/r/commits/secret/pulls", "commit_pulls"],
       ["/repos/o/r/actions/runs", "actions_runs"],
       ["/repos/o/r/actions/runs/42/jobs", "actions_run_jobs"],
+      ["/repos/o/r/actions/runs/42/attempts/2/jobs", "actions_run_jobs"],
     ].map(([route, expected]) => [githubEgressRouteTemplate(route!), expected]),
     [
       ["graphql", "graphql"],
@@ -294,6 +295,7 @@ test("descriptor exposes only closed method, operation, and route dimensions", (
       ["commit_check_runs", "commit_check_runs"],
       ["commit_pulls", "commit_pulls"],
       ["actions_runs", "actions_runs"],
+      ["actions_run_jobs", "actions_run_jobs"],
       ["actions_run_jobs", "actions_run_jobs"],
     ],
   );
