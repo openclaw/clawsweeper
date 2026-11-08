@@ -74,6 +74,8 @@ everything else requires human comparison with current main.
 
 ## Configuration and repository onboarding
 
+- [GitHub API limits at openclaw scale](github-api-limits.md) — active audit;
+  every GitHub route we read, its hard limit, and how our reader handles it.
 - [Automation limits](limits.md) — active; validated by
   `pnpm run check:limits`
 - [Target repositories](target-repositories.md) — active; profiles, generic
