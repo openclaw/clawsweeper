@@ -301,7 +301,7 @@ if (args[0] === "api" && args[1] === "graphql") {
 } else if (args[0] === "api" && /\\/actions\\/runs\\?/.test(path)) {
   console.log(JSON.stringify({ workflow_runs: ${JSON.stringify(sourceRuns)} }));
 } else if (args[0] === "api" && /\\/commits\\/head-sha\\/status(?:\\?|$)/.test(path)) {
-  console.log(JSON.stringify({ state: ${JSON.stringify(combinedStatusState)}, statuses: [] }));
+  console.log(JSON.stringify({ state: ${JSON.stringify(combinedStatusState)}, total_count: 0, statuses: [] }));
 } else if (args[0] === "api" && /\\/commits\\/head-sha\\/check-runs(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify({
     total_count: ${checkRunConclusion === null ? 0 : 1},

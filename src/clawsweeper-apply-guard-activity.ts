@@ -17,6 +17,7 @@ import { asRecord, login, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { isOlderThanDays } from "./iso-time.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 import { githubHumanContentEditTimes } from "./github-content-edits.js";
+import { readCommitChecks } from "./github-commit-checks.js";
 
 export function maintainerAssociatedEntries(entries: readonly unknown[]): unknown[] {
   return entries.filter((entry) =>
@@ -483,18 +484,20 @@ export function createApplyGuardActivity({ ghJson, ghPaged, targetRepo }: GuardR
       }
     };
     if (headSha) {
-      const combined = ghJson<{ state?: string; statuses?: unknown[] }>([
-        "api",
-        `repos/${targetRepo()}/commits/${headSha}/status`,
-      ]);
-      if (combined.state === "failure" || combined.state === "error") headChecksFailing = true;
-      for (const status of combined.statuses ?? []) observeStatusActivity(status);
-      const checks = ghJson<{ check_runs?: unknown[] }>([
-        "api",
-        `repos/${targetRepo()}/commits/${headSha}/check-runs?per_page=100`,
-      ]);
-      for (const run of checks.check_runs ?? []) {
-        const record = asRecord(run);
+      // Every check run counts: a recent run on a later page is still activity.
+      const checks = readCommitChecks({
+        repository: targetRepo(),
+        sha: headSha,
+        readPages: (paths) => paths.map((path) => ghJson<unknown>(["api", path])),
+      });
+      if (!checks.complete) {
+        throw new Error("current-head check runs and statuses are incomplete");
+      }
+      if (checks.combinedState === "failure" || checks.combinedState === "error") {
+        headChecksFailing = true;
+      }
+      for (const status of checks.statuses) observeStatusActivity(status);
+      for (const record of checks.checkRuns) {
         observeStatusActivity(record);
         if (
           typeof record.conclusion === "string" &&

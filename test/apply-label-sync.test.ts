@@ -2708,7 +2708,7 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
 } else if (args[0] === "api" && path.includes("/commits/${headSha}/check-runs")) {
   console.log(JSON.stringify({ total_count: 0, check_runs: [] }));
 } else if (args[0] === "api" && path.includes("/commits/${headSha}/status")) {
-  console.log(JSON.stringify({ state: "success", statuses: [] }));
+  console.log(JSON.stringify({ state: "success", total_count: 0, statuses: [] }));
 } else if (args[0] === "api" && path === "repos/openclaw/openclaw/issues/comments/${leaseCommentId}" && args.includes("DELETE")) {
   console.log("");
 } else if (args[0] === "api" && /\\/issues\\/74482\\/comments(?:\\?|$)/.test(path)) {
@@ -4191,7 +4191,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     : { issue: { state: "CLOSED", timelineItems: { nodes: timelineNodes } } };
   console.log(JSON.stringify({ data: { repository } }));
 } else if (args[0] === "api" && /\\/commits\\/head-sha\\/(?:check-runs|status)(?:\\?|$)/.test(path)) {
-  console.log(JSON.stringify({ check_runs: [] }));
+  console.log(JSON.stringify({ total_count: 0, check_runs: [], statuses: [], state: "success" }));
 } else if (args[0] === "api" && /^search\\/issues\\?/.test(path)) {
   console.log(JSON.stringify({ items: [] }));
 } else if (args[0] === "api" && /\\/issues\\/456\\/comments(?:\\?|$)/.test(path)) {

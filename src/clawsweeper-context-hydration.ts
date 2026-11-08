@@ -2,7 +2,7 @@ import { reviewBodyWithoutPreflight } from "./review-preflight-body.js";
 import { AgentInputScanError } from "./agent-input-scan.js";
 import { GitHubOperationDeadlineError } from "./clawsweeper-github-runtime.js";
 import { ghJson, ghJsonEach, ghJsonOnce } from "./clawsweeper-github-execution.js";
-import { githubCount } from "./clawsweeper-github-context.js";
+import { readCommitChecks } from "./github-commit-checks.js";
 import { targetProfile, targetRepo } from "./repository-profiles.js";
 import { fetchIssueReviewComments } from "./clawsweeper-review-comment-state.js";
 import { isSafeGitBranchName } from "./clawsweeper-review-core.js";
@@ -313,48 +313,31 @@ function compactCommitStatus(value: unknown): unknown {
 
 function pullChecksContext(number: number, headSha: string): unknown {
   try {
-    // Both reads run together; the first failure in request order is reported.
-    const [checkPayload, statusPayload] = ghJsonEach<unknown>([
-      ["api", `repos/${targetRepo()}/commits/${headSha}/check-runs?per_page=100`],
-      [`api`, `repos/${targetRepo()}/commits/${headSha}/status?per_page=100`],
-    ]).map((read) => {
-      if (!read.ok) throw read.error;
-      return read.value;
+    const checks = readCommitChecks({
+      repository: targetRepo(),
+      sha: headSha,
+      // Pages in one batch run together; the first failure in request order is reported.
+      readPages: (paths) =>
+        ghJsonEach<unknown>(paths.map((path) => ["api", path])).map((read) => {
+          if (!read.ok) throw read.error;
+          return read.value;
+        }),
     });
-    const checkResponse = asRecord(checkPayload);
-    const statusResponse = asRecord(statusPayload);
-    const rawCheckRuns = Array.isArray(checkResponse.check_runs) ? checkResponse.check_runs : null;
-    const rawStatuses = Array.isArray(statusResponse.statuses) ? statusResponse.statuses : null;
-    const checkRunsTotal = githubCount(checkResponse.total_count);
-    const statusesTotal = githubCount(statusResponse.total_count);
-    if (!rawCheckRuns || !rawStatuses || checkRunsTotal === null || statusesTotal === null) {
-      return {
-        complete: false,
-        checkRuns: [],
-        checkRunsTruncated: true,
-        statuses: [],
-        statusesTruncated: true,
-      };
-    }
-    const checkRunsTruncated = checkRunsTotal > rawCheckRuns.length || rawCheckRuns.length > 100;
-    const statusesTruncated = statusesTotal > rawStatuses.length || rawStatuses.length > 100;
     // Order by code unit, not locale collation: these feed pullChecksDigest, and
     // localeCompare returns 0 for distinct strings, which would leave GitHub's
     // arbitrary response order in the digest.
-    const checkRuns = rawCheckRuns
-      .slice(0, 100)
+    const checkRuns = checks.checkRuns
       .map(compactCheckRun)
       .sort((left, right) => compareCodeUnits(stableJson(left), stableJson(right)));
-    const statuses = rawStatuses
-      .slice(0, 100)
+    const statuses = checks.statuses
       .map(compactCommitStatus)
       .sort((left, right) => compareCodeUnits(stableJson(left), stableJson(right)));
     return {
-      complete: !checkRunsTruncated && !statusesTruncated,
+      complete: checks.complete,
       checkRuns,
-      checkRunsTruncated,
+      checkRunsTruncated: !checks.complete,
       statuses,
-      statusesTruncated,
+      statusesTruncated: !checks.complete,
     };
   } catch (error) {
     console.error(
