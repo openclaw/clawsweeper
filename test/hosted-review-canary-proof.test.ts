@@ -24,7 +24,7 @@ import { gzipSync } from "node:zlib";
 
 import { codexHumanFailureDetail, codexHumanRetryHint } from "../dist/codex-transient.js";
 import { codexFailureDecisionForTest } from "../dist/clawsweeper.js";
-import { reviewTreeMetadataArgs } from "../dist/clawsweeper-context-hydration.js";
+import { reviewBlobMetadataArgs } from "../dist/clawsweeper-context-hydration.js";
 import {
   assertBooleanCountArtifact,
   assertHostedMultilineRequest,
@@ -37,7 +37,7 @@ import {
   hostedNativeChildFailureFacts,
   hostedNativeFailureLine,
   hostedProcessIdentity,
-  hostedTreeMetadataSource,
+  hostedBlobMetadataSource,
   latchHostedNativeFailure,
   readHostedLifecycle,
   recordHostedLifecycle,
@@ -73,26 +73,29 @@ test("hosted process identity handles an exiting process without hiding other re
   }
 });
 
-test("hosted tree metadata fixture accepts bounded requests and rejects other command shapes", () => {
+test("hosted blob metadata fixture accepts bounded requests and rejects other command shapes", () => {
   const root = mkdtempSync(join(tmpdir(), "hosted-metadata-fixture-"));
   const callsPath = join(root, "calls");
   const repository = "steipete/camsnap";
-  const headSha = "a".repeat(40);
-  const route = `repos/${repository}/git/trees/${headSha}?recursive=1`;
-  const tree = [{ type: "blob", sha: "b".repeat(40), size: 23 }];
+  const oid = "b".repeat(40);
+  const tree = [{ type: "blob", sha: oid, size: 23 }];
+  const query = `query { repository(owner: "steipete", name: "camsnap") { b0: object(oid: "${oid}") { ... on Blob { oid byteSize } } } }`;
   try {
-    for (const truncated of [true, false]) {
-      const source = hostedTreeMetadataSource({ repository, headSha, callsPath, truncated, tree });
+    for (const complete of [false, true]) {
+      const source = hostedBlobMetadataSource({ repository, callsPath, complete, tree });
       const invoke = (args: string[]) =>
         execFileSync(process.execPath, ["--input-type=module", "--eval", source, ...args], {
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
         });
-      assert.deepEqual(JSON.parse(invoke(reviewTreeMetadataArgs(route))), { truncated, tree });
+      assert.deepEqual(
+        JSON.parse(invoke(reviewBlobMetadataArgs(query))),
+        complete ? { b0: { oid, byteSize: 23 } } : { b0: null },
+      );
       for (const args of [
-        ["api", route],
-        reviewTreeMetadataArgs(`${route}-wrong`),
-        [...reviewTreeMetadataArgs(route), "--paginate"],
+        ["api", "graphql"],
+        reviewBlobMetadataArgs(query.replace("camsnap", "other")),
+        [...reviewBlobMetadataArgs(query), "--paginate"],
       ]) {
         assert.throws(
           () => invoke(args),
@@ -1519,9 +1522,9 @@ test("hosted changed-surface proof keeps native execution and passive blob obser
   assert.match(source, /summarizeHostedMultilineFailure\(failure, decision/);
   assert.match(source, /materializePullRequestReviewTree/);
   assert.doesNotMatch(source, /live-proof-review|sanitizedLiveProofEnvironment/);
-  assert.match(source, /for \(const truncated of \[true, false\]\)/);
+  assert.match(source, /for \(const complete of \[false, true\]\)/);
   assert.match(source, /const child = spawn\(process\.execPath, args,/);
-  assert.match(source, /assert\.equal\(starts\.length, truncated \? 0 : 1\)/);
+  assert.match(source, /assert\.equal\(starts\.length, complete \? 1 : 0\)/);
   assert.match(
     source,
     /for \(const key of \["OPENAI_API_KEY", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY", "DATABASE_PASSWORD"\]\) assert\.equal\(process\.env\[key\], undefined\)/,

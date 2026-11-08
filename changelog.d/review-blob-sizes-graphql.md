@@ -1,0 +1,1 @@
+- Resolve review blob sizes with a targeted GraphQL lookup instead of a recursive tree listing, which GitHub truncates for openclaw/openclaw and which failed reviews with review_blob_metadata_unavailable.

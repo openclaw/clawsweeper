@@ -20,7 +20,7 @@ import test from "node:test";
 import {
   ensurePullRequestReviewHead,
   ensureReviewTreeCommit,
-  githubReviewTreeBlobSizes,
+  githubReviewBlobSizes,
   hydratePullRequestReviewBlobs,
   hydratePullRequestReviewHistory,
   materializePullRequestReviewTree,
@@ -51,27 +51,27 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
 
-function reviewTreeGhScript(source: string): string {
+// Fake \`gh api graphql\` for blob sizes: answers each aliased object from the
+// fixture's source repository, and null for objects it does not hold.
+function reviewBlobGhScript(source: string, onRequest = ""): string {
   return `const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
 const args = process.argv.slice(2);
-assert.equal(args[0], "api");
-assert.deepEqual(args.slice(2), [
-  "--jq",
-  '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}',
-]);
-const revision = args[1]?.match(/\\/git\\/trees\\/([0-9a-f]+)\\?recursive=1$/)?.[1];
-assert.ok(revision);
-const tree = execFileSync("git", ["ls-tree", "-r", "-l", revision], {
-  cwd: ${JSON.stringify(source)}, encoding: "utf8",
-}).trim().split("\\n").filter(Boolean).map((line) => {
-  const match = line.match(/^\\d+ (\\w+) ([0-9a-f]+)\\s+(-|\\d+)\\t/);
-  assert.ok(match);
-  return match[1] === "blob"
-    ? { type: "blob", sha: match[2], size: Number(match[3]) }
-    : { type: match[1], sha: match[2] };
-});
-process.stdout.write(JSON.stringify({ truncated: false, tree }));
+assert.deepEqual([args[0], args[1], args[2]], ["api", "graphql", "-f"]);
+assert.deepEqual(args.slice(4), ["--jq", ".data.repository"]);
+const query = args[3].slice("query=".length);
+${onRequest}
+const repository = {};
+for (const [, alias, oid] of query.matchAll(/(b\\d+): object\\(oid: "([0-9a-f]{40})"\\)/g)) {
+  try {
+    const type = execFileSync("git", ["cat-file", "-t", oid], { cwd: ${JSON.stringify(source)}, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const byteSize = Number(execFileSync("git", ["cat-file", "-s", oid], { cwd: ${JSON.stringify(source)}, encoding: "utf8" }).trim());
+    repository[alias] = type === "blob" ? { oid, byteSize } : {};
+  } catch {
+    repository[alias] = null;
+  }
+}
+process.stdout.write(JSON.stringify(repository));
 `;
 }
 
@@ -950,7 +950,7 @@ test("optional pinned-base blobs cannot suppress unsettled acquisition", (t) => 
     t.mock.restoreAll();
     syncBuiltinESMExports();
   });
-  withMockGh(fixture.root, reviewTreeGhScript(fixture.source), () =>
+  withMockGh(fixture.root, reviewBlobGhScript(fixture.source), () =>
     withGitHubRun(() => {
       assert.throws(
         () =>
@@ -2217,25 +2217,10 @@ test("introduced blob hydration does not start metadata work after its deadline"
   const fixture = partialCloneFixture();
   const startedAt = Date.now();
   const requestsPath = join(fixture.root, "requests.json");
-  const ghScript = `const assert = require("node:assert/strict");
-const { execFileSync } = require("node:child_process");
-const { appendFileSync } = require("node:fs");
-const args = process.argv.slice(2);
-assert.equal(args[0], "api");
-const revision = args[1]?.match(/\\/git\\/trees\\/([0-9a-f]+)\\?recursive=1$/)?.[1];
-assert.ok(revision);
-const tree = execFileSync("git", ["ls-tree", "-r", "-l", revision], {
-  cwd: ${JSON.stringify(fixture.source)}, encoding: "utf8",
-}).trim().split("\\n").filter(Boolean).map((line) => {
-  const match = line.match(/^\\d+ (\\w+) ([0-9a-f]+)\\s+(-|\\d+)\\t/);
-  assert.ok(match);
-  return match[1] === "blob"
-    ? { type: "blob", sha: match[2], size: Number(match[3]) }
-    : { type: match[1], sha: match[2] };
-});
-appendFileSync(${JSON.stringify(requestsPath)}, JSON.stringify({ revision, elapsedMs: 0 }) + "\\n");
-process.stdout.write(JSON.stringify({ truncated: false, tree }));
-`;
+  const ghScript = reviewBlobGhScript(
+    fixture.source,
+    `require("node:fs").appendFileSync(${JSON.stringify(requestsPath)}, JSON.stringify({ query: args[3].length, elapsedMs: 0 }) + "\\n");`,
+  );
   try {
     t.mock.method(Date, "now", () => (existsSync(requestsPath) ? startedAt + 30_001 : startedAt));
     withMockGh(fixture.root, ghScript, () =>
@@ -2254,18 +2239,15 @@ process.stdout.write(JSON.stringify({ truncated: false, tree }));
         );
       }),
     );
-    const requests: Array<{ revision: string; elapsedMs: number }> = readFileSync(
-      requestsPath,
-      "utf8",
-    )
+    const requests: Array<{ query: number; elapsedMs: number }> = readFileSync(requestsPath, "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
     const addedBlobStillMissing = !objectExistsOffline(fixture.target, fixture.addedBlobSha);
     t.diagnostic(JSON.stringify({ requests, addedBlobStillMissing }));
-    assert.deepEqual(
-      requests.map((request) => request.revision),
-      [fixture.baseSha],
+    assert.equal(
+      requests.length,
+      1,
       "metadata work must stop before another request after the owner deadline",
     );
     assert.equal(addedBlobStillMissing, true);
@@ -2309,7 +2291,7 @@ process.once("SIGTERM", () => {
 });
 const respond = () => {
   record("response");
-  ${reviewTreeGhScript(fixture.source)}
+  ${reviewBlobGhScript(fixture.source)}
 };
 if (ordinal === 1) setTimeout(respond, 31_000);
 else respond();
@@ -2356,7 +2338,7 @@ else respond();
     const starts = events.filter((event) => event.event === "start");
     assert.equal(starts.length, 1, "no second metadata request may start after expiry");
     assert.equal(starts[0]!.args?.[0], "api");
-    assert.ok(starts[0]!.args?.[1]?.endsWith(`/git/trees/${fixture.baseSha}?recursive=1`));
+    assert.equal(starts[0]!.args?.[1], "graphql");
     assert.deepEqual(
       events.map((event) => event.event),
       ["start", "signal", "exit"],
@@ -2381,7 +2363,7 @@ else respond();
 test("source preparation reports unavailable historical blobs before restricted inspection", () => {
   const fixture = partialCloneFixture({ historicalBase: true, prefetchHead: false });
   const reviewTree = join(fixture.root, "review-tree");
-  withMockGh(fixture.root, reviewTreeGhScript(fixture.source), () =>
+  withMockGh(fixture.root, reviewBlobGhScript(fixture.source), () =>
     withGitHubRun(() => {
       try {
         // Construct a main-only unsafe path in Git without relying on host filesystem
@@ -2478,90 +2460,23 @@ test("source preparation reports unavailable historical blobs before restricted 
   );
 });
 
-test("review checkout preserves large tree metadata within the GitHub CLI capture limit", () => {
+test("production review checkout resolves missing blob sizes without a tree listing", () => {
   const fixture = partialCloneFixture();
   const reviewTree = join(fixture.root, "review-tree");
-  const metadataPath = join(fixture.root, "tree.json");
-  const tree = git(fixture.source, "ls-tree", "-rl", fixture.headSha)
-    .split("\n")
-    .map((line) => {
-      const match = /^(\d+) (\w+) ([0-9a-f]+)\s+(\d+|-)\t(.+)$/.exec(line);
-      assert.ok(match);
-      return {
-        mode: match[1],
-        type: match[2],
-        sha: match[3],
-        size: match[4] === "-" ? null : Number(match[4]),
-        path: match[5],
-        url: `https://api.github.com/repos/fixture/repository/git/blobs/${match[3]}`,
-      };
-    });
-  for (let index = 0; index < 33_000; index += 1) {
-    const sha = index.toString(16).padStart(40, "0");
-    tree.push({
-      mode: "100644",
-      type: "blob",
-      sha,
-      size: index + 1,
-      path: `synthetic/packages/${index}/${"segment/".repeat(20)}entry.ts`,
-      url: `https://api.github.com/repos/fixture/repository/git/blobs/${sha}`,
-    });
-  }
-  const metadata = { truncated: false, tree };
-  const raw = JSON.stringify(metadata);
-  assert.ok(Buffer.byteLength(raw) > 8 * 1024 * 1024);
-  writeFileSync(metadataPath, raw);
-  const capturedPath = join(fixture.root, "captured-tree.json");
-  const materialize = () =>
-    withGitHubRun(() =>
-      materializeContextReviewTree({
-        targetDir: fixture.target,
-        worktreeDir: reviewTree,
-        itemNumber: 982,
-        headSha: fixture.headSha,
-      }),
-    );
   try {
-    withMockGh(
-      fixture.root,
-      `const { spawnSync } = require("node:child_process");
-const { readFileSync, writeFileSync } = require("node:fs");
-const args = process.argv.slice(2);
-const filter = args.indexOf("--jq");
-if (filter < 0) {
-  process.stdout.write(readFileSync(${JSON.stringify(metadataPath)}));
-} else {
-  const result = spawnSync("jq", ["-c", args[filter + 1], ${JSON.stringify(metadataPath)}], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
-  if (result.status === 0) {
-    writeFileSync(${JSON.stringify(capturedPath)}, result.stdout);
-    process.stdout.write(result.stdout);
-  } else {
-    process.stderr.write(result.stderr);
-    process.exitCode = result.status ?? 1;
-  }
-}
-`,
-      () => {
-        for (const invalid of [
-          { ...metadata, truncated: true },
-          { truncated: false, tree: { entry: tree[0] } },
-          { truncated: false, tree: [null, ...tree] },
-        ]) {
-          writeFileSync(metadataPath, JSON.stringify(invalid));
-          assert.throws(materialize, { diagnosticReason: "review_checkout_unavailable" });
-          assert.equal(existsSync(reviewTree), false);
-        }
-        writeFileSync(metadataPath, raw);
-        assert.equal(materialize(), true);
-      },
+    withMockGh(fixture.root, reviewBlobGhScript(fixture.source), () =>
+      assert.equal(
+        withGitHubRun(() =>
+          materializeContextReviewTree({
+            targetDir: fixture.target,
+            worktreeDir: reviewTree,
+            itemNumber: 982,
+            headSha: fixture.headSha,
+          }),
+        ),
+        true,
+      ),
     );
-    const capturedOutput = readFileSync(capturedPath, "utf8");
-    assert.ok(Buffer.byteLength(capturedOutput) < 8 * 1024 * 1024);
-    const captured = JSON.parse(capturedOutput);
-    assert.deepEqual(captured, {
-      truncated: false,
-      tree: tree.map(({ type, sha, size }) => ({ type, sha, size })),
-    });
     assert.equal(git(reviewTree, "rev-parse", "HEAD"), fixture.headSha);
     assert.equal(readFileSync(join(reviewTree, "added.txt"), "utf8"), "new implementation\n");
   } finally {
@@ -2570,42 +2485,49 @@ if (filter < 0) {
   }
 });
 
-test("review tree blob sizes use one bounded recursive-tree request", () => {
-  const headSha = "a".repeat(40);
-  let requests = 0;
-  const result = githubReviewTreeBlobSizes({
-    repository: "openclaw/clawsweeper",
-    headSha,
-    request: (path) => {
-      requests += 1;
-      assert.equal(path, `repos/openclaw/clawsweeper/git/trees/${headSha}?recursive=1`);
-      return {
-        truncated: false,
-        tree: [
-          { type: "tree", sha: "b".repeat(40) },
-          { type: "blob", sha: "c".repeat(40), size: 12 },
-          { type: "blob", sha: "d".repeat(40), size: 34 },
-        ],
-      };
+test("review blob sizes read exactly the missing objects in bounded batches", () => {
+  // Production: openclaw/openclaw's recursive tree listing became truncated, so
+  // a whole-tree size lookup failed every review whose checkout lacked a blob.
+  const ids = Array.from({ length: 150 }, (_, index) => index.toString(16).padStart(40, "0"));
+  const queries: string[] = [];
+  const result = githubReviewBlobSizes({
+    repository: "openclaw/openclaw",
+    objectIds: [...ids, ids[0]!],
+    request: (query) => {
+      queries.push(query);
+      const response: Record<string, unknown> = {};
+      for (const [, alias, oid] of query.matchAll(/(b\d+): object\(oid: "([0-9a-f]{40})"\)/g)) {
+        response[alias!] = oid === ids[149] ? null : { oid, byteSize: 7 };
+      }
+      return response;
     },
   });
-
-  assert.equal(requests, 1);
-  assert.deepEqual(
-    [...result],
-    [
-      ["c".repeat(40), 12],
-      ["d".repeat(40), 34],
-    ],
+  assert.equal(queries.length, 2);
+  assert.match(queries[0]!, /repository\(owner: "openclaw", name: "openclaw"\)/);
+  assert.equal(result.size, 149);
+  assert.equal(result.get(ids[0]!), 7);
+  assert.equal(
+    result.has(ids[149]!),
+    false,
+    "an unknown object stays missing so the caller fails closed",
   );
   assert.throws(
     () =>
-      githubReviewTreeBlobSizes({
-        repository: "openclaw/clawsweeper",
-        headSha,
-        request: () => ({ truncated: true, tree: [] }),
+      githubReviewBlobSizes({
+        repository: "openclaw/openclaw",
+        objectIds: [ids[0]!],
+        request: () => ({ b0: { oid: ids[1], byteSize: 7 } }),
       }),
-    /incomplete bounded review tree metadata response/,
+    /invalid bounded review blob metadata/,
+  );
+  assert.throws(
+    () =>
+      githubReviewBlobSizes({
+        repository: "openclaw/openclaw",
+        objectIds: ['" } evil'],
+        request: () => ({}),
+      }),
+    /invalid bounded review blob metadata request/,
   );
 });
 
