@@ -5,6 +5,7 @@ import { ghJson } from "./github-cli.js";
 import {
   describeHookDelivery,
   errorText,
+  isConclusiveHookDelivery,
   postOpenClawAgentHook,
   resolveOpenClawHookConfig,
 } from "./openclaw-hook.js";
@@ -25,6 +26,9 @@ export type ScaleObservation = {
 export type ReviewFailureObservation = {
   windowMinutes: number;
   sourcePreparationFailures: number;
+  // Health "unknown" (for example telemetry_unavailable): the counts are at
+  // best a lower bound, so a low count is not evidence of health.
+  unavailableReasons: string[];
 };
 
 export type ScaleFinding = { key: string; message: string };
@@ -95,12 +99,25 @@ export function observeReviewFailures(status: unknown): ReviewFailureObservation
   const queue = (status as { exact_review_queue?: { review_failure_health?: unknown } } | null)
     ?.exact_review_queue;
   const health = queue?.review_failure_health as
-    | { window_minutes?: unknown; by_stage?: { source_preparation?: unknown } }
+    | {
+        status?: unknown;
+        reasons?: unknown;
+        window_minutes?: unknown;
+        by_stage?: { source_preparation?: unknown };
+      }
     | undefined;
   const failures = health?.by_stage?.source_preparation;
   const windowMinutes = health?.window_minutes;
   if (typeof failures !== "number" || typeof windowMinutes !== "number") return null;
-  return { windowMinutes, sourcePreparationFailures: failures };
+  const reasons = Array.isArray(health?.reasons)
+    ? health.reasons.filter((reason): reason is string => typeof reason === "string")
+    : [];
+  return {
+    windowMinutes,
+    sourcePreparationFailures: failures,
+    unavailableReasons:
+      health?.status === "unknown" ? (reasons.length ? reasons : ["unknown"]) : [],
+  };
 }
 
 const LIMITS_GUIDE_URL =
@@ -122,6 +139,9 @@ export async function collectScaleFindings(
   try {
     failures = observeReviewFailures(await readStatus());
     if (!failures) throw new Error("review_failure_health missing from the status document");
+    if (failures.unavailableReasons.length > 0) {
+      throw new Error(`review failure health unknown: ${failures.unavailableReasons.join(", ")}`);
+    }
   } catch (error) {
     unavailable.push({
       key: "review_failures_unavailable",
@@ -190,10 +210,14 @@ async function main() {
     },
   });
   console.log(`alert: ${describeHookDelivery(result.delivery)}`);
-  if (sentFile) appendFileSync(sentFile, `${alertKey}\n`);
+  // Record only a conclusive delivery; a failed or unknown one stays eligible
+  // for the next hourly run.
+  if (sentFile && isConclusiveHookDelivery(result.delivery)) {
+    appendFileSync(sentFile, `${alertKey}\n`);
+  }
 }
 
-export function alertAlreadySent(sentFile: string, alertKey: string): boolean {
+function alertAlreadySent(sentFile: string, alertKey: string): boolean {
   return existsSync(sentFile) && readFileSync(sentFile, "utf8").split("\n").includes(alertKey);
 }
 

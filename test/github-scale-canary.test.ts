@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  alertAlreadySent,
   collectScaleFindings,
   evaluateScaleCanary,
   observeCheckRunScale,
@@ -79,7 +81,7 @@ test("canary reads source-preparation failures from the public status document",
         review_failure_health: { window_minutes: 60, by_stage: { source_preparation: 613 } },
       },
     }),
-    { windowMinutes: 60, sourcePreparationFailures: 613 },
+    { windowMinutes: 60, sourcePreparationFailures: 613, unavailableReasons: [] },
   );
   assert.equal(observeReviewFailures({}), null);
 });
@@ -131,11 +133,93 @@ test("canary keeps observed findings and reports each source it could not read",
   assert.deepEqual(healthy.findings, []);
 });
 
-test("canary suppresses an alert key already sent today", () => {
-  const sent = join(mkdtempSync(join(tmpdir(), "scale-canary-")), "sent.txt");
-  const key = "github-scale-canary:2026-11-08:source_preparation_failures";
-  assert.equal(alertAlreadySent(sent, key), false);
-  writeFileSync(sent, `${key}\n`);
-  assert.equal(alertAlreadySent(sent, key), true);
-  assert.equal(alertAlreadySent(sent, `${key},check_runs:openclaw/openclaw`), false);
+async function runCanaryCli(env: Record<string, string>) {
+  return await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
+    const child = spawn(process.execPath, ["dist/repair/github-scale-canary.js"], {
+      env: { ...process.env, TARGET_REPOS: "", ...env },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+test("canary CLI records only conclusive deliveries and alerts on unknown failure health", async () => {
+  let status: unknown = {
+    exact_review_queue: {
+      review_failure_health: {
+        status: "degraded",
+        window_minutes: 60,
+        by_stage: { source_preparation: openclaw.reviewFailuresPerHourDuringTreeOutage },
+      },
+    },
+  };
+  let completion: unknown = { status: "error", deliveryError: "discord unavailable" };
+  const hookPosts: Array<{ idempotencyKey: string; message: string }> = [];
+  const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => (body += chunk));
+    request.on("end", () => {
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/status") {
+        response.end(JSON.stringify(status));
+        return;
+      }
+      hookPosts.push(JSON.parse(body));
+      response.end(JSON.stringify({ ok: true, runId: `run-${hookPosts.length}`, completion }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const directory = mkdtempSync(join(tmpdir(), "scale-canary-"));
+  try {
+    const { port } = server.address() as AddressInfo;
+    const sentFile = join(directory, "sent.txt");
+    const env = {
+      CLAWSWEEPER_STATUS_URL: `http://127.0.0.1:${port}/status`,
+      CLAWSWEEPER_OPENCLAW_HOOK_URL: `http://127.0.0.1:${port}/hooks`,
+      CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: "test-token",
+      CLAWSWEEPER_OPENCLAW_HOOK_RETRY_ATTEMPTS: "1",
+      CLAWSWEEPER_DISCORD_TARGET: "channel:1",
+      CLAWSWEEPER_SCALE_CANARY_SENT_FILE: sentFile,
+    };
+
+    // A failed delivery is not recorded, so the next hourly run retries it.
+    const failed = await runCanaryCli(env);
+    assert.equal(failed.code, 1, failed.stderr);
+    assert.match(failed.stdout, /alert: .*failed/i);
+    assert.equal(existsSync(sentFile) && readFileSync(sentFile, "utf8"), false);
+
+    completion = { status: "ok", delivered: true };
+    const delivered = await runCanaryCli(env);
+    assert.equal(delivered.code, 1, delivered.stderr);
+    const repeat = await runCanaryCli(env);
+    assert.match(
+      repeat.stdout,
+      /alert already sent: github-scale-canary:\S+:source_preparation_failures/,
+    );
+    assert.equal(hookPosts.length, 2);
+    assert.match(hookPosts[0]!.message, /docs\/github-api-limits\.md/);
+
+    // Health explicitly unknown with a low count is not a healthy run.
+    status = {
+      exact_review_queue: {
+        review_failure_health: {
+          status: "unknown",
+          reasons: ["telemetry_unavailable"],
+          window_minutes: 60,
+          by_stage: { source_preparation: 0 },
+        },
+      },
+    };
+    const unknown = await runCanaryCli(env);
+    assert.equal(unknown.code, 1, unknown.stderr);
+    assert.match(unknown.stdout, /review_failures_unavailable/);
+    assert.match(unknown.stdout, /telemetry_unavailable/);
+    assert.equal(hookPosts.length, 3);
+  } finally {
+    server.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
