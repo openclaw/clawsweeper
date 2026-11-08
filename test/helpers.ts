@@ -970,6 +970,19 @@ export function promotionGhMock(options: {
 	  console.log(JSON.stringify({ total_count: openPrCount, incomplete_results: authorSearchIncomplete, items: [] }));
 	} else if (args[0] === "api" && args[1] === "graphql") {
 	  const query = args.find(arg => arg.startsWith("query=")) || "";
+	  if (query.includes("HEAD_REF_FORCE_PUSHED_EVENT")) {
+	    // Served from the same timeline fixture the REST timeline reads.
+	    const nodes = timeline
+	      .filter(event => event.event === "head_ref_force_pushed")
+	      .map(event => ({
+	        createdAt: event.createdAt ?? event.created_at,
+	        afterCommit: { oid: event.commitId ?? event.commit_id },
+	      }));
+	    console.log(JSON.stringify({ data: { repository: { pullRequest: { timelineItems: {
+	      nodes, pageInfo: { hasPreviousPage: false, startCursor: null }
+	    } } } } }));
+	    process.exit(0);
+	  }
 	  if (query.includes("nodes(ids:")) {
 	    const ids = JSON.parse(query.split("nodes(ids:")[1].split(")")[0]);
 	    console.log(JSON.stringify({ data: { nodes: ids.map(id => ({ id, lastEditedAt: null, userContentEdits: { totalCount: 0, nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } })) } }));

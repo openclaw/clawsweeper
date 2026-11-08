@@ -228,7 +228,14 @@ ${
 }
 if (args[0] === "api" && args[1] === "graphql") {
   const query = args.find(arg => arg.startsWith("query=")) || "";
-  if (query.includes("nodes(ids:")) {
+  if (query.includes("HEAD_REF_FORCE_PUSHED_EVENT")) {
+    const nodes = [{ event: "none" }${forcePushEvent}]
+      .filter(event => event.event === "head_ref_force_pushed")
+      .map(event => ({ createdAt: event.created_at, afterCommit: { oid: event.commit_id } }));
+    console.log(JSON.stringify({ data: { repository: { pullRequest: { timelineItems: {
+      nodes, pageInfo: { hasPreviousPage: false, startCursor: null }
+    } } } } }));
+  } else if (query.includes("nodes(ids:")) {
     const ids = JSON.parse(query.split("nodes(ids:")[1].split(")")[0]);
     console.log(JSON.stringify({ data: { nodes: ids.map(id => {
       const at = id === "IC_9902" ? ${JSON.stringify(options.humanCommentAt ?? null)} : null;
