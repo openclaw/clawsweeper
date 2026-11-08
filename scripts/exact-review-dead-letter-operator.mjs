@@ -1280,7 +1280,10 @@ async function reconcileParkedReviews({
       if (target.state === "repository_gone") summary.repository_gone_targets += 1;
     } else if (target.state === "open") {
       summary.open_targets += 1;
-      if (!args.forceUnchanged && !parkedReviewRetryIdentityChanged(row, target)) {
+      if (
+        !(args.forceUnchanged && parkedReviewHasRetryBudget(row)) &&
+        !parkedReviewRetryIdentityChanged(row, target)
+      ) {
         summary.skipped_targets += 1;
         recordSkipReasonCount(summary, "unchanged_review_identity", 1);
       } else if (recoverable.length < args.maxRecoveries) recoverable.push({ row, target });
@@ -1378,7 +1381,10 @@ async function reconcileParkedReviews({
         summary.skipped_targets += 1;
         continue;
       }
-      if (!args.forceUnchanged && !parkedReviewRetryIdentityChanged(candidate.row, current)) {
+      if (
+        !(args.forceUnchanged && parkedReviewHasRetryBudget(candidate.row)) &&
+        !parkedReviewRetryIdentityChanged(candidate.row, current)
+      ) {
         summary.skipped_targets += 1;
         recordSkipReasonCount(summary, "unchanged_review_identity", 1);
         continue;
@@ -1430,6 +1436,15 @@ async function reconcileParkedReviews({
     }
   }
   printResult(summary);
+}
+
+// --force-unchanged resets a spent retry budget. Policy holds (maintainer
+// request, locked conversation, oversized PR) have no budget: an unchanged
+// held review would only re-park, so it still needs a source change.
+const PARKED_RETRY_BUDGET_REASONS = new Set(["review_retry_exhausted", "dispatch_rejected"]);
+
+function parkedReviewHasRetryBudget(row) {
+  return PARKED_RETRY_BUDGET_REASONS.has(row.parked_reason);
 }
 
 function parkedReviewRetryIdentityChanged(row, target) {

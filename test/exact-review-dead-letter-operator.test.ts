@@ -720,6 +720,27 @@ test("parked pull request reconciliation requires immutable source drift", async
     assert.equal(JSON.parse(forced.stdout).recovered_targets, 1);
     assert.equal(mutations.length, 4);
     assert.equal(mutations[3].override_retry_budget, true);
+
+    // A policy hold has no retry budget to reset: forcing an unchanged held
+    // review would only re-park it, so it still needs a source change.
+    row.parked_reason = "maintainer_request_required";
+    const forcedHold = await runOperator(
+      [
+        ...common,
+        "--execute",
+        "--force-unchanged",
+        "--output",
+        join(directory, "forced-hold.json"),
+      ],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(forcedHold.code, 0, forcedHold.stderr);
+    assert.equal(JSON.parse(forcedHold.stdout).recovered_targets, 0);
+    assert.deepEqual(JSON.parse(forcedHold.stdout).skip_reasons, {
+      unchanged_review_identity: 1,
+    });
+    assert.equal(mutations.length, 4);
   } finally {
     server.close();
     await rm(directory, { recursive: true, force: true });
