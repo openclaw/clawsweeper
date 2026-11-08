@@ -5768,6 +5768,70 @@ test("target sweep dispatches preserve disabled ClawHub guard", () => {
   );
 });
 
+test("apply continuation queues nothing when the active run list is unreadable", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const run = workflow.jobs["apply-existing"].steps.find(
+    (candidate: { name?: string }) => candidate.name === "Continue apply sweep",
+  ).run as string;
+  const root = mkdtempSync(`${tmpPrefix}apply-continuation-runs-`);
+  const calls = join(root, "calls");
+  try {
+    for (const runsFail of [true, false]) {
+      writeFileSync(calls, "");
+      execFileSync(
+        "bash",
+        // GitHub's default step shell: bash -e -o pipefail.
+        [
+          "-e",
+          "-o",
+          "pipefail",
+          "-c",
+          `
+pnpm() {
+  printf 'pnpm %s\\n' "$*" >> "$CONTINUATION_CALLS"
+  printf 'APPLY_CONTINUATION_BLOCKED=false\\n'
+}
+gh() {
+  printf 'gh %s\\n' "$*" >> "$CONTINUATION_CALLS"
+  case "$1" in
+    api) [ -z "\${CONTINUATION_RUNS_FAIL:-}" ] ;;
+    workflow) [ "$2" = run ] ;;
+    *) return 98 ;;
+  esac
+}
+${run}`,
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          env: {
+            PATH: process.env.PATH,
+            CONTINUATION_CALLS: calls,
+            WORKFLOW_REPOSITORY: "openclaw/clawsweeper",
+            WORKFLOW_RUN_ID: "123",
+            APPLY_TARGET_REPO: "openclaw/openclaw",
+            APPLY_CONTINUE: "true",
+            APPLY_AUTO_SELECTED_BATCH: "true",
+            ...(runsFail ? { CONTINUATION_RUNS_FAIL: "1" } : {}),
+          },
+        },
+      );
+      const observed = readFileSync(calls, "utf8").trim().split("\n").filter(Boolean);
+      const dispatches = observed.filter((call) => call.startsWith("gh workflow run "));
+      if (runsFail) {
+        assert.equal(observed.filter((call) => call.startsWith("gh api ")).length, 1);
+        assert.deepEqual(dispatches, [], "an unreadable run list must not queue a duplicate apply");
+        assert.equal(observed.filter((call) => call.startsWith("pnpm ")).length, 0);
+      } else {
+        assert.equal(observed.filter((call) => call.startsWith("gh api ")).length, 5);
+        assert.equal(dispatches.length, 1, "a readable, unblocked lane still continues");
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("review backstops preserve resolved apply scope and recent lane activity", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
   const step = workflow.jobs["apply-existing"].steps.find(
@@ -5827,6 +5891,8 @@ test("review backstops preserve resolved apply scope and recent lane activity", 
     { name: "recent hot lane", scope: "true", recent: [hot], expected: ["false"] },
     { name: "recent normal lane", scope: "true", recent: [normal], expected: ["true"] },
     { name: "both lanes recent", scope: "true", recent: [hot, normal], expected: [] },
+    // An unreadable run list cannot rule out recent runs: queue nothing.
+    { name: "unreadable run list", scope: "true", recent: [], runsFail: true, expected: [] },
   ];
   try {
     for (const scenario of cases) {
@@ -5851,7 +5917,7 @@ pnpm() {
 gh() {
   printf 'gh %s\\n' "$*" >> "$BACKSTOP_CALLS"
   case "$1" in
-    api) printf '%s' "$BACKSTOP_RECENT_RUNS" ;;
+    api) [ -z "\${BACKSTOP_RUNS_FAIL:-}" ] && printf '%s' "$BACKSTOP_RECENT_RUNS" ;;
     workflow) [ "$2" = run ] && [ "$3" = review-plan.yml ] ;;
     *) return 98 ;;
   esac
@@ -5899,6 +5965,7 @@ ${run}`,
             WORKFLOW_REPOSITORY: "openclaw/clawsweeper",
             GITHUB_RUN_ID: "123",
             BACKSTOP_RECENT_RUNS: scenario.recent.map((entry) => JSON.stringify(entry)).join("\n"),
+            ...(scenario.runsFail ? { BACKSTOP_RUNS_FAIL: "1" } : {}),
             ...(scenario.scope === undefined ? {} : { APPLY_AUTO_SELECTED_BATCH: scenario.scope }),
             APPLY_SYNC_COMMENTS_ONLY: scenario.commentsOnly ?? "false",
             APPLY_ITEM_NUMBERS: scenario.items ?? "",

@@ -1,0 +1,1 @@
+- The apply continuation and review backstops in `sweep.yml` no longer queue runs when the active-run list cannot be read; scheduled runs continue the lanes instead of a possible duplicate.
