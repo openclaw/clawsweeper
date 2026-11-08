@@ -742,10 +742,14 @@ export function createRelatedContext({
         ),
       );
       if (!Array.isArray(response.items)) return null;
-      return response.items.map(asRecord).some((candidate) => {
+      const related = response.items.map(asRecord).some((candidate) => {
         const number = candidate.number;
         return typeof number === "number" && number !== item.number && !candidate.pull_request;
       });
+      // A search that timed out server-side can omit the match; only a
+      // complete result proves there is no related issue.
+      if (!related && response.incomplete_results === true) return null;
+      return related;
     } catch (error) {
       if (error instanceof GitHubRuntimeBudgetError) throw error;
       return null;
