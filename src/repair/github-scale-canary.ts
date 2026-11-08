@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { ghJson } from "./github-cli.js";
 import {
@@ -102,6 +103,45 @@ export function observeReviewFailures(status: unknown): ReviewFailureObservation
   return { windowMinutes, sourcePreparationFailures: failures };
 }
 
+const LIMITS_GUIDE_URL =
+  "https://github.com/openclaw/clawsweeper/blob/main/docs/github-api-limits.md";
+
+/**
+ * Observe every source and evaluate. A failed observation becomes a finding
+ * of its own, so a GitHub or status outage neither hides findings already
+ * observed nor passes as a healthy run.
+ */
+export async function collectScaleFindings(
+  repositories: readonly string[],
+  readStatus: () => Promise<unknown>,
+  observe: (repository: string) => ScaleObservation = (repository) =>
+    observeCheckRunScale(repository),
+): Promise<{ scale: ScaleObservation[]; findings: ScaleFinding[] }> {
+  const unavailable: ScaleFinding[] = [];
+  let failures: ReviewFailureObservation | null = null;
+  try {
+    failures = observeReviewFailures(await readStatus());
+    if (!failures) throw new Error("review_failure_health missing from the status document");
+  } catch (error) {
+    unavailable.push({
+      key: "review_failures_unavailable",
+      message: `Could not read review failures from ClawSweeper status (${errorText(error)}); source-preparation failures were not checked.`,
+    });
+  }
+  const scale: ScaleObservation[] = [];
+  for (const repository of repositories) {
+    try {
+      scale.push(observe(repository));
+    } catch (error) {
+      unavailable.push({
+        key: `check_runs_unavailable:${repository}`,
+        message: `Could not read open-PR check-run counts for ${repository} (${errorText(error)}).`,
+      });
+    }
+  }
+  return { scale, findings: [...evaluateScaleCanary(scale, failures), ...unavailable] };
+}
+
 async function main() {
   const repositories = (process.env.TARGET_REPOS ?? "openclaw/openclaw")
     .split(",")
@@ -109,35 +149,52 @@ async function main() {
     .filter(Boolean);
   const statusUrl =
     process.env.CLAWSWEEPER_STATUS_URL ?? "https://clawsweeper.openclaw.ai/api/status";
-  const status = await fetch(statusUrl, { signal: AbortSignal.timeout(30_000) })
-    .then((response) => (response.ok ? response.json() : null))
-    .catch(() => null);
-  const scale = repositories.map((repository) => observeCheckRunScale(repository));
-  const findings = evaluateScaleCanary(scale, observeReviewFailures(status));
+  const { scale, findings } = await collectScaleFindings(repositories, async () => {
+    const response = await fetch(statusUrl, { signal: AbortSignal.timeout(30_000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  });
   console.log(JSON.stringify({ scale, findings }, null, 2));
   if (findings.length === 0) return;
   process.exitCode = 1;
+  if (process.env.CLAWSWEEPER_SCALE_CANARY_DRY_RUN === "1") return;
   const config = resolveOpenClawHookConfig(process.env);
-  if (!config || process.env.CLAWSWEEPER_SCALE_CANARY_DRY_RUN === "1") return;
-  // One alert per finding set per day: the key makes repeat runs idempotent.
+  if (!config) {
+    console.error("alert not sent: OpenClaw hook URL, token or Discord target is not configured");
+    return;
+  }
+  // One alert per finding set per day. The Gateway only deduplicates retries
+  // for a few minutes, so hourly repeats are suppressed by the sent-key file
+  // the workflow carries between runs in the Actions cache.
   const day = new Date().toISOString().slice(0, 10);
+  const alertKey = `github-scale-canary:${day}:${findings.map((finding) => finding.key).join(",")}`;
+  const sentFile = process.env.CLAWSWEEPER_SCALE_CANARY_SENT_FILE;
+  if (sentFile && alertAlreadySent(sentFile, alertKey)) {
+    console.log(`alert already sent: ${alertKey}`);
+    return;
+  }
   const result = await postOpenClawAgentHook({
     config,
     fetcher: fetch,
     post: {
       name: "ClawSweeper GitHub scale canary",
-      idempotencyKey: `github-scale-canary:${day}:${findings.map((finding) => finding.key).join(",")}`,
+      idempotencyKey: alertKey,
       deliver: true,
       message: [
         "Post this ClawSweeper alert to the channel verbatim:",
         "",
         "ClawSweeper GitHub scale canary:",
         ...findings.map((finding) => `- ${finding.message}`),
-        "See docs/github-api-limits.md.",
+        `Limits and recovery: ${LIMITS_GUIDE_URL}`,
       ].join("\n"),
     },
   });
   console.log(`alert: ${describeHookDelivery(result.delivery)}`);
+  if (sentFile) appendFileSync(sentFile, `${alertKey}\n`);
+}
+
+export function alertAlreadySent(sentFile: string, alertKey: string): boolean {
+  return existsSync(sentFile) && readFileSync(sentFile, "utf8").split("\n").includes(alertKey);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

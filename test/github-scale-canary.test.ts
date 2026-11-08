@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
+  alertAlreadySent,
+  collectScaleFindings,
   evaluateScaleCanary,
   observeCheckRunScale,
   observeReviewFailures,
@@ -78,4 +82,60 @@ test("canary reads source-preparation failures from the public status document",
     { windowMinutes: 60, sourcePreparationFailures: 613 },
   );
   assert.equal(observeReviewFailures({}), null);
+});
+
+test("canary keeps observed findings and reports each source it could not read", async () => {
+  const outageStatus = {
+    exact_review_queue: {
+      review_failure_health: {
+        window_minutes: 60,
+        by_stage: { source_preparation: openclaw.reviewFailuresPerHourDuringTreeOutage },
+      },
+    },
+  };
+  const githubDown = await collectScaleFindings(
+    ["openclaw/openclaw"],
+    async () => outageStatus,
+    () => {
+      throw new Error("HTTP 502 from GraphQL");
+    },
+  );
+  assert.deepEqual(
+    githubDown.findings.map((finding) => finding.key),
+    ["source_preparation_failures", "check_runs_unavailable:openclaw/openclaw"],
+  );
+
+  const quiet = { repository: "openclaw/openclaw", maxCheckRuns: 12, maxCheckRunsPr: 1 };
+  for (const readStatus of [
+    async () => {
+      throw new Error("HTTP 503");
+    },
+    async () => ({ exact_review_queue: {} }),
+  ]) {
+    const statusDown = await collectScaleFindings(["openclaw/openclaw"], readStatus, () => quiet);
+    assert.deepEqual(
+      statusDown.findings.map((finding) => finding.key),
+      ["review_failures_unavailable"],
+    );
+  }
+
+  const healthy = await collectScaleFindings(
+    ["openclaw/openclaw"],
+    async () => ({
+      exact_review_queue: {
+        review_failure_health: { window_minutes: 60, by_stage: { source_preparation: 0 } },
+      },
+    }),
+    () => quiet,
+  );
+  assert.deepEqual(healthy.findings, []);
+});
+
+test("canary suppresses an alert key already sent today", () => {
+  const sent = join(mkdtempSync(join(tmpdir(), "scale-canary-")), "sent.txt");
+  const key = "github-scale-canary:2026-11-08:source_preparation_failures";
+  assert.equal(alertAlreadySent(sent, key), false);
+  writeFileSync(sent, `${key}\n`);
+  assert.equal(alertAlreadySent(sent, key), true);
+  assert.equal(alertAlreadySent(sent, `${key},check_runs:openclaw/openclaw`), false);
 });
