@@ -1,0 +1,18 @@
+{
+  "measuredAt": "2026-11-08",
+  "repository": "openclaw/openclaw",
+  "source": "Live read-only GitHub probes; see docs/github-api-limits.md",
+  "treeEntries": 67554,
+  "treeListingTruncated": true,
+  "openPullRequests": 2886,
+  "sampledOpenPrHeads": 200,
+  "sampledHeadsOverOnePageOfCheckRuns": 144,
+  "maxCheckRunsOnOpenHead": 299,
+  "checkRunsOnPr194898": 231,
+  "maxChangedFiles": 5018,
+  "maxPullCommits": 2522,
+  "maxTimelineEvents": 703,
+  "maxIssueComments": 476,
+  "repositoryLabels": 405,
+  "reviewFailuresPerHourDuringTreeOutage": 620
+}
