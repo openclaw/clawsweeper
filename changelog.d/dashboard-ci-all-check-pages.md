@@ -1,0 +1,1 @@
+- Count every page of a PR head's check runs in the dashboard's live CI status; openclaw PRs with failures past the first 100 runs were shown green.
