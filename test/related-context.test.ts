@@ -15,7 +15,11 @@ const SECRET_URI = ["https://alice", "secret@example.com/chrome"].join(":");
 const PASS_URI = ["https://user", "pass@chrome.example.com"].join(":");
 const PASS_HTTP_URI = ["http://user", "pass@chrome.example.com"].join(":");
 
-function relatedContextWith(records: Record<string, unknown>, localReportsRoot?: string) {
+function relatedContextWith(
+  records: Record<string, unknown>,
+  localReportsRoot?: string,
+  searchResponse?: unknown,
+) {
   const requested: string[] = [];
   const batches: string[][] = [];
   const context = createRelatedContext({
@@ -36,7 +40,10 @@ function relatedContextWith(records: Record<string, unknown>, localReportsRoot?:
           : { ok: false as const, error: new Error(`unexpected GitHub request: ${path}`) },
       );
     },
-    ghJsonOnce: () => {
+    ghJsonOnce: <T>(args: string[]) => {
+      if (searchResponse !== undefined && String(args[1]).startsWith("search/issues?")) {
+        return searchResponse as T;
+      }
       throw new Error("unexpected GitHub request");
     },
     compactIssue: (value: unknown) => value,
@@ -334,6 +341,30 @@ ${"e".repeat(512 * 1024)}
     );
     assert.deepEqual(JSON.parse(stdout), [1, 2, 3, 4, 5]);
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("structural relation probe treats an incomplete empty search as unknown", () => {
+  const previous = process.env.CLAWSWEEPER_RELATED_GITHUB_SEARCH;
+  process.env.CLAWSWEEPER_RELATED_GITHUB_SEARCH = "1";
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-relation-probe-"));
+  try {
+    const issue = {
+      ...item,
+      kind: "issue" as const,
+      number: 195100,
+      title: "Gateway crashes when the browser plugin reconnects twice",
+    };
+    const probe = (response: unknown) =>
+      relatedContextWith({}, root, response).context.structuralExternalRelationSensitivity(issue);
+    const related = { number: 195001, title: "Gateway crash on reconnect" };
+    assert.equal(probe({ incomplete_results: false, items: [] }), false);
+    assert.equal(probe({ incomplete_results: true, items: [] }), null);
+    assert.equal(probe({ incomplete_results: true, items: [related] }), true);
+  } finally {
+    if (previous === undefined) delete process.env.CLAWSWEEPER_RELATED_GITHUB_SEARCH;
+    else process.env.CLAWSWEEPER_RELATED_GITHUB_SEARCH = previous;
     rmSync(root, { recursive: true, force: true });
   }
 });
