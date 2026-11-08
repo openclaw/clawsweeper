@@ -4257,12 +4257,19 @@ jobs:
           else
             continuation_env="$(mktemp)"
             runs_json="$(mktemp)"
-            {
-              for run_status in in_progress pending queued waiting requested; do
-                gh api --paginate "repos/${WORKFLOW_REPOSITORY}/actions/runs?per_page=100&status=${run_status}" \
-                  --jq '.workflow_runs[] | {databaseId:.id, workflowPath:.path, displayTitle:.display_title, status:.status, createdAt:.created_at, updatedAt:.updated_at}' 2>/dev/null || true
-              done
-            } | jq -s '.' > "$runs_json"
+            runs_ndjson="$(mktemp)"
+            # An unreadable run list cannot prove no other apply run is active,
+            # so do not queue a possibly duplicate one; scheduled runs backstop.
+            for run_status in in_progress pending queued waiting requested; do
+              if ! gh api --paginate "repos/${WORKFLOW_REPOSITORY}/actions/runs?per_page=100&status=${run_status}" \
+                --jq '.workflow_runs[] | {databaseId:.id, workflowPath:.path, displayTitle:.display_title, status:.status, createdAt:.created_at, updatedAt:.updated_at}' >> "$runs_ndjson"; then
+                echo "::warning::Could not list ${run_status} workflow runs; not queueing an apply continuation. Scheduled apply runs will continue the lane."
+                rm -f "$continuation_env" "$runs_json" "$runs_ndjson"
+                exit 0
+              fi
+            done
+            jq -s '.' "$runs_ndjson" > "$runs_json"
+            rm -f "$runs_ndjson"
             pnpm run --silent workflow -- apply-continuation-blocker \
               --runs "$runs_json" \
               --current-run-id "${WORKFLOW_RUN_ID}" \
@@ -4353,11 +4360,14 @@ jobs:
             echo "Apply scope is not automatic close mode; skipping review backstops."
             exit 0
           fi
-          runs_json="$({
-            gh api "repos/${WORKFLOW_REPOSITORY}/actions/runs?per_page=100" \
-              --jq '.workflow_runs[] | {databaseId:.id, workflowPath:.path, displayTitle:.display_title, status:.status, createdAt:.created_at, updatedAt:.updated_at}' 2>/dev/null \
-              || true
-          } | jq -s 'unique_by(.databaseId)')"
+          # Without the run list, recent review runs cannot be ruled out; skip
+          # the backstops rather than queue possible duplicates.
+          if ! runs_ndjson="$(gh api "repos/${WORKFLOW_REPOSITORY}/actions/runs?per_page=100" \
+            --jq '.workflow_runs[] | {databaseId:.id, workflowPath:.path, displayTitle:.display_title, status:.status, createdAt:.created_at, updatedAt:.updated_at}')"; then
+            echo "::warning::Could not list workflow runs; skipping review backstops. Scheduled review runs continue."
+            exit 0
+          fi
+          runs_json="$(printf '%s\n' "$runs_ndjson" | jq -s 'unique_by(.databaseId)')"
           eval "$(
             RUNS_JSON="$runs_json" node <<'NODE'
           const runs = JSON.parse(process.env.RUNS_JSON || "[]");
