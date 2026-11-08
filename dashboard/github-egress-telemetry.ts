@@ -568,7 +568,7 @@ export class GithubEgressTelemetryStore {
                    route_template, page_bucket, unit, outcome, status_bucket,
                    latency_bucket, claim_generation_bucket, first_repeat,
                    attempted, telemetry_complete
-          ORDER BY bucket_start ASC, pool_class, stage, operation, unit
+          ORDER BY bucket_start DESC, pool_class, stage, operation, unit
           LIMIT ?`,
         bucketKind,
         bucketStart,
@@ -576,27 +576,32 @@ export class GithubEgressTelemetryStore {
       ),
     ) as Array<Record<string, unknown>>;
     const truncated = rows.length > MAX_PUBLIC_ROWS;
-    const publicRows = rows.slice(0, MAX_PUBLIC_ROWS).map((row) => ({
-      bucket_start: new Date(Number(row.bucket_start)).toISOString(),
-      deployment_revision: row.deployment_revision,
-      config_revision: row.config_revision,
-      pool_class: row.pool_class,
-      stage: row.stage,
-      source_action: row.source_action,
-      operation: row.operation,
-      method: row.method,
-      route_template: row.route_template,
-      page_bucket: row.page_bucket,
-      unit: row.unit,
-      outcome: row.outcome,
-      status_bucket: row.status_bucket,
-      latency_bucket: row.latency_bucket,
-      claim_generation_bucket: row.claim_generation_bucket,
-      first_repeat: row.first_repeat,
-      attempted: Number(row.attempted) === 1,
-      telemetry_complete: Number(row.telemetry_complete) === 1,
-      count: Number(row.count),
-    }));
+    // A bounded view keeps the newest buckets: during an incident the recent
+    // rows are the evidence. Rows are then returned in ascending time order.
+    const publicRows = rows
+      .slice(0, MAX_PUBLIC_ROWS)
+      .reverse()
+      .map((row) => ({
+        bucket_start: new Date(Number(row.bucket_start)).toISOString(),
+        deployment_revision: row.deployment_revision,
+        config_revision: row.config_revision,
+        pool_class: row.pool_class,
+        stage: row.stage,
+        source_action: row.source_action,
+        operation: row.operation,
+        method: row.method,
+        route_template: row.route_template,
+        page_bucket: row.page_bucket,
+        unit: row.unit,
+        outcome: row.outcome,
+        status_bucket: row.status_bucket,
+        latency_bucket: row.latency_bucket,
+        claim_generation_bucket: row.claim_generation_bucket,
+        first_repeat: row.first_repeat,
+        attempted: Number(row.attempted) === 1,
+        telemetry_complete: Number(row.telemetry_complete) === 1,
+        count: Number(row.count),
+      }));
     const rateLimitRows = Array.from(
       this.storage.sql.exec(
         `SELECT observed_at, deployment_revision, config_revision, pool_class,

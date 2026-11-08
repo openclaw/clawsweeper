@@ -1,0 +1,1 @@
+- Keep the newest buckets when the public GitHub egress view is truncated, so recent incident traffic is not the part dropped.

@@ -822,6 +822,11 @@ test("signed upload, SQLite restart, retention, cardinality, and public privacy 
     const truncatedHour = highCardinalityStore.publicObservability(1, NOW);
     assert.equal(truncatedHour?.rows.length, 2_000);
     assert.equal(truncatedHour?.completeness.rows_truncated, true);
+    // Truncation drops the oldest buckets, so the newest observation survives.
+    assert.equal(
+      truncatedHour?.rows.at(-1)?.bucket_start,
+      new Date(Math.floor((NOW - 10 * 60 * 1_000) / 300_000) * 300_000).toISOString(),
+    );
     assert.equal(truncatedHour?.completeness.query_complete, false);
     const completeQuarterHour = highCardinalityStore.publicObservability(0.25, NOW);
     assert.equal(completeQuarterHour?.rows.length, 1);
