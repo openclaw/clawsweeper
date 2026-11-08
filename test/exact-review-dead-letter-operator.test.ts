@@ -741,6 +741,25 @@ test("parked pull request reconciliation requires immutable source drift", async
       unchanged_review_identity: 1,
     });
     assert.equal(mutations.length, 4);
+
+    // The source-drift loop counter is a budget the Worker restarts on an
+    // operator recovery, so forcing an unchanged loop still recovers it.
+    row.parked_reason = "source_drift_loop";
+    const forcedLoop = await runOperator(
+      [
+        ...common,
+        "--execute",
+        "--force-unchanged",
+        "--output",
+        join(directory, "forced-loop.json"),
+      ],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(forcedLoop.code, 0, forcedLoop.stderr);
+    assert.equal(JSON.parse(forcedLoop.stdout).recovered_targets, 1);
+    assert.equal(mutations.length, 5);
+    assert.equal(mutations[4].override_retry_budget, true);
   } finally {
     server.close();
     await rm(directory, { recursive: true, force: true });

@@ -1,1 +1,1 @@
-- `--force-unchanged` parked recovery now resets only spent retry budgets; unchanged policy holds such as maintainer-request-required no longer consume the per-run recovery cap.
+- `--force-unchanged` parked recovery now resets only spent budgets (retry attempts and the source-drift loop counter); unchanged policy holds such as maintainer-request-required no longer consume the per-run recovery cap.
