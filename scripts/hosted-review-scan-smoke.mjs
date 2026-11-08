@@ -30,7 +30,7 @@ import {
   HOSTED_MULTILINE_PROVIDER_ERROR,
   hostedNativeFailureLine,
   hostedProcessIdentity,
-  hostedTreeMetadataSource,
+  hostedBlobMetadataSource,
   latchHostedNativeFailure,
   readHostedLifecycle,
   readHostedReviewRollout,
@@ -626,19 +626,18 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { materializePullRequestReviewTree, removePullRequestReviewTree, githubReviewTreeBlobSizes } from ${JSON.stringify(blobsModule)};
-import { reviewTreeMetadataArgs } from ${JSON.stringify(contextModule)};
+import { materializePullRequestReviewTree, removePullRequestReviewTree, githubReviewBlobSizes } from ${JSON.stringify(blobsModule)};
+import { reviewBlobMetadataArgs } from ${JSON.stringify(contextModule)};
 const [target, output, starts, repo, headSha, item, temporaryRoot] = process.argv.slice(2);
 const worktreeDir = join(temporaryRoot, "review-tree");
-let sizes;
 try {
   materializePullRequestReviewTree({
     targetDir: target, worktreeDir, itemNumber: Number(item), headSha,
-    resolveBlobSizes() {
-      return sizes ??= githubReviewTreeBlobSizes({
-        repository: repo, headSha,
-        request(path) {
-          const response = spawnSync(process.execPath, ["--input-type=module", "--eval", process.env.BLOB_METADATA_SOURCE, ...reviewTreeMetadataArgs(path)], { encoding: "utf8", timeout: 15000 });
+    resolveBlobSizes(objectIds) {
+      return githubReviewBlobSizes({
+        repository: repo, objectIds,
+        request(query) {
+          const response = spawnSync(process.execPath, ["--input-type=module", "--eval", process.env.BLOB_METADATA_SOURCE, ...reviewBlobMetadataArgs(query)], { encoding: "utf8", timeout: 15000 });
           assert.equal(response.status, 0);
           return JSON.parse(response.stdout);
         },
@@ -676,16 +675,15 @@ try {
       .split("\n")
       .map((line) => JSON.parse(line));
   };
-  for (const truncated of [true, false]) {
+  for (const complete of [false, true]) {
     const startsBefore = readStarts().length;
     const callsBefore = existsSync(metadataCallsPath)
       ? readFileSync(metadataCallsPath, "utf8").length
       : 0;
-    const metadataSource = hostedTreeMetadataSource({
+    const metadataSource = hostedBlobMetadataSource({
       repository: repo,
-      headSha,
       callsPath: metadataCallsPath,
-      truncated,
+      complete,
       tree,
     });
     const args = [
@@ -762,9 +760,9 @@ try {
       }
       assert.equal(result.signal, null);
       const starts = readStarts().slice(startsBefore);
-      assert.equal(starts.length, truncated ? 0 : 1);
+      assert.equal(starts.length, complete ? 1 : 0);
       assert.equal(readFileSync(metadataCallsPath, "utf8").length - callsBefore, 1);
-      if (truncated) {
+      if (!complete) {
         assert.notEqual(result.status, 0);
         assert.equal(missing(), true);
         assert.equal(existsSync(output), false);

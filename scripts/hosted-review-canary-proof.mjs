@@ -15,7 +15,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { terminateCodexProcessTree } from "../dist/codex-spawn.js";
-import { reviewTreeMetadataArgs } from "../dist/clawsweeper-context-hydration.js";
+import { reviewBlobMetadataArgs } from "../dist/clawsweeper-context-hydration.js";
 
 export const HOSTED_REVIEW_ROLLOUT_MAX_BYTES = 4 * 1024 * 1024;
 const ROLLOUT_RECORD_MAX_BYTES = 512 * 1024;
@@ -179,15 +179,31 @@ export function hostedProcessIdentity(pid) {
   }
 }
 
-export function hostedTreeMetadataSource({ repository, headSha, callsPath, truncated, tree }) {
-  const args = reviewTreeMetadataArgs(`repos/${repository}/git/trees/${headSha}?recursive=1`);
+// Fake `gh api graphql` for review blob sizes. An incomplete answer omits every
+// object, which the review checkout must treat as missing metadata.
+export function hostedBlobMetadataSource({ repository, callsPath, complete, tree }) {
+  const prefix = reviewBlobMetadataArgs("").slice(0, 3);
+  const suffix = reviewBlobMetadataArgs("").slice(4);
+  const [owner, name] = repository.split("/");
+  const sizes = Object.fromEntries(
+    tree.filter((entry) => entry.type === "blob").map((entry) => [entry.sha, entry.size]),
+  );
   return `
 import assert from "node:assert/strict";
 import { appendFileSync } from "node:fs";
 try {
-  assert.deepEqual(process.argv.slice(1), ${JSON.stringify(args)});
+  const args = process.argv.slice(1);
+  assert.deepEqual(args.slice(0, 3), ${JSON.stringify(prefix)});
+  assert.deepEqual(args.slice(4), ${JSON.stringify(suffix)});
+  const query = args[3].slice("query=".length);
+  assert.ok(query.includes(${JSON.stringify(`repository(owner: "${owner}", name: "${name}")`)}));
   appendFileSync(${JSON.stringify(callsPath)}, "1", { mode: 0o600 });
-  process.stdout.write(${JSON.stringify(JSON.stringify({ truncated, tree }))});
+  const sizes = ${JSON.stringify(complete ? sizes : {})};
+  const response = {};
+  for (const [, alias, oid] of query.matchAll(/(b\\d+): object\\(oid: "([0-9a-f]{40})"\\)/g)) {
+    response[alias] = oid in sizes ? { oid, byteSize: sizes[oid] } : null;
+  }
+  process.stdout.write(JSON.stringify(response));
 } catch {
   process.stderr.write("Unexpected synthetic metadata request.\\n");
   process.exitCode = 1;

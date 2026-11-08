@@ -22,7 +22,7 @@ import { quoteGitHubSearchTerm } from "./clawsweeper-related-context.js";
 import {
   ensurePullRequestReviewHead,
   ensureReviewTreeCommit,
-  githubReviewTreeBlobSizes,
+  githubReviewBlobSizes,
   hydratePullRequestReviewBlobs,
   hydratePullRequestReviewHistory,
   materializePullRequestReviewTree as materializeReviewTree,
@@ -64,11 +64,8 @@ import {
 } from "./clawsweeper-item-policy.js";
 import { authorPrBudget, positiveIntegerEnv } from "./policy-flags.js";
 
-const REVIEW_TREE_METADATA_JQ =
-  '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}';
-
-export function reviewTreeMetadataArgs(path: string): string[] {
-  return ["api", path, "--jq", REVIEW_TREE_METADATA_JQ];
+export function reviewBlobMetadataArgs(query: string): string[] {
+  return ["api", "graphql", "-f", `query=${query}`, "--jq", ".data.repository"];
 }
 
 function compactMappedSlice<T>(
@@ -804,18 +801,6 @@ function hydratePullRequestReviewSource(options: {
         "Could not establish complete review ancestry.",
       );
     }
-    const remoteTreeSizes = new Map<string, ReadonlyMap<string, number>>();
-    const treeSizes = (revision: string, deadlineAt: number): ReadonlyMap<string, number> => {
-      const cached = remoteTreeSizes.get(revision);
-      if (cached) return cached;
-      const sizes = githubReviewTreeBlobSizes({
-        repository: targetRepo(),
-        headSha: revision,
-        request: (path) => ghJson(reviewTreeMetadataArgs(path), { deadlineAt }),
-      });
-      remoteTreeSizes.set(revision, sizes);
-      return sizes;
-    };
     const hydrateBlobs = (revision: string) =>
       hydratePullRequestReviewBlobs({
         targetDir: options.targetDir,
@@ -823,14 +808,11 @@ function hydratePullRequestReviewSource(options: {
         headSha,
         resolveBlobSizes: (objectIds, deadlineAt) => {
           try {
-            const baseSizes = treeSizes(revision, deadlineAt);
-            const headSizes = revision === headSha ? baseSizes : treeSizes(headSha, deadlineAt);
-            return new Map(
-              objectIds.flatMap((objectId) => {
-                const bytes = headSizes.get(objectId) ?? baseSizes.get(objectId);
-                return bytes === undefined ? [] : [[objectId, bytes]];
-              }),
-            );
+            return githubReviewBlobSizes({
+              repository: targetRepo(),
+              objectIds,
+              request: (query) => ghJson(reviewBlobMetadataArgs(query), { deadlineAt }),
+            });
           } catch (error) {
             if (error instanceof GitHubOperationDeadlineError) {
               throw new AgentInputScanError("deadline");
@@ -889,22 +871,14 @@ export { authorPrBudget, ensurePullRequestReviewHead, removePullRequestReviewTre
 export function materializePullRequestReviewTree(
   options: Parameters<typeof materializeReviewTree>[0],
 ) {
-  let remoteTreeSizes: ReadonlyMap<string, number> | null = null;
   return materializeReviewTree({
     ...options,
-    resolveBlobSizes: (objectIds, timeoutMs) => {
-      remoteTreeSizes ??= githubReviewTreeBlobSizes({
+    resolveBlobSizes: (objectIds, timeoutMs) =>
+      githubReviewBlobSizes({
         repository: targetRepo(),
-        headSha: options.headSha,
-        request: (path) => ghJsonOnce(reviewTreeMetadataArgs(path), timeoutMs),
-      });
-      return new Map(
-        objectIds.flatMap((objectId) => {
-          const bytes = remoteTreeSizes!.get(objectId);
-          return bytes === undefined ? [] : [[objectId, bytes]];
-        }),
-      );
-    },
+        objectIds,
+        request: (query) => ghJsonOnce(reviewBlobMetadataArgs(query), timeoutMs),
+      }),
   });
 }
 

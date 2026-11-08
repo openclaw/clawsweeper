@@ -1269,14 +1269,22 @@ function throwBlobMetadataUnavailable(): never {
   );
 }
 
-export function githubReviewTreeBlobSizes({
+// One aliased GraphQL query reads at most this many blob sizes.
+export const REVIEW_BLOB_SIZE_BATCH = 100;
+
+/**
+ * Reads the size of exactly the blobs a review checkout lacks. A recursive tree
+ * listing cannot serve this: GitHub truncates it once a repository's tree passes
+ * its response limit, and openclaw/openclaw crossed that limit.
+ */
+export function githubReviewBlobSizes({
   repository,
-  headSha,
+  objectIds,
   request,
 }: {
   repository: string;
-  headSha: string;
-  request: (path: string) => unknown;
+  objectIds: readonly string[];
+  request: (query: string) => unknown;
 }): ReadonlyMap<string, number> {
   const match = repository.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
   if (
@@ -1285,37 +1293,41 @@ export function githubReviewTreeBlobSizes({
     match[1] === ".." ||
     match[2] === "." ||
     match[2] === ".." ||
-    !GIT_OBJECT_ID.test(headSha)
+    objectIds.length > REVIEW_TREE_MAX_FILES ||
+    objectIds.some((objectId) => !GIT_OBJECT_ID.test(objectId))
   ) {
-    throw new Error("invalid bounded review tree metadata request");
-  }
-  const response = request(`repos/${match[1]}/${match[2]}/git/trees/${headSha}?recursive=1`) as {
-    truncated?: unknown;
-    tree?: unknown;
-  };
-  if (response.truncated !== false || !Array.isArray(response.tree)) {
-    throw new Error("incomplete bounded review tree metadata response");
-  }
-  if (response.tree.length > REVIEW_TREE_MAX_FILES) {
-    throw new Error("bounded review tree metadata response exceeded its entry limit");
+    throw new Error("invalid bounded review blob metadata request");
   }
   const sizes = new Map<string, number>();
-  for (const value of response.tree) {
-    if (!value || typeof value !== "object") {
-      throw new Error("invalid bounded review tree metadata entry");
+  const unique = [...new Set(objectIds)];
+  for (let offset = 0; offset < unique.length; offset += REVIEW_BLOB_SIZE_BATCH) {
+    const batch = unique.slice(offset, offset + REVIEW_BLOB_SIZE_BATCH);
+    // Owner, name and object IDs are validated above; nothing else is interpolated.
+    const fields = batch
+      .map(
+        (objectId, index) =>
+          `b${index}: object(oid: "${objectId}") { ... on Blob { oid byteSize } }`,
+      )
+      .join(" ");
+    const response = request(
+      `query { repository(owner: "${match[1]}", name: "${match[2]}") { ${fields} } }`,
+    ) as Record<string, unknown> | null;
+    if (!response || typeof response !== "object") {
+      throw new Error("incomplete bounded review blob metadata response");
     }
-    const entry = value as { type?: unknown; sha?: unknown; size?: unknown };
-    if (entry.type !== "blob") continue;
-    if (
-      typeof entry.sha !== "string" ||
-      !GIT_OBJECT_ID.test(entry.sha) ||
-      typeof entry.size !== "number" ||
-      !Number.isSafeInteger(entry.size) ||
-      entry.size < 0
-    ) {
-      throw new Error("invalid bounded review tree blob metadata");
-    }
-    sizes.set(entry.sha, entry.size);
+    batch.forEach((objectId, index) => {
+      const entry = response[`b${index}`] as { oid?: unknown; byteSize?: unknown } | null;
+      if (entry === null || entry === undefined) return;
+      if (
+        entry.oid !== objectId ||
+        typeof entry.byteSize !== "number" ||
+        !Number.isSafeInteger(entry.byteSize) ||
+        entry.byteSize < 0
+      ) {
+        throw new Error("invalid bounded review blob metadata");
+      }
+      sizes.set(objectId, entry.byteSize);
+    });
   }
   return sizes;
 }
