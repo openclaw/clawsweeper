@@ -1096,6 +1096,7 @@ export function promotionGhMock(options: {
 	} else if (args[0] === "api" && /\\/commits\\/head-sha\\/status(?:\\?|$)/.test(path)) {
 	  console.log(JSON.stringify({
 	    state: "success",
+	    total_count: statusActivityAt ? 1 : 0,
 	    statuses: statusActivityAt ? [{ state: "success", updated_at: statusActivityAt }] : []
 	  }));
 	} else if (args[0] === "api" && /\\/commits\\/head-sha\\/check-runs(?:\\?|$)/.test(path)) {

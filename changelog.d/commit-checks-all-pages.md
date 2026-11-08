@@ -1,0 +1,1 @@
+- Read every page of a commit's check runs and statuses; openclaw PR heads usually carry over 100 check runs, which left review caching disabled and close guards reading partial CI activity.
