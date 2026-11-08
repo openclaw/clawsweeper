@@ -67,6 +67,15 @@ test("close guards see check activity beyond the first page of check runs", () =
       if (path === "repos/openclaw/openclaw/pulls/7") {
         return { state: "open", head: { sha: "head-sha" }, created_at: "2026-01-01T00:00:00Z" };
       }
+      if (path === "graphql") {
+        return {
+          data: {
+            repository: {
+              pullRequest: { timelineItems: { nodes: [], pageInfo: { hasPreviousPage: false } } },
+            },
+          },
+        };
+      }
       return read(path);
     },
   } as never);

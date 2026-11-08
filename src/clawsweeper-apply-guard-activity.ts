@@ -395,13 +395,60 @@ export function createApplyGuardActivity({ ghJson, ghPaged, targetRepo }: GuardR
     }
     return null;
   }
+  // Only force-push events matter here. The REST timeline returns every
+  // event (megabytes on a busy PR), so read just this type over GraphQL.
+  function headRefForcePushedEvents(number: number): unknown[] {
+    const [owner, name] = targetRepo().split("/");
+    const events: unknown[] = [];
+    let before: string | null = null;
+    for (let page = 0; page < 10; page += 1) {
+      const connection = asRecord(
+        asRecord(
+          asRecord(
+            asRecord(
+              ghJson<unknown>([
+                "api",
+                "graphql",
+                "-f",
+                `owner=${owner}`,
+                "-f",
+                `name=${name}`,
+                "-F",
+                `number=${number}`,
+                ...(before ? ["-f", `before=${before}`] : []),
+                "-f",
+                "query=query($owner:String!,$name:String!,$number:Int!,$before:String){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT],last:100,before:$before){nodes{...on HeadRefForcePushedEvent{createdAt afterCommit{oid}}} pageInfo{hasPreviousPage startCursor}}}}}",
+              ]),
+            ).data,
+          ).repository,
+        ).pullRequest,
+      ).timelineItems;
+      const connectionRecord = asRecord(connection);
+      if (!Array.isArray(connectionRecord.nodes)) {
+        throw new Error(`force-push timeline unavailable for #${number}`);
+      }
+      for (const node of connectionRecord.nodes) {
+        const record = asRecord(node);
+        events.push({
+          event: "head_ref_force_pushed",
+          commit_id: asRecord(record.afterCommit).oid,
+          created_at: record.createdAt,
+        });
+      }
+      const pageInfo = asRecord(connectionRecord.pageInfo);
+      if (pageInfo.hasPreviousPage !== true) return events;
+      before = nonBlankStringOrUndefined(pageInfo.startCursor) ?? null;
+      if (!before) break;
+    }
+    throw new Error(`force-push timeline for #${number} exceeds the read bound`);
+  }
   function pullRequestHeadActivity(
     number: number,
     pull: {
       created_at?: string;
       head?: { ref?: string; repo?: { full_name?: string; id?: unknown }; sha?: string };
     },
-    timeline = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/timeline`),
+    timeline: readonly unknown[] | null = null,
   ): Pick<PullRequestLiveActivity, "headSha" | "headActivityAtMs"> {
     const headSha = typeof pull.head?.sha === "string" ? pull.head.sha : "";
     let headActivityAtMs: number | null = null;
@@ -440,7 +487,7 @@ export function createApplyGuardActivity({ ghJson, ghPaged, targetRepo }: GuardR
           observe(record.created_at);
         }
       }
-      for (const event of timeline) {
+      for (const event of timeline ?? headRefForcePushedEvents(number)) {
         const record = asRecord(event);
         const commitId =
           nonBlankStringOrUndefined(record.commitId) ?? nonBlankStringOrUndefined(record.commit_id);

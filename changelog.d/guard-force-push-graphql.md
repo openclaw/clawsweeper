@@ -1,0 +1,1 @@
+- Close-guard head activity reads only force-push events over GraphQL instead of downloading the full PR timeline (3.8 MB and about 12 s on the largest openclaw PR).

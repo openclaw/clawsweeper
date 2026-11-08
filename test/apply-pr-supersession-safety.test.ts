@@ -51,7 +51,17 @@ for (const repo of ["openclaw/openclaw", "openclaw/clawhub"]) {
         t,
         `
 const path = args[1];
-if (path.split("?")[0].endsWith("/issues/333/timeline")) {
+if (path === "graphql" && args.some((arg) => arg.includes("HEAD_REF_FORCE_PUSHED_EVENT"))) {
+  if (!args.includes("number=333")) throw new Error("unexpected force-push read " + args.join(" "));
+  const nodes = [
+    { createdAt: "2026-02-03T00:00:00Z", afterCommit: { oid: "head333" } },
+    { createdAt: "2026-03-01T00:00:00Z", afterCommit: { oid: "other" } }
+  ];
+  console.log(JSON.stringify({ data: { repository: { pullRequest: { timelineItems: {
+    nodes, pageInfo: { hasPreviousPage: false, startCursor: null }
+  } } } } }));
+} else if (path.split("?")[0].endsWith("/issues/333/timeline")) {
+  // The low-signal policy guard reads the full timeline for author activity.
   const events = [
     { event: "head_ref_force_pushed", commit_id: "head333", created_at: "2026-02-03T00:00:00Z" },
     { event: "head_ref_force_pushed", commit_id: "other", created_at: "2026-03-01T00:00:00Z" }
@@ -102,13 +112,25 @@ if (path.split("?")[0].endsWith("/issues/333/timeline")) {
         });
         assert.equal(fixture.requests().length, count, "empty heads make no workflow read");
         const paths = fixture.requests().map(({ args }) => args[1]);
-        assert.ok(paths.includes(`repos/${repo}/issues/333/timeline?per_page=100`));
+        // Head activity reads force pushes from one typed GraphQL read, not the
+        // full REST timeline.
+        assert.ok(!paths.some((path) => path.includes("/timeline")));
+        assert.ok(
+          fixture
+            .requests()
+            .some(
+              ({ args }) =>
+                args[1] === "graphql" &&
+                args.includes(`owner=${repo.split("/")[0]}`) &&
+                args.includes(`name=${repo.split("/")[1]}`),
+            ),
+        );
         assert.ok(
           paths.includes(
             `repos/${repo}/actions/runs?head_sha=head333&event=pull_request&per_page=100`,
           ),
         );
-        assert.ok(paths.every((path) => path.startsWith(`repos/${repo}/`)));
+        assert.ok(paths.every((path) => path === "graphql" || path.startsWith(`repos/${repo}/`)));
         const { pullRequestClosePromotion } = createPullRequestClosePromotion(
           guards.pullRequestHeadActivity,
         );
