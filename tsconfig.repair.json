@@ -26,6 +26,7 @@
     "src/codex-output-capture.ts",
     "src/codex-spawn.ts",
     "src/codex-process-worker.ts",
+    "src/github-commit-checks.ts",
     "src/github-egress-descriptor.ts",
     "src/github-egress-observer.ts",
     "src/github-egress-telemetry-contract.ts",

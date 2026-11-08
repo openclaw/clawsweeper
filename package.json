@@ -33,6 +33,7 @@
     "repair:publish-main": "node dist/repair/publish-main.js",
     "repair:notify-maintainer-report": "node dist/repair/notify-maintainer-report.js",
     "repair:notify-github-activity": "node dist/repair/notify-github-activity.js",
+    "repair:github-scale-canary": "node dist/repair/github-scale-canary.js",
     "repair:exact-review-bundle": "node dist/repair/exact-review-bundle-cli.js",
     "repair:exact-review-queue-maintenance": "node dist/repair/exact-review-queue-maintenance.js",
     "repair:scheduled-review-enqueue": "node dist/repair/scheduled-review-enqueue.js",
