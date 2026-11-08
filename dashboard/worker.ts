@@ -8694,10 +8694,20 @@ async function attachCiStatus(
   try {
     const pr = await github(`/repos/${item.repository}/pulls/${item.item_number}`);
     if (!pr?.head?.sha) return;
-    const checks = await github(
-      `/repos/${item.repository}/commits/${pr.head.sha}/check-runs?per_page=100`,
+    // A head can carry more than one page of check runs (openclaw PRs often
+    // have 100-300), so read every page before counting failures.
+    const checksPath = (page: number) =>
+      `/repos/${item.repository}/commits/${pr.head.sha}/check-runs?per_page=100&page=${page}`;
+    const first = await github(checksPath(1));
+    const total = Number(first?.total_count);
+    const pageCount =
+      Number.isSafeInteger(total) && total > 100 ? Math.min(10, Math.ceil(total / 100)) : 1;
+    const rest = await Promise.all(
+      Array.from({ length: pageCount - 1 }, (_, index) => github(checksPath(index + 2))),
     );
-    const runs = Array.isArray(checks?.check_runs) ? checks.check_runs : [];
+    const runs = [first, ...rest].flatMap((page) =>
+      Array.isArray(page?.check_runs) ? page.check_runs : [],
+    );
     const failing = runs.filter(
       (check) =>
         check.status === "completed" &&

@@ -2503,6 +2503,112 @@ test("dashboard reuses live PR CI hydration within one status snapshot", async (
   }
 });
 
+test("dashboard CI status counts check runs beyond the first page", async () => {
+  // openclaw PR heads often carry 100-300 check runs; a failure on a later page
+  // used to be invisible, so the dashboard showed green with total 100.
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: {
+      default: new MemoryCache(),
+    },
+  });
+  const runs = [
+    {
+      id: 8060901,
+      name: "ClawSweeper",
+      display_title: "Review event item openclaw/openclaw#80609",
+      status: "in_progress",
+      conclusion: null,
+      run_attempt: 1,
+      html_url: "https://github.com/openclaw/clawsweeper/actions/runs/8060901",
+      created_at: isoAgo(120_000),
+      updated_at: isoAgo(10_000),
+    },
+    {
+      id: 8060902,
+      name: "ClawSweeper",
+      display_title: "Review event item openclaw/openclaw#80609",
+      status: "in_progress",
+      conclusion: null,
+      run_attempt: 1,
+      html_url: "https://github.com/openclaw/clawsweeper/actions/runs/8060902",
+      created_at: isoAgo(90_000),
+      updated_at: isoAgo(5_000),
+    },
+  ];
+  let pullRequests = 0;
+  let checkRequests = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+      const status = url.searchParams.get("status");
+      return jsonResponse({ workflow_runs: !status || status === "in_progress" ? runs : [] });
+    }
+    if (
+      /^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/attempts\/1\/jobs$/.test(url.pathname)
+    ) {
+      return jsonResponse({ jobs: [] });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/pulls/80609") {
+      pullRequests += 1;
+      return jsonResponse({ head: { sha: "head-80609" } });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw/commits/head-80609/check-runs") {
+      checkRequests += 1;
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const all = Array.from({ length: 231 }, (_, index) => ({
+        name: `check-${index}`,
+        status: "completed",
+        conclusion: index === 230 ? "failure" : "success",
+      }));
+      return jsonResponse({
+        total_count: 231,
+        check_runs: all.slice((page - 1) * 100, page * 100),
+      });
+    }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/repair-cluster-intake.yml/runs"
+    ) {
+      return jsonResponse({ workflow_runs: [] });
+    }
+    if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+    if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      {
+        CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+        TARGET_REPOS: "openclaw/openclaw",
+        CACHE_TTL_SECONDS: "0",
+        INCLUDE_CI_STATUS: "1",
+      },
+      {
+        waitUntil: () => undefined,
+      },
+    );
+    const status = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(pullRequests, 1);
+    assert.equal(checkRequests, 3);
+    assert.deepEqual(status.pipeline[0].ci, {
+      state: "red",
+      total: 231,
+      failing: 1,
+      pending: 0,
+      source: "live",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
 test("dashboard reconciles workflow observations before deriving lifecycle views", async (t) => {
   const row = {
     ...completedReviewRun(42, 101, "failure", 60_000),
