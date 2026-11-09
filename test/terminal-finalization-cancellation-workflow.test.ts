@@ -17,6 +17,7 @@ for (const [status, body, success] of [
   [409, { error: "lease_not_active" }, true],
   [409, { error: "invalid_terminal_finalization_acknowledgement" }, false],
   [503, { error: "parked_command_target_unavailable" }, false],
+  [418, { error: "unexpected_status" }, false],
   [200, { ok: true, allowed: true, acknowledgement_state: "pending", attempt_id: "ack:1" }, true],
 ] as const)
   test(`terminal acknowledgement workflow ${status} ${"error" in body ? body.error : "authorized"}`, async () => {
@@ -27,8 +28,17 @@ for (const [status, body, success] of [
       let raw = "";
       for await (const c of req) raw += c;
       const input = JSON.parse(raw);
-      assert.equal(input.item_key, "terminal-finalization:synthetic/repo#1:1");
+      assert.deepEqual(input, {
+        lease_id: "synthetic-lease",
+        item_key: "terminal-finalization:synthetic/repo#1:1",
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: "123",
+        run_attempt: 1,
+        status_marker: "synthetic-marker",
+      });
       assert.equal(req.method, "POST");
+      assert.equal(req.url, "/internal/exact-review/terminal-finalization/attempt");
       requests++;
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
@@ -37,7 +47,23 @@ for (const [status, body, success] of [
     const address = server.address();
     assert.ok(address && typeof address === "object");
     try {
+      await fs.mkdir(path.join(root, "scripts"));
+      await fs.mkdir(path.join(root, "dist", "repair"), { recursive: true });
+      const helper = await fs.readFile("scripts/control-plane-curl.sh", "utf8");
+      const backoff = 'sleep "$delay"';
+      assert.equal(helper.split(backoff).length, 2, "expected exactly one helper backoff sleep");
+      // control-plane-curl.test.ts owns retry timing; this fixture verifies the workflow outcome.
+      await fs.writeFile(
+        path.join(root, "scripts", "control-plane-curl.sh"),
+        helper.replace(backoff, "sleep 0"),
+      );
+      const requestBuilder = "dist/repair/exact-review-queue-request.js";
+      const copiedBuilder = path.join(root, requestBuilder);
+      await fs.copyFile(requestBuilder, copiedBuilder);
+      assert.deepEqual(await fs.readFile(copiedBuilder), await fs.readFile(requestBuilder));
+      await fs.writeFile(path.join(root, "package.json"), '{"type":"module"}\n');
       const run = execute("bash", ["-euo", "pipefail", "-c", script], {
+        cwd: root,
         timeout: 30000,
         env: {
           PATH: process.env.PATH,
@@ -58,8 +84,30 @@ for (const [status, body, success] of [
         const result = await fs.readFile(output, "utf8");
         assert.match(result, status === 409 ? /allowed=false/ : /allowed=true/);
         if (status === 409) assert.match(result, /acknowledgement_state=unavailable/);
-      } else await assert.rejects(run);
-      assert.equal(requests, status >= 500 ? 4 : 1);
+      } else {
+        await assert.rejects(run, (error: unknown) => {
+          const failure = error as {
+            code: number | string;
+            signal: string | null;
+            killed: boolean;
+            stderr: string;
+          };
+          assert.equal(failure.code, 1);
+          assert.equal(failure.signal, null);
+          assert.equal(failure.killed, false);
+          const attempts = [
+            ...failure.stderr.matchAll(
+              /Control-plane request attempt \d+\/6: HTTP (\d{3}), curl exit (\d+)/g,
+            ),
+          ];
+          assert.equal(attempts.length, status >= 500 ? 6 : 1);
+          assert.ok(
+            attempts.every((attempt) => Number(attempt[1]) === status && attempt[2] === "0"),
+          );
+          return true;
+        });
+      }
+      assert.equal(requests, status >= 500 ? 6 : 1);
       assert.match(
         job.steps.find((step) => step.id === "update-final-command-status").if,
         /terminal-acknowledgement.outputs.allowed == .true./,
