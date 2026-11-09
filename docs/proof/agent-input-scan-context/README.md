@@ -573,3 +573,10 @@ source edit, or hosted-review replacement is claimed. The exact original hosted
 prompt was not retained; this is representative full-input proof, not its
 byte-for-byte recovery. OpenClaw Bay is unaffected: no dashboard, queue,
 publication, telemetry schema, or public action surface changes.
+
+## Push relay userinfo rejection fixture
+
+The [push relay qualification](../push-relay-fixture/README.md) records native
+3.99.4 before/after admission for the exact unchanged OpenClaw fixture, its
+observed decoder identities, and native/classifier refusal controls. It changes
+only trusted fixture policy; the hosted scanner guard remains in force.

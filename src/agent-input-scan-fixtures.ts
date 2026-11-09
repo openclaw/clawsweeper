@@ -303,6 +303,10 @@ const OCE_SIGN_IN_SOURCE_SHA256S = [
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   OCE_JDBC_ATTRIBUTION,
+  // Push relay userinfo-rejection fixture: native 3.99.4 observed these exact decoder identities.
+  [17, "URI", "PLAIN", "e86d617b3e5670ce0a6c4f92f89148535c8a379bdb84a9fc144f2004ac4743a4", "26450b6aba4123d2f67a8d940c50bf9b6c492993c657100d6a02c4345b67ea3a", "708fc8405f2610f3ccfea55cee78e6eceb2912c1ffa847609040442f554f7847", "src/infra/push-apns.test.ts", "100644"],
+  [17, "URI", "HTML", "e86d617b3e5670ce0a6c4f92f89148535c8a379bdb84a9fc144f2004ac4743a4", "26450b6aba4123d2f67a8d940c50bf9b6c492993c657100d6a02c4345b67ea3a", "708fc8405f2610f3ccfea55cee78e6eceb2912c1ffa847609040442f554f7847", "src/infra/push-apns.test.ts", "100644"],
+  [17, "URI", "ESCAPED_UNICODE", "e86d617b3e5670ce0a6c4f92f89148535c8a379bdb84a9fc144f2004ac4743a4", "26450b6aba4123d2f67a8d940c50bf9b6c492993c657100d6a02c4345b67ea3a", "708fc8405f2610f3ccfea55cee78e6eceb2912c1ffa847609040442f554f7847", "src/infra/push-apns.test.ts", "100644"],
   // OCE sign-in URL-rejection fixtures: qualify only observed blob/decoder pairs.
   [17, "URI", "PLAIN", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "d95cd614f4cb89a7bc1332e1b4006a1e2ff6e5019051ec1fcf749e09ee4721a2", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_SOURCE_SHA256S],
   [17, "URI", "ESCAPED_UNICODE", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "d95cd614f4cb89a7bc1332e1b4006a1e2ff6e5019051ec1fcf749e09ee4721a2", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_SOURCE_SHA256S],
@@ -565,6 +569,21 @@ function isExactOceSignInAttribution(row: ReviewedAttribution): boolean {
   );
 }
 
+function isExactPushRelayAttribution(row: ReviewedAttribution): boolean {
+  const [type, name, decoder, raw, rawV2, line, source, mode] = row;
+  return (
+    row.length === 8 &&
+    type === 17 &&
+    name === "URI" &&
+    (decoder === "PLAIN" || decoder === "HTML" || decoder === "ESCAPED_UNICODE") &&
+    raw === "e86d617b3e5670ce0a6c4f92f89148535c8a379bdb84a9fc144f2004ac4743a4" &&
+    rawV2 === "26450b6aba4123d2f67a8d940c50bf9b6c492993c657100d6a02c4345b67ea3a" &&
+    line === "708fc8405f2610f3ccfea55cee78e6eceb2912c1ffa847609040442f554f7847" &&
+    source === "src/infra/push-apns.test.ts" &&
+    mode === "100644"
+  );
+}
+
 function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): void {
   const seen = new Set<string>();
   for (const row of rows) {
@@ -582,6 +601,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
       !(
         exactJdbc ||
         isExactOceSignInAttribution(row) ||
+        isExactPushRelayAttribution(row) ||
         (source === ".grilltrack/events.jsonl" &&
           detectorType === 938 &&
           detectorName === "Privacy" &&

@@ -1,0 +1,1 @@
+- Qualify the exact synthetic push-relay URL rejection fixture while retaining scanner verification and unrecognized-finding refusals.
