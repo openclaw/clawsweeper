@@ -303,6 +303,10 @@ const OCE_SIGN_IN_SOURCE_SHA256S = [
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   OCE_JDBC_ATTRIBUTION,
+  // OCE harness-origin rejection fixture, restricted to the retained base blob.
+  // Native 3.99.4 reports PLAIN or BASE64 for the same literal witness.
+  [17, "URI", "PLAIN", "df5d0c0b6699181dcdecf0b5d53d60b7bc18ad36a9d306faa058306242584253", "df5d0c0b6699181dcdecf0b5d53d60b7bc18ad36a9d306faa058306242584253", "fc26cbb49456cf74b80e7ab0610563921cdbaabc557bc984bda8f281dbbd94d2", "tests/conformance/openshell-harness-status.test.mjs", "100644", ["9bd1ee333e9b86f5a47425e2d14f6dcbdba44868d05f5d06c21d9148fbc03ed8"]],
+  [17, "URI", "BASE64", "df5d0c0b6699181dcdecf0b5d53d60b7bc18ad36a9d306faa058306242584253", "df5d0c0b6699181dcdecf0b5d53d60b7bc18ad36a9d306faa058306242584253", "fc26cbb49456cf74b80e7ab0610563921cdbaabc557bc984bda8f281dbbd94d2", "tests/conformance/openshell-harness-status.test.mjs", "100644", ["9bd1ee333e9b86f5a47425e2d14f6dcbdba44868d05f5d06c21d9148fbc03ed8"]],
   // OCE sign-in URL-rejection fixtures: qualify only observed blob/decoder pairs.
   [17, "URI", "PLAIN", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "d95cd614f4cb89a7bc1332e1b4006a1e2ff6e5019051ec1fcf749e09ee4721a2", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_SOURCE_SHA256S],
   [17, "URI", "ESCAPED_UNICODE", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "80604187b394765a0db26f0ce735ae373dcd6e40f275a1f6492bccd3988fe925", "d95cd614f4cb89a7bc1332e1b4006a1e2ff6e5019051ec1fcf749e09ee4721a2", "tests/integration/sign-in-chart-parity.test.mjs", "100644", OCE_SIGN_IN_SOURCE_SHA256S],
