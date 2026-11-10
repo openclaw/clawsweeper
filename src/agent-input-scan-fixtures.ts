@@ -608,6 +608,13 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorType === 17 &&
           detectorName === "URI" &&
           decoder === "PLAIN") ||
+        (source === "tests/conformance/openshell-harness-status.test.mjs" &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          (decoder === "PLAIN" || decoder === "BASE64") &&
+          Array.isArray(sourceSha256s) &&
+          sourceSha256s.length === 1 &&
+          sourceSha256s.every((digest) => sha256Pattern.test(digest))) ||
         (source === "tests/conformance/kubernetes-compute.test.mjs" &&
           detectorType === 17 &&
           detectorName === "URI" &&
