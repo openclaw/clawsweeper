@@ -303,7 +303,7 @@ const OCE_SIGN_IN_SOURCE_SHA256S = [
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   OCE_JDBC_ATTRIBUTION,
-  // OCE harness-origin rejection fixture, restricted to the retained base blob.
+  // OCE harness-origin rejection fixture, pinned to exact historical source bytes.
   // Native 3.99.4 reports PLAIN or BASE64 for the same literal witness.
   [17, "URI", "PLAIN", "df5d0c0b6699181dcdecf0b5d53d60b7bc18ad36a9d306faa058306242584253", "df5d0c0b6699181dcdecf0b5d53d60b7bc18ad36a9d306faa058306242584253", "fc26cbb49456cf74b80e7ab0610563921cdbaabc557bc984bda8f281dbbd94d2", "tests/conformance/openshell-harness-status.test.mjs", "100644", ["9bd1ee333e9b86f5a47425e2d14f6dcbdba44868d05f5d06c21d9148fbc03ed8"]],
   [17, "URI", "BASE64", "df5d0c0b6699181dcdecf0b5d53d60b7bc18ad36a9d306faa058306242584253", "df5d0c0b6699181dcdecf0b5d53d60b7bc18ad36a9d306faa058306242584253", "fc26cbb49456cf74b80e7ab0610563921cdbaabc557bc984bda8f281dbbd94d2", "tests/conformance/openshell-harness-status.test.mjs", "100644", ["9bd1ee333e9b86f5a47425e2d14f6dcbdba44868d05f5d06c21d9148fbc03ed8"]],
