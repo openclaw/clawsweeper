@@ -17,6 +17,7 @@ for (const [status, body, success] of [
   [409, { error: "lease_not_active" }, true],
   [409, { error: "invalid_terminal_finalization_acknowledgement" }, false],
   [503, { error: "parked_command_target_unavailable" }, false],
+  [418, { error: "unexpected_status" }, false],
   [200, { ok: true, allowed: true, acknowledgement_state: "pending", attempt_id: "ack:1" }, true],
 ] as const)
   test(`terminal acknowledgement workflow ${status} ${"error" in body ? body.error : "authorized"}`, async () => {
@@ -27,10 +28,20 @@ for (const [status, body, success] of [
       let raw = "";
       for await (const c of req) raw += c;
       const input = JSON.parse(raw);
-      assert.equal(input.item_key, "terminal-finalization:synthetic/repo#1:1");
+      assert.deepEqual(input, {
+        lease_id: "synthetic-lease",
+        item_key: "terminal-finalization:synthetic/repo#1:1",
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: "123",
+        run_attempt: 1,
+        status_marker: "synthetic-marker",
+      });
       assert.equal(req.method, "POST");
+      assert.equal(req.url, "/internal/exact-review/terminal-finalization/attempt");
       requests++;
-      res.writeHead(status, { "content-type": "application/json" });
+      // The real retry helper honors Retry-After, so retries run without waiting.
+      res.writeHead(status, { "content-type": "application/json", "retry-after": "0" });
       res.end(JSON.stringify(body));
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -58,8 +69,19 @@ for (const [status, body, success] of [
         const result = await fs.readFile(output, "utf8");
         assert.match(result, status === 409 ? /allowed=false/ : /allowed=true/);
         if (status === 409) assert.match(result, /acknowledgement_state=unavailable/);
-      } else await assert.rejects(run);
-      assert.equal(requests, status >= 500 ? 4 : 1);
+      } else {
+        // A normal exit 1 after every retry, not the subprocess timeout.
+        await assert.rejects(
+          run,
+          (error: { code?: unknown; killed?: unknown; signal?: unknown }) => {
+            assert.equal(error.code, 1);
+            assert.equal(error.killed, false);
+            assert.equal(error.signal, null);
+            return true;
+          },
+        );
+      }
+      assert.equal(requests, status >= 500 ? 6 : 1);
       assert.match(
         job.steps.find((step) => step.id === "update-final-command-status").if,
         /terminal-acknowledgement.outputs.allowed == .true./,
