@@ -270,10 +270,18 @@ test("a token mint stranded by another request cannot stall later reads", async 
   const env = appEnv("stranded");
   githubJsonForTest(env, "/repos/openclaw/alpha/issues/1").catch(() => undefined);
   await started;
-  const later = await Promise.race([
-    githubJsonForTest(env, "/repos/openclaw/alpha/issues/2"),
-    new Promise((_, reject) => setTimeout(() => reject(new Error("later read stalled")), 10_000)),
-  ]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let later: unknown;
+  try {
+    later = await Promise.race([
+      githubJsonForTest(env, "/repos/openclaw/alpha/issues/2"),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("later read stalled")), 10_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
   assert.deepEqual(later, { ok: true });
   assert.equal(mints, 2);
 });
