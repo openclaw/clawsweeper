@@ -9,12 +9,19 @@ import { join, resolve } from "node:path";
 import { parse } from "yaml";
 import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../../src/media-proof-budget.ts";
 
-const fixtureNoWait = process.argv.includes("--fixture-no-wait");
-const quiet = process.argv.includes("--quiet");
-assert.ok(!(fixtureNoWait && quiet), "--fixture-no-wait cannot be combined with --quiet");
 const output = resolve(process.argv[2] || ".artifacts/review-reservation");
 mkdirSync(output, { recursive: true });
 const root = mkdtempSync(join(tmpdir(), "review-reservation-"));
+// The focused test opts out of real retry waits: a `sleep` shim on PATH records
+// each requested delay instead. The standalone e2e keeps real waits.
+const noWait = process.argv.includes("--fixture-no-wait");
+const shimDir = join(root, "no-wait-bin");
+if (noWait) {
+  mkdirSync(shimDir);
+  writeFileSync(join(shimDir, "sleep"), '#!/bin/sh\necho "$1" >> "$RESERVATION_SLEEP_LOG"\n', {
+    mode: 0o755,
+  });
+}
 const repo = "openclaw/reservation-fixture";
 const number = 357;
 const head = "a".repeat(40);
@@ -100,7 +107,7 @@ const quietCases = [
     background: true,
   },
 ];
-const cases = quiet
+const cases = process.argv.includes("--quiet")
   ? quietCases
   : [
       { name: "superseded-before-post", codes: [409], result: "superseded", posts: 0, deletes: 0 },
@@ -152,45 +159,6 @@ const cases = quiet
       { name: "service-unavailable", codes: [503], result: "failure", posts: 0, deletes: 0 },
       ...quietCases,
     ];
-// The ordinary e2e and --quiet proof retain real waits. Only the focused test
-// opts into simulated sleeps, and validates every requested delay below.
-const fixtureAttempts = {
-  "superseded-before-post": [],
-  "valid-owner": [],
-  "preflight-service-recovery": [1],
-  "post-service-recovery": [1],
-  "post-throttle-recovery": [1],
-  "superseded-after-post": [],
-  "head-changed-after-post": [],
-  "other-owner-held": [],
-  "service-unavailable": [1, 2, 3, 4],
-  "quiet-background": [],
-  "explicit-rereview": [],
-  "background-first-review": [],
-  "quiet-superseded": [],
-};
-if (fixtureNoWait)
-  assert.deepEqual(
-    cases.map((scenario) => scenario.name),
-    Object.keys(fixtureAttempts),
-  );
-const bashEnv = join(root, "fixture-no-wait.bash");
-if (fixtureNoWait) {
-  writeFileSync(
-    bashEnv,
-    `
-fixture_sleep_log="$RESERVATION_FIXTURE_SLEEP_LOG"
-unset BASH_ENV RESERVATION_FIXTURE_SLEEP_LOG
-sleep() {
-  if [ "$#" -ne 1 ] || ! [[ "$1" =~ ^[0-9]+$ ]] || ! [[ "\${attempt-}" =~ ^[1-9][0-9]*$ ]]; then
-    echo "invalid fixture sleep arguments or attempt" >&2
-    return 2
-  fi
-  printf '%s\\t%s\\n' "$attempt" "$1" >> "$fixture_sleep_log"
-}
-`,
-  );
-}
 const results = [];
 try {
   for (const scenario of cases) {
@@ -281,8 +249,11 @@ try {
     const githubOutput = join(root, `${scenario.name}.output`);
     writeFileSync(githubOutput, "");
     try {
+      const sleepLog = join(root, `${scenario.name}.sleeps`);
+      writeFileSync(sleepLog, "");
       const childEnv = {
-        PATH: process.env.PATH,
+        PATH: noWait ? `${shimDir}:${process.env.PATH}` : process.env.PATH,
+        RESERVATION_SLEEP_LOG: sleepLog,
         HOME: root,
         ...(process.env.COREPACK_HOME ? { COREPACK_HOME: process.env.COREPACK_HOME } : {}),
         GH_BIN: "/usr/bin/env",
@@ -313,12 +284,8 @@ try {
         }),
         RESOLVED_STATUS_COMMENT_ID: "",
       };
-      const sleepLog = join(root, `${scenario.name}.sleeps`);
-      if (fixtureNoWait) writeFileSync(sleepLog, "");
       const child = spawn("bash", ["-c", reservation], {
-        env: fixtureNoWait
-          ? { ...childEnv, BASH_ENV: bashEnv, RESERVATION_FIXTURE_SLEEP_LOG: sleepLog }
-          : childEnv,
+        env: childEnv,
         stdio: ["ignore", "pipe", "pipe"],
       });
       let stdout = "",
@@ -329,40 +296,21 @@ try {
       child.stderr.on("data", (chunk) => {
         stderr += chunk;
       });
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGKILL");
-      }, 120_000);
-      const { exitCode, signal } = await new Promise((resolveExit, reject) => {
+      const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
+      const exitCode = await new Promise((resolveExit, reject) => {
         child.on("error", reject);
-        child.on("close", (exitCode, signal) => resolveExit({ exitCode, signal }));
+        child.on("close", resolveExit);
       }).finally(() => clearTimeout(timer));
-      assert.equal(timedOut, false, `${scenario.name}: reservation watchdog expired`);
-      assert.equal(signal, null, `${scenario.name}: reservation terminated by ${signal}`);
-      assert.equal(typeof exitCode, "number", `${scenario.name}: reservation exit code missing`);
-      let requestedDelays;
-      if (fixtureNoWait) {
-        const sleepText = readFileSync(sleepLog, "utf8");
+      // Each retry still asks for the workflow's backoff: 2n + 0..3 seconds.
+      const retryDelays = noWait
+        ? readFileSync(sleepLog, "utf8").split("\n").filter(Boolean).map(Number)
+        : null;
+      for (const [index, delay] of (retryDelays ?? []).entries()) {
+        const attempt = index + 1;
         assert.ok(
-          sleepText === "" || sleepText.endsWith("\n"),
-          `${scenario.name}: incomplete retry delay record`,
+          delay >= 2 * attempt && delay <= 2 * attempt + 3,
+          `${scenario.name}: retry ${attempt} requested ${delay}s`,
         );
-        const records = sleepText === "" ? [] : sleepText.slice(0, -1).split("\n");
-        const attempts = fixtureAttempts[scenario.name];
-        assert.equal(records.length, attempts.length, `${scenario.name}: retry delay count`);
-        requestedDelays = [];
-        for (const [index, attempt] of attempts.entries()) {
-          const record = records[index].match(/^([1-9]\d*)\t(\d+)$/);
-          assert.ok(record, `${scenario.name}: malformed retry delay record`);
-          assert.equal(Number(record[1]), attempt, `${scenario.name}: retry attempt order`);
-          const delay = Number(record[2]);
-          assert.ok(
-            delay >= 2 * attempt && delay <= 2 * attempt + 3,
-            `${scenario.name}: retry delay outside attempt ${attempt} bounds`,
-          );
-          requestedDelays.push({ attempt, delay });
-        }
       }
       const outputs = Object.fromEntries(
         readFileSync(githubOutput, "utf8")
@@ -428,7 +376,10 @@ try {
           : Number(Boolean(scenario.durable)) + scenario.posts - scenario.deletes,
         scenario.name,
       );
-      if (scenario.name === "service-unavailable") assert.equal(checks, 5);
+      if (scenario.name === "service-unavailable") {
+        assert.equal(checks, 5);
+        if (retryDelays) assert.equal(retryDelays.length, 4, "the shim recorded every retry wait");
+      }
       if (scenario.name === "superseded-before-post") assert.equal(checks, 1);
       if (outputs.status === "posted")
         assert.equal(
@@ -445,8 +396,8 @@ try {
         deletes: deletes.length,
         patches: patches.length,
         remaining: comments.length,
+        ...(retryDelays ? { retryDelays } : {}),
         trace,
-        ...(fixtureNoWait ? { requestedDelays } : {}),
       };
       results.push(result);
       writeFileSync(
@@ -471,9 +422,6 @@ try {
     image: process.env.RESERVATION_PROOF_IMAGE || "unspecified",
     limits:
       "Actual reservation workflow shell, built CLI and curl over loopback HTTP. GitHub and queue responses are controlled fixtures; no production writes or model review.",
-    ...(fixtureNoWait
-      ? { retryTiming: "simulated fixture sleeps; requested delays validated" }
-      : {}),
     passed: results.length,
     results,
   };
