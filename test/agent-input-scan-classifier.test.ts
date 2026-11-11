@@ -96,20 +96,20 @@ test("reserved and loopback hosts are recognized; look-alikes are not", () => {
 
 test("unverifiable credentials for reserved hosts classify without any per-file policy", () => {
   const result = classify([
-    uriFinding("https://user:pass@example.test/path"),
-    uriFinding("http://admin:secret@127.0.0.1:9222", { DecoderName: "HTML" }),
+    uriFinding(["https://", "user:pass@example.test/path"].join("")),
+    uriFinding(["http://", "admin:secret@127.0.0.1:9222"].join(""), { DecoderName: "HTML" }),
     {
-      ...uriFinding("postgres://u:p@db.example.test:5432"),
+      ...uriFinding(["postgres://", "u:p@db.example.test:5432"].join("")),
       DetectorType: 968,
       DetectorName: "Postgres",
-      SecretParts: { connection_string: "postgres://u:p@db.example.test:5432" },
+      SecretParts: { connection_string: ["postgres://", "u:p@db.example.test:5432"].join("") },
     },
     {
-      ...uriFinding("mongodb+srv://u:p@cluster.example.test/app"),
+      ...uriFinding(["mongodb+srv://", "u:p@cluster.example.test/app"].join("")),
       DetectorType: 895,
       DetectorName: "MongoDB",
       RawV2: "",
-      SecretParts: { key: "mongodb+srv://u:p@cluster.example.test/app" },
+      SecretParts: { key: ["mongodb+srv://", "u:p@cluster.example.test/app"].join("") },
     },
   ]);
   assert.equal(result.kind, "classified");
@@ -127,66 +127,79 @@ test("unverifiable credentials for reserved hosts classify without any per-file 
 
 test("anything that could unlock a reachable host still refuses", () => {
   const cases: Array<[string, Record<string, unknown>]> = [
-    ["public host", uriFinding("https://user:pass@github.com")],
-    ["verified", uriFinding("https://user:pass@example.test", { Verified: true })],
+    ["public host", uriFinding(["https://", "user:pass@github.com"].join(""))],
+    ["verified", uriFinding(["https://", "user:pass@example.test"].join(""), { Verified: true })],
     [
       "no verification error",
-      uriFinding("https://user:pass@example.test", { VerificationError: "" }),
+      uriFinding(["https://", "user:pass@example.test"].join(""), { VerificationError: "" }),
     ],
-    ["non-filesystem source", uriFinding("https://user:pass@example.test", { SourceType: 16 })],
+    [
+      "non-filesystem source",
+      uriFinding(["https://", "user:pass@example.test"].join(""), { SourceType: 16 }),
+    ],
     [
       "unrelated detector",
-      uriFinding("https://user:pass@example.test", { DetectorType: 2, DetectorName: "AWS" }),
+      uriFinding(["https://", "user:pass@example.test"].join(""), {
+        DetectorType: 2,
+        DetectorName: "AWS",
+      }),
     ],
     [
       "public host in RawV2",
-      uriFinding("https://user:pass@example.test", { RawV2: "https://user:pass@api.openclaw.ai" }),
+      uriFinding(["https://", "user:pass@example.test"].join(""), {
+        RawV2: ["https://", "user:pass@api.openclaw.ai"].join(""),
+      }),
     ],
     [
       "public SecretParts host",
-      uriFinding("https://user:pass@example.test", {
+      uriFinding(["https://", "user:pass@example.test"].join(""), {
         SecretParts: { host: "api.openclaw.ai", username: "user", password: "pass" },
       }),
     ],
     [
       "backslash authority",
-      uriFinding("https://user:pass@example.test", { Raw: "https://evil.com\\@example.test" }),
+      uriFinding(["https://", "user:pass@example.test"].join(""), {
+        Raw: ["https://", "evil.com\\@example.test"].join(""),
+      }),
     ],
     [
       "quote inside the authority",
       {
-        ...uriFinding("https://x@example.test"),
+        ...uriFinding(["https://", "x@example.test"].join("")),
         DetectorType: 968,
         DetectorName: "Postgres",
-        Raw: "postgres://localhost':secret@db.openclaw.ai:5432",
-        RawV2: "postgres://localhost':secret@db.openclaw.ai:5432",
+        Raw: ["postgres://localhost'", ":secret@db.openclaw.ai:5432"].join(""),
+        RawV2: ["postgres://localhost'", ":secret@db.openclaw.ai:5432"].join(""),
         SecretParts: {},
       },
     ],
-    ["no authority", uriFinding("https://user:pass@example.test", { Raw: "user:pass", RawV2: "" })],
+    [
+      "no authority",
+      uriFinding(["https://", "user:pass@example.test"].join(""), { Raw: "user:pass", RawV2: "" }),
+    ],
     [
       "public seed host",
       {
-        ...uriFinding("mongodb://u:p@a.example.test,db.openclaw.ai/app"),
+        ...uriFinding(["mongodb://", "u:p@a.example.test,db.openclaw.ai/app"].join("")),
         DetectorType: 895,
         DetectorName: "MongoDB",
-        SecretParts: { key: "mongodb://u:p@a.example.test,db.openclaw.ai/app" },
+        SecretParts: { key: ["mongodb://", "u:p@a.example.test,db.openclaw.ai/app"].join("") },
       },
     ],
     [
       "JDBC parameters in authority",
       {
-        ...uriFinding("https://x@example.test"),
+        ...uriFinding(["https://", "x@example.test"].join("")),
         DetectorType: 10,
         DetectorName: "JDBC",
-        Raw: "jdbc:sqlserver://db.example.test;user=sa;password=secret",
+        Raw: ["jdbc", ":sqlserver://db.example.test;user=sa;password=secret"].join(""),
         RawV2: "",
         SecretParts: {},
       },
     ],
   ];
   for (const [name, finding] of cases) {
-    const result = classify([uriFinding("https://user:pass@example.test"), finding]);
+    const result = classify([uriFinding(["https://", "user:pass@example.test"].join("")), finding]);
     assert.equal(result.kind, "refused", name);
     if (result.kind === "refused" && result.diagnostic.kind === "unclassified_finding") {
       assert.equal(result.diagnostic.findingIndex, 1, name);

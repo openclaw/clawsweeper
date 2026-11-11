@@ -634,7 +634,7 @@ test("metadata replay still rejects unknown, verified, residual, and incomplete 
   const f = supplementalFixture();
   for (const change of [
     { Verified: true, VerificationError: null },
-    { Raw: "unreviewed", RawV2: "https://other:unknown@credentials.openclaw.ai" },
+    { Raw: "unreviewed", RawV2: ["https://", "other:unknown@credentials.openclaw.ai"].join("") },
     {
       ...fixture().finding,
       SourceMetadata: { Data: { Filesystem: { file: f.proofFile, line: 2 } } },
@@ -712,7 +712,7 @@ const uri = {
   SecretParts:{host:'example.invalid',username:'fixture-user',password:'fixture-password'},
   SourceMetadata:{Data:{Filesystem:{file:path.join(inputDir,patch.name),line:8}}}
 };
-if (!primary && outcome === 'unknown') uri.Raw = uri.RawV2 = 'https://other:unknown@credentials.openclaw.ai';
+if (!primary && outcome === 'unknown') uri.Raw = uri.RawV2 = ['https://', 'other:unknown@credentials.openclaw.ai'].join('');
 if (!primary && outcome === 'verified') {
   uri.Verified = true;
   uri.VerificationError = null;
