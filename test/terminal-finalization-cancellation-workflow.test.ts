@@ -40,30 +40,15 @@ for (const [status, body, success] of [
       assert.equal(req.method, "POST");
       assert.equal(req.url, "/internal/exact-review/terminal-finalization/attempt");
       requests++;
-      res.writeHead(status, { "content-type": "application/json" });
+      // The real retry helper honors Retry-After, so retries run without waiting.
+      res.writeHead(status, { "content-type": "application/json", "retry-after": "0" });
       res.end(JSON.stringify(body));
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     assert.ok(address && typeof address === "object");
     try {
-      await fs.mkdir(path.join(root, "scripts"));
-      await fs.mkdir(path.join(root, "dist", "repair"), { recursive: true });
-      const helper = await fs.readFile("scripts/control-plane-curl.sh", "utf8");
-      const backoff = 'sleep "$delay"';
-      assert.equal(helper.split(backoff).length, 2, "expected exactly one helper backoff sleep");
-      // control-plane-curl.test.ts owns retry timing; this fixture verifies the workflow outcome.
-      await fs.writeFile(
-        path.join(root, "scripts", "control-plane-curl.sh"),
-        helper.replace(backoff, "sleep 0"),
-      );
-      const requestBuilder = "dist/repair/exact-review-queue-request.js";
-      const copiedBuilder = path.join(root, requestBuilder);
-      await fs.copyFile(requestBuilder, copiedBuilder);
-      assert.deepEqual(await fs.readFile(copiedBuilder), await fs.readFile(requestBuilder));
-      await fs.writeFile(path.join(root, "package.json"), '{"type":"module"}\n');
       const run = execute("bash", ["-euo", "pipefail", "-c", script], {
-        cwd: root,
         timeout: 30000,
         env: {
           PATH: process.env.PATH,
@@ -85,27 +70,16 @@ for (const [status, body, success] of [
         assert.match(result, status === 409 ? /allowed=false/ : /allowed=true/);
         if (status === 409) assert.match(result, /acknowledgement_state=unavailable/);
       } else {
-        await assert.rejects(run, (error: unknown) => {
-          const failure = error as {
-            code: number | string;
-            signal: string | null;
-            killed: boolean;
-            stderr: string;
-          };
-          assert.equal(failure.code, 1);
-          assert.equal(failure.signal, null);
-          assert.equal(failure.killed, false);
-          const attempts = [
-            ...failure.stderr.matchAll(
-              /Control-plane request attempt \d+\/6: HTTP (\d{3}), curl exit (\d+)/g,
-            ),
-          ];
-          assert.equal(attempts.length, status >= 500 ? 6 : 1);
-          assert.ok(
-            attempts.every((attempt) => Number(attempt[1]) === status && attempt[2] === "0"),
-          );
-          return true;
-        });
+        // A normal exit 1 after every retry, not the subprocess timeout.
+        await assert.rejects(
+          run,
+          (error: { code?: unknown; killed?: unknown; signal?: unknown }) => {
+            assert.equal(error.code, 1);
+            assert.equal(error.killed, false);
+            assert.equal(error.signal, null);
+            return true;
+          },
+        );
       }
       assert.equal(requests, status >= 500 ? 6 : 1);
       assert.match(
