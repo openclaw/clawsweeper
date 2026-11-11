@@ -189,7 +189,9 @@ function isReservedHostCredential(finding: Record<string, unknown>): boolean {
   const hosts: string[] = [];
   for (const value of [finding.Raw, finding.RawV2]) {
     if (typeof value !== "string" || !value) continue;
-    const authorities = [...value.matchAll(/[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#\s"'\x60]*)/g)];
+    // Read the authority up to the path, query, or fragment like a URL parser
+    // would; anything odd inside it (quotes, spaces) then fails STRICT_HOST.
+    const authorities = [...value.matchAll(/[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#]*)/g)];
     // A credential value without a parseable authority has no host to judge.
     if (authorities.length === 0) return false;
     for (const [, authority] of authorities) {

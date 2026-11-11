@@ -152,6 +152,17 @@ test("anything that could unlock a reachable host still refuses", () => {
       "backslash authority",
       uriFinding("https://user:pass@example.test", { Raw: "https://evil.com\\@example.test" }),
     ],
+    [
+      "quote inside the authority",
+      {
+        ...uriFinding("https://x@example.test"),
+        DetectorType: 968,
+        DetectorName: "Postgres",
+        Raw: "postgres://localhost':secret@db.openclaw.ai:5432",
+        RawV2: "postgres://localhost':secret@db.openclaw.ai:5432",
+        SecretParts: {},
+      },
+    ],
     ["no authority", uriFinding("https://user:pass@example.test", { Raw: "user:pass", RawV2: "" })],
     [
       "public seed host",
