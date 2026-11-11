@@ -52,7 +52,7 @@ export type ScanRefusalDiagnostic =
     };
 
 export interface ScanClassificationNotice {
-  classification: "git_object_id" | "reserved_host";
+  classification: "git_object_id" | "reserved_host" | "approved_value";
   detector: string;
   findings: { blob: string; scannerLine: number; decoder: string; occurrences: number }[];
 }
@@ -203,6 +203,44 @@ function isReservedHostCredential(finding: Record<string, unknown>): boolean {
   return hosts.length > 0 && hosts.every(isReservedHost);
 }
 
+// Previously reviewed synthetic values whose test needs a real hostname, so the
+// reserved-host rule cannot judge them. Bound to the exact native value pair
+// ("Raw:RawV2" SHA-256), not to a file: editing the surrounding file is fine.
+const APPROVED_SYNTHETIC_VALUES = new Set([
+  // Azure dynamic sessions test (azurecontainerapps.io)
+  "18b8a05caad228f56cfded41e0ce2f513f859be0da13c3a688b169ded93637d1:18b8a05caad228f56cfded41e0ce2f513f859be0da13c3a688b169ded93637d1",
+  // GrillTrack generated event UUID (Privacy detector)
+  "6e31751daf97832583d6877d6f79a17eb9b74188d3916d1668d136af36a9ea45:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  // OCE Kubernetes compute test (10.42.0.15)
+  "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457:fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457",
+  "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b:18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b",
+  // OpenClaw GitHub detail tests (github.com)
+  "902e57fd9767d172abc419455669b173ffe3b1d1e06b45dd190c86b8082a1b2e:a9ff2e4d2ef22693a1505cfa8939988fed4a345e9c86a3df3a5a2cbd53cddf47",
+  "902e57fd9767d172abc419455669b173ffe3b1d1e06b45dd190c86b8082a1b2e:237992038e2f8635133fc70c6372f4fd2cbb8a6d01433d243a3056670966ca43",
+  "1aa166a254353a56288ad1942fdac6d92342f9ca53ca6690247bae6cc0ac3738:99c6ba8a9fbc40225ed3839f4cadf69924aa66ca191aa2bc647d0a18aaabe731",
+  // OpenClaw config-patch test (browserless.io)
+  "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f:3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f",
+  // autoreview negative tests (bare host)
+  "7b8ee01b06a7e5b375164f2c45249bb258c75726a60b27e20a0ba6e42d5d0b27:7b8ee01b06a7e5b375164f2c45249bb258c75726a60b27e20a0ba6e42d5d0b27",
+  "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83:662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83",
+  "6c529e5b9845e7f41a5406cea40dc9dc98bfc8da6a330c3cdb34554f2dc0317f:eebab8ec3df3ff0426c28021cce68ab7d2391e32d3040b128210e9df7ad3e092",
+  "2d082b79ad4da55704d07af5754a91f9a677bfbbdc626d93a58291f11edf53c5:2d082b79ad4da55704d07af5754a91f9a677bfbbdc626d93a58291f11edf53c5",
+  "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31:b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31",
+  "05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1:05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1",
+  "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2:80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2",
+  "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736:fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736",
+]);
+
+function isApprovedSyntheticValue(finding: Record<string, unknown>): boolean {
+  return (
+    finding.SourceType === 15 &&
+    finding.Verified === false &&
+    typeof finding.Raw === "string" &&
+    typeof finding.RawV2 === "string" &&
+    APPROVED_SYNTHETIC_VALUES.has(`${sha256(finding.Raw)}:${sha256(finding.RawV2)}`)
+  );
+}
+
 /** Classify a complete native scan. Any finding not explained here refuses. */
 export function classifyScan(
   status: number,
@@ -328,6 +366,10 @@ function classifyFindings(
 
     if (isReservedHostCredential(finding)) {
       record("reserved_host", String(finding.DetectorName), staged.id, scannerLine, decoder);
+      continue;
+    }
+    if (isApprovedSyntheticValue(finding)) {
+      record("approved_value", String(finding.DetectorName), staged.id, scannerLine, decoder);
       continue;
     }
 
