@@ -12,6 +12,16 @@ import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../../src/media-proof-budget.ts";
 const output = resolve(process.argv[2] || ".artifacts/review-reservation");
 mkdirSync(output, { recursive: true });
 const root = mkdtempSync(join(tmpdir(), "review-reservation-"));
+// The focused test opts out of real retry waits: a `sleep` shim on PATH records
+// each requested delay instead. The standalone e2e keeps real waits.
+const noWait = process.argv.includes("--fixture-no-wait");
+const shimDir = join(root, "no-wait-bin");
+if (noWait) {
+  mkdirSync(shimDir);
+  writeFileSync(join(shimDir, "sleep"), '#!/bin/sh\necho "$1" >> "$RESERVATION_SLEEP_LOG"\n', {
+    mode: 0o755,
+  });
+}
 const repo = "openclaw/reservation-fixture";
 const number = 357;
 const head = "a".repeat(40);
@@ -239,8 +249,11 @@ try {
     const githubOutput = join(root, `${scenario.name}.output`);
     writeFileSync(githubOutput, "");
     try {
+      const sleepLog = join(root, `${scenario.name}.sleeps`);
+      writeFileSync(sleepLog, "");
       const childEnv = {
-        PATH: process.env.PATH,
+        PATH: noWait ? `${shimDir}:${process.env.PATH}` : process.env.PATH,
+        RESERVATION_SLEEP_LOG: sleepLog,
         HOME: root,
         ...(process.env.COREPACK_HOME ? { COREPACK_HOME: process.env.COREPACK_HOME } : {}),
         GH_BIN: "/usr/bin/env",
@@ -288,6 +301,17 @@ try {
         child.on("error", reject);
         child.on("close", resolveExit);
       }).finally(() => clearTimeout(timer));
+      // Each retry still asks for the workflow's backoff: 2n + 0..3 seconds.
+      const retryDelays = noWait
+        ? readFileSync(sleepLog, "utf8").split("\n").filter(Boolean).map(Number)
+        : null;
+      for (const [index, delay] of (retryDelays ?? []).entries()) {
+        const attempt = index + 1;
+        assert.ok(
+          delay >= 2 * attempt && delay <= 2 * attempt + 3,
+          `${scenario.name}: retry ${attempt} requested ${delay}s`,
+        );
+      }
       const outputs = Object.fromEntries(
         readFileSync(githubOutput, "utf8")
           .trim()
@@ -352,7 +376,10 @@ try {
           : Number(Boolean(scenario.durable)) + scenario.posts - scenario.deletes,
         scenario.name,
       );
-      if (scenario.name === "service-unavailable") assert.equal(checks, 5);
+      if (scenario.name === "service-unavailable") {
+        assert.equal(checks, 5);
+        if (retryDelays) assert.equal(retryDelays.length, 4, "the shim recorded every retry wait");
+      }
       if (scenario.name === "superseded-before-post") assert.equal(checks, 1);
       if (outputs.status === "posted")
         assert.equal(
@@ -369,6 +396,7 @@ try {
         deletes: deletes.length,
         patches: patches.length,
         remaining: comments.length,
+        ...(retryDelays ? { retryDelays } : {}),
         trace,
       };
       results.push(result);
