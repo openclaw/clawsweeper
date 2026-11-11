@@ -1373,6 +1373,7 @@ export class ExactReviewQueue {
     if (
       request.method === "POST" &&
       [
+        "/review-coverage/census/prepare",
         "/review-coverage/census/start",
         "/review-coverage/census/next",
         "/review-coverage/census/accept",
@@ -1381,17 +1382,21 @@ export class ExactReviewQueue {
     ) {
       try {
         const body = await request.json();
-        const result = url.pathname.endsWith("/start")
-          ? await this.coverageCensus.start(body)
-          : url.pathname.endsWith("/next")
-            ? this.coverageCensus.next(body)
-            : url.pathname.endsWith("/accept")
-              ? await this.coverageCensus.accept(body)
-              : this.coverageCensus.fail(body);
+        const result = url.pathname.endsWith("/prepare")
+          ? this.coverageCensus.prepare(body)
+          : url.pathname.endsWith("/start")
+            ? await this.coverageCensus.start(body)
+            : url.pathname.endsWith("/next")
+              ? this.coverageCensus.next(body)
+              : url.pathname.endsWith("/accept")
+                ? await this.coverageCensus.accept(body)
+                : this.coverageCensus.fail(body);
         return json(result);
       } catch (error) {
         // This reply is behind the signed, private census control route.
-        const phase = url.pathname.split("/").at(-1) as CensusPhase;
+        const phase = (
+          url.pathname.endsWith("/prepare") ? "start" : url.pathname.split("/").at(-1)
+        ) as CensusPhase;
         const category = censusFailureCategory(error);
         return json(
           {

@@ -11,6 +11,8 @@ import {
   censusHttpControl,
   censusOperationalFailure,
   runReviewCoverageCensus,
+  prepareCensusObservation,
+  type PreparedCensusObservation,
 } from "./review-coverage-census.js";
 import { CENSUS } from "../review-coverage-census.js";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -160,6 +162,21 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   const publishUrl = stringArg(args["publish-url"], "");
   const coverageProtocol = stringArg(args["coverage-protocol"], "v2");
   if (!["v1", "v2"].includes(coverageProtocol)) throw new Error("unsupported coverage protocol");
+  let observation: PreparedCensusObservation | null = null;
+  let observationFailure: { error: unknown } | undefined;
+  const readCoverageCounts = async (repositories: readonly SelectedRepository[]) => {
+    if (publishUrl && coverageProtocol === "v2") {
+      try {
+        observation = await prepareCensusObservation({
+          baseUrl: publishUrl,
+          secret: process.env.CLAWSWEEPER_WEBHOOK_SECRET ?? "",
+        });
+      } catch (error) {
+        observationFailure = { error };
+      }
+    }
+    return loadRepositoryOpenCounts(repositories);
+  };
   const publishCoverage = async (
     repositories: readonly SelectedRepository[],
     openCounts: ReadonlyMap<string, RepositoryOpenCounts>,
@@ -172,7 +189,9 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
       });
       return { protocol: "v1" };
     }
+    if (observationFailure) throw observationFailure.error;
     const result = await runReviewCoverageCensus({
+      observation,
       repositories: repositories.map((repo) => {
         const counts = openCounts.get(repo.targetRepo);
         if (!counts?.repositoryId || !counts.observedAt)
@@ -229,7 +248,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
       let collectionFailure: { error: unknown } | undefined;
       try {
         const repositories = await loadEligibleRepositories(config, options.owners);
-        const openCounts = loadRepositoryOpenCounts(repositories);
+        const openCounts = await readCoverageCounts(repositories);
         const progress = await publishCoverage(repositories, openCounts);
         console.error(JSON.stringify({ coverage_collection: progress }));
       } catch (error) {
@@ -258,7 +277,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
       return;
     }
     const repositories = await loadEligibleRepositories(config, options.owners);
-    const openCounts = loadRepositoryOpenCounts(repositories);
+    const openCounts = await readCoverageCounts(repositories);
     const now = Date.now(),
       snapshot = loadReviewCoverageInventory(repositories, openCounts, now);
     process.stdout.write(
@@ -286,7 +305,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   let planningRepositories: readonly SelectedRepository[] = repositories;
   let reviewCandidateCapacity: number | null = null;
   if (mode === "normal-review" || mode === "hot-intake") {
-    const openCounts = loadRepositoryOpenCounts(repositories);
+    const openCounts = await readCoverageCounts(repositories);
     if (publishUrl) {
       try {
         await publishCoverage(repositories, openCounts);
@@ -313,7 +332,7 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   }
   if (mode === "audit" && publishUrl) {
     try {
-      await publishCoverage(repositories, loadRepositoryOpenCounts(repositories));
+      await publishCoverage(repositories, await readCoverageCounts(repositories));
     } catch (error) {
       console.error(
         "[target-fanout] WARNING: live review inventory did not publish; continuing without blocking scheduled fanout work: " +

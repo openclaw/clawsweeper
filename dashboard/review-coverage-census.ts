@@ -16,6 +16,8 @@ import {
   censusItem,
   censusIdentifier,
   censusPage,
+  censusObservationWindow,
+  type CensusObservationWindow,
   censusRecord,
   censusRepository,
   censusToken,
@@ -26,6 +28,8 @@ import {
 } from "../src/review-coverage-census.ts";
 
 type Connection = {
+  observationWindow?: CensusObservationWindow;
+  observationAttempt?: string;
   cursor: string | null;
   done: boolean;
   count: number;
@@ -72,6 +76,8 @@ type RepositoryState = {
   isolated?: boolean;
 };
 type Control = {
+  observationWindow?: CensusObservationWindow;
+  serverClock?: boolean;
   attempt: string;
   until: number;
   frontier: string;
@@ -434,6 +440,26 @@ export class ReviewCoverageCensusStore {
       };
     });
   }
+  prepare(value: unknown, now = Date.now()) {
+    const v = censusRecord(value),
+      attempt = censusIdentifier(v.attempt);
+    if (v.version !== CENSUS.version) throw new Error("invalid census population");
+    return this.storage.transactionSync(() => {
+      const old = this.meta<Control>("control");
+      if (old && old.attempt !== attempt && old.until > now)
+        throw new Error("census lease conflict");
+      const observationWindow = { id: crypto.randomUUID(), startedAt: new Date(now).toISOString() };
+      this.putMeta("control", {
+        attempt,
+        until: now + CENSUS.leaseMs,
+        frontier: old?.frontier ?? "",
+        finalize: old?.finalize ?? "",
+        turn: old?.turn ?? 0,
+        observationWindow,
+      });
+      return { ok: true, clock: "server-query-window-v1", observationWindow };
+    });
+  }
   async start(value: unknown, now = Date.now()) {
     const v = censusRecord(value),
       attempt = censusIdentifier(v.attempt);
@@ -443,6 +469,8 @@ export class ReviewCoverageCensusStore {
       censusBytes(v) > CENSUS.wireBytes
     )
       throw new Error("invalid census population");
+    const observationWindow =
+      v.observationWindow === undefined ? undefined : censusObservationWindow(v.observationWindow);
     const repositories = v.repositories
       .map(censusRepository)
       .sort((a, b) => a.repo.localeCompare(b.repo));
@@ -466,6 +494,25 @@ export class ReviewCoverageCensusStore {
     if (Date.parse(observedAt) > now || Date.parse(observedAt) < latest)
       throw new Error("invalid census observation time");
     const fingerprint = await censusDigest([observedAt, repositories]);
+    const currentControl = this.meta<Control>("control");
+    if (
+      !observationWindow &&
+      currentControl?.attempt === attempt &&
+      currentControl.observationWindow
+    )
+      throw new Error("invalid census observation time");
+    if (observationWindow) {
+      const prepared = this.lease(attempt, now).observationWindow;
+      if (
+        !prepared ||
+        prepared.id !== observationWindow.id ||
+        prepared.startedAt !== observationWindow.startedAt ||
+        v.observedAt !== prepared.startedAt ||
+        v.repositories.some((r) => censusRecord(r).countsAt !== prepared.startedAt)
+      )
+        throw new Error("invalid census observation time");
+    }
+
     let total = 0,
       sumOverflow = false;
     for (const repository of repositories)
@@ -587,6 +634,7 @@ export class ReviewCoverageCensusStore {
         frontier: old?.frontier ?? "",
         finalize: old?.finalize ?? "",
         turn: old?.turn ?? 0,
+        ...(observationWindow ? { observationWindow, serverClock: true } : {}),
       });
       this.putMeta("population", {
         observed: observedAt,
@@ -693,16 +741,39 @@ export class ReviewCoverageCensusStore {
         first.connection.cursor === null && !first.s.isolated
           ? pool.filter((x) => x.connection.cursor === null && !x.s.isolated).slice(0, 10)
           : [first];
-      const work: CensusWork[] = selected.map(({ s, g, kind, connection }) => ({
-        repo: s.repository.repo,
-        id: s.repository.id,
-        revision: s.repository.revision,
-        generation: g.id,
-        revisionNumber: g.revision,
-        pass: g.pass,
-        kind,
-        cursor: connection.cursor,
-      }));
+      const work: CensusWork[] = selected.map(({ s, g, kind, connection }) => {
+        if (c.serverClock) {
+          if (
+            connection.observationAttempt !== c.attempt ||
+            !connection.observationWindow ||
+            Date.parse(connection.observationWindow.startedAt) < Date.parse(g.passStarted)
+          ) {
+            connection.observationWindow = {
+              id: crypto.randomUUID(),
+              startedAt: new Date(now).toISOString(),
+            };
+            connection.observationAttempt = c.attempt;
+          }
+          this.save(s, now);
+        } else if (connection.observationWindow) {
+          delete connection.observationWindow;
+          delete connection.observationAttempt;
+          this.save(s, now);
+        }
+        return {
+          repo: s.repository.repo,
+          id: s.repository.id,
+          revision: s.repository.revision,
+          generation: g.id,
+          revisionNumber: g.revision,
+          pass: g.pass,
+          kind,
+          cursor: connection.cursor,
+          ...(c.serverClock && connection.observationWindow
+            ? { observationWindow: connection.observationWindow }
+            : {}),
+        };
+      });
       c.frontier = selected.at(-1)!.s.repository.repo;
       c.turn++;
       c.until = now + CENSUS.leaseMs;
@@ -757,7 +828,8 @@ export class ReviewCoverageCensusStore {
         observe("lease");
         const control = this.lease(attempt, now);
         if (this.meta<boolean>("blocked") === true) throw new Error("census capacity blocked");
-        for (const { page: p, hash } of hashes) this.acceptPage(p, hash, requestId, now, observe);
+        for (const { page: p, hash } of hashes)
+          this.acceptPage(p, hash, requestId, now, observe, attempt, control.serverClock === true);
         observe("receipt");
         const result = { accepted: true, requestId };
         this.storage.sql.exec(
@@ -897,6 +969,8 @@ export class ReviewCoverageCensusStore {
     receipt: string,
     now: number,
     observe: (operation: CensusAcceptOperation) => void,
+    attempt: string,
+    serverClock: boolean,
   ) {
     observe("checkpoint");
     const s = this.state(p.repo),
@@ -914,7 +988,35 @@ export class ReviewCoverageCensusStore {
       c.done
     )
       throw new Error("census checkpoint conflict");
-    if (Date.parse(p.observedAt) > now || Date.parse(p.observedAt) < Date.parse(g.passStarted))
+    if (serverClock || p.observationWindow || c.observationWindow) {
+      const expected = c.observationWindow,
+        received = p.observationWindow;
+      if (
+        !expected ||
+        !received ||
+        c.observationAttempt !== attempt ||
+        expected.id !== received.id ||
+        expected.startedAt !== received.startedAt ||
+        p.observedAt !== null ||
+        Date.parse(received.startedAt) > now ||
+        Date.parse(received.startedAt) < Date.parse(g.passStarted)
+      )
+        throw new Error("census observation window conflict");
+      // The query ran inside [issuedAt, request receipt], both owned by this DO.
+      // Source timestamps may advance after issuance but never past receipt.
+      if (
+        p.items.some(
+          (item) =>
+            Date.parse(item.updated_at) > now ||
+            (item.reopened_at != null && Date.parse(item.reopened_at) > now),
+        )
+      )
+        throw new Error("future census identity");
+    } else if (
+      p.observedAt === null ||
+      Date.parse(p.observedAt) > now ||
+      Date.parse(p.observedAt) < Date.parse(g.passStarted)
+    )
       throw new Error("census observation window conflict");
     if (
       p.next &&
@@ -1076,6 +1178,8 @@ export class ReviewCoverageCensusStore {
     c.stable = c.stable && (c.total === null || c.total === p.total);
     c.total = p.total;
     c.digest = hash;
+    delete c.observationWindow;
+    delete c.observationAttempt;
     c.done = !p.hasNext || cursorBound;
     c.cursor = c.done ? null : p.next;
     if (c.count > CENSUS.identities) throw new Error("census identity bound");
@@ -1098,7 +1202,7 @@ export class ReviewCoverageCensusStore {
         pulls: b.count,
         stable: a.stable && b.stable,
         start: g.passStarted,
-        end: p.observedAt,
+        end: p.observedAt ?? new Date(now).toISOString(),
       };
       g.prunePass = g.pass;
       const previous = g.previous;
