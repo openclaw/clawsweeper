@@ -242,7 +242,13 @@ export function resolveTestFiles(target, cwd = process.cwd()) {
   const patterns = TARGET_PATTERNS[target];
   if (!patterns) throw new Error(`Unknown test target: ${target}.`);
 
-  return [...new Set(patterns.flatMap((pattern) => globSync(pattern, { cwd })))].sort();
+  return [
+    ...new Set(
+      patterns.flatMap((pattern) =>
+        globSync(pattern, { cwd }).map((file) => file.replaceAll("\\", "/")),
+      ),
+    ),
+  ].sort();
 }
 
 export function selectShard(files, shard) {
