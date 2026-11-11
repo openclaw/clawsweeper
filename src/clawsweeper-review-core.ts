@@ -15,10 +15,7 @@ import {
   runAgentProcess,
 } from "./agent-runner.js";
 import { AgentInputScanError, type AgentScanSource } from "./agent-input-scan.js";
-import {
-  omitReviewedFixtureReferences,
-  serializeReviewContext,
-} from "./agent-input-scan-fixtures.js";
+import { serializeReviewContext } from "./agent-input-scan-classifier.js";
 import { stringArg, type Args } from "./clawsweeper-args.js";
 
 import {
@@ -352,7 +349,7 @@ ${additionalPrompt.trim()}
 - Target repo: ${item.repo}
 - Item: #${item.number}
 - Type: ${item.kind}
-- Title: ${omitReviewedFixtureReferences(item.title)}
+- Title: ${item.title}
 - URL: ${item.url}
 - Author: ${item.author}${runtimeHints.localRange ? " (unverified local Git display name)" : ""}
 - Author association: ${item.authorAssociation}${runtimeHints.localRange ? " (synthetic contributor proof context; GitHub role is unverified)" : ""}

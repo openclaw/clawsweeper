@@ -28,14 +28,14 @@ import {
 import type { AgentInputScanFailureReason } from "./exact-review-failure-reason.js";
 import { readReviewGit, reviewMergeBase, type ReviewGitReadOptions } from "./pr-review-evidence.js";
 import {
-  classifyReviewedFixtureScan,
-  type ReviewedFixtureNotice,
+  classifyScan,
+  type ScanClassificationNotice,
   type ScanInputOrigin,
   type ScanRefusalDiagnostic,
   type ScanSourceReference,
   type ScanSourceRole,
   type StagedScanInput,
-} from "./agent-input-scan-fixtures.js";
+} from "./agent-input-scan-classifier.js";
 
 export type AgentScanSource =
   | { kind: "prompt" }
@@ -278,7 +278,7 @@ export function scanAgentInput(options: {
   };
   let root: string | undefined;
   let failure: AgentInputScanError | undefined;
-  let classified: ReviewedFixtureNotice[] | undefined;
+  let classified: ScanClassificationNotice[] | undefined;
   try {
     const cwd = realpathSync(options.cwd);
     const scanner = trustedScanner(cwd, options.cwd, remaining());
@@ -704,12 +704,7 @@ export function scanAgentInput(options: {
     };
     const result = scan(inputDir);
     if (result.status === 183 || result.stdout?.length) {
-      const classification = classifyReviewedFixtureScan(
-        result.status!,
-        result.stdout,
-        result.stderr,
-        inputs,
-      );
+      const classification = classifyScan(result.status!, result.stdout, result.stderr, inputs);
       if (classification.kind === "refused")
         throw new AgentInputScanError(classification.reason, classification.diagnostic);
       if (classification.kind === "git_metadata_proof_required") {
@@ -719,27 +714,11 @@ export function scanAgentInput(options: {
           const original = inputs.get(file);
           if (original?.kind !== "patch" && original?.kind !== "raw_diff")
             throw new AgentInputScanError("incomplete_source");
+          // The replay only confirms what remains once proven metadata is masked;
+          // no Git object metadata can qualify again, and original bytes stay provenance.
           stage(
             bytes,
-            // Raw metadata replay has no fixture-attribution route: every remaining
-            // finding refuses, while the original raw bytes remain provenance.
-            original.kind === "raw_diff"
-              ? {
-                  kind: "raw_diff_proof",
-                  from: original.from,
-                  to: original.to,
-                }
-              : {
-                  kind: "patch",
-                  from: original.from,
-                  to: original.to,
-                  metadataProof: {
-                    file: join(proofDir, original.id),
-                    originalFile: file,
-                    original,
-                    bytes: Buffer.from(bytes),
-                  },
-                },
+            { kind: "metadata_proof", from: original.from, to: original.to },
             original.id,
             proofDir,
           );
@@ -747,12 +726,7 @@ export function scanAgentInput(options: {
         // Decoder coordinates do not identify original bytes. A complete native
         // replay with metadata masked must independently clear decoded content.
         const proof = scan(proofDir);
-        const confirmation = classifyReviewedFixtureScan(
-          proof.status!,
-          proof.stdout,
-          proof.stderr,
-          inputs,
-        );
+        const confirmation = classifyScan(proof.status!, proof.stdout, proof.stderr, inputs);
         if (confirmation.kind === "refused")
           throw new AgentInputScanError(confirmation.reason, confirmation.diagnostic);
         if (confirmation.kind !== "classified") throw new AgentInputScanError("findings");
@@ -785,7 +759,7 @@ export function scanAgentInput(options: {
         notice:
           classification.classification === "git_object_id"
             ? "Canonical Git object metadata classified as non-sensitive."
-            : "Reviewed synthetic fixture findings classified as non-sensitive.",
+            : "Unverifiable credentials for reserved or loopback hosts classified as non-sensitive.",
         ...classification,
       }),
     );
