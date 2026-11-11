@@ -1,0 +1,1 @@
+- Qualify the existing password-free JDBC test fixture in the exact source revisions used by [OCE PR 5398](https://github.com/openclaw/openclaw-enterprise/pull/5398).
