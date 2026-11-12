@@ -1,0 +1,1 @@
+- Stop PR reviews from demanding proof for speculative races and in-flight revocation: authority-chain review now triggers only on changed authorization decisions, revocation applies to the next request, P3 findings are advisory, and unrequested race machinery or single-use helpers become findings instead.

@@ -132,7 +132,8 @@ function publicBeforeMergeItems(options: {
       "blocked",
     );
   }
-  for (const finding of options.findings) {
+  // P3 findings are advice: they stay in the Findings section but never gate merge.
+  for (const finding of options.findings.filter((candidate) => candidate.priority < 3)) {
     add(
       `${finding.title.trim()} (${priorityLabel(finding.priority)})`,
       typedBlockerDetail(finding.body, `Resolve ${finding.title.trim()} before merge.`),
@@ -203,7 +204,7 @@ function publicBeforeMergeItems(options: {
   if (
     options.patchQualityBlocked &&
     !ratingRemediationRepresented &&
-    options.findings.length === 0 &&
+    !options.findings.some((finding) => finding.priority < 3) &&
     options.securityReview.concerns.length === 0
   ) {
     add(
@@ -303,8 +304,13 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
       "The review found that this PR may be superseded, but the close check did not confirm that the other PR covers all of its work. A maintainer must close this PR or confirm that it still has work to land.",
     );
     const correctness = decision.overallCorrectness;
+    // P3 findings are advice; an incorrect verdict or queued repair backed only by them never gates merge.
+    const advisoryOnly =
+      decision.reviewFindings.length > 0 &&
+      decision.reviewFindings.every((finding) => finding.priority === 3);
     if (
       correctness === "patch is incorrect" &&
+      !advisoryOnly &&
       !items.some((item) => item.state === "needs-changes")
     ) {
       items.push({
@@ -326,6 +332,7 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
     }
     if (
       decision.workCandidate === "queue_fix_pr" &&
+      !advisoryOnly &&
       !items.some((item) => item.state === "needs-changes")
     ) {
       items.push({

@@ -9,6 +9,14 @@ file. This repository does not currently maintain `AGENT.md`, `CLAUDE.md`, or
 Cursor aliases; agents that do not discover `AGENTS.md` automatically must be
 directed here rather than given a duplicated policy copy.
 
+## Design
+
+- Do not extract single-use helpers preemptively. Inline the logic at the call site unless the helper is reused, hides a genuinely complex boundary, or has a clear independent name that improves the caller.
+- Before adding complexity for a speculative or vanishingly unlikely race or security edge case, explain the concrete failure mode, likelihood, and complexity cost to the user and get their buy-in. Do not silently expand scope for theoretical robustness.
+- A review prompt never demands proof for a speculative race. At most, it asks the author to state the failure mode and its likelihood.
+- A new rule here or in `prompts/` cites an incident (a PR, issue or commit) and passes the deletion test: without it, a senior engineer does the wrong thing.
+- A rule has no "unless security, data or money" exception, and a rule added here deletes its copies in the prompts in the same PR.
+
 ## Structure
 
 - Main code: `src/clawsweeper.ts`.

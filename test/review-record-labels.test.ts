@@ -269,6 +269,37 @@ test("typed findings, product and security block the same readiness used by labe
   assert.match(comment, /Typed product blocker/);
 });
 
+test("P3 findings stay visible but never block readiness", () => {
+  const finding = {
+    title: "Advisory finding",
+    body: "A low-impact defect worth fixing later.",
+    priority: 3 as const,
+    confidenceScore: 0.9,
+    file: "src/example.ts",
+    lineStart: 1,
+    lineEnd: 1,
+  };
+  const report = pullRequestReport().replace(
+    "author_association: CONTRIBUTOR",
+    "author_association: CONTRIBUTOR\npull_head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  );
+  const typed = withReviewRecord(report, {
+    ...readyDecision,
+    overallCorrectness: "patch is incorrect",
+    workCandidate: "queue_fix_pr",
+    reviewFindings: [finding],
+  });
+  assert.equal(pullRequestReviewReadinessFromReport(typed).state, "ready");
+  assert.match(renderReviewCommentFromReport(typed, "none"), /Advisory finding/);
+  const blocking = withReviewRecord(report, {
+    ...readyDecision,
+    overallCorrectness: "patch is incorrect",
+    workCandidate: "queue_fix_pr",
+    reviewFindings: [{ ...finding, priority: 2 as const }],
+  });
+  assert.equal(pullRequestReviewReadinessFromReport(blocking).state, "needs-changes");
+});
+
 test("host proof rules retain overrides, author exemptions, empty summaries and authority markers", () => {
   const missing = {
     status: "missing",
