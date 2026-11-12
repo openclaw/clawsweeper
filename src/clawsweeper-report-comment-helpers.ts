@@ -132,7 +132,8 @@ function publicBeforeMergeItems(options: {
       "blocked",
     );
   }
-  for (const finding of options.findings) {
+  // P3 findings are advice: they stay in the Findings section but never gate merge.
+  for (const finding of options.findings.filter((candidate) => candidate.priority < 3)) {
     add(
       `${finding.title.trim()} (${priorityLabel(finding.priority)})`,
       typedBlockerDetail(finding.body, `Resolve ${finding.title.trim()} before merge.`),
@@ -203,7 +204,7 @@ function publicBeforeMergeItems(options: {
   if (
     options.patchQualityBlocked &&
     !ratingRemediationRepresented &&
-    options.findings.length === 0 &&
+    !options.findings.some((finding) => finding.priority < 3) &&
     options.securityReview.concerns.length === 0
   ) {
     add(
