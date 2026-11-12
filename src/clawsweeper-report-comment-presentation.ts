@@ -1,3 +1,5 @@
+import { independentReviewConflicts, independentReviewValue } from "./independent-reviews.js";
+import { reportForIndependentReview } from "./review-record.js";
 import type {
   CloseReason,
   ProductFixScope,
@@ -568,6 +570,56 @@ export function renderReviewCommentFromReport(
   options: ReviewCommentRenderOptions = {},
 ): string {
   const reviewDecision = reportReviewDecision(markdown);
+  if (reviewDecision.independentReviews) {
+    const reviews = reviewDecision.independentReviews;
+    const readiness =
+      frontMatterValue(markdown, "type") === "pull_request"
+        ? pullRequestReviewReadinessFromReport(markdown)
+        : undefined;
+    const conflicts = independentReviewConflicts(reviews);
+    const body = [
+      `Independent reviews: ${frontMatterValue(markdown, "review_status") === "complete" ? "complete" : "incomplete"}.`,
+      "No model consolidation, consensus or semantic deduplication. Reviewer judgments remain attributed; close and work automation are disabled for this mode.",
+      ...(readiness
+        ? [
+            "## Merge readiness",
+            publicMergeReadinessBlock(
+              readiness.state,
+              reviewDecision.triagePriority,
+              "Both ordinary policies must pass; no generated consensus.",
+              readiness.items.length,
+              readiness.maintainerDecisionPending,
+              readiness.headSha ?? "",
+            ),
+            "## Before merge",
+            publicBeforeMergeBlock(readiness.items),
+          ]
+        : []),
+      "## Typed disagreements",
+      conflicts.length
+        ? conflicts
+            .map(
+              (path) =>
+                `- ${path}: ${reviews.map((review) => `Reviewer ${review.reviewer} = ${JSON.stringify(independentReviewValue(review.decision, path)) ?? "absent"}`).join("; ")}`,
+            )
+            .join("\n")
+        : "None in the defined typed fields; this is not semantic agreement.",
+      ...reviews.flatMap((review) => [
+        `## Reviewer ${review.reviewer}`,
+        `Requested model: ${review.requestedModel}. Executed model: unverified. Status: ${review.status}.`,
+        renderReviewCommentFromReport(
+          reportForIndependentReview(markdown, review),
+          review.decision.closeReason,
+          { suppressAutomationMarkers: true },
+        ),
+      ]),
+      ...(options.suppressAutomationMarkers
+        ? []
+        : [reviewAutomationMarkersFromReport(markdown, readiness)]),
+      reviewVersionMarkerFromReport(markdown),
+    ];
+    return body.filter(Boolean).join("\n\n");
+  }
   if (reason === "oversized_pull_request") {
     return [
       renderCloseCommentFromReport(markdown, reason, targetProfile()),

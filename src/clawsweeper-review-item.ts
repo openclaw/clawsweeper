@@ -1,3 +1,5 @@
+import { completeActivityContextSymbol } from "./clawsweeper-types.js";
+import { reduceIndependentReviews, type IndependentReview } from "./independent-reviews.js";
 import { join } from "node:path";
 import { applyHiddenPayloadSecurityReview } from "./repair/security-signals.js";
 import { writeFileSync } from "node:fs";
@@ -41,6 +43,8 @@ export function runPreparedReviewItem(
     context: ItemContext;
     git: GitInfo;
     model: string;
+    reviewModels?: [string, string];
+    disableDecisionRepair?: boolean;
     sandboxMode: string;
     localOnly: boolean;
     localRange: boolean;
@@ -65,7 +69,66 @@ export function runPreparedReviewItem(
     onPrompt?: (prompt: string) => void;
   },
   dependencies: PreparedReviewDependencies,
-) {
+): {
+  decision: Decision;
+  runtime: import("./clawsweeper-types.js").ReviewRuntime & { codexElapsedMs: number };
+  codexFailure: { error: unknown; logKind: CodexFailureLogKind } | null;
+  codexFailureRetryable: boolean;
+  snapshotHash: string;
+} {
+  if (options.reviewModels) {
+    const { reviewModels, ...ordinary } = options;
+    const startedAt = Date.now();
+    const results: ReturnType<typeof runPreparedReviewItem>[] = [];
+    const reviews: IndependentReview[] = [];
+    for (const [index, model] of reviewModels.entries()) {
+      const result = runPreparedReviewItem(
+        {
+          ...ordinary,
+          model,
+          disableDecisionRepair: true,
+          context: {
+            ...structuredClone(options.context),
+            ...(options.context[completeActivityContextSymbol]
+              ? {
+                  [completeActivityContextSymbol]: structuredClone(
+                    options.context[completeActivityContextSymbol],
+                  ),
+                }
+              : {}),
+          },
+          timeoutMs: Math.max(1, options.timeoutMs - (Date.now() - startedAt)),
+          codexWorkDir: join(options.codexWorkDir, `reviewer-${index + 1}`),
+          proofScratchDir: join(options.proofScratchDir, `reviewer-${index + 1}`),
+        },
+        dependencies,
+      );
+      results.push(result);
+      reviews.push({
+        reviewer: index === 0 ? 1 : 2,
+        requestedModel: model,
+        executionModel: "unverified",
+        snapshotHash: result.snapshotHash,
+        status:
+          result.codexFailure || reviewStatusForDecision(result.decision) !== "complete"
+            ? "failed"
+            : "complete",
+        decision: result.decision,
+      });
+    }
+    const first = results[0]!;
+    const failed = results.find((result) => result.codexFailure);
+    const neutral = dependencies.codexReviewFailure(
+      new Error("Independent review projection"),
+    ).decision;
+    return {
+      ...first,
+      decision: reduceIndependentReviews(reviews, first.snapshotHash, neutral),
+      runtime: { ...first.runtime, codexElapsedMs: Date.now() - startedAt },
+      codexFailure: failed?.codexFailure ?? null,
+      codexFailureRetryable: results.some((result) => result.codexFailureRetryable),
+    };
+  }
   const {
     item,
     context,
@@ -177,6 +240,7 @@ export function runPreparedReviewItem(
           context,
           git,
           model,
+          ...(options.disableDecisionRepair ? { disableDecisionRepair: true } : {}),
           openclawDir: reviewOpenclawDir,
           reviewTreeRoot: reviewTreesDir,
           reasoningEffort: itemCodexProfile.reasoningEffort,

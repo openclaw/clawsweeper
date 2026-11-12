@@ -902,3 +902,38 @@ test("legacy explicit-path failures report compatibility retention in JSON", () 
   }
   assert.equal(JSON.parse(lines.join("")).retention, "debug");
 });
+
+test("independent review output prunes both ordinary streams without removing another item", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-pair-prune-"));
+  try {
+    const codexWorkDir = join(root, "codex");
+    const proofScratchDir = join(codexWorkDir, "proof-scratch", "42");
+    mkdirSync(proofScratchDir, { recursive: true });
+    const reportPath = join(root, "42.md");
+    writeFileSync(reportPath, "report");
+    for (const reviewer of [1, 2]) {
+      const work = join(codexWorkDir, `reviewer-${reviewer}`);
+      mkdirSync(work);
+      for (const suffix of ["prompt.md", "json", "1.codex.stdout.log", "1.codex.stderr.log"]) {
+        writeFileSync(join(work, `42.${suffix}`), "bounded output");
+      }
+      writeFileSync(join(work, "43.json"), "other item");
+    }
+    pruneReviewOutputItem({
+      artifactDir: root,
+      codexWorkDir,
+      proofScratchDir,
+      reportPath,
+      itemNumber: 42,
+      retention: "summary",
+    });
+    assert.equal(countFiles(root), 3); // report + the two other-item results
+    for (const reviewer of [1, 2])
+      assert.equal(
+        readFileSync(join(codexWorkDir, `reviewer-${reviewer}`, "43.json"), "utf8"),
+        "other item",
+      );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

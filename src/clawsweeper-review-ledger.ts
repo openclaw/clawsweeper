@@ -346,17 +346,31 @@ export function createReviewActionLedger({
     const prefix = `${options.item.number}.`;
     const logs =
       options.codexWorkDir && existsSync(options.codexWorkDir)
-        ? readdirSync(options.codexWorkDir)
+        ? [
+            options.codexWorkDir,
+            join(options.codexWorkDir, "reviewer-1"),
+            join(options.codexWorkDir, "reviewer-2"),
+          ]
+            .filter((dir) => existsSync(dir))
+            .flatMap((dir) => readdirSync(dir).map((name) => ({ dir, name })))
             .filter(
-              (name) =>
+              ({ name }) =>
                 name.startsWith(prefix) &&
                 (name.endsWith(".codex.stdout.log") || name.endsWith(".codex.stderr.log")),
             )
-            .sort()
-            .slice(0, 64)
-            .map((name) =>
-              actionLedgerFileEvidence("review_log", join(options.codexWorkDir!, name)),
+            .sort((a, b) =>
+              a.dir < b.dir
+                ? -1
+                : a.dir > b.dir
+                  ? 1
+                  : a.name < b.name
+                    ? -1
+                    : a.name > b.name
+                      ? 1
+                      : 0,
             )
+            .slice(0, 64)
+            .map(({ dir, name }) => actionLedgerFileEvidence("review_log", join(dir, name)))
             .filter((entry): entry is ActionEventEvidence => entry !== null)
         : [];
     const captured = logs.length > 0;

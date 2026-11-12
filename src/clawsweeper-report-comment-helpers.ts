@@ -24,6 +24,7 @@ import type {
 } from "./clawsweeper-types.js";
 import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import { reportRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
+import { reportForIndependentReview } from "./review-record.js";
 import { reportReviewDecision } from "./report-review-decision.js";
 import {
   closeEvidenceLine,
@@ -224,6 +225,21 @@ function typedBlockerDetail(detail: string, fallback: string): string {
     : fallback;
 }
 
+function readinessState(
+  items: readonly PublicBeforeMergeItem[],
+  decisionPending: boolean,
+): PullRequestReviewReadiness["state"] {
+  return items.some((item) => item.state === "blocked")
+    ? "blocked"
+    : items.length
+      ? decisionPending
+        ? "blocked"
+        : "needs-changes"
+      : decisionPending
+        ? "awaiting-maintainer"
+        : "ready";
+}
+
 export function pullRequestReviewReadinessFromReport(markdown: string): PullRequestReviewReadiness {
   let headSha: string | null = null;
   try {
@@ -231,6 +247,43 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
     headSha = candidate && /^[0-9a-f]{40}$/i.test(candidate) ? candidate.toLowerCase() : null;
     const decision = reportReviewDecision(markdown);
     const reviewStatus = frontMatterValue(markdown, "review_status");
+    if (decision.independentReviews) {
+      const individual = decision.independentReviews.map((review) => ({
+        review,
+        readiness: pullRequestReviewReadinessFromReport(
+          reportForIndependentReview(markdown, review),
+        ),
+      }));
+      const items = individual.flatMap(({ review, readiness }) =>
+        readiness.items.map((item) => ({
+          ...item,
+          label: `Reviewer ${review.reviewer}: ${item.label}`,
+        })),
+      );
+      for (const { review } of individual) {
+        if (review.snapshotHash !== frontMatterValue(markdown, "item_snapshot_hash")) {
+          items.push({
+            state: "blocked",
+            label: `Reviewer ${review.reviewer}: stale source`,
+            detail: "Complete a fresh independent review of the current source snapshot.",
+          });
+        }
+      }
+      if (decision.nextStep && decision.nextStep.kind !== "none")
+        items.push({
+          state: "blocked",
+          label: "Reconcile independent review metadata",
+          detail: decision.nextStep.text,
+        });
+      const pending = individual.some(({ readiness }) => readiness.maintainerDecisionPending);
+      return {
+        headSha,
+        items,
+        state: readinessState(items, pending),
+        maintainerDecisionPending: pending,
+        normalizationFailed: individual.some(({ readiness }) => readiness.normalizationFailed),
+      };
+    }
     const decisionPending = Boolean(decision.maintainerDecision?.required);
     const rating = decision.prRating;
     const patchQualityBlocked = rating.patchTier === "F" || rating.patchTier === "D";
@@ -351,17 +404,7 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
     }
     // A decision beside remaining work keeps the PR blocked, as before. Only a
     // decision with nothing else left is awaiting the maintainer.
-    const state: PullRequestReviewReadiness["state"] = items.some(
-      (item) => item.state === "blocked",
-    )
-      ? "blocked"
-      : items.length
-        ? decisionPending
-          ? "blocked"
-          : "needs-changes"
-        : decisionPending
-          ? "awaiting-maintainer"
-          : "ready";
+    const state = readinessState(items, decisionPending);
     return {
       headSha,
       state,

@@ -682,14 +682,20 @@ export function pruneReviewOutputItem(options: {
   const codexWorkDir = assertOwnedOutputPath(artifactDir, options.codexWorkDir);
   const proofScratchDir = assertOwnedOutputPath(artifactDir, options.proofScratchDir);
   const reportPath = assertOwnedOutputPath(artifactDir, options.reportPath);
-  const itemPrefix = join(codexWorkDir, String(options.itemNumber));
-  for (const path of [
-    `${itemPrefix}.prompt.md`,
-    `${itemPrefix}.json`,
-    `${itemPrefix}.1.codex.stdout.log`,
-    `${itemPrefix}.1.codex.stderr.log`,
+  for (const workDir of [
+    codexWorkDir,
+    join(codexWorkDir, "reviewer-1"),
+    join(codexWorkDir, "reviewer-2"),
   ]) {
-    rmSync(path, { force: true });
+    const itemPrefix = join(workDir, String(options.itemNumber));
+    for (const path of [
+      `${itemPrefix}.prompt.md`,
+      `${itemPrefix}.json`,
+      `${itemPrefix}.1.codex.stdout.log`,
+      `${itemPrefix}.1.codex.stderr.log`,
+    ])
+      rmSync(path, { force: true });
+    if (workDir !== codexWorkDir) removeDirectoryIfEmpty(workDir);
   }
   rmSync(proofScratchDir, { recursive: true, force: true });
   if (options.retention === "none") rmSync(reportPath, { force: true });

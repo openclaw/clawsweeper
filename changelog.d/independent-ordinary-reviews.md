@@ -1,0 +1,1 @@
+- Add opt-in independent ordinary reviews with attributed results and conservative deterministic metadata reduction, without a consolidation model. Thanks @karkarl and @RomneyDa.

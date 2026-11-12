@@ -248,6 +248,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       batchSize,
       maxPages,
       model,
+      reviewModels,
       sandboxMode,
       timeoutMs,
       expectedSourceRevision,
@@ -1409,7 +1410,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           reviewOutputMediaLimits(outputBudget, proofScratchDir), writeOutputMetadata,
         );
         const { decision, runtime, codexFailure, codexFailureRetryable, snapshotHash } = runPreparedReviewItem({
-          item, context, git, model, sandboxMode, localOnly, localRange: false,
+          item, context, git, model, ...(reviewModels ? { reviewModels } : {}), sandboxMode, localOnly, localRange: false,
           reviewOpenclawDir, reviewTreesDir, additionalPrompt, proofScratchDir,
           preparedMediaProof, resolveProvenancePull, shardIndex, shardCount, timeoutMs,
           humanLocalReview, outputSelection, outputBudget, itemOutputBudget, codexWorkDir,

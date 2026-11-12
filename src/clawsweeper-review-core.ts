@@ -816,6 +816,7 @@ ${extra}
     context: ItemContext;
     git: GitInfo;
     model: string;
+    disableDecisionRepair?: boolean;
     openclawDir: string;
     reviewTreeRoot?: string;
     reasoningEffort: string;
@@ -964,9 +965,17 @@ ${extra}
         : { outputFileBytes: options.streamFileBytes }),
       outputLastMessageBytes: options.resultFileBytes,
       timeoutMs: remainingMs,
-      decisionRepair: {
-        item: { repo: options.item.repo, number: options.item.number, kind: options.item.kind },
-      },
+      ...(options.disableDecisionRepair
+        ? {}
+        : {
+            decisionRepair: {
+              item: {
+                repo: options.item.repo,
+                number: options.item.number,
+                kind: options.item.kind,
+              },
+            },
+          }),
     });
     const processFinishedAt = Date.now();
     // Complete the best-effort local handoff before failure can terminate the process.

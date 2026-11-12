@@ -1,3 +1,12 @@
+import {
+  prStatusLabelKindFromReport,
+  nextPrStatusLabels,
+} from "../dist/clawsweeper-label-policy.js";
+import {
+  nextPriorityLabels,
+  nextRealBehaviorProofSufficientLabels,
+} from "../dist/clawsweeper-label-selection.js";
+import { readReviewRecord } from "../dist/review-record.js";
 import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -1001,6 +1010,9 @@ if (process.env.LOCAL_REVIEW_PROMPT) fs.writeFileSync(process.env.LOCAL_REVIEW_P
 const captures = fs.existsSync(process.env.LOCAL_REVIEW_CAPTURE)
   ? JSON.parse(fs.readFileSync(process.env.LOCAL_REVIEW_CAPTURE, "utf8"))
   : [];
+if (process.env.LOCAL_REVIEW_PAIR_TRACE) {
+  fs.appendFileSync(process.env.LOCAL_REVIEW_PAIR_TRACE, JSON.stringify({ args, prompt, proofScratchDir: process.env.CLAWSWEEPER_PROOF_SCRATCH_DIR, hasGitHubToken: Boolean(process.env.GH_TOKEN || process.env.GITHUB_TOKEN) }) + "\\n");
+}
 captures.push({
   hasPreviousReview: prompt.includes('"previousClawSweeperReview"'),
   hasPriorFinding: prompt.includes(${JSON.stringify(priorFindingTitle)}),
@@ -1011,7 +1023,9 @@ if (process.env.LOCAL_REVIEW_FAIL === "1") {
   process.stderr.write("deterministic local review failure\\n");
   process.exit(1);
 }
-process.stdout.write(fs.readFileSync(process.env.LOCAL_REVIEW_DECISION, "utf8") + "\\n");
+const responses = JSON.parse(fs.readFileSync(process.env.LOCAL_REVIEW_DECISION, "utf8"));
+const selected = Array.isArray(responses) ? responses[captures.length - 1] : responses;
+process.stdout.write(JSON.stringify(selected) + "\\n");
 `,
   );
 }
@@ -1534,6 +1548,185 @@ test("--local-range preserves native history and exports current preflight summa
     assert.doesNotMatch(JSON.stringify(captures[2]), new RegExp(failedHead));
     assert.doesNotMatch(readFileSync(historyPath, "utf8"), /Review history \(/);
     assert.equal(git(dir, "status", "--porcelain"), "");
+  } finally {
+    rmSync(harness, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("compiled CLI independent reviews use exactly two isolated ordinary calls and one attributed comment", (t) => {
+  if (process.env.CLAWSWEEPER_REAL_SCANNER !== "1") useFakeScanner(t);
+  const dir = initRepo();
+  const harness = mkdtempSync(join(tmpdir(), "lrr-independent-"));
+  try {
+    writeFileSync(
+      join(dir, "AGENTS.md"),
+      "Inspect the changed file and keep this checkout read-only.\n",
+    );
+    writeFileSync(join(dir, "file.txt"), "before\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "base");
+    git(dir, "branch", "base-ref");
+    writeFileSync(join(dir, "file.txt"), "after\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "change");
+    const firstText = "Reviewer one: preserve  this recommendation.";
+    const responses = [
+      changelogReviewDecision({
+        summary: firstText,
+        bestSolution: "Keep reviewer one's reasoning intact.",
+        reviewFindings: [
+          reviewFinding({
+            title: "First runtime defect",
+            priority: 1,
+            file: "file.txt",
+            lineStart: 1,
+            lineEnd: 1,
+          }),
+        ],
+      }),
+      changelogReviewDecision({
+        summary: "Reviewer two disagrees about the remedy.",
+        bestSolution: "Use a different repair, not generated consensus.",
+        reviewFindings: [
+          reviewFinding({
+            title: "Second runtime defect",
+            priority: 2,
+            file: "file.txt",
+            lineStart: 1,
+            lineEnd: 1,
+          }),
+        ],
+        realBehaviorProof: {
+          status: "missing",
+          summary: "The live behavior is still unproven.",
+          evidenceKind: "none",
+          needsContributorAction: true,
+        },
+      }),
+    ];
+    const responsesPath = join(harness, "responses.json");
+    const tracePath = join(harness, "trace.jsonl");
+    const captures = join(harness, "captures.json");
+    const fakeCodex = writeLocalReviewCodex(harness, firstText);
+    writeFileSync(responsesPath, JSON.stringify(responses));
+    for (const mode of ["pair", "invalid", "single"]) {
+      writeFileSync(
+        responsesPath,
+        JSON.stringify(mode === "invalid" ? [responses[0], { invalid: "schema" }] : responses),
+      );
+      writeFileSync(captures, "[]");
+      writeFileSync(tracePath, "");
+      const result = spawnReview(
+        CLI,
+        [
+          "review",
+          "--local-range",
+          "--target-repo",
+          "openclaw/clawsweeper",
+          "--target-dir",
+          dir,
+          "--base",
+          "base-ref",
+          "--output-retention",
+          "none",
+          "--result-format",
+          "json",
+          ...(mode !== "single" ? ["--review-models", "fixture-one,fixture-two"] : []),
+        ],
+        {
+          encoding: "utf8",
+          timeout: 60_000,
+          env: {
+            ...process.env,
+            CODEX_BIN: fakeCodex,
+            LOCAL_REVIEW_DECISION: responsesPath,
+            LOCAL_REVIEW_CAPTURE: captures,
+            LOCAL_REVIEW_PAIR_TRACE: tracePath,
+          },
+        },
+      );
+      assert.ifError(result.error);
+      assert.equal(result.status, mode === "invalid" ? 1 : 0, result.stderr + result.stdout);
+      const markdown = JSON.parse(result.stdout).reports[0].report;
+      const stored = readReviewRecord(markdown).decision;
+      const trace = readFileSync(tracePath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.equal(
+        trace.length,
+        mode === "single" ? 1 : 2,
+        "no baseline, repair or coordinator invocation",
+      );
+      assert.ok(trace.every((entry) => !entry.hasGitHubToken));
+      if (mode === "pair") {
+        assert.equal(stored.independentReviews.length, 2);
+        assert.equal(stored.independentReviews[0].decision.summary, firstText);
+        assert.equal(stored.independentReviews[1].decision.bestSolution, responses[1].bestSolution);
+        assert.equal(stored.reviewFindings.length, 2);
+        assert.equal(stored.realBehaviorProof.status, "missing");
+        assert.ok(trace.every((entry) => !entry.prompt.includes(firstText)));
+        assert.ok(trace[0].args.includes("fixture-one"));
+        assert.ok(trace[1].args.includes("fixture-two"));
+        assert.notEqual(trace[0].proofScratchDir, trace[1].proofScratchDir);
+        const statusKind = prStatusLabelKindFromReport(
+          markdown,
+          { comments: [], timeline: [] },
+          [],
+        );
+        const labelPlan = nextPrStatusLabels(
+          nextPriorityLabels(
+            nextRealBehaviorProofSufficientLabels([], stored.realBehaviorProof),
+            stored.triagePriority,
+          ),
+          statusKind,
+        );
+        assert.equal(statusKind, "needs_proof");
+        assert.ok(labelPlan.includes("P2"));
+        assert.ok(!labelPlan.includes("proof: sufficient"));
+        const comment = renderReviewCommentFromReport(markdown, "none");
+        assert.match(comment, /## Reviewer 1/);
+        assert.match(comment, /## Reviewer 2/);
+        assert.match(comment, /First runtime defect/);
+        assert.match(comment, /Second runtime defect/);
+        assert.match(
+          comment,
+          /realBehaviorProof.status: Reviewer 1 = "not_applicable"; Reviewer 2 = "missing"/,
+        );
+        if (process.env.CLAWSWEEPER_PROOF_ARTIFACT_DIR) {
+          const out = process.env.CLAWSWEEPER_PROOF_ARTIFACT_DIR;
+          mkdirSync(out, { recursive: true });
+          writeFileSync(join(out, "report.md"), markdown);
+          writeFileSync(join(out, "comment.md"), comment);
+          writeFileSync(
+            join(out, "trace.json"),
+            JSON.stringify(
+              {
+                labelPlan,
+                base: git(dir, "rev-parse", "base-ref"),
+                head: git(dir, "rev-parse", "HEAD"),
+                calls: trace.map(({ args, hasGitHubToken }) => ({ args, hasGitHubToken })),
+                independentReviews: stored.independentReviews.map(
+                  ({ reviewer, status, executionModel }) => ({ reviewer, status, executionModel }),
+                ),
+              },
+              null,
+              2,
+            ),
+          );
+        }
+      } else if (mode === "invalid") {
+        assert.equal(stored.independentReviews[1].status, "failed");
+        assert.equal(stored.reviewFindings[0].title, "First runtime defect");
+        assert.equal(stored.confidence, "low");
+        assert.match(markdown, /^review_status: failed$/m);
+      } else {
+        assert.equal(stored.independentReviews, undefined);
+        assert.equal(stored.summary, firstText);
+      }
+      assert.equal(git(dir, "status", "--porcelain"), "");
+    }
   } finally {
     rmSync(harness, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
