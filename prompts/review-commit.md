@@ -87,8 +87,8 @@ Look for these issue kinds:
 - `supply_chain`: dependency, lockfile, install script, CI action, downloaded artifact, publishing/release risk
 - `data_loss`: deletes, migrations, overwrite behavior, corrupt persistence, bad cleanup
 - `privacy`: logs/tokens/user data leaking, telemetry/config exposure
-- `reliability`: race, crash, retry loop, timeout, resource leak, flaky network/process behavior
-- `concurrency`: async ordering, cancellation, shared mutable state, missing locks
+- `reliability`: crash, retry loop, timeout, resource leak, flaky network/process behavior
+- `concurrency`: two real writers, a restart or a retry that corrupts state or order; name both events. A change that arrives while one request is in progress is not a finding.
 - `compatibility`: Node/platform/version/env/config drift
 - `test_gap`: only when the missing test hides a concrete plausible bug, not generic coverage commentary
 
