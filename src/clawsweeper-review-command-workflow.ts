@@ -366,8 +366,13 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const itemOutputBudget = configureReviewOutputItems(
         outputBudget,
         Math.max(1, candidates.length),
+        reviewModels ? 2 : 1,
       );
-      assertReviewOutputFilePeak(outputSelection.retention, Math.max(1, candidates.length));
+      assertReviewOutputFilePeak(
+        outputSelection.retention,
+        Math.max(1, candidates.length),
+        reviewModels ? 2 : 1,
+      );
       const writeOutputMetadata = (path: string, content: string): void => {
         writeReviewOutput(outputBudget, path, content);
       };

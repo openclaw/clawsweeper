@@ -50,6 +50,10 @@ The controlled run passed. Its assertions verify:
 - Adverse control: schema-invalid second response exits unsuccessfully, keeps
   the first finding, records reviewer 2 as failed, lowers confidence and leaves
   `review_status: failed`. Total invocations remain two, not three.
+- Budget control at the existing output owner: all 40 MiB of media plus both
+  complete shared model-output allowances fit without widening the 96 MiB cap;
+  debug pools and additional live files are accounted for too. This addresses
+  the first committed-branch Codex review's P2 output-admission finding.
 - Default control: one invocation, no independent-review envelope, original
   summary retained. Each temporary target Git checkout remains clean.
 

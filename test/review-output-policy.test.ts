@@ -23,6 +23,7 @@ import { parseArgs } from "../dist/clawsweeper-args.js";
 import {
   assertActiveReviewOutputBudget,
   assertTransientReviewOutputBudget,
+  configureReviewOutputItems,
   createReviewOutputBudget,
   createReviewOutputWriter,
   createTransientReviewOutput,
@@ -933,6 +934,55 @@ test("independent review output prunes both ordinary streams without removing an
         readFileSync(join(codexWorkDir, `reviewer-${reviewer}`, "43.json"), "utf8"),
         "other item",
       );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("two independent reviews reserve shared model pools before media admission", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-pair-budget-"));
+  try {
+    const budget = createReviewOutputBudget(root, "none");
+    const ordinary = reviewOutputItemBudget("none", 1);
+    const item = configureReviewOutputItems(budget, 1, 2);
+    assert.equal(item.resultFileBytes * 2, ordinary.resultFileBytes);
+    assert.equal(item.streamFileBytes * 2, ordinary.streamFileBytes);
+    const media = join(root, "media");
+    mkdirSync(media);
+    const limits = reviewOutputMediaLimits(budget, media);
+    assert.equal(limits.downloadBytes, ordinary.mediaDownloadBytes);
+    assert.equal(limits.derivedBytes, ordinary.mediaDerivedBytes);
+    writeFileSync(join(media, "proof.bin"), "");
+    truncateSync(
+      join(media, "proof.bin"),
+      ordinary.mediaDownloadBytes + ordinary.mediaDerivedBytes,
+    );
+    let invocations = 0;
+    for (const reviewer of [1, 2]) {
+      const paths = ["json", "stdout", "stderr"].map((suffix) =>
+        join(root, `${reviewer}.${suffix}`),
+      );
+      produceReviewOutput(
+        budget,
+        { paths, maxFiles: 4, maxBytes: item.resultFileBytes + 2 * item.streamFileBytes },
+        () => {
+          invocations++;
+          for (const [index, path] of paths.entries()) {
+            writeFileSync(path, "");
+            truncateSync(path, index === 0 ? item.resultFileBytes : item.streamFileBytes);
+          }
+        },
+      );
+    }
+    assert.equal(invocations, 2, "both complete output allowances fit beside all admitted media");
+    assert.equal(reviewOutputFilePeak("none", 1, 2), reviewOutputFilePeak("none", 1) + 4);
+    mkdirSync(join(root, "debug"));
+    const debug = createReviewOutputBudget(join(root, "debug"), "debug");
+    const singleDebug = reviewOutputItemBudget("debug", 64);
+    const pairDebug = configureReviewOutputItems(debug, 64, 2);
+    assert.equal(pairDebug.promptFileBytes * 2, singleDebug.promptFileBytes);
+    assert.equal(pairDebug.resultFileBytes * 2, singleDebug.resultFileBytes);
+    assert.equal(pairDebug.streamFileBytes * 2, singleDebug.streamFileBytes);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

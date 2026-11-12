@@ -22,7 +22,9 @@ coordinator JSON are rejected, not silently accepted or migrated.
 
 Each review starts fresh, receives an independently cloned original context,
 and has separate diagnostic/proof output. Neither receives the other's answer.
-The item deadline is shared, not reset for the second review. Invalid output
+The item deadline is shared, not reset for the second review. Both reviews share
+the existing retained model-output pools, reserved before media admission; media
+and report allowances and aggregate byte/file caps are not widened. Invalid output
 fails that review without a repair-model turn in this mode. A completed pair
 has exactly two ordinary review invocations; scanner/deadline failure can stop
 earlier. No retry, rollout, apply or close is requested by this option.

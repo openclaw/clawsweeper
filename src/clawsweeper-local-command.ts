@@ -104,8 +104,8 @@ export function runLocalRangeReview(args: Args, dependencies: LocalRangeCommandD
     const reviewTreesDir = join(realpathSync(reviewWorkspaceDir), "review-trees");
     if (readonlyOpenclaw) dependencies.makeTreeReadOnly(openclawDir, readonlyModeSnapshots);
     assertCurrentOutputBudget();
-    const itemOutputBudget = configureReviewOutputItems(outputBudget, 1);
-    assertReviewOutputFilePeak(outputSelection.retention, 1);
+    const itemOutputBudget = configureReviewOutputItems(outputBudget, 1, reviewModels ? 2 : 1);
+    assertReviewOutputFilePeak(outputSelection.retention, 1, reviewModels ? 2 : 1);
     const writeOutputMetadata = (path: string, content: string) =>
       writeReviewOutput(outputBudget, path, content);
     console.error(
