@@ -577,8 +577,11 @@ export function renderReviewCommentFromReport(
         ? pullRequestReviewReadinessFromReport(markdown)
         : undefined;
     const conflicts = independentReviewConflicts(reviews);
+    const history = reviewHistoryForRender(markdown, options.previousReviewCommentBody);
     const body = [
-      `Independent reviews: ${frontMatterValue(markdown, "review_status") === "complete" ? "complete" : "incomplete"}.`,
+      frontMatterValue(markdown, "review_status") === "complete"
+        ? `Codex review: two independent reviews complete; readiness ${readiness?.state ?? "not applicable"}.`
+        : "ClawSweeper review: did not complete due to Codex infrastructure failure.",
       "No model consolidation, consensus or semantic deduplication. Reviewer judgments remain attributed; close and work automation are disabled for this mode.",
       ...(readiness
         ? [
@@ -613,6 +616,8 @@ export function renderReviewCommentFromReport(
           { suppressAutomationMarkers: true },
         ),
       ]),
+      renderReviewHistorySection(history),
+      reviewFreshnessText(markdown, history.totalCompletedCycles + 1),
       ...(options.suppressAutomationMarkers
         ? []
         : [reviewAutomationMarkersFromReport(markdown, readiness)]),

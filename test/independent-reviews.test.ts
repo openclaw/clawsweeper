@@ -1,3 +1,9 @@
+import { prStatusLabelKindFromReport } from "../dist/clawsweeper-label-policy.js";
+import {
+  parseReviewHistory,
+  renderReviewHistorySection,
+  reviewHistoryCycleFromCommentBody,
+} from "../dist/review-history.js";
 import { reviewPolicyHash } from "../dist/clawsweeper-review-policy-hash.js";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -289,4 +295,57 @@ test("distinct maintainer decisions stay intact and both hold readiness", () => 
   const comment = renderReviewCommentFromReport(markdown, "none");
   assert.match(comment, /Question from 1/);
   assert.match(comment, /Question from 2/);
+});
+
+test("typed reconciliation keeps contributor status routing", () => {
+  const first = review(
+    1,
+    decision({ triagePriority: "P1", labelJustifications: [{ label: "P1", reason: "Urgent" }] }),
+  );
+  const markdown = report(reduceIndependentReviews([first, review(2)], snapshot, neutral()));
+  const readiness = pullRequestReviewReadinessFromReport(markdown);
+  assert.equal(readiness.state, "needs-changes");
+  assert.equal(
+    prStatusLabelKindFromReport(markdown, { comments: [], timeline: [] }, []),
+    "waiting_on_author",
+  );
+});
+
+test("paired re-reviews retain one history ledger and one completed cycle per pair", () => {
+  const previous =
+    renderReviewCommentFromReport(
+      replaceFrontMatterValue(report(decision()), "reviewed_at", "2026-11-01T00:00:00Z"),
+      "none",
+    ) +
+    "\n\n" +
+    renderReviewHistorySection({
+      cycles: [
+        {
+          reviewedAt: "2026-10-01T00:00:00Z",
+          sha: "c".repeat(40),
+          verdict: "prior verdict",
+          findings: ["Prior finding"],
+        },
+      ],
+      totalCompletedCycles: 1,
+    });
+  const aggregate = reduceIndependentReviews([review(1), review(2)], snapshot, neutral());
+  const current = renderReviewCommentFromReport(
+    replaceFrontMatterValue(report(aggregate), "reviewed_at", "2026-11-02T00:00:00Z"),
+    "none",
+    { previousReviewCommentBody: previous },
+  );
+  assert.equal(parseReviewHistory(current).totalCompletedCycles, 2);
+  assert.equal((current.match(/<!-- clawsweeper-review-history /g) ?? []).length, 1);
+  assert.match(
+    reviewHistoryCycleFromCommentBody(current).verdict,
+    /two independent reviews complete/,
+  );
+  const next = renderReviewCommentFromReport(
+    replaceFrontMatterValue(report(aggregate), "reviewed_at", "2026-11-03T00:00:00Z"),
+    "none",
+    { previousReviewCommentBody: current },
+  );
+  assert.equal(parseReviewHistory(next).totalCompletedCycles, 3);
+  assert.equal((next.match(/<!-- clawsweeper-review-history /g) ?? []).length, 1);
 });

@@ -271,7 +271,8 @@ export function pullRequestReviewReadinessFromReport(markdown: string): PullRequ
       }
       if (decision.nextStep && decision.nextStep.kind !== "none")
         items.push({
-          state: "blocked",
+          state: decision.nextStep.kind === "required" ? "needs-changes" : "blocked",
+          ...(decision.nextStep.kind === "maintainer" ? { owner: "maintainer" as const } : {}),
           label: "Reconcile independent review metadata",
           detail: decision.nextStep.text,
         });

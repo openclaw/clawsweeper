@@ -54,6 +54,9 @@ The controlled run passed. Its assertions verify:
   complete shared model-output allowances fit without widening the 96 MiB cap;
   debug pools and additional live files are accounted for too. This addresses
   the first committed-branch Codex review's P2 output-admission finding.
+- Report regressions preserve one history ledger across paired re-reviews and
+  route required typed reconciliation as contributor work. These address the
+  second committed-branch Codex review's two P2 integration findings.
 - Default control: one invocation, no independent-review envelope, original
   summary retained. Each temporary target Git checkout remains clean.
 
