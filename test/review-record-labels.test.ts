@@ -285,12 +285,16 @@ test("P3 findings stay visible but never block readiness", () => {
   );
   const typed = withReviewRecord(report, {
     ...readyDecision,
+    overallCorrectness: "patch is incorrect",
+    workCandidate: "queue_fix_pr",
     reviewFindings: [finding],
   });
   assert.equal(pullRequestReviewReadinessFromReport(typed).state, "ready");
   assert.match(renderReviewCommentFromReport(typed, "none"), /Advisory finding/);
   const blocking = withReviewRecord(report, {
     ...readyDecision,
+    overallCorrectness: "patch is incorrect",
+    workCandidate: "queue_fix_pr",
     reviewFindings: [{ ...finding, priority: 2 as const }],
   });
   assert.equal(pullRequestReviewReadinessFromReport(blocking).state, "needs-changes");
