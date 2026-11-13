@@ -72,6 +72,48 @@ test("reviewed synthetic values survive surrounding edits and material changes",
   }
 });
 
+test("reviewed password-only URI findings retain empty usernames", () => {
+  for (const [raw, suffix] of [
+    [["https://:", "example-password@status.example"].join(""), ""],
+    [["https://:", "empty-username-password-1234567890@api.example.test"].join(""), "/v1"],
+  ]) {
+    const value = raw + suffix;
+    const finding = uriFinding(value, { Raw: raw });
+    assert.equal(classify([finding]).kind, "classified");
+    assert.equal(classify([{ ...finding, Verified: true }]).kind, "refused");
+    assert.equal(
+      classify([{ ...finding, SecretParts: { ...finding.SecretParts, username: "changed" } }]).kind,
+      "refused",
+    );
+  }
+});
+
+test("reviewed Privacy UUID retains its native absent verification error", () => {
+  const uuid = ["870bbc5d", "0aaf", "4193", "8191", "61ef581c1bf1"].join("-");
+  const finding = uriFinding(approvedUri, {
+    DetectorType: 938,
+    DetectorName: "Privacy",
+    VerificationError: undefined,
+    Raw: uuid,
+    RawV2: "",
+    SecretParts: { key: uuid },
+  });
+  assert.equal(classify([finding]).kind, "classified");
+  for (const override of [
+    { Verified: true },
+    { VerificationError: null },
+    { VerificationError: "" },
+    { Raw: uuid.slice(0, -1) + "2" },
+    { SecretParts: { key: uuid + "2" } },
+    { ExtraData: {} },
+  ])
+    assert.equal(classify([{ ...finding, ...override }]).kind, "refused");
+  assert.equal(
+    classify([uriFinding(approvedUri, { VerificationError: undefined })]).kind,
+    "refused",
+  );
+});
+
 test("arbitrary credentials never qualify by reserved or loopback hostname", () => {
   for (const host of [
     "db.example.test",

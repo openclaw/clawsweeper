@@ -154,8 +154,10 @@ function isApprovedSyntheticValue(finding: Record<string, unknown>): boolean {
   if (
     finding.SourceType !== 15 ||
     finding.Verified !== false ||
-    typeof finding.VerificationError !== "string" ||
-    !finding.VerificationError ||
+    !(
+      (finding.DetectorType === 938 && finding.VerificationError === undefined) ||
+      (typeof finding.VerificationError === "string" && !!finding.VerificationError)
+    ) ||
     finding.StructuredData !== null ||
     typeof finding.Raw !== "string" ||
     typeof finding.RawV2 !== "string"
@@ -184,7 +186,8 @@ function isApprovedSyntheticValue(finding: Record<string, unknown>): boolean {
         const authority = /^[^:]+:\/\/([^/?#]*)/.exec(rawV2)?.[1];
         return (
           finding.ExtraData === null &&
-          exactStringRecord(parts, ["host", "username", "password"]) &&
+          parts !== undefined &&
+          Object.keys(parts).sort().join("\0") === "host\0password\0username" &&
           parts!.host === authority?.slice(authority.lastIndexOf("@") + 1) &&
           parts!.username === decodeURIComponent(uri.username) &&
           parts!.password === uri.password

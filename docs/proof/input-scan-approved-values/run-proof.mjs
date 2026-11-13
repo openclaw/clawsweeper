@@ -43,6 +43,7 @@ const unreviewed = ["https://", "review_user:CSW_SYNTHETIC_NOT_A_SECRET_2201@"].
 const cases = [
   ["approved-value", approved, true],
   ["approved-value-surrounding-edit", "// unrelated edit\n" + approved, true],
+  ["approved-password-only", ["https://:", "example-password@status.example"].join(""), true],
   ["changed-approved-password", approved.replace("fixture-password", "different-password"), false],
   ["unreviewed-reserved-host", unreviewed + "db.example.invalid/path", false],
   ["unreviewed-test-host", unreviewed + "db.example.test/path", false],
@@ -103,7 +104,8 @@ try {
       } catch (error) {
         admitted = false;
         reason = error.reason;
-        if (!reason) throw error;
+        // Infrastructure failures do not establish that the credential was detected.
+        if (reason !== "findings") throw error;
       }
       results.push({ name, surface, expected, admitted, ...(reason ? { reason } : {}) });
     }

@@ -10,7 +10,8 @@ The claim is that editing surrounding source does not invalidate an approved
 synthetic value, while arbitrary credentials never qualify from their hostname.
 The controlled proof exercises the production `scanAgentInput` function and real
 checksum-pinned TruffleHog over both prompts and complete committed Git ranges.
-It covers an approved value, an unrelated edit, a changed password, arbitrary
+It covers an approved value, an unrelated edit, an approved password-only URI,
+a changed password, arbitrary
 reserved/test/loopback credentials, SQL Server passwords ending in `@example.test`,
 Postgres `hostaddr`, Cloud SQL JDBC target selection, and a nonreserved control.
 
