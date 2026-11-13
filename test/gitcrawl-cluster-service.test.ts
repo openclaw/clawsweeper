@@ -269,8 +269,5 @@ test("service mode holds synchronous apply entrypoints before dependencies or ef
     assert.throws(() => operation({}), /does not support apply/);
   }
   const apply = createApplyDecisionWorkflow(dependencies as never);
-  assert.throws(
-    () => apply.applyDecisionsCommandInner({}, {} as never),
-    /does not support apply/,
-  );
+  assert.throws(() => apply.applyDecisionsCommandInner({}, {} as never), /does not support apply/);
 });

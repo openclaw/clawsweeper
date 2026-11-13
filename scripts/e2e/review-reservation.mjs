@@ -277,8 +277,7 @@ try {
             : { error: code === 409 ? "lease_not_active" : "fixture_unavailable" },
         );
       }
-      if (path === `/repos/${repo}/issues/${number}`)
-        return send(200, issue);
+      if (path === `/repos/${repo}/issues/${number}`) return send(200, issue);
       if (path === `/repos/${repo}/pulls/${number}`)
         return send(200, { head: { sha: currentHead } });
       if (path === `/repos/${repo}/issues/${number}/comments`) {
@@ -293,8 +292,7 @@ try {
         comments.push(comment);
         if (scenario.drift) currentHead = "b".repeat(40);
         if (scenario.issueDrift === "body") issue.body = "Changed synthetic issue body";
-        if (scenario.issueDrift === "comment")
-          comments[0].body = "Changed synthetic human comment";
+        if (scenario.issueDrift === "comment") comments[0].body = "Changed synthetic human comment";
         return send(201, comment);
       }
       if (request.method === "DELETE" && path.startsWith(`/repos/${repo}/issues/comments/`)) {
@@ -453,9 +451,9 @@ try {
         scenario.otherOwner
           ? 1
           : Number(Boolean(scenario.durable)) +
-            Number(Boolean(scenario.issue)) +
-            scenario.posts -
-            scenario.deletes,
+              Number(Boolean(scenario.issue)) +
+              scenario.posts -
+              scenario.deletes,
         scenario.name,
       );
       if (scenario.service) {
@@ -471,7 +469,10 @@ try {
         );
         if (scenario.issue) {
           assert.equal(comments[0].id, 43, "the human comment survives owned cleanup");
-          assert.equal(trace.some((event) => event.path.includes("/pulls/")), false);
+          assert.equal(
+            trace.some((event) => event.path.includes("/pulls/")),
+            false,
+          );
         }
         if (outputs.status === "posted") {
           const result = JSON.parse(
