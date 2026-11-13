@@ -18,7 +18,7 @@ test(
           timeout: 170_000,
         },
       );
-      assert.equal(JSON.parse(readFileSync(join(output, "summary.json"), "utf8")).passed, 13);
+      assert.equal(JSON.parse(readFileSync(join(output, "summary.json"), "utf8")).passed, 19);
     } finally {
       rmSync(output, { recursive: true, force: true });
     }

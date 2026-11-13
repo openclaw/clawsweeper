@@ -25,12 +25,17 @@ if (noWait) {
 const repo = "openclaw/reservation-fixture";
 const number = 357;
 const head = "a".repeat(40);
+// Golden revision of the fixture's issue and its human comment, excluding the bot lease.
+const issueRevision = "0baba6b2acbc281654c5a537f3e07a608b57d65976e4eedf0d47bd23d43600a5";
 const workflow = parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
 const steps = Object.values(workflow.jobs).flatMap((job) => job.steps || []);
 const reservation = steps.find((step) => step.name === "Reserve exact review lease").run;
 const sources = [
   "src/clawsweeper-review-comment-leases.ts",
   "src/clawsweeper-command-operations.ts",
+  "src/clawsweeper-report-actions.ts",
+  "src/clawsweeper-runtime.ts",
+  "src/clawsweeper-source-revision.ts",
   "src/clawsweeper-review-comment-state.ts",
   "src/review-comment-markers.ts",
   "src/clawsweeper-review-lease.ts",
@@ -158,6 +163,61 @@ const cases = process.argv.includes("--quiet")
       },
       { name: "service-unavailable", codes: [503], result: "failure", posts: 0, deletes: 0 },
       ...quietCases,
+      {
+        name: "cluster-service-issue",
+        service: true,
+        issue: true,
+        codes: [200],
+        result: "posted",
+        posts: 1,
+        deletes: 0,
+      },
+      {
+        name: "cluster-service-issue-body-drift",
+        service: true,
+        issue: true,
+        issueDrift: "body",
+        codes: [200],
+        result: "superseded",
+        posts: 1,
+        deletes: 1,
+      },
+      {
+        name: "cluster-service-issue-comment-drift",
+        service: true,
+        issue: true,
+        issueDrift: "comment",
+        codes: [200],
+        result: "superseded",
+        posts: 1,
+        deletes: 1,
+      },
+      {
+        name: "cluster-service-issue-queue-superseded",
+        service: true,
+        issue: true,
+        codes: [200, 409],
+        result: "superseded",
+        posts: 1,
+        deletes: 1,
+      },
+      {
+        name: "cluster-service-pr",
+        service: true,
+        codes: [200],
+        result: "posted",
+        posts: 1,
+        deletes: 0,
+      },
+      {
+        name: "cluster-service-pr-head-drift",
+        service: true,
+        drift: true,
+        codes: [200],
+        result: "superseded",
+        posts: 1,
+        deletes: 1,
+      },
     ];
 const results = [];
 try {
@@ -167,6 +227,26 @@ try {
     let checks = 0;
     let currentHead = head;
     let nextId = 1000;
+    const issue = {
+      number,
+      title: "Synthetic reservation proof",
+      body: "Synthetic issue body",
+      state: "open",
+      locked: false,
+      html_url: `https://github.com/${repo}/${scenario.issue ? "issues" : "pull"}/${number}`,
+      user: { login: "fixture-author" },
+      labels: [],
+      ...(scenario.issue ? {} : { pull_request: {} }),
+      created_at: "2026-09-21T00:00:00Z",
+      updated_at: "2026-09-21T00:00:00Z",
+    };
+    if (scenario.issue)
+      comments.push({
+        id: 43,
+        user: { login: "fixture-author" },
+        body: "Synthetic human comment",
+        updated_at: "2026-09-21T00:00:00Z",
+      });
     const durableBody = `Codex review: synthetic prior review.\n\nPrior findings remain readable.\n\n<!-- clawsweeper-review-version item=${number} reviewed_at=2026-09-21T00:00:00Z sha=${head} source_revision=${"c".repeat(64)} lease_owner=previous-owner lease_comment_id=900 v=1 -->\n\n<!-- clawsweeper-review item=${number} -->`;
     if (scenario.durable)
       comments.push({ id: 42, user: { login: "clawsweeper[bot]" }, body: durableBody });
@@ -188,7 +268,7 @@ try {
         response.end(JSON.stringify(value));
       };
       if (path === "/internal/exact-review/heartbeat") {
-        assert.equal(JSON.parse(body).source_head_sha, head);
+        assert.equal(JSON.parse(body).source_head_sha, scenario.issue ? undefined : head);
         const code = scenario.codes[Math.min(checks++, scenario.codes.length - 1)];
         return send(
           code,
@@ -198,18 +278,7 @@ try {
         );
       }
       if (path === `/repos/${repo}/issues/${number}`)
-        return send(200, {
-          number,
-          title: "Synthetic reservation proof",
-          state: "open",
-          locked: false,
-          html_url: `https://github.com/${repo}/pull/${number}`,
-          user: { login: "fixture-author" },
-          labels: [],
-          pull_request: {},
-          created_at: "2026-09-21T00:00:00Z",
-          updated_at: "2026-09-21T00:00:00Z",
-        });
+        return send(200, issue);
       if (path === `/repos/${repo}/pulls/${number}`)
         return send(200, { head: { sha: currentHead } });
       if (path === `/repos/${repo}/issues/${number}/comments`) {
@@ -223,6 +292,9 @@ try {
         event.commentId = comment.id;
         comments.push(comment);
         if (scenario.drift) currentHead = "b".repeat(40);
+        if (scenario.issueDrift === "body") issue.body = "Changed synthetic issue body";
+        if (scenario.issueDrift === "comment")
+          comments[0].body = "Changed synthetic human comment";
         return send(201, comment);
       }
       if (request.method === "DELETE" && path.startsWith(`/repos/${repo}/issues/comments/`)) {
@@ -263,6 +335,13 @@ try {
         CURL_BIN: process.execPath,
         CURL_BIN_ARGS: JSON.stringify([rawProxy]),
         RESERVATION_FIXTURE_URL: url,
+        ...(scenario.service
+          ? {
+              CLAWSWEEPER_GITCRAWL_ENDPOINT: url,
+              CLAWSWEEPER_GITCRAWL_ARCHIVE: "fixture",
+              CLAWSWEEPER_GITCRAWL_READER_TOKEN: "synthetic-cluster-reader",
+            }
+          : {}),
         TARGET_REPO: repo,
         ITEM_NUMBER: String(number),
         CODEX_TIMEOUT_MS: "1000",
@@ -276,7 +355,7 @@ try {
         EXACT_REVIEW_LEASE_ID: "fixture-lease",
         EXACT_REVIEW_LEASE_REVISION: "3",
         EXACT_REVIEW_CLAIM_GENERATION: "1",
-        EXACT_REVIEW_SOURCE_HEAD_SHA: head,
+        EXACT_REVIEW_SOURCE_HEAD_SHA: scenario.issue ? "" : head,
         EXACT_REVIEW_DECISION: JSON.stringify({
           sourceAction: scenario.background
             ? "scheduled_normal_backfill"
@@ -373,9 +452,35 @@ try {
         comments.length,
         scenario.otherOwner
           ? 1
-          : Number(Boolean(scenario.durable)) + scenario.posts - scenario.deletes,
+          : Number(Boolean(scenario.durable)) +
+            Number(Boolean(scenario.issue)) +
+            scenario.posts -
+            scenario.deletes,
         scenario.name,
       );
+      if (scenario.service) {
+        assert.equal(
+          trace.some((event) => event.path.startsWith("/v1/apps/")),
+          false,
+          "reservation must not hydrate cluster context",
+        );
+        assert.deepEqual(
+          deletes.map((event) => event.commentId),
+          posts.slice(0, scenario.deletes).map((event) => event.commentId),
+          "supersession cleans up only this reservation's lease",
+        );
+        if (scenario.issue) {
+          assert.equal(comments[0].id, 43, "the human comment survives owned cleanup");
+          assert.equal(trace.some((event) => event.path.includes("/pulls/")), false);
+        }
+        if (outputs.status === "posted") {
+          const result = JSON.parse(
+            stdout.split("\n").find((line) => line.startsWith('{"status":')),
+          );
+          if (scenario.issue) assert.equal(result.headSha, issueRevision);
+          else assert.equal(result.headSha, head, "PR reservations retain the live GitHub head");
+        }
+      }
       if (scenario.name === "service-unavailable") {
         assert.equal(checks, 5);
         if (retryDelays) assert.equal(retryDelays.length, 4, "the shim recorded every retry wait");

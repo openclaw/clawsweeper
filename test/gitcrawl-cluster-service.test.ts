@@ -8,7 +8,6 @@ import { readGitcrawlClusterService } from "../dist/gitcrawl-cluster-service.js"
 import { createRelatedContext } from "../dist/clawsweeper-related-context.js";
 import { createApplyDecisionWorkflow } from "../dist/clawsweeper-apply-decision-workflow.js";
 import { createCommandOperations } from "../dist/clawsweeper-command-operations.js";
-import { postReviewStartStatusComment } from "../dist/clawsweeper-review-comment-leases.js";
 
 const repository = "fixture/repository";
 const bindingColumns =
@@ -259,27 +258,19 @@ test("selected service failures cannot become empty context or fall back to SQLi
   assert.equal(f.requests.length, before, "mixed configuration must refuse before either source");
 });
 
-test("service mode holds synchronous apply and review-start entrypoints before dependencies or effects", async (t) => {
+test("service mode holds synchronous apply entrypoints before dependencies or effects", async (t) => {
   await fixture(t);
   const dependencies = new Proxy(
     {},
     { get: () => () => assert.fail("held operation reached a dependency") },
   );
   const commands = createCommandOperations(dependencies as never);
-  for (const operation of [
-    commands.applyDecisionsCommand,
-    commands.applyArtifactsCommand,
-    commands.reserveReviewLeaseCommand,
-  ]) {
-    assert.throws(() => operation({}), /does not support apply or review-start/);
+  for (const operation of [commands.applyDecisionsCommand, commands.applyArtifactsCommand]) {
+    assert.throws(() => operation({}), /does not support apply/);
   }
   const apply = createApplyDecisionWorkflow(dependencies as never);
   assert.throws(
     () => apply.applyDecisionsCommandInner({}, {} as never),
-    /does not support apply or review-start/,
-  );
-  assert.throws(
-    () => postReviewStartStatusComment({} as never, () => assert.fail("revision read")),
-    /does not support apply or review-start/,
+    /does not support apply/,
   );
 });

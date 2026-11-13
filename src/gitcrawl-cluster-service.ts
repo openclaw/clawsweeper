@@ -66,15 +66,13 @@ function number(value: unknown): number {
 }
 
 // Synchronous mutation guards cannot await this source yet. Refuse before any
-// apply or review-start effect, including incomplete service configuration.
+// apply effect, including incomplete service configuration.
 export function assertGitcrawlClusterMutationSupported(): void {
   if (
     process.env.CLAWSWEEPER_GITCRAWL_ENDPOINT !== undefined ||
     process.env.CLAWSWEEPER_GITCRAWL_ARCHIVE !== undefined
   ) {
-    throw new Error(
-      "Gitcrawl cluster service mode does not support apply or review-start publication yet",
-    );
+    throw new Error("Gitcrawl cluster service mode does not support apply yet");
   }
 }
 

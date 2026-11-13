@@ -212,11 +212,10 @@ if (path === "repos/openclaw/openclaw/pulls/77") {
         repoFromArgs: () => {},
         fetchItem: inventory.fetchItem,
         currentReviewRevision: (candidate) =>
-          currentReviewRevision(candidate, (collectedItem, options) => {
-            assert.equal(collectedItem.number, 77);
-            assert.deepEqual(options, { fullTimelineForRelations: true });
+          currentReviewRevision(candidate, (number) => {
+            assert.equal(number, 77);
             revisionReads.push("issue");
-            return { sourceRevision: issueRevision };
+            return issueRevision;
           }),
         exactReviewQueueAuthorityFromEnv: () => ({
           itemKey: "openclaw/openclaw#77",

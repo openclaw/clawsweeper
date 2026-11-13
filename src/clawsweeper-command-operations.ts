@@ -263,7 +263,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
   }
 
   function reserveReviewLeaseCommand(args: Args): void {
-    assertGitcrawlClusterMutationSupported();
     repoFromArgs(args);
     const itemNumber = numberArg(args.item_number, 0);
     const reviewTimeoutMs = numberArg(args.review_timeout_ms, 0);

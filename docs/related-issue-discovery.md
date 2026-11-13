@@ -111,10 +111,12 @@ service result remains unknown even when the view is structurally complete.
 Context includes capture and source/analysis clocks without inventing a freshness
 threshold. Credentials and service URLs are not included in context or errors.
 
-This first service integration supports read/review context only. Service-selected
-apply and review-start publication commands refuse before effects while their
-synchronous guards await a separate migration. Local read-only review remains
-available; no service selector preserves the existing SQLite behavior.
+Service-selected review-start reservations check the live issue and comments or
+PR head without hydrating related context. Their queue authority, revision checks,
+and owned-lease cleanup still apply. Apply commands and synchronous context
+hydration remain held until their guards support service preparation. Local
+read-only review remains available; no service selector preserves the existing
+SQLite behavior.
 
 ## Guardrails
 

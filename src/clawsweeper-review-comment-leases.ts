@@ -1,4 +1,3 @@
-import { assertGitcrawlClusterMutationSupported } from "./gitcrawl-cluster-service.js";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type {
@@ -222,7 +221,6 @@ export function postReviewStartStatusComment(
   },
   readLiveReviewRevision: (item: Item) => string,
 ): ReviewStartStatusCommentResult {
-  assertGitcrawlClusterMutationSupported();
   const startedAtMs = Date.now();
   const leaseOwner = newReviewStartLeaseOwner();
   const leaseOptions: ReviewStartStatusCommentOptions = {

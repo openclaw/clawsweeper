@@ -17,14 +17,10 @@ export function pullRequestHeadSha(number: number): string {
 
 export function currentReviewRevision(
   item: Item,
-  collectItemContext: (
-    item: Item,
-    options: { fullTimelineForRelations: boolean },
-  ) => { sourceRevision?: string },
+  liveIssueSourceRevision: (number: number) => string,
 ): string {
   if (item.kind === "pull_request") return pullRequestHeadSha(item.number);
-  const revision = collectItemContext(item, { fullTimelineForRelations: true }).sourceRevision;
-  return typeof revision === "string" ? revision : "";
+  return liveIssueSourceRevision(item.number);
 }
 
 export function closeItem(options: { number: number; kind: ItemKind; reason: CloseReason }): void {

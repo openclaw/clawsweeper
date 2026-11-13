@@ -582,7 +582,7 @@ export {
 };
 
 const currentReviewRevision = (item: Item): string =>
-  readCurrentReviewRevision(item, collectItemContext);
+  readCurrentReviewRevision(item, (number) => commandOperations.liveIssueSourceRevision(number));
 const reviewCommentWorkflow = createReviewCommentWorkflow(currentReviewRevision);
 export const {
   canPatchReviewComment,
