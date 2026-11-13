@@ -2519,6 +2519,7 @@ for (const scenario of [
   "changed receipt",
   "changed timeline receipt",
   "changed head",
+  "lease revoked after unknown label write",
 ] as const) {
   test(`exact publication reconciles labels only for a current review: ${scenario}`, () => {
     const root = mkdtempSync(tmpPrefix);
@@ -2526,6 +2527,7 @@ for (const scenario of [
       const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
       const logPath = join(root, "gh.log");
       const itemPath = join(itemsDir, "74482.md");
+      const revokedPath = join(root, "lease-revoked");
       const headSha = "bc60b889bc60b889bc60b889bc60b889bc60b889";
       const leaseOwner = "exact-pr-74482";
       const leaseCommentId = 1987482;
@@ -2619,8 +2621,10 @@ Full review comments:
         leaseOwner,
       });
       const ghMock = `
-const { appendFileSync, readFileSync } = require("fs");
+const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("fs");
 const logPath = ${JSON.stringify(logPath)};
+const revokedPath = ${JSON.stringify(revokedPath)};
+const revokeAfterUnknownWrite = ${scenario === "lease revoked after unknown label write"};
 const comment = ${JSON.stringify(synced.comment)};
 const comments = [
   {
@@ -2665,6 +2669,9 @@ const comments = [
     updated_at: "2026-07-03T21:45:00Z"
   }))
 ];
+if (existsSync(revokedPath)) {
+  comments.splice(comments.findIndex(comment => comment.id === ${leaseCommentId}), 1);
+}
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
@@ -2725,6 +2732,11 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
     body
   }));
 } else if (args[0] === "issue" && args[1] === "edit") {
+  if (revokeAfterUnknownWrite && !existsSync(revokedPath)) {
+    writeFileSync(revokedPath, "revoked");
+    console.error("HTTP 503: Service Unavailable");
+    process.exit(1);
+  }
   console.log("");
 } else if (args[0] === "api" && path === "repos/openclaw/openclaw/labels?per_page=100") {
   console.log("[[]]");
@@ -2759,6 +2771,18 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
         .filter(Boolean)
         .map((line) => JSON.parse(line) as string[]);
       const edits = calls.filter((args) => args[0] === "issue" && args[1] === "edit");
+      if (scenario === "lease revoked after unknown label write") {
+        assert.equal(existsSync(revokedPath), true, "the first label write must be attempted");
+        assert.equal(edits.length, 1, "a retry must not write after its lease is revoked");
+        assert.equal(calls.some((args) => args[0] === "patched-review-body"), false);
+        assert.doesNotMatch(updatedReport, /^labels_synced_at: /m);
+        assert.equal(existsSync(join(closedDir, "74482.md")), false);
+        const results = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          reason: string;
+        }>;
+        assert.match(results[0]?.reason ?? "", /no longer the elected same-head lease/);
+        return;
+      }
       if (scenario !== "captured discussion and command") {
         assert.equal(edits.length, 0);
         assert.doesNotMatch(updatedReport, /^labels_synced_at: /m);
