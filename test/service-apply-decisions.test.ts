@@ -22,6 +22,9 @@ import {
   workPlanCandidateReport,
 } from "./helpers.ts";
 
+import { renderReviewStartStatusComment } from "../dist/clawsweeper.js";
+import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
+
 const repository = "openclaw/clawsweeper";
 const snapshot = `pg-gitcrawl-clusters-v1:${"a".repeat(32)}:1`;
 const updatedAt = "2026-05-01T00:00:00Z";
@@ -66,6 +69,16 @@ async function fixture(t: TestContext, scenario: Scenario) {
   writeFileSync(eventsPath, "");
   const isCounterpart = scenario === "missing-counterpart";
   const repo = isCounterpart ? "openclaw/openclaw" : repository;
+  const issue = {
+    number: 321, title: "Render work plans", body: "Reviewed source.",
+    html_url: `https://github.com/${repository}/issues/321`, created_at: updatedAt,
+    updated_at: updatedAt, closed_at: null, state: "open", locked: false,
+    active_lock_reason: null, author_association: "CONTRIBUTOR", user: { login: "reporter" },
+    labels: [], comments: scenario === "retry-revoked" ? 2 : 1, pull_request: null,
+  };
+  const sourceRevision = itemSourceRevisionSha256(issue, []);
+  const leaseOwner = "service-apply-review";
+  const leaseId = 700321;
   const report = isCounterpart
     ? verifiedImplementationPullRequestReport({
         repository: repo,
@@ -83,6 +96,11 @@ async function fixture(t: TestContext, scenario: Scenario) {
           reviewed_at: updatedAt,
           item_snapshot_hash: "reviewed-snapshot-321",
           ...(scenario === "legacy-hash" ? {} : { item_updated_at: updatedAt }),
+          ...(scenario === "retry-revoked" ? {
+            item_source_revision: sourceRevision,
+            review_lease_owner: leaseOwner,
+            review_lease_comment_id: String(leaseId),
+          } : {}),
           triage_priority: "P2",
           impact_labels: JSON.stringify(["impact:message-loss"]),
           work_cluster_refs: "[]",
@@ -116,6 +134,13 @@ async function fixture(t: TestContext, scenario: Scenario) {
     user: { login: "clawsweeper[bot]", type: "Bot" },
     body: synced.comment,
   };
+  const startedAt = new Date(Date.now() - 120_000).toISOString();
+  const lease = {
+    id: leaseId, html_url: `https://github.com/${repo}/issues/321#issuecomment-${leaseId}`,
+    created_at: startedAt, updated_at: startedAt, user: { login: "clawsweeper[bot]" },
+    body: renderReviewStartStatusComment({ number: 321, kind: "issue", title: issue.title,
+      headSha: sourceRevision, startedAt, leaseExpiresAt: new Date(Date.now() + 1_800_000).toISOString(), leaseOwner }),
+  };
   const ghPath = join(root, "bin", "gh.cjs");
   const common = `
 const fs = require("node:fs");
@@ -148,15 +173,15 @@ if (actual[0] === "api" && /\\/issues\\/320$/.test(endpoint)) {
         : `
 const current = state();
 const durable = ${JSON.stringify(durable)};
+const lease = ${JSON.stringify(lease)};
+const issue = ${JSON.stringify(issue)};
 if (actual[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(endpoint) && !actual.includes("--method")) {
   const comments = [{ ...durable, body: current.revoked ? "Maintainer replaced the reviewed decision." : durable.body }];
+  if (${JSON.stringify(scenario)} === "retry-revoked" && !current.revoked) comments.push(lease);
   console.log(JSON.stringify(actual.includes("--slurp") ? [comments] : comments));
 } else if (actual[0] === "api" && /\\/issues\\/321$/.test(endpoint)) {
-  console.log(JSON.stringify({ number: 321, title: "Render work plans", body: "Reviewed source.",
-    html_url: "https://github.com/${repository}/issues/321", created_at: ${JSON.stringify(updatedAt)},
-    updated_at: current.updatedAt, closed_at: null, state: "open", locked: false,
-    active_lock_reason: null, author_association: "CONTRIBUTOR", user: { login: "reporter" },
-    labels: current.labels.map(name => ({ name })), comments: 1, pull_request: null }));
+  console.log(JSON.stringify({ ...issue, updated_at: current.updatedAt,
+    labels: current.labels.map(name => ({ name })) }));
 } else if (actual[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(endpoint)) {
   console.log(actual.includes("-i") ? "HTTP/2 200\\n\\n[]" : JSON.stringify(actual.includes("--slurp") ? [[]] : []));
 } else if (actual[0] === "issue" && actual[1] === "view") {
