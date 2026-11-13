@@ -2774,7 +2774,10 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
       if (scenario === "lease revoked after unknown label write") {
         assert.equal(existsSync(revokedPath), true, "the first label write must be attempted");
         assert.equal(edits.length, 1, "a retry must not write after its lease is revoked");
-        assert.equal(calls.some((args) => args[0] === "patched-review-body"), false);
+        assert.equal(
+          calls.some((args) => args[0] === "patched-review-body"),
+          false,
+        );
         assert.doesNotMatch(updatedReport, /^labels_synced_at: /m);
         assert.equal(existsSync(join(closedDir, "74482.md")), false);
         const results = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
