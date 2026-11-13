@@ -1025,19 +1025,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let liveItem: ReturnType<typeof fetchItem>;
       try {
         liveItem = fetchApplyItem(number);
-        const prepared = oversizedMetadataDecision ? null : await dependencies.prepareApplyItemContext(liveItem.item, {
-          liveReadGeneration,
-          hasReport: (counterpart) => Boolean(openReportEntry(counterpart)),
-          prepareCounterparts: isCloseProposal,
-          includeImplementationLinkedIssue: liveItem.item.kind === "pull_request" &&
-            (closeReason === "implemented_on_main" || closeReason === "mostly_implemented_on_main"),
-        });
-        if (prepared) {
-          preparedCollectItemContext = prepared;
-          liveReadGeneration.invalidate();
-          resetGuardReadCache();
-          liveItem = fetchApplyItem(number);
-        }
       } catch (error) {
         if (!(error instanceof GitHubItemMovedError) && !isGitHubNotFoundError(error)) throw error;
         // A repository lookup can return the same 404 when the repo is missing or
@@ -1071,6 +1058,19 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         maybeLogProgress(`archived #${number}: item not found on GitHub`);
         if (processedCount >= processedLimit) break;
         continue;
+      }
+      const prepared = oversizedMetadataDecision ? null : await dependencies.prepareApplyItemContext(liveItem.item, {
+        liveReadGeneration,
+        hasReport: (counterpart) => Boolean(openReportEntry(counterpart)),
+        prepareCounterparts: isCloseProposal,
+        includeImplementationLinkedIssue: liveItem.item.kind === "pull_request" &&
+          (closeReason === "implemented_on_main" || closeReason === "mostly_implemented_on_main"),
+      });
+      if (prepared) {
+        preparedCollectItemContext = prepared;
+        liveReadGeneration.invalidate();
+        resetGuardReadCache();
+        liveItem = fetchApplyItem(number);
       }
       const { item, state } = liveItem;
       if (state === "open" && exactEventPublication && process.env.EXACT_REVIEW_DECISION &&

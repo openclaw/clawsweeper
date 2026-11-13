@@ -477,7 +477,11 @@ const prepareApplyItemContext: CreateApplyDecisionWorkflowDependencies["prepareA
       return true;
     });
     if (options.includeImplementationLinkedIssue) {
-      const body = asRecord(context.pullRequest).body;
+      // Match close execution's full-body provenance read; the review context
+      // deliberately truncates long PR bodies before their closing directives.
+      const { body } = ghJson<{ body?: unknown }>([
+        "api", `repos/${item.repo}/pulls/${item.number}`, "--jq", "{body}",
+      ]);
       if (typeof body === "string") {
         const linked = linkedIssueNumbersForImplementationProvenance(body, item.repo);
         if (linked?.length === 1 && options.hasReport(linked[0]!)) counterparts.add(linked[0]!);
