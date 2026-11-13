@@ -592,7 +592,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
   }
 
   function applyArtifactsCommand(args: Args): void {
-    assertGitcrawlClusterMutationSupported();
     const profile = repoFromArgs(args);
     const artifactDir = resolve(stringArg(args.artifact_dir, "artifacts"));
     const recordRoot = resolve(stringArg(args.record_root, ROOT));

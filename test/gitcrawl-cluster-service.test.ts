@@ -265,9 +265,7 @@ test("service mode holds synchronous apply entrypoints before dependencies or ef
     { get: () => () => assert.fail("held operation reached a dependency") },
   );
   const commands = createCommandOperations(dependencies as never);
-  for (const operation of [commands.applyDecisionsCommand, commands.applyArtifactsCommand]) {
-    assert.throws(() => operation({}), /does not support apply/);
-  }
+  assert.throws(() => commands.applyDecisionsCommand({}), /does not support apply/);
   const apply = createApplyDecisionWorkflow(dependencies as never);
   assert.throws(() => apply.applyDecisionsCommandInner({}, {} as never), /does not support apply/);
 });

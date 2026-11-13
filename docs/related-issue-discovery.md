@@ -113,8 +113,11 @@ threshold. Credentials and service URLs are not included in context or errors.
 
 Service-selected review-start reservations check the live issue and comments or
 PR head without hydrating related context. Their queue authority, revision checks,
-and owned-lease cleanup still apply. Apply commands and synchronous context
-hydration remain held until their guards support service preparation. Local
+and owned-lease cleanup still apply. `apply-artifacts` can publish completed
+review records and their work plans without reading cluster context. Its live
+GitHub state checks and reconciliation behavior are unchanged. `apply-decisions`
+and synchronous context hydration remain held until their guards support service
+preparation. Local
 read-only review remains available; no service selector preserves the existing
 SQLite behavior.
 

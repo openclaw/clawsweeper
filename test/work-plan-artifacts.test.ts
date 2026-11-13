@@ -117,8 +117,14 @@ test("work plan sync removes a corrupt record's stale plan and continues with va
   }
 });
 
-test("apply-artifacts writes and removes generated work plans", () => {
+test("apply-artifacts writes and removes generated work plans in service mode", () => {
   const root = mkdtempSync(tmpPrefix);
+  const env = {
+    ...process.env,
+    CLAWSWEEPER_GITCRAWL_ENDPOINT: "http://127.0.0.1:9",
+    CLAWSWEEPER_GITCRAWL_ARCHIVE: "fixture",
+    CLAWSWEEPER_GITCRAWL_READER_TOKEN: "fixture-reader",
+  };
   try {
     const artifactDir = join(root, "artifacts");
     const itemsDir = join(root, "items");
@@ -126,22 +132,26 @@ test("apply-artifacts writes and removes generated work plans", () => {
     const plansDir = join(root, "plans");
     mkdirSync(artifactDir, { recursive: true });
     writeFileSync(join(artifactDir, "321.md"), workPlanCandidateReport(), "utf8");
-    execFileSync(process.execPath, [
-      "dist/clawsweeper.js",
-      "apply-artifacts",
-      "--target-repo",
-      "openclaw/clawsweeper",
-      "--artifact-dir",
-      artifactDir,
-      "--items-dir",
-      itemsDir,
-      "--closed-dir",
-      closedDir,
-      "--plans-dir",
-      plansDir,
-      "--replay-closed-artifacts",
-      "--skip-reconcile",
-    ]);
+    execFileSync(
+      process.execPath,
+      [
+        "dist/clawsweeper.js",
+        "apply-artifacts",
+        "--target-repo",
+        "openclaw/clawsweeper",
+        "--artifact-dir",
+        artifactDir,
+        "--items-dir",
+        itemsDir,
+        "--closed-dir",
+        closedDir,
+        "--plans-dir",
+        plansDir,
+        "--replay-closed-artifacts",
+        "--skip-reconcile",
+      ],
+      { env },
+    );
     const planPath = join(plansDir, "321.md");
     assert.ok(existsSync(planPath));
     assert.match(readFileSync(planPath, "utf8"), /## Plan\n\nRender generated plan markdown/);
@@ -151,22 +161,26 @@ test("apply-artifacts writes and removes generated work plans", () => {
       workPlanCandidateReport({ work_candidate: "none", work_status: "none" }),
       "utf8",
     );
-    execFileSync(process.execPath, [
-      "dist/clawsweeper.js",
-      "apply-artifacts",
-      "--target-repo",
-      "openclaw/clawsweeper",
-      "--artifact-dir",
-      artifactDir,
-      "--items-dir",
-      itemsDir,
-      "--closed-dir",
-      closedDir,
-      "--plans-dir",
-      plansDir,
-      "--replay-closed-artifacts",
-      "--skip-reconcile",
-    ]);
+    execFileSync(
+      process.execPath,
+      [
+        "dist/clawsweeper.js",
+        "apply-artifacts",
+        "--target-repo",
+        "openclaw/clawsweeper",
+        "--artifact-dir",
+        artifactDir,
+        "--items-dir",
+        itemsDir,
+        "--closed-dir",
+        closedDir,
+        "--plans-dir",
+        plansDir,
+        "--replay-closed-artifacts",
+        "--skip-reconcile",
+      ],
+      { env },
+    );
     assert.equal(existsSync(planPath), false);
   } finally {
     rmSync(root, { recursive: true, force: true });

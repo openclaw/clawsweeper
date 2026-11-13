@@ -90,7 +90,7 @@ if (args[0] === "api" && args[1]?.includes("/issues?state=open")) {
   }
 });
 
-test("scoped publication archives an item closed after hydration without changing unrelated records", () => {
+test("service-selected publication preserves live closed-state checks and scoped reconciliation", () => {
   const root = mkdtempSync(tmpPrefix);
   const recordsDir = join(root, "records", "openclaw-openclaw");
   const itemsDir = join(recordsDir, "items");
@@ -125,24 +125,35 @@ if (args[0] === "api" && args[1]?.endsWith("/issues/2")) {
   try {
     let stdout = "";
     withMockGh(root, ghMock, () => {
-      execFileSync(process.execPath, [
-        "dist/clawsweeper.js",
-        "apply-artifacts",
-        "--target-repo",
-        "openclaw/openclaw",
-        "--artifact-dir",
-        artifactDir,
-        "--items-dir",
-        itemsDir,
-        "--closed-dir",
-        closedDir,
-        "--plans-dir",
-        plansDir,
-        "--skip-dashboard",
-        "--skip-reconcile",
-        "--canonical-record-baseline-dir",
-        canonicalBaselineDir,
-      ]);
+      execFileSync(
+        process.execPath,
+        [
+          "dist/clawsweeper.js",
+          "apply-artifacts",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--artifact-dir",
+          artifactDir,
+          "--items-dir",
+          itemsDir,
+          "--closed-dir",
+          closedDir,
+          "--plans-dir",
+          plansDir,
+          "--skip-dashboard",
+          "--skip-reconcile",
+          "--canonical-record-baseline-dir",
+          canonicalBaselineDir,
+        ],
+        {
+          env: {
+            ...process.env,
+            CLAWSWEEPER_GITCRAWL_ENDPOINT: "http://127.0.0.1:9",
+            CLAWSWEEPER_GITCRAWL_ARCHIVE: "fixture",
+            CLAWSWEEPER_GITCRAWL_READER_TOKEN: "fixture-reader",
+          },
+        },
+      );
       assert.equal(readFileSync(join(itemsDir, "2.md"), "utf8"), report(2, "open"));
       assert.equal(existsSync(join(closedDir, "2.md")), false);
       stdout = execFileSync(
