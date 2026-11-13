@@ -449,20 +449,18 @@ references contain Git revisions and hashed paths, with at most four references
 and their total count. No raw paths, matched values, literal digests, or
 verification messages are retained; this provenance does not authorize a finding.
 
-TruffleHog runs with `--results=verified,unknown`: it refuses credentials it
-could log in with and credentials it could not test, and lets through
-credentials it tested and found dead. Test data almost always lands in the
-"could not test" group because its host does not exist. The host therefore
-classifies an unverifiable JDBC, URI, MongoDB, FTP, or Postgres finding as
-non-sensitive when every host it names is reserved for testing or loopback:
-`*.test`, `*.example`, `*.invalid`, `*.localhost`, `localhost`,
-`example.com`/`.net`/`.org` and their subdomains, `127.0.0.0/8`, and `::1`
-(RFC 2606 and RFC 6761). A credential for such a host cannot unlock anything
-reachable. Verified findings, other detectors, any public or unparseable host,
-and incomplete scans still refuse. Host-generated Git object IDs in diff
-`index` lines that the Cloudflare global-key detector mistakes for keys are
-proven to be that metadata and require a masked re-scan to clear everything
-else. There is no per-file allowlist. See `src/agent-input-scan-classifier.ts`.
+TruffleHog runs with `--results=verified,unknown`: verified credentials and
+credentials it could not test block review unless the complete native value pair
+is already reviewed as synthetic. These approvals bind the detector, observed
+decoder, and SHA-256 of both `Raw` and `RawV2`, rather than a source path or
+whole-file hash. Editing surrounding test code does not require another approval;
+new credential values still do. Reserved domains and loopback addresses never
+establish that a password is synthetic: private DNS, local proxies, and database
+connection options can lead to real systems. Verified findings and incomplete
+scans still refuse. Host-generated Git object IDs in diff `index` lines that the
+Cloudflare global-key detector mistakes for keys are proven to be that metadata
+and require a masked re-scan to clear everything else. See
+`src/agent-input-scan-classifier.ts` and `src/agent-input-scan-approved-values.ts`.
 After successful cleanup and final source fences, each classification emits a
 host-side structured stderr notice with `event`, `classification`, `detector`,
 and `findings` entries containing `blob`, `scannerLine`, `decoder`, and

@@ -759,9 +759,7 @@ export function scanAgentInput(options: {
         notice:
           classification.classification === "git_object_id"
             ? "Canonical Git object metadata classified as non-sensitive."
-            : classification.classification === "reserved_host"
-              ? "Unverifiable credentials for reserved or loopback hosts classified as non-sensitive."
-              : "Previously reviewed synthetic values classified as non-sensitive.",
+            : "Previously reviewed synthetic values classified as non-sensitive.",
         ...classification,
       }),
     );

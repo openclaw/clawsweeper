@@ -1,1 +1,1 @@
-- Reviews no longer stop on test credentials for reserved or loopback hosts (`*.test`, `*.example`, `*.invalid`, `localhost`, `example.com`, `127.0.0.1`). This replaces the per-file fixture allowlist, so editing a test file no longer needs a new ClawSweeper PR.
+- Reviews reuse exact approved synthetic credential values across surrounding file edits, while arbitrary credentials, including reserved-domain and loopback credentials, remain blocked by the input scanner.

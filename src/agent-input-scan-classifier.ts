@@ -1,4 +1,5 @@
 import { sha256 } from "./content-hash.js";
+import { APPROVED_SYNTHETIC_VALUES } from "./agent-input-scan-approved-values.js";
 import { TRUFFLEHOG_VERSION } from "./review-tool-bootstrap.js";
 import { resolveGitObjectMetadata } from "./agent-input-scan-git-metadata.js";
 
@@ -52,7 +53,7 @@ export type ScanRefusalDiagnostic =
     };
 
 export interface ScanClassificationNotice {
-  classification: "git_object_id" | "reserved_host" | "approved_value";
+  classification: "git_object_id" | "approved_value";
   detector: string;
   findings: { blob: string; scannerLine: number; decoder: string; occurrences: number }[];
 }
@@ -146,101 +147,92 @@ function materialDiagnostic(input: StagedScanInput): ScanMaterialDiagnostic {
   };
 }
 
-// Credential detectors whose value names the host it would unlock:
-// JDBC, URI, MongoDB, FTP and Postgres.
-const HOST_CREDENTIAL_DETECTORS = new Set([10, 17, 895, 899, 968]);
-const STRICT_HOST = /^(?:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.?|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/;
-
-// RFC 2606/6761 names and loopback addresses never route to a reachable server.
-export function isReservedHost(hostPort: string): boolean {
-  if (!STRICT_HOST.test(hostPort)) return false;
-  const host = (
-    hostPort.startsWith("[") ? hostPort.slice(1, hostPort.indexOf("]")) : hostPort.split(":")[0]!
-  )
-    .toLowerCase()
-    .replace(/\.$/, "");
-  if (host === "::1" || /^127(?:\.(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}$/.test(host))
-    return true;
-  return (
-    [".test", ".example", ".invalid", ".localhost"].some((suffix) => host.endsWith(suffix)) ||
-    ["localhost", "example.com", "example.net", "example.org"].some(
-      (domain) => host === domain || host.endsWith(`.${domain}`),
-    )
-  );
-}
-
-/**
- * TruffleHog reports "unknown" when it cannot test a credential, which for
- * test values is almost always because the host does not exist. A credential
- * whose every target host is reserved or loopback cannot unlock anything
- * reachable. Verified findings, other detectors, and any public or
- * unparseable host still refuse.
- */
-function isReservedHostCredential(finding: Record<string, unknown>): boolean {
+// A reserved/local hostname is not evidence that the credential is synthetic:
+// JDBC properties can name a different destination, and loopback can proxy a
+// real database. Admit only complete values already reviewed as synthetic.
+function isApprovedSyntheticValue(finding: Record<string, unknown>): boolean {
   if (
     finding.SourceType !== 15 ||
     finding.Verified !== false ||
     typeof finding.VerificationError !== "string" ||
     !finding.VerificationError ||
-    typeof finding.DetectorType !== "number" ||
-    !HOST_CREDENTIAL_DETECTORS.has(finding.DetectorType)
+    finding.StructuredData !== null ||
+    typeof finding.Raw !== "string" ||
+    typeof finding.RawV2 !== "string"
   )
     return false;
-  const hosts: string[] = [];
-  for (const value of [finding.Raw, finding.RawV2]) {
-    if (typeof value !== "string" || !value) continue;
-    // Read the authority up to the path, query, or fragment like a URL parser
-    // would; anything odd inside it (quotes, spaces) then fails STRICT_HOST.
-    const authorities = [...value.matchAll(/[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#]*)/g)];
-    // A credential value without a parseable authority has no host to judge.
-    if (authorities.length === 0) return false;
-    for (const [, authority] of authorities) {
-      if (authority!.includes("\\")) return false;
-      // Like URL parsers, the host follows the last @; MongoDB lists seed hosts.
-      hosts.push(...authority!.slice(authority!.lastIndexOf("@") + 1).split(","));
-    }
-  }
+  const raw = finding.Raw;
+  const rawV2 = finding.RawV2;
+  const rawDigest = sha256(raw);
+  const rawV2Digest = sha256(rawV2);
+  if (
+    !APPROVED_SYNTHETIC_VALUES.some(
+      ([type, name, decoders, expectedRaw, expectedRawV2]) =>
+        finding.DetectorType === type &&
+        finding.DetectorName === name &&
+        decoders.includes(String(finding.DecoderName)) &&
+        rawDigest === expectedRaw &&
+        rawV2Digest === expectedRawV2,
+    )
+  )
+    return false;
   const parts = object(finding.SecretParts);
-  if (typeof parts?.host === "string") hosts.push(parts.host);
-  return hosts.length > 0 && hosts.every(isReservedHost);
-}
-
-// Previously reviewed synthetic values whose test needs a real hostname, so the
-// reserved-host rule cannot judge them. Bound to the exact native value pair
-// ("Raw:RawV2" SHA-256), not to a file: editing the surrounding file is fine.
-const APPROVED_SYNTHETIC_VALUES = new Set([
-  // Azure dynamic sessions test (azurecontainerapps.io)
-  "18b8a05caad228f56cfded41e0ce2f513f859be0da13c3a688b169ded93637d1:18b8a05caad228f56cfded41e0ce2f513f859be0da13c3a688b169ded93637d1",
-  // GrillTrack generated event UUID (Privacy detector)
-  "6e31751daf97832583d6877d6f79a17eb9b74188d3916d1668d136af36a9ea45:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  // OCE Kubernetes compute test (10.42.0.15)
-  "fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457:fde443718383531e2fc52a8324fc644f1c45c1c766afd11da028368831e0f457",
-  "18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b:18e186031a746783f43d3002e63b775b6e28acef5d60825a82c418ad3e603b5b",
-  // OpenClaw GitHub detail tests (github.com)
-  "902e57fd9767d172abc419455669b173ffe3b1d1e06b45dd190c86b8082a1b2e:a9ff2e4d2ef22693a1505cfa8939988fed4a345e9c86a3df3a5a2cbd53cddf47",
-  "902e57fd9767d172abc419455669b173ffe3b1d1e06b45dd190c86b8082a1b2e:237992038e2f8635133fc70c6372f4fd2cbb8a6d01433d243a3056670966ca43",
-  "1aa166a254353a56288ad1942fdac6d92342f9ca53ca6690247bae6cc0ac3738:99c6ba8a9fbc40225ed3839f4cadf69924aa66ca191aa2bc647d0a18aaabe731",
-  // OpenClaw config-patch test (browserless.io)
-  "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f:3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f",
-  // autoreview negative tests (bare host)
-  "7b8ee01b06a7e5b375164f2c45249bb258c75726a60b27e20a0ba6e42d5d0b27:7b8ee01b06a7e5b375164f2c45249bb258c75726a60b27e20a0ba6e42d5d0b27",
-  "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83:662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83",
-  "6c529e5b9845e7f41a5406cea40dc9dc98bfc8da6a330c3cdb34554f2dc0317f:eebab8ec3df3ff0426c28021cce68ab7d2391e32d3040b128210e9df7ad3e092",
-  "2d082b79ad4da55704d07af5754a91f9a677bfbbdc626d93a58291f11edf53c5:2d082b79ad4da55704d07af5754a91f9a677bfbbdc626d93a58291f11edf53c5",
-  "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31:b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31",
-  "05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1:05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1",
-  "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2:80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2",
-  "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736:fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736",
-]);
-
-function isApprovedSyntheticValue(finding: Record<string, unknown>): boolean {
-  return (
-    finding.SourceType === 15 &&
-    finding.Verified === false &&
-    typeof finding.Raw === "string" &&
-    typeof finding.RawV2 === "string" &&
-    APPROVED_SYNTHETIC_VALUES.has(`${sha256(finding.Raw)}:${sha256(finding.RawV2)}`)
-  );
+  switch (finding.DetectorType) {
+    case 17: {
+      try {
+        const uri = new URL(rawV2);
+        const authority = /^[^:]+:\/\/([^/?#]*)/.exec(rawV2)?.[1];
+        return (
+          finding.ExtraData === null &&
+          exactStringRecord(parts, ["host", "username", "password"]) &&
+          parts!.host === authority?.slice(authority.lastIndexOf("@") + 1) &&
+          parts!.username === decodeURIComponent(uri.username) &&
+          parts!.password === uri.password
+        );
+      } catch {
+        return false;
+      }
+    }
+    case 10:
+      return (
+        rawV2 === "" &&
+        exactStringRecord(parts, ["connection_string"]) &&
+        parts!.connection_string === raw &&
+        finding.ExtraData === null &&
+        finding.VerificationError === "missing host or password in connection string"
+      );
+    case 895:
+    case 899:
+      return (
+        rawV2 === "" &&
+        exactStringRecord(parts, ["key"]) &&
+        parts!.key === raw &&
+        (finding.DetectorType === 899
+          ? finding.ExtraData === null
+          : exactStringRecord(finding.ExtraData, [
+              "database",
+              "host",
+              "rotation_guide",
+              "username",
+            ]))
+      );
+    case 968:
+      return (
+        raw === rawV2 &&
+        exactStringRecord(parts, ["connection_string"]) &&
+        parts!.connection_string === raw &&
+        exactStringRecord(finding.ExtraData, ["database", "host", "sslmode", "username"])
+      );
+    case 938:
+      return (
+        rawV2 === "" &&
+        exactStringRecord(parts, ["key"]) &&
+        parts!.key === raw &&
+        finding.ExtraData === null
+      );
+    default:
+      return false;
+  }
 }
 
 /** Classify a complete native scan. Any finding not explained here refuses. */
@@ -366,10 +358,6 @@ function classifyFindings(
       return refuse("metadata_mismatch");
     const decoder = String(finding.DecoderName);
 
-    if (isReservedHostCredential(finding)) {
-      record("reserved_host", String(finding.DetectorName), staged.id, scannerLine, decoder);
-      continue;
-    }
     if (isApprovedSyntheticValue(finding)) {
       record("approved_value", String(finding.DetectorName), staged.id, scannerLine, decoder);
       continue;

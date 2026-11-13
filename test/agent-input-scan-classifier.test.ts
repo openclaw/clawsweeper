@@ -1,28 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  classifyScan,
-  isReservedHost,
-  type StagedScanInput,
-} from "../dist/agent-input-scan-classifier.js";
+import { classifyScan, type StagedScanInput } from "../dist/agent-input-scan-classifier.js";
+import { APPROVED_SYNTHETIC_VALUES } from "../dist/agent-input-scan-approved-values.js";
 import { TRUFFLEHOG_VERSION } from "../dist/review-tool-bootstrap.js";
 
 const file = "/private/scanner/blob";
-const inputs = new Map<string, StagedScanInput>([
-  [
-    file,
-    {
-      kind: "blob",
-      id: "a".repeat(40),
-      bytes: Buffer.from("fixture\n"),
-      references: [
-        { source: "test/a.test.ts", mode: "100644", revision: "b".repeat(40), role: "head" },
-      ],
-    },
-  ],
-]);
+const approvedUri = ["https://", "fixture-user:fixture-password@example.invalid"].join("");
 
-function uriFinding(value: string, overrides: Record<string, unknown> = {}) {
+function uriFinding(value = approvedUri, overrides: Record<string, unknown> = {}) {
   const url = new URL(value);
   return {
     SourceType: 15,
@@ -35,16 +20,18 @@ function uriFinding(value: string, overrides: Record<string, unknown> = {}) {
     Raw: value,
     RawV2: value,
     SecretParts: { host: url.host, username: url.username, password: url.password },
+    ExtraData: null,
+    StructuredData: null,
     ...overrides,
   };
 }
 
-function classify(findings: Record<string, unknown>[]) {
+function classify(findings: Record<string, unknown>[], input?: StagedScanInput, complete = true) {
   const verified = findings.filter((finding) => finding.Verified === true).length;
   const log = {
     level: "info-0",
     logger: "trufflehog",
-    msg: "finished scanning",
+    msg: complete ? "finished scanning" : "started scanning",
     trufflehog_version: TRUFFLEHOG_VERSION,
     chunks: 1,
     bytes: 1,
@@ -55,155 +42,163 @@ function classify(findings: Record<string, unknown>[]) {
     183,
     Buffer.from(findings.map((finding) => JSON.stringify(finding)).join("\n") + "\n"),
     Buffer.from(JSON.stringify(log) + "\n"),
-    inputs,
+    new Map([[file, input ?? { kind: "prompt", id: "prompt", bytes: Buffer.from(approvedUri) }]]),
   );
 }
 
-test("reserved and loopback hosts are recognized; look-alikes are not", () => {
+test("reviewed synthetic values survive surrounding edits and material changes", () => {
+  const materials: StagedScanInput[] = [
+    ...(["prompt", "schema", "additional"] as const).map((kind) => ({ kind, id: kind })),
+    { kind: "blob", id: "blob", references: [] },
+    { kind: "worktree", id: "worktree", references: [] },
+    ...(["patch", "raw_diff", "metadata_proof"] as const).map((kind) => ({
+      kind,
+      id: kind,
+      from: "a".repeat(40),
+      to: "b".repeat(40),
+    })),
+  ];
+  for (const material of materials) {
+    for (const prefix of ["", "// unrelated edit\n"]) {
+      const result = classify([uriFinding()], {
+        ...material,
+        bytes: Buffer.from(prefix + approvedUri),
+      });
+      assert.equal(result.kind, "classified", material.kind);
+      if (result.kind !== "classified") throw new Error("expected approved value");
+      assert.equal(result.notices[0]?.classification, "approved_value");
+      assert.equal(JSON.stringify(result).includes("fixture-password"), false);
+    }
+  }
+});
+
+test("arbitrary credentials never qualify by reserved or loopback hostname", () => {
   for (const host of [
-    "example.test",
-    "db.example.test:5432",
+    "db.example.test",
     "proxy.example",
-    "example.invalid",
+    "db.invalid",
     "app.localhost",
     "localhost",
-    "localhost:3000",
     "example.com",
-    "cdn.example.com",
-    "matrix.example.org",
-    "example.net.",
+    "example.net",
+    "example.org",
     "127.0.0.1",
     "127.10.20.30:9222",
     "[::1]:8080",
-  ])
-    assert.equal(isReservedHost(host), true, host);
-  for (const host of [
-    "github.com",
-    "chrome.browserless.io",
+    "db.company.internal",
     "example.com.attacker.net",
-    "notexample.com",
-    "test.com",
-    "localhost.attacker.net",
-    "128.0.0.1",
-    "127.0.0.256",
-    "10.0.0.1",
-    "[::2]",
-    "example.test\\@evil.com",
-    "",
-  ])
-    assert.equal(isReservedHost(host), false, host);
+  ]) {
+    const value = ["https://", "review-user:unreviewed-password@", host].join("");
+    assert.equal(classify([uriFinding(value)]).kind, "refused", host);
+  }
 });
 
-test("unverifiable credentials for reserved hosts classify without any per-file policy", () => {
-  const result = classify([
-    uriFinding(["https://", "user:pass@example.test/path"].join("")),
-    uriFinding(["http://", "admin:secret@127.0.0.1:9222"].join(""), { DecoderName: "HTML" }),
-    {
-      ...uriFinding(["postgres://", "u:p@db.example.test:5432"].join("")),
-      DetectorType: 968,
-      DetectorName: "Postgres",
-      SecretParts: { connection_string: ["postgres://", "u:p@db.example.test:5432"].join("") },
-    },
-    {
-      ...uriFinding(["mongodb+srv://", "u:p@cluster.example.test/app"].join("")),
-      DetectorType: 895,
-      DetectorName: "MongoDB",
-      RawV2: "",
-      SecretParts: { key: ["mongodb+srv://", "u:p@cluster.example.test/app"].join("") },
-    },
-  ]);
-  assert.equal(result.kind, "classified");
-  if (result.kind !== "classified") return;
-  assert.deepEqual(
-    result.notices.map(({ classification, detector }) => [classification, detector]),
+test("JDBC authority tricks and connection target overrides refuse", () => {
+  const values = [
     [
-      ["reserved_host", "MongoDB"],
-      ["reserved_host", "Postgres"],
-      ["reserved_host", "URI"],
-    ],
-  );
-  assert.equal(JSON.stringify(result).includes("pass"), false, "values are never emitted");
-});
-
-test("anything that could unlock a reachable host still refuses", () => {
-  const cases: Array<[string, Record<string, unknown>]> = [
-    ["public host", uriFinding(["https://", "user:pass@github.com"].join(""))],
-    ["verified", uriFinding(["https://", "user:pass@example.test"].join(""), { Verified: true })],
+      "jdbc:sqlserver://db.company.internal:1433;user=review_user;password=",
+      "synthetic@example.test",
+    ].join(""),
     [
-      "no verification error",
-      uriFinding(["https://", "user:pass@example.test"].join(""), { VerificationError: "" }),
-    ],
+      "jdbc:postgresql://db.example.invalid/app?user=review_user&password=synthetic&",
+      "host=db.company.internal",
+    ].join(""),
     [
-      "non-filesystem source",
-      uriFinding(["https://", "user:pass@example.test"].join(""), { SourceType: 16 }),
-    ],
-    [
-      "unrelated detector",
-      uriFinding(["https://", "user:pass@example.test"].join(""), {
-        DetectorType: 2,
-        DetectorName: "AWS",
-      }),
-    ],
-    [
-      "public host in RawV2",
-      uriFinding(["https://", "user:pass@example.test"].join(""), {
-        RawV2: ["https://", "user:pass@api.openclaw.ai"].join(""),
-      }),
-    ],
-    [
-      "public SecretParts host",
-      uriFinding(["https://", "user:pass@example.test"].join(""), {
-        SecretParts: { host: "api.openclaw.ai", username: "user", password: "pass" },
-      }),
-    ],
-    [
-      "backslash authority",
-      uriFinding(["https://", "user:pass@example.test"].join(""), {
-        Raw: ["https://", "evil.com\\@example.test"].join(""),
-      }),
-    ],
-    [
-      "quote inside the authority",
-      {
-        ...uriFinding(["https://", "x@example.test"].join("")),
+      "jdbc:postgresql://db.example.invalid/app?user=review_user&password=synthetic&",
+      "socketFactory=com.google.cloud.sql.postgres.SocketFactory&cloudSqlInstance=project:region:production",
+    ].join(""),
+  ];
+  for (const raw of values) {
+    assert.equal(
+      classify([
+        uriFinding(approvedUri, {
+          DetectorType: 10,
+          DetectorName: "JDBC",
+          Raw: raw,
+          RawV2: "",
+          SecretParts: { connection_string: raw },
+          ExtraData: { host: "db.company.internal" },
+        }),
+      ]).kind,
+      "refused",
+    );
+  }
+  // Native Postgres findings normalize away hostaddr; even the normalized
+  // reserved-host value must refuse without an exact synthetic-value approval.
+  const raw = ["postgresql://", "review_user:synthetic@db.example.invalid:5432"].join("");
+  assert.equal(
+    classify([
+      uriFinding(approvedUri, {
         DetectorType: 968,
         DetectorName: "Postgres",
-        Raw: ["postgres://localhost'", ":secret@db.openclaw.ai:5432"].join(""),
-        RawV2: ["postgres://localhost'", ":secret@db.openclaw.ai:5432"].join(""),
-        SecretParts: {},
+        Raw: raw,
+        RawV2: raw,
+        SecretParts: { connection_string: raw },
+        ExtraData: {
+          database: "app",
+          host: "db.example.invalid:5432",
+          sslmode: "<unset>",
+          username: "review_user",
+        },
+      }),
+    ]).kind,
+    "refused",
+  );
+});
+
+test("approved values retain detector, decoder, verification and native-part bindings", () => {
+  for (const override of [
+    { Verified: true },
+    { VerificationError: "" },
+    { SourceType: 16 },
+    { DetectorType: 2 },
+    { DetectorName: "AWS" },
+    { DecoderName: "OTHER" },
+    { Raw: approvedUri + "/changed" },
+    { RawV2: approvedUri + "/changed" },
+    {
+      SecretParts: {
+        host: "elsewhere.invalid",
+        username: "fixture-user",
+        password: "fixture-password",
       },
-    ],
-    [
-      "no authority",
-      uriFinding(["https://", "user:pass@example.test"].join(""), { Raw: "user:pass", RawV2: "" }),
-    ],
-    [
-      "public seed host",
-      {
-        ...uriFinding(["mongodb://", "u:p@a.example.test,db.openclaw.ai/app"].join("")),
-        DetectorType: 895,
-        DetectorName: "MongoDB",
-        SecretParts: { key: ["mongodb://", "u:p@a.example.test,db.openclaw.ai/app"].join("") },
+    },
+    {
+      SecretParts: {
+        host: "example.invalid",
+        username: "fixture-user",
+        password: "another-password",
       },
-    ],
-    [
-      "JDBC parameters in authority",
-      {
-        ...uriFinding(["https://", "x@example.test"].join("")),
-        DetectorType: 10,
-        DetectorName: "JDBC",
-        Raw: ["jdbc", ":sqlserver://db.example.test;user=sa;password=secret"].join(""),
-        RawV2: "",
-        SecretParts: {},
-      },
-    ],
-  ];
-  for (const [name, finding] of cases) {
-    const result = classify([uriFinding(["https://", "user:pass@example.test"].join("")), finding]);
-    assert.equal(result.kind, "refused", name);
-    if (result.kind === "refused" && result.diagnostic.kind === "unclassified_finding") {
-      assert.equal(result.diagnostic.findingIndex, 1, name);
-      assert.equal(result.diagnostic.reason, "finding_not_reviewed", name);
-    }
+    },
+    { ExtraData: { host: "db.company.internal" } },
+    { StructuredData: {} },
+    { SourceMetadata: { Data: { Filesystem: { file: "/unscanned/file", line: 1 } } } },
+  ])
+    assert.equal(
+      classify([uriFinding(approvedUri, override)]).kind,
+      "refused",
+      JSON.stringify(override),
+    );
+  assert.equal(classify([uriFinding()], undefined, false).kind, "refused");
+  assert.equal(classify([uriFinding(), uriFinding(approvedUri + "/changed")]).kind, "refused");
+  assert.equal(classify([uriFinding(approvedUri, { DecoderName: "HTML" })]).kind, "classified");
+});
+
+test("migrated approvals have distinct, complete detector and native value identities", () => {
+  const keys = new Set<string>();
+  assert.equal(APPROVED_SYNTHETIC_VALUES.length, 98);
+  for (const [type, name, decoders, raw, rawV2] of APPROVED_SYNTHETIC_VALUES) {
+    assert.ok([10, 17, 895, 899, 938, 968].includes(type));
+    assert.ok(["JDBC", "URI", "MongoDB", "FTP", "Privacy", "Postgres"].includes(name));
+    assert.ok(decoders.length > 0);
+    assert.equal(new Set(decoders).size, decoders.length);
+    assert.ok(
+      decoders.every((decoder) => ["PLAIN", "HTML", "BASE64", "ESCAPED_UNICODE"].includes(decoder)),
+    );
+    assert.match(raw, /^[a-f0-9]{64}$/);
+    assert.match(rawV2, /^[a-f0-9]{64}$/);
+    const key = `${type}:${name}:${raw}:${rawV2}`;
+    assert.equal(keys.has(key), false);
+    keys.add(key);
   }
 });
