@@ -10,6 +10,7 @@ import {
   liveApplyCloseReasonPolicyBlock,
 } from "../dist/clawsweeper-apply-close-policies.js";
 import { LiveReadGeneration } from "../dist/live-read-generation.js";
+import { GitcrawlContextNotPreparedError } from "../dist/gitcrawl-cluster-service.js";
 import type { ReportEntry } from "../src/clawsweeper-types.ts";
 import {
   implementedCloseReport,
@@ -38,6 +39,7 @@ const currentMarkdown = withReviewRecord(
 function counterpartAdmission(
   closeReason: "implemented_on_main" | "stale_version_bug" | "stale_insufficient_info",
   changeAfterAdmission: "locked" | "closed" | "unknown" | null = null,
+  prepared = true,
 ) {
   const root = mkdtempSync(tmpPrefix);
   try {
@@ -70,7 +72,10 @@ function counterpartAdmission(
         closeReasonApplyAgeSkipReason: () => null,
         closeReasonEnabled: () => true,
         closingPullRequestsForIssue: () => [],
-        collectItemContext: () => ({ relatedItems: [] }),
+        collectItemContext: () => {
+          if (!prepared) throw new GitcrawlContextNotPreparedError();
+          return { relatedItems: [] };
+        },
         commentBodyMatches: () => true,
         commentUpdatedAt: () => counterpartItem.updatedAt,
         duplicateCanonicalPullRequestBlockReason: () => null,
@@ -162,6 +167,12 @@ for (const change of ["locked", "closed", "unknown"] as const) {
     assert.deepEqual([admitted, revalidated, fileEntries.length], [true, change === "closed", 1]);
   });
 }
+
+test("same-author pair holds when service context was not prepared for its counterpart", () => {
+  const result = counterpartAdmission("implemented_on_main", null, false);
+  assert.equal(result.admitted, false);
+  assert.deepEqual(result.fileEntries, []);
+});
 
 test("terminal reason policy bypasses an unchanged live-read generation", () => {
   const generation = new LiveReadGeneration();
