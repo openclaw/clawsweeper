@@ -37,6 +37,7 @@ const MATERIAL_KINDS = [
   "additional",
   "raw_diff",
   "raw_diff_proof",
+  "metadata_proof",
   "patch",
   "worktree",
   "blob",
@@ -91,7 +92,7 @@ function scanProjection(scan) {
             : matches(m.id, /^(?:0|[1-9][0-9]{0,15})$/)),
     );
     result.material = { kind: m.kind, id: m.id };
-    if (["raw_diff", "raw_diff_proof", "patch"].includes(m.kind)) {
+    if (["raw_diff", "raw_diff_proof", "metadata_proof", "patch"].includes(m.kind)) {
       requireValue(matches(m.from, SHA) && matches(m.to, SHA));
       Object.assign(result.material, { from: m.from, to: m.to });
     }

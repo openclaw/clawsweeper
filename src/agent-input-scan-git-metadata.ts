@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { StagedScanInput } from "./agent-input-scan-fixtures.js";
+import type { StagedScanInput } from "./agent-input-scan-classifier.js";
 
 export function resolveScannedGitBlob(
   scope: Extract<StagedScanInput, { kind: "raw_diff" | "patch" }>,

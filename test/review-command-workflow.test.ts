@@ -84,10 +84,6 @@ const reviewedUri = readFileSync("test/action-ledger-runtime.test.ts", "utf8")
   );
 assert.ok(reviewedUri);
 const fixtureQuote = `Reference [fixture](${reviewedUri}). Changed [fixture](${reviewedUri}?unreviewed).`;
-const safeFixtureQuote = fixtureQuote.replace(
-  reviewedUri,
-  "[reviewed synthetic URI omitted; inspect test/action-ledger-runtime.test.ts]",
-);
 
 function structuralRecord(
   activityUpdatedAt: string,
@@ -1469,7 +1465,7 @@ process.exitCode = 1;
       }
       assert.equal(
         hydrated ? inspectedContext.issue.body : inspectedContext.title,
-        hydrated ? safeFixtureQuote : `Scheduled cache proof. ${safeFixtureQuote}`,
+        hydrated ? fixtureQuote : `Scheduled cache proof. ${fixtureQuote}`,
       );
       assert.equal(context.issue.body, fixtureQuote);
       assert.equal(item.title, `Scheduled cache proof. ${fixtureQuote}`);
