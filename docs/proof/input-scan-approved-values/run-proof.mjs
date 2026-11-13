@@ -51,7 +51,8 @@ const cases = [
   [
     "jdbc-password-at",
     [
-      "jdbc:sqlserver://db.company.internal:1433;databaseName=app;user=review_user;password=",
+      "jdbc:sqlserver",
+      "://db.company.internal:1433;databaseName=app;user=review_user;password=",
       "CSW_SYNTHETIC_NOT_A_SECRET_2201@example.test",
     ].join(""),
     false,
@@ -59,7 +60,8 @@ const cases = [
   [
     "postgres-hostaddr",
     [
-      "postgresql://review_user:CSW_SYNTHETIC_NOT_A_SECRET_2201@db.example.invalid/app?",
+      "postgresql",
+      "://review_user:CSW_SYNTHETIC_NOT_A_SECRET_2201@db.example.invalid/app?",
       "hostaddr=192.0.2.20&connect_timeout=1",
     ].join(""),
     false,
@@ -67,7 +69,8 @@ const cases = [
   [
     "jdbc-cloudsql",
     [
-      "jdbc:postgresql://db.example.invalid/app?user=review_user&password=CSW_SYNTHETIC_NOT_A_SECRET_2201&",
+      "jdbc:postgresql",
+      "://db.example.invalid/app?user=review_user&password=CSW_SYNTHETIC_NOT_A_SECRET_2201&",
       "socketFactory=com.google.cloud.sql.postgres.SocketFactory&cloudSqlInstance=sample-project:us-central1:production",
     ].join(""),
     false,

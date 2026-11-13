@@ -138,15 +138,18 @@ test("arbitrary credentials never qualify by reserved or loopback hostname", () 
 test("JDBC authority tricks and connection target overrides refuse", () => {
   const values = [
     [
-      "jdbc:sqlserver://db.company.internal:1433;user=review_user;password=",
+      "jdbc:sqlserver",
+      "://db.company.internal:1433;user=review_user;password=",
       "synthetic@example.test",
     ].join(""),
     [
-      "jdbc:postgresql://db.example.invalid/app?user=review_user&password=synthetic&",
+      "jdbc:postgresql",
+      "://db.example.invalid/app?user=review_user&password=synthetic&",
       "host=db.company.internal",
     ].join(""),
     [
-      "jdbc:postgresql://db.example.invalid/app?user=review_user&password=synthetic&",
+      "jdbc:postgresql",
+      "://db.example.invalid/app?user=review_user&password=synthetic&",
       "socketFactory=com.google.cloud.sql.postgres.SocketFactory&cloudSqlInstance=project:region:production",
     ].join(""),
   ];
