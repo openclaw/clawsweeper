@@ -205,7 +205,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     withGuardReadOptions,
   } = dependencies;
 
-  async function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudget): Promise<void> {
+  async function applyDecisionsCommandInner(
+    args: Args,
+    runtimeBudget: GitHubRuntimeBudget,
+  ): Promise<void> {
     configuredGitcrawlClusterService();
     const profile = repoFromArgs(args);
     const recordRoot = resolve(stringArg(args.record_root, ROOT));

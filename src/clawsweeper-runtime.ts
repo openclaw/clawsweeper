@@ -472,7 +472,7 @@ const prepareApplyItemContext: CreateApplyDecisionWorkflowDependencies["prepareA
       bypassGenerationCache: true,
     });
     const counterparts = new Set<number>();
-    sameAuthorCounterpartApplyReason(item, context.relatedItems ?? [], (number, kind) => {
+    contextHydration.sameAuthorCounterpartApplyReason(item, context.relatedItems ?? [], (number, kind) => {
       if (kind === "issue" && options.hasReport(number)) counterparts.add(number);
       return true;
     });
@@ -480,7 +480,10 @@ const prepareApplyItemContext: CreateApplyDecisionWorkflowDependencies["prepareA
       // Match close execution's full-body provenance read; the review context
       // deliberately truncates long PR bodies before their closing directives.
       const { body } = ghJson<{ body?: unknown }>([
-        "api", `repos/${item.repo}/pulls/${item.number}`, "--jq", "{body}",
+        "api",
+        `repos/${item.repo}/pulls/${item.number}`,
+        "--jq",
+        "{body}",
       ]);
       if (typeof body === "string") {
         const linked = linkedIssueNumbersForImplementationProvenance(body, item.repo);

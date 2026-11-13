@@ -78,7 +78,9 @@ export function assertGitcrawlSynchronousContextSupported(): void {
     process.env.CLAWSWEEPER_GITCRAWL_ENDPOINT !== undefined ||
     process.env.CLAWSWEEPER_GITCRAWL_ARCHIVE !== undefined
   ) {
-    throw new Error("Gitcrawl cluster service mode does not support unprepared synchronous context");
+    throw new Error(
+      "Gitcrawl cluster service mode does not support unprepared synchronous context",
+    );
   }
 }
 
