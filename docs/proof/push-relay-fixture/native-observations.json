@@ -1,0 +1,130 @@
+{
+  "scannerVersion": "3.99.4",
+  "verification": "enabled; no detector exclusions, ignores or no-verification flags",
+  "canonicalFullInputObservations": [
+    {
+      "executableSha256": "e05963636bce6c5a48e0c780b26c98eb851ec8f87ab6efce8167753a9141b893",
+      "arguments": [
+        "filesystem",
+        "[private staged input]",
+        "--results=verified,unknown",
+        "--fail",
+        "--fail-on-scan-errors",
+        "--no-update",
+        "--json",
+        "--no-color"
+      ],
+      "status": 183,
+      "signal": null,
+      "findings": [
+        {
+          "detectorType": 17,
+          "detectorName": "URI",
+          "decoder": "HTML",
+          "verified": false,
+          "rawSha256": "e86d617b3e5670ce0a6c4f92f89148535c8a379bdb84a9fc144f2004ac4743a4",
+          "rawV2Sha256": "26450b6aba4123d2f67a8d940c50bf9b6c492993c657100d6a02c4345b67ea3a",
+          "sourceId": "77724187431100ec599905e760c04c03ae8d1c51",
+          "sourceSha256": "3a42ab6bb7be940c865cd9336fbd651dddbf5d1e2657edf8c911b8166fb09a42",
+          "scannerLine": 624,
+          "literalLines": [
+            {
+              "line": 624,
+              "sha256": "708fc8405f2610f3ccfea55cee78e6eceb2912c1ffa847609040442f554f7847"
+            }
+          ]
+        },
+        {
+          "detectorType": 17,
+          "detectorName": "URI",
+          "decoder": "PLAIN",
+          "verified": false,
+          "rawSha256": "e86d617b3e5670ce0a6c4f92f89148535c8a379bdb84a9fc144f2004ac4743a4",
+          "rawV2Sha256": "26450b6aba4123d2f67a8d940c50bf9b6c492993c657100d6a02c4345b67ea3a",
+          "sourceId": "7fe77cd6c283f420aec0ca355cef8f1d1edc6b6a",
+          "sourceSha256": "ff4a689a39a03840a4c034e8f5183ba64d66cd7dbf3abad3c74218ca65bfc0ad",
+          "scannerLine": 647,
+          "literalLines": [
+            {
+              "line": 647,
+              "sha256": "708fc8405f2610f3ccfea55cee78e6eceb2912c1ffa847609040442f554f7847"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "executableSha256": "e05963636bce6c5a48e0c780b26c98eb851ec8f87ab6efce8167753a9141b893",
+      "arguments": [
+        "filesystem",
+        "[private staged input]",
+        "--results=verified,unknown",
+        "--fail",
+        "--fail-on-scan-errors",
+        "--no-update",
+        "--json",
+        "--no-color"
+      ],
+      "status": 183,
+      "signal": null,
+      "findings": [
+        {
+          "detectorType": 17,
+          "detectorName": "URI",
+          "decoder": "PLAIN",
+          "verified": false,
+          "rawSha256": "e86d617b3e5670ce0a6c4f92f89148535c8a379bdb84a9fc144f2004ac4743a4",
+          "rawV2Sha256": "26450b6aba4123d2f67a8d940c50bf9b6c492993c657100d6a02c4345b67ea3a",
+          "sourceId": "77724187431100ec599905e760c04c03ae8d1c51",
+          "sourceSha256": "3a42ab6bb7be940c865cd9336fbd651dddbf5d1e2657edf8c911b8166fb09a42",
+          "scannerLine": 624,
+          "literalLines": [
+            {
+              "line": 624,
+              "sha256": "708fc8405f2610f3ccfea55cee78e6eceb2912c1ffa847609040442f554f7847"
+            }
+          ]
+        },
+        {
+          "detectorType": 17,
+          "detectorName": "URI",
+          "decoder": "PLAIN",
+          "verified": false,
+          "rawSha256": "e86d617b3e5670ce0a6c4f92f89148535c8a379bdb84a9fc144f2004ac4743a4",
+          "rawV2Sha256": "26450b6aba4123d2f67a8d940c50bf9b6c492993c657100d6a02c4345b67ea3a",
+          "sourceId": "7fe77cd6c283f420aec0ca355cef8f1d1edc6b6a",
+          "sourceSha256": "ff4a689a39a03840a4c034e8f5183ba64d66cd7dbf3abad3c74218ca65bfc0ad",
+          "scannerLine": 647,
+          "literalLines": [
+            {
+              "line": 647,
+              "sha256": "708fc8405f2610f3ccfea55cee78e6eceb2912c1ffa847609040442f554f7847"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "separateTwoBlobObservation": {
+    "status": 183,
+    "scope": "Exact two original source blobs; direct native observation only, not full-input admission proof",
+    "verification": "enabled",
+    "findings": [
+      {
+        "decoder": "ESCAPED_UNICODE",
+        "detector": 17,
+        "rawSha256": "e86d617b3e5670ce0a6c4f92f89148535c8a379bdb84a9fc144f2004ac4743a4",
+        "rawV2Sha256": "26450b6aba4123d2f67a8d940c50bf9b6c492993c657100d6a02c4345b67ea3a",
+        "sourceId": "7fe77cd6c283f420aec0ca355cef8f1d1edc6b6a"
+      },
+      {
+        "decoder": "PLAIN",
+        "detector": 17,
+        "rawSha256": "e86d617b3e5670ce0a6c4f92f89148535c8a379bdb84a9fc144f2004ac4743a4",
+        "rawV2Sha256": "26450b6aba4123d2f67a8d940c50bf9b6c492993c657100d6a02c4345b67ea3a",
+        "sourceId": "77724187431100ec599905e760c04c03ae8d1c51"
+      }
+    ]
+  },
+  "limits": "The two-blob observation identifies the escaped decoder; it is not full-input admission proof. Original hosted second finding was not exposed and is not retroactively attributed."
+}

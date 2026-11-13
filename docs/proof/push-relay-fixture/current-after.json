@@ -1,0 +1,42 @@
+{
+  "targetHead": "c91c36dfbdc2fded615c860f1eb68d28c4aea0eb",
+  "base": "154d60ec2bc612db80a39c13b61466a64acfc527",
+  "source": "complete committed range, canonical pinned native scanner",
+  "prompt": {
+    "kind": "controlled",
+    "bytes": 71,
+    "sha256": "ec04b7c204ee8e5aafb5fc4f81351c69e8fa7375aba79b95e50ecc86c127f66f"
+  },
+  "schema": null,
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "admitted",
+  "elapsedMs": 2370,
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "26450b6aba4123d2f67a8d940c50bf9b6c492993c657100d6a02c4345b67ea3a",
+      "source": "src/infra/push-apns.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "77724187431100ec599905e760c04c03ae8d1c51",
+          "scannerLine": 624,
+          "literalLine": 624,
+          "decoder": "HTML",
+          "role": "base",
+          "occurrences": 1
+        },
+        {
+          "blob": "7fe77cd6c283f420aec0ca355cef8f1d1edc6b6a",
+          "scannerLine": 647,
+          "literalLine": 647,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1
+        }
+      ]
+    }
+  ]
+}

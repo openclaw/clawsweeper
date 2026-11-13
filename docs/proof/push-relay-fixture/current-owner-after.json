@@ -1,0 +1,37 @@
+{
+  "targetHead": "81b5e47967a092c610bdcb456549a7a633270f36",
+  "base": "154d60ec2bc612db80a39c13b61466a64acfc527",
+  "source": "complete committed range, canonical pinned native scanner",
+  "prompt": {
+    "kind": "controlled",
+    "bytes": 71,
+    "sha256": "ec04b7c204ee8e5aafb5fc4f81351c69e8fa7375aba79b95e50ecc86c127f66f"
+  },
+  "schema": null,
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "admitted",
+  "elapsedMs": 2680,
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Previously reviewed synthetic values classified as non-sensitive.",
+      "classification": "approved_value",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "77724187431100ec599905e760c04c03ae8d1c51",
+          "scannerLine": 624,
+          "decoder": "PLAIN",
+          "occurrences": 1
+        },
+        {
+          "blob": "7fe77cd6c283f420aec0ca355cef8f1d1edc6b6a",
+          "scannerLine": 647,
+          "decoder": "PLAIN",
+          "occurrences": 1
+        }
+      ]
+    }
+  ]
+}

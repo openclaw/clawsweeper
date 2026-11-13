@@ -189,6 +189,8 @@ export const APPROVED_SYNTHETIC_VALUES: readonly ApprovedSyntheticValue[] = [
   [17,"URI",["HTML","PLAIN"],"fe30fb721f4e8b1d50f281ae338da254a0e34dba6804776c231b8666d5856055","fe30fb721f4e8b1d50f281ae338da254a0e34dba6804776c231b8666d5856055"],
   // skills/autoreview/tests/test_autoreview_hardening.py
   [17,"URI",["HTML","PLAIN"],"fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736","fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736"],
+  // src/infra/push-apns.test.ts; native qualification: openclaw/clawsweeper#2195
+  [17,"URI",["ESCAPED_UNICODE","HTML","PLAIN"],"e86d617b3e5670ce0a6c4f92f89148535c8a379bdb84a9fc144f2004ac4743a4","26450b6aba4123d2f67a8d940c50bf9b6c492993c657100d6a02c4345b67ea3a"],
   // worker/test/fleet.test.ts
   [17,"URI",["HTML","PLAIN"],"feadf36b48cb372414d8668b56c965d97d8e34d206d323b3790e863ac233f675","feadf36b48cb372414d8668b56c965d97d8e34d206d323b3790e863ac233f675"],
   // src/logging/redact.test.ts
