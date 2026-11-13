@@ -1062,6 +1062,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (processedCount >= processedLimit) break;
         continue;
       }
+      // A missing counterpart is not evidence that the primary was deleted.
+      // A post-wait lookup failure retains the report for the next apply run.
       const prepared = oversizedMetadataDecision ? null : await dependencies.prepareApplyItemContext(liveItem.item, {
         liveReadGeneration,
         hasReport: (counterpart) => Boolean(openReportEntry(counterpart)),
