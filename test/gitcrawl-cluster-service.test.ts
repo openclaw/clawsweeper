@@ -62,7 +62,8 @@ async function fixture(t: TestContext) {
     if (!binding) {
       assert.equal(query.name, "gitcrawl.clusters.related-issues");
       assert.equal(query.snapshot_id, pin());
-      assert.deepEqual(query.args, { repository, number: "1" });
+      assert.equal(query.args.repository, repository);
+      assert.match(query.args.number, /^[1-9]\d*$/);
       assert.equal(query.limit, 6);
     }
     const values = [
@@ -258,14 +259,48 @@ test("selected service failures cannot become empty context or fall back to SQLi
   assert.equal(f.requests.length, before, "mixed configuration must refuse before either source");
 });
 
-test("service mode holds synchronous apply entrypoints before dependencies or effects", async (t) => {
+test("incomplete service configuration rejects async apply before dependencies or effects", async (t) => {
   await fixture(t);
+  delete process.env.CLAWSWEEPER_GITCRAWL_READER_TOKEN;
   const dependencies = new Proxy(
     {},
     { get: () => () => assert.fail("held operation reached a dependency") },
   );
   const commands = createCommandOperations(dependencies as never);
-  assert.throws(() => commands.applyDecisionsCommand({}), /does not support apply/);
+  await assert.rejects(commands.applyDecisionsCommand({}), /unavailable or unqualified/);
   const apply = createApplyDecisionWorkflow(dependencies as never);
-  assert.throws(() => apply.applyDecisionsCommandInner({}, {} as never), /does not support apply/);
+  await assert.rejects(apply.applyDecisionsCommandInner({}, {} as never), /unavailable or unqualified/);
+});
+
+test("apply relations pin counterpart preparation and reject unprepared identities", async (t) => {
+  const f = await fixture(t);
+  const relations = f.context.createApplyRelations();
+  assert.ok(relations);
+  await relations.prepare(item);
+  const counterpart = { ...item, number: 4 };
+  await relations.prepare(counterpart);
+  const bindings = f.requests.filter((request) => request.name === "gitcrawl.clusters.binding");
+  assert.equal(bindings.length, 2);
+  assert.equal(bindings[0]?.snapshot_id, undefined);
+  assert.equal(bindings[1]?.snapshot_id, f.pin());
+  assert.deepEqual(
+    f.requests.filter((request) => request.name === "gitcrawl.clusters.related-issues")
+      .map((request) => request.snapshot_id),
+    [f.pin(), f.pin()],
+  );
+  for (const unprepared of [
+    { ...item, number: 5 },
+    { ...item, repo: "another/repository" },
+    { ...item, kind: "pull_request" as const },
+  ]) {
+    assert.throws(
+      () => relations.relatedItemsContext({ item: unprepared, issue: {}, comments: [], timeline: [] }),
+      /not prepared/,
+    );
+  }
+  const count = f.requests.length;
+  await relations.prepare(item);
+  assert.equal(f.requests.length, count, "the same prepared identity keeps its original snapshot");
+  f.advance();
+  await assert.rejects(relations.prepare({ ...item, number: 5 }), /unavailable or unqualified/);
 });
