@@ -269,7 +269,10 @@ test("incomplete service configuration rejects async apply before dependencies o
   const commands = createCommandOperations(dependencies as never);
   await assert.rejects(commands.applyDecisionsCommand({}), /unavailable or unqualified/);
   const apply = createApplyDecisionWorkflow(dependencies as never);
-  await assert.rejects(apply.applyDecisionsCommandInner({}, {} as never), /unavailable or unqualified/);
+  await assert.rejects(
+    apply.applyDecisionsCommandInner({}, {} as never),
+    /unavailable or unqualified/,
+  );
 });
 
 test("apply relations pin counterpart preparation and reject unprepared identities", async (t) => {
@@ -284,7 +287,8 @@ test("apply relations pin counterpart preparation and reject unprepared identiti
   assert.equal(bindings[0]?.snapshot_id, undefined);
   assert.equal(bindings[1]?.snapshot_id, f.pin());
   assert.deepEqual(
-    f.requests.filter((request) => request.name === "gitcrawl.clusters.related-issues")
+    f.requests
+      .filter((request) => request.name === "gitcrawl.clusters.related-issues")
       .map((request) => request.snapshot_id),
     [f.pin(), f.pin()],
   );
@@ -294,7 +298,8 @@ test("apply relations pin counterpart preparation and reject unprepared identiti
     { ...item, kind: "pull_request" as const },
   ]) {
     assert.throws(
-      () => relations.relatedItemsContext({ item: unprepared, issue: {}, comments: [], timeline: [] }),
+      () =>
+        relations.relatedItemsContext({ item: unprepared, issue: {}, comments: [], timeline: [] }),
       /not prepared/,
     );
   }

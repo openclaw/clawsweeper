@@ -472,10 +472,14 @@ const prepareApplyItemContext: CreateApplyDecisionWorkflowDependencies["prepareA
       bypassGenerationCache: true,
     });
     const counterparts = new Set<number>();
-    contextHydration.sameAuthorCounterpartApplyReason(item, context.relatedItems ?? [], (number, kind) => {
-      if (kind === "issue" && options.hasReport(number)) counterparts.add(number);
-      return true;
-    });
+    contextHydration.sameAuthorCounterpartApplyReason(
+      item,
+      context.relatedItems ?? [],
+      (number, kind) => {
+        if (kind === "issue" && options.hasReport(number)) counterparts.add(number);
+        return true;
+      },
+    );
     if (options.includeImplementationLinkedIssue) {
       // Match close execution's full-body provenance read; the review context
       // deliberately truncates long PR bodies before their closing directives.
