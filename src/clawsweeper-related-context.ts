@@ -20,9 +20,11 @@ import { reportReviewDecision, type ReportReviewDecision } from "./report-review
 import { ReviewRecordFormatError } from "./review-record.js";
 import { markdownFiles, numberForMarkdownFile } from "./clawsweeper-repository-paths.js";
 import {
-  assertGitcrawlClusterMutationSupported,
+  assertGitcrawlSynchronousContextSupported,
   configuredGitcrawlClusterService,
   readGitcrawlClusterService,
+  type GitcrawlClusterServiceConfig,
+  GitcrawlContextNotPreparedError,
 } from "./gitcrawl-cluster-service.js";
 
 const CREDENTIAL_URI =
@@ -808,16 +810,28 @@ export function createRelatedContext({
     pullRequest?: unknown;
     pullReviewComments?: unknown[];
   }): unknown[] {
-    assertGitcrawlClusterMutationSupported();
+    assertGitcrawlSynchronousContextSupported();
     return buildRelatedItemsContext(options, compactRelatedGitcrawlItems);
   }
 
   async function prepareReviewRelations(item: Item) {
     const service = configuredGitcrawlClusterService();
     if (!service) return { relatedItemsContext, referencingMergedPullRequestsForIssue };
+    return prepareServiceRelations(item, service);
+  }
+
+  async function prepareServiceRelations(
+    item: Item,
+    service: GitcrawlClusterServiceConfig,
+    snapshotId?: string,
+  ) {
+    const repository = targetRepo().toLowerCase();
+    if (item.repo.toLowerCase() !== repository) {
+      throw new Error("Gitcrawl cluster context repository does not match the item");
+    }
     const result =
       item.kind === "issue"
-        ? await readGitcrawlClusterService(service, targetRepo().toLowerCase(), item.number)
+        ? await readGitcrawlClusterService(service, repository, item.number, snapshotId)
         : null;
     const candidates =
       result?.rows.map((row) => ({
@@ -847,11 +861,46 @@ export function createRelatedContext({
         },
       })) ?? [];
     return {
+      snapshotId: result?.snapshotId,
       referencingMergedPullRequestsForIssue,
-      relatedItemsContext: (options: Parameters<typeof relatedItemsContext>[0]) =>
-        buildRelatedItemsContext(options, (_item, seen) =>
+      relatedItemsContext: (options: Parameters<typeof relatedItemsContext>[0]) => {
+        if (
+          targetRepo().toLowerCase() !== repository ||
+          options.item.repo.toLowerCase() !== repository ||
+          options.item.kind !== item.kind ||
+          options.item.number !== item.number
+        ) {
+          throw new GitcrawlContextNotPreparedError();
+        }
+        return buildRelatedItemsContext(options, (_item, seen) =>
           candidates.filter((row) => !seen.has(row.gitcrawlThread.number)),
-        ),
+        );
+      },
+    };
+  }
+
+  function createApplyRelations() {
+    const service = configuredGitcrawlClusterService();
+    if (!service) return null;
+    const repository = targetRepo().toLowerCase();
+    const prepared = new Map<string, Awaited<ReturnType<typeof prepareServiceRelations>>>();
+    let snapshotId: string | undefined;
+    const key = (item: Item) => `${item.repo.toLowerCase()}:${item.kind}:${item.number}`;
+    return {
+      async prepare(item: Item): Promise<void> {
+        if (prepared.has(key(item))) return;
+        const relations = await prepareServiceRelations(item, service, snapshotId);
+        snapshotId ??= relations.snapshotId;
+        prepared.set(key(item), relations);
+      },
+      referencingMergedPullRequestsForIssue,
+      relatedItemsContext(options: Parameters<typeof relatedItemsContext>[0]): unknown[] {
+        const relations = prepared.get(key(options.item));
+        if (!relations || targetRepo().toLowerCase() !== repository) {
+          throw new GitcrawlContextNotPreparedError();
+        }
+        return relations.relatedItemsContext(options);
+      },
     };
   }
 
@@ -892,6 +941,7 @@ export function createRelatedContext({
     referencingMergedPullRequestsForIssue,
     relatedItemsContext,
     prepareReviewRelations,
+    createApplyRelations,
     structuralExternalRelationSensitivity,
   };
 }

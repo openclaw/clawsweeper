@@ -82,6 +82,7 @@ import {
 } from "./clawsweeper-github-runtime.js";
 import { exactPublicationPublicReadToken } from "./github-public-read.js";
 import { createItemContext } from "./clawsweeper-item-context.js";
+import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import {
   applyBlockingProtectedLabels,
   applyKindArg,
@@ -457,6 +458,43 @@ async function collectReviewItemContext(
   return createItemContext(relations).collectItemContext(item, options);
 }
 
+const prepareApplyItemContext: CreateApplyDecisionWorkflowDependencies["prepareApplyItemContext"] =
+  async (item, options) => {
+    const relations = relatedContext.createApplyRelations();
+    if (!relations) return null;
+    await relations.prepare(item);
+    const { collectItemContext: collectPreparedContext } = createItemContext(relations);
+    if (item.kind !== "pull_request" || !options.prepareCounterparts) return collectPreparedContext;
+    const context = collectPreparedContext(item, {
+      fullTimelineForRelations: true,
+      reviewCacheDigest: true,
+      liveReadGeneration: options.liveReadGeneration,
+      bypassGenerationCache: true,
+    });
+    const counterparts = new Set<number>();
+    sameAuthorCounterpartApplyReason(item, context.relatedItems ?? [], (number, kind) => {
+      if (kind === "issue" && options.hasReport(number)) counterparts.add(number);
+      return true;
+    });
+    if (options.includeImplementationLinkedIssue) {
+      const body = asRecord(context.pullRequest).body;
+      if (typeof body === "string") {
+        const linked = linkedIssueNumbersForImplementationProvenance(body, item.repo);
+        if (linked?.length === 1 && options.hasReport(linked[0]!)) counterparts.add(linked[0]!);
+      }
+    }
+    for (const number of counterparts) {
+      const counterpart = fetchItem(number, {
+        liveReadGeneration: options.liveReadGeneration,
+        bypassGenerationCache: true,
+      });
+      await relations.prepare(counterpart.item);
+    }
+    // The workflow clears preliminary GitHub reads and refetches the primary
+    // before installing its guards. Only historical cluster evidence is retained.
+    return collectPreparedContext;
+  };
+
 const reviewRuntime = createReviewRuntime({
   reviewItemPromptPaths: REVIEW_ITEM_PROMPT_PATHS,
   decisionSchemaPath: CLAWSWEEPER_DECISION_SCHEMA_PATH,
@@ -776,6 +814,7 @@ const { applyDecisionsCommandInner: applyDecisionsWithoutReceipts } = createAppl
   closeReasonFilterText,
   closeReasonsArg,
   collectItemContext,
+  prepareApplyItemContext,
   ...repositoryPaths,
   ensureDir,
   ensureRuntimeDelayFits,
@@ -805,8 +844,8 @@ const { applyDecisionsCommandInner: applyDecisionsWithoutReceipts } = createAppl
   validateCloseDecision,
 });
 
-function applyDecisionsCommandInner(args: Args, budget: GitHubRuntimeBudget): void {
-  withMutationReceiptRunner(null, () => applyDecisionsWithoutReceipts(args, budget));
+function applyDecisionsCommandInner(args: Args, budget: GitHubRuntimeBudget): Promise<void> {
+  return withMutationReceiptRunner(null, () => applyDecisionsWithoutReceipts(args, budget));
 }
 
 function artifactTargetIsOpen(number: number, openNumbers: Set<number> | null): boolean {

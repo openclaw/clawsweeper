@@ -46,6 +46,12 @@ export interface GitcrawlClusterServiceResult {
 }
 
 const unavailable = () => new Error("Gitcrawl cluster service is unavailable or unqualified");
+export class GitcrawlContextNotPreparedError extends Error {
+  constructor() {
+    super("Gitcrawl cluster context was not prepared for this item");
+    this.name = "GitcrawlContextNotPreparedError";
+  }
+}
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const decimal = (value: unknown): value is string =>
@@ -65,14 +71,14 @@ function number(value: unknown): number {
   return Number(value);
 }
 
-// Synchronous mutation guards cannot await this source yet. Refuse before any
-// apply effect, including incomplete service configuration.
-export function assertGitcrawlClusterMutationSupported(): void {
+// Service consumers prepare a pinned view asynchronously before hydrating the
+// synchronous GitHub context. Direct synchronous callers must not skip it.
+export function assertGitcrawlSynchronousContextSupported(): void {
   if (
     process.env.CLAWSWEEPER_GITCRAWL_ENDPOINT !== undefined ||
     process.env.CLAWSWEEPER_GITCRAWL_ARCHIVE !== undefined
   ) {
-    throw new Error("Gitcrawl cluster service mode does not support apply yet");
+    throw new Error("Gitcrawl cluster service mode does not support unprepared synchronous context");
   }
 }
 
@@ -97,6 +103,7 @@ export async function readGitcrawlClusterService(
   config: GitcrawlClusterServiceConfig,
   repository: string,
   itemNumber: number,
+  snapshotId?: string,
 ): Promise<GitcrawlClusterServiceResult> {
   let endpoint: URL;
   try {
@@ -194,7 +201,16 @@ export async function readGitcrawlClusterService(
     }
   };
 
-  const binding = await query({ name: "gitcrawl.clusters.binding", limit: 1 }, BINDING_COLUMNS, 1);
+  const binding = await query(
+    {
+      name: "gitcrawl.clusters.binding",
+      limit: 1,
+      ...(snapshotId === undefined ? {} : { snapshot_id: snapshotId }),
+    },
+    BINDING_COLUMNS,
+    1,
+    snapshotId,
+  );
   if (binding.rows.length !== 1) throw unavailable();
   const values = binding.rows[0];
   if (!values) throw unavailable();

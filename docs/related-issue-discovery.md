@@ -116,10 +116,17 @@ PR head without hydrating related context. Their queue authority, revision check
 and owned-lease cleanup still apply. `apply-artifacts` can publish completed
 review records and their work plans without reading cluster context. Its live
 GitHub state checks and reconciliation behavior are unchanged. `apply-decisions`
-and synchronous context hydration remain held until their guards support service
-preparation. Local
-read-only review remains available; no service selector preserves the existing
-SQLite behavior.
+prepares service relations for each item and its known issue counterparts at one
+immutable snapshot before processing that item. It then discards preliminary
+GitHub reads and refetches the primary item. Existing live source, comment,
+label, lease, and close guards still run before each mutation attempt.
+
+The prepared service view supplies historical relationship evidence, not live
+GitHub authority. A counterpart discovered later cannot borrow another item's
+context: its guard holds until a later run can prepare it. Direct synchronous
+context hydration still refuses service mode. The metadata-only oversized-PR
+policy does not hydrate relation context. No service selector preserves the
+existing SQLite behavior.
 
 ## Guardrails
 

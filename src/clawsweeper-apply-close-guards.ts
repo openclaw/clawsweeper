@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { GitcrawlContextNotPreparedError } from "./gitcrawl-cluster-service.js";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import {
   unreadableReviewRecordReason,
@@ -379,10 +380,16 @@ export function createApplyCloseGuards(
           const counterpartUpdatedSinceReview = Boolean(
             counterpartStoredUpdatedAt && counterpartItem.updatedAt !== counterpartStoredUpdatedAt,
           );
-          const counterpartContext = collectItemContext(counterpartItem, {
-            fullTimelineForRelations: true,
-            bypassGenerationCache: true,
-          });
+          let counterpartContext: ReturnType<typeof collectItemContext>;
+          try {
+            counterpartContext = collectItemContext(counterpartItem, {
+              fullTimelineForRelations: true,
+              bypassGenerationCache: true,
+            });
+          } catch (error) {
+            if (error instanceof GitcrawlContextNotPreparedError) return false;
+            throw error;
+          }
           const counterpartSnapshotChanged =
             !counterpartStoredUpdatedAt &&
             counterpartStoredHash &&

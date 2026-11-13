@@ -1,4 +1,4 @@
-import { assertGitcrawlClusterMutationSupported } from "./gitcrawl-cluster-service.js";
+import { configuredGitcrawlClusterService } from "./gitcrawl-cluster-service.js";
 import { sha256 } from "./content-hash.js";
 import { GitHubItemMovedError } from "./github-item-identity.js";
 import {
@@ -205,8 +205,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     withGuardReadOptions,
   } = dependencies;
 
-  function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudget): void {
-    assertGitcrawlClusterMutationSupported();
+  async function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudget): Promise<void> {
+    configuredGitcrawlClusterService();
     const profile = repoFromArgs(args);
     const recordRoot = resolve(stringArg(args.record_root, ROOT));
     const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
@@ -550,10 +550,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         itemNumber: number,
         options: { bypassGenerationCache?: boolean } = {},
       ) => fetchItem(itemNumber, { ...options, liveReadGeneration });
+      let preparedCollectItemContext = collectItemContext;
       const collectApplyItemContext = (
         contextItem: Parameters<typeof collectItemContext>[0],
         options: NonNullable<Parameters<typeof collectItemContext>[1]> = {},
-      ) => collectItemContext(contextItem, { ...options, liveReadGeneration });
+      ) => preparedCollectItemContext(contextItem, { ...options, liveReadGeneration });
       const applyReadDependencies: CreateApplyDecisionWorkflowDependencies = {
         ...dependencies,
         fetchItem: fetchApplyItem,
@@ -1024,6 +1025,19 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let liveItem: ReturnType<typeof fetchItem>;
       try {
         liveItem = fetchApplyItem(number);
+        const prepared = oversizedMetadataDecision ? null : await dependencies.prepareApplyItemContext(liveItem.item, {
+          liveReadGeneration,
+          hasReport: (counterpart) => Boolean(openReportEntry(counterpart)),
+          prepareCounterparts: isCloseProposal,
+          includeImplementationLinkedIssue: liveItem.item.kind === "pull_request" &&
+            (closeReason === "implemented_on_main" || closeReason === "mostly_implemented_on_main"),
+        });
+        if (prepared) {
+          preparedCollectItemContext = prepared;
+          liveReadGeneration.invalidate();
+          resetGuardReadCache();
+          liveItem = fetchApplyItem(number);
+        }
       } catch (error) {
         if (!(error instanceof GitHubItemMovedError) && !isGitHubNotFoundError(error)) throw error;
         // A repository lookup can return the same 404 when the repo is missing or

@@ -114,6 +114,15 @@ export interface CreateApplyDecisionWorkflowDependencies {
       bypassGenerationCache?: boolean;
     },
   ) => ItemContext;
+  prepareApplyItemContext: (
+    item: Item,
+    options: {
+      liveReadGeneration: LiveReadGeneration;
+      hasReport: (number: number) => boolean;
+      prepareCounterparts: boolean;
+      includeImplementationLinkedIssue: boolean;
+    },
+  ) => Promise<CreateApplyDecisionWorkflowDependencies["collectItemContext"] | null>;
   commentBody: (comment: Record<string, unknown> | undefined) => string | undefined;
   commentBodyMatches: (
     comment: Record<string, unknown> | undefined,

@@ -1,4 +1,4 @@
-import { assertGitcrawlClusterMutationSupported } from "./gitcrawl-cluster-service.js";
+import { configuredGitcrawlClusterService } from "./gitcrawl-cluster-service.js";
 import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { recordWorkflowPhaseEvent } from "./action-ledger-runtime.js";
@@ -67,7 +67,7 @@ interface CreateCommandOperationsDependencies {
     redactionVersion: string;
     fieldsDropped: readonly ["body", "comments", "diff", "logs", "patch", "prompt"];
   };
-  applyDecisionsCommandInner: (args: Args, runtimeBudget: GitHubRuntimeBudget) => void;
+  applyDecisionsCommandInner: (args: Args, runtimeBudget: GitHubRuntimeBudget) => Promise<void>;
   artifactTargetIsOpen: (number: number, openNumbers: Set<number> | null) => boolean;
   codexFailureReason: (detail: string, errorCode?: string | null) => string;
   currentReviewRevision: (item: Item) => string;
@@ -541,15 +541,15 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     );
   }
 
-  function applyDecisionsCommand(args: Args): void {
-    assertGitcrawlClusterMutationSupported();
+  async function applyDecisionsCommand(args: Args): Promise<void> {
+    configuredGitcrawlClusterService();
     const runtimeBudget = applyRuntimeBudget(
       numberArg(args.max_runtime_ms, 0),
       process.env.CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS,
     );
-    withGitHubRuntimeBudget(runtimeBudget, () => {
+    await withGitHubRuntimeBudget(runtimeBudget, async () => {
       try {
-        applyDecisionsCommandInner(args, runtimeBudget);
+        await applyDecisionsCommandInner(args, runtimeBudget);
       } catch (error) {
         if (error instanceof GitHubRuntimeBudgetError && runtimeBudget.onYield) {
           runtimeBudget.onYield(error.reason);
