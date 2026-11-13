@@ -365,9 +365,9 @@ for (const scenario of [
           (event) => event.query?.name === "gitcrawl.clusters.related-issues",
         );
         assert.ok(
-          f.events.slice(serviceRead + 1).some(
-            (event) => event.args?.[1] === `repos/${repository}/issues/321`,
-          ),
+          f.events
+            .slice(serviceRead + 1)
+            .some((event) => event.args?.[1] === `repos/${repository}/issues/321`),
           "the live issue must be fetched again after service preparation",
         );
       } else if (scenario !== "legacy-hash") {
