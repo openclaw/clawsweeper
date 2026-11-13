@@ -698,14 +698,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           const reason = currentCloseMutationPolicyGuard?.(Number(options.identity.split(":")[1]));
           if (reason) throw new ApplyMutationReviewGuardError(reason);
         };
-        if (!attempt) {
-          if (options.identity.startsWith("item_close:")) {
-            const reason = currentApplyMutationGuard?.();
-            if (reason) throw new ApplyMutationReviewGuardError(reason);
-            finalClosePolicyGuard();
-          }
-          return options.operation();
-        }
+        // Live guards and read invalidation apply even when receipt recording is disabled.
         try {
           if (!options.identity.startsWith("review_lease_")) {
             const mutationGuardReason = currentApplyMutationGuard?.();
@@ -716,12 +709,14 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           finalClosePolicyGuard();
           const result = options.operation();
           const mutated = options.didMutate?.(result) ?? true;
-          const outcomeEventId = finishApplyMutationAttempt({
-            ledger: applyLedger,
-            entry: mutationLedgerEntry,
-            attempt,
-            outcome: mutated ? "accepted" : "rejected",
-          });
+          const outcomeEventId = attempt
+            ? finishApplyMutationAttempt({
+                ledger: applyLedger,
+                entry: mutationLedgerEntry,
+                attempt,
+                outcome: mutated ? "accepted" : "rejected",
+              })
+            : undefined;
           if (mutated) {
             recordMutation(outcomeEventId);
             if (
@@ -739,12 +734,14 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           const rejected =
             error instanceof ApplyMutationReviewGuardError ||
             options.knownNoMutation?.(error) === true;
-          finishApplyMutationAttempt({
-            ledger: applyLedger,
-            entry: mutationLedgerEntry,
-            attempt,
-            outcome: rejected ? "rejected" : "unknown",
-          });
+          if (attempt) {
+            finishApplyMutationAttempt({
+              ledger: applyLedger,
+              entry: mutationLedgerEntry,
+              attempt,
+              outcome: rejected ? "rejected" : "unknown",
+            });
+          }
           if (!rejected) markMutationObserved();
           throw error;
         }
