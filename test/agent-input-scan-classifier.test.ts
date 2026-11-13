@@ -229,12 +229,32 @@ test("approved values retain detector, decoder, verification and native-part bin
   assert.equal(classify([uriFinding(approvedUri, { DecoderName: "HTML" })]).kind, "classified");
 });
 
+test("normalized Postgres findings never gain a value-only approval", () => {
+  // This was an approved native pair, but native normalization can discard an
+  // overriding query password. Its apparent identity is not a complete value.
+  const raw = ["postgres", "secret:secret@db.example.test:5432"].join("://");
+  const finding = uriFinding(approvedUri, {
+    DetectorType: 968,
+    DetectorName: "Postgres",
+    Raw: raw,
+    RawV2: raw,
+    SecretParts: { connection_string: raw },
+    ExtraData: {
+      database: "openclaw",
+      host: "db.example.test:5432",
+      sslmode: "<unset>",
+      username: "secret",
+    },
+  });
+  assert.equal(classify([finding]).kind, "refused");
+});
+
 test("migrated approvals have distinct, complete detector and native value identities", () => {
   const keys = new Set<string>();
-  assert.equal(APPROVED_SYNTHETIC_VALUES.length, 98);
+  assert.equal(APPROVED_SYNTHETIC_VALUES.length, 92);
   for (const [type, name, decoders, raw, rawV2] of APPROVED_SYNTHETIC_VALUES) {
-    assert.ok([10, 17, 895, 899, 938, 968].includes(type));
-    assert.ok(["JDBC", "URI", "MongoDB", "FTP", "Privacy", "Postgres"].includes(name));
+    assert.ok([10, 17, 895, 899, 938].includes(type));
+    assert.ok(["JDBC", "URI", "MongoDB", "FTP", "Privacy"].includes(name));
     assert.ok(decoders.length > 0);
     assert.equal(new Set(decoders).size, decoders.length);
     assert.ok(

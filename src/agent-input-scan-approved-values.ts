@@ -1,5 +1,6 @@
 // Exact synthetic values migrated from the reviewed policy at
 // 8ba1ab445ed086863bbd9749237cfcb7096bae7a, without file/line/content hashes.
+// Postgres is excluded: its normalized native values can omit a query password.
 // Hostnames never establish that a credential is synthetic. See
 // https://github.com/openclaw/clawsweeper/pull/2201 for the policy change.
 export type ApprovedSyntheticValue = readonly [
@@ -196,16 +197,4 @@ export const APPROVED_SYNTHETIC_VALUES: readonly ApprovedSyntheticValue[] = [
   [899,"FTP",["HTML","PLAIN"],"927664cc6f3d082fb8acb9e01b47942d21d8043ddf150a6d833b5660bc240e07","e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
   // .grilltrack/events.jsonl
   [938,"Privacy",["PLAIN"],"6e31751daf97832583d6877d6f79a17eb9b74188d3916d1668d136af36a9ea45","e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
-  // src/logging/redact.test.ts
-  [968,"Postgres",["ESCAPED_UNICODE","HTML","PLAIN"],"050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66","050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66"],
-  // src/logging/redact.test.ts
-  [968,"Postgres",["ESCAPED_UNICODE","HTML","PLAIN"],"39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa","39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa"],
-  // src/logging/redact.test.ts
-  [968,"Postgres",["ESCAPED_UNICODE","PLAIN"],"4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f","4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f"],
-  // src/logging/redact.test.ts
-  [968,"Postgres",["ESCAPED_UNICODE","PLAIN"],"8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565","8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565"],
-  // docs/operations.md
-  [968,"Postgres",["HTML","PLAIN"],"b296b6d2d18690f50a8088d03ce813c6147aaf1642e9f774a88b7c10b4c1948b","b296b6d2d18690f50a8088d03ce813c6147aaf1642e9f774a88b7c10b4c1948b"],
-  // src/logging/redact.test.ts
-  [968,"Postgres",["ESCAPED_UNICODE","PLAIN"],"f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70","f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70"],
 ];

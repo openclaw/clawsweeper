@@ -449,12 +449,15 @@ references contain Git revisions and hashed paths, with at most four references
 and their total count. No raw paths, matched values, literal digests, or
 verification messages are retained; this provenance does not authorize a finding.
 
-TruffleHog runs with `--results=verified,unknown`: verified credentials and
-credentials it could not test block review unless the complete native value pair
-is already reviewed as synthetic. These approvals bind the detector, observed
+TruffleHog runs with `--results=verified,unknown`: verified credentials block
+review. Credentials it could not test also block unless the supported native value
+pair is already reviewed as synthetic. These approvals bind the detector, observed
 decoder, and SHA-256 of both `Raw` and `RawV2`, rather than a source path or
 whole-file hash. Editing surrounding test code does not require another approval;
-new credential values still do. Reserved domains and loopback addresses never
+new credential values still do. Postgres findings remain blocked: the pinned
+detector normalizes away connection options, including overriding query passwords,
+so its reported value pair cannot qualify a complete credential. The six prior
+Postgres pairs are excluded from global approval. Reserved domains and loopback addresses never
 establish that a password is synthetic: private DNS, local proxies, and database
 connection options can lead to real systems. Verified findings and incomplete
 scans still refuse. Host-generated Git object IDs in diff `index` lines that the

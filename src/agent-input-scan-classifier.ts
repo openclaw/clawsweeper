@@ -219,13 +219,6 @@ function isApprovedSyntheticValue(finding: Record<string, unknown>): boolean {
               "username",
             ]))
       );
-    case 968:
-      return (
-        raw === rawV2 &&
-        exactStringRecord(parts, ["connection_string"]) &&
-        parts!.connection_string === raw &&
-        exactStringRecord(finding.ExtraData, ["database", "host", "sslmode", "username"])
-      );
     case 938:
       return (
         rawV2 === "" &&

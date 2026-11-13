@@ -49,6 +49,28 @@ const cases = [
   ["unreviewed-test-host", unreviewed + "db.example.test/path", false],
   ["unreviewed-loopback", unreviewed + "127.0.0.1:1/path", false],
   [
+    "normalized-postgres-fixture",
+    ["postgres", "://secret:secret@db.example.test/openclaw"].join(""),
+    false,
+  ],
+  [
+    "normalized-postgres-query-password",
+    [
+      "postgres",
+      "://secret:secret@db.example.test/openclaw?hostaddr=192.0.2.20&",
+      "password=CSW_SYNTHETIC_NOT_A_SECRET_NEW_2201&connect_timeout=1",
+    ].join(""),
+    false,
+  ],
+  [
+    "normalized-postgres-target-override",
+    [
+      "postgres",
+      "://secret:secret@db.example.test/openclaw?hostaddr=192.0.2.20&connect_timeout=1",
+    ].join(""),
+    false,
+  ],
+  [
     "jdbc-password-at",
     [
       "jdbc:sqlserver",

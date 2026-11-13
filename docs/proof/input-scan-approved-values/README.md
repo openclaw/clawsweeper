@@ -27,7 +27,12 @@ The receipt records the checked head, dirty state, binary digest, runtime, and
 per-scenario admission result. Inputs use synthetic passwords and no working
 remote database. The proof stops at admission and makes no model call; focused
 tests additionally cover verified findings, scanner completion failures, native
-metadata drift, and Git metadata replay. The 98 distinct value pairs and their
+metadata drift, and Git metadata replay. The 92 distinct value pairs and their
 observed decoder bindings were migrated from the prior host-owned fixture and
 attribution arrays at `8ba1ab445ed086863bbd9749237cfcb7096bae7a`; their source
 filenames in the new data are provenance comments, not admission restrictions.
+The six prior Postgres pairs are deliberately excluded: the pinned detector can
+discard an overriding query password while keeping the approved native identity.
+The proof also refuses a normalized Postgres fixture, its query-password override,
+and its target override. These findings require source-bound qualification; a
+normalized native pair alone is insufficient.

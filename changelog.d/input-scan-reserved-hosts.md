@@ -1,1 +1,1 @@
-- Reviews reuse exact approved synthetic credential values across surrounding file edits, while arbitrary credentials, including reserved-domain and loopback credentials, remain blocked by the input scanner.
+- Reviews reuse exact approved synthetic credential values across surrounding file edits, while arbitrary credentials and normalized Postgres findings remain blocked by the input scanner.
