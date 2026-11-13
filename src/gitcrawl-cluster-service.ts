@@ -117,11 +117,15 @@ export async function readGitcrawlClusterService(
         endpoint.protocol === "http:" &&
         ["127.0.0.1", "[::1]", "localhost"].includes(endpoint.hostname)
       )) ||
-    !/^[A-Za-z0-9][A-Za-z0-9_.\/-]{0,199}$/.test(config.archive) ||
+    !/^[A-Za-z0-9][A-Za-z0-9_./-]{0,199}$/.test(config.archive) ||
     config.archive.split("/").some((part) => part === "." || part === ".." || part === "") ||
     !config.token ||
     Buffer.byteLength(config.token) > 16 * 1024 ||
-    /[\s\x00-\x1f\x7f]/.test(config.token) ||
+    /\s/.test(config.token) ||
+    Array.from(config.token).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    }) ||
     !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repository) ||
     !Number.isSafeInteger(itemNumber) ||
     itemNumber < 1

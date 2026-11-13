@@ -239,6 +239,14 @@ test("selected service failures cannot become empty context or fall back to SQLi
     });
   }
   f.setFault("");
+  const beforeInvalidToken = f.requests.length;
+  for (const suffix of ["\u0001", "\u007f", "\n", "\u00a0"]) {
+    await assert.rejects(
+      readGitcrawlClusterService({ ...f.config, token: `reader${suffix}` }, repository, 1),
+      /unavailable or unqualified/,
+    );
+  }
+  assert.equal(f.requests.length, beforeInvalidToken, "invalid tokens never reach the service");
   f.setRows([relatedRow("9007199254740993")]);
   await assert.rejects(f.context.prepareReviewRelations(item), /unavailable or unqualified/);
   assert.throws(
