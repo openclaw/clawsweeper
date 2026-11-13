@@ -742,7 +742,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
               outcome: rejected ? "rejected" : "unknown",
             });
           }
-          if (!rejected) markMutationObserved();
+          if (!rejected) {
+            markMutationObserved();
+            // An ambiguous write cannot preserve a previously checked lease
+            // across the next native retry, even during an exact-event batch.
+            resetMutationGuardBoundary();
+          }
           throw error;
         }
       };
