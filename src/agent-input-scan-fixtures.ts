@@ -304,6 +304,17 @@ const OCE_SIGN_IN_SOURCE_SHA256S = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // PR 2201 retires these existing synthetic scanner fixtures. Keep their
+  // exact native values, complete line witnesses, paths, and source bytes bound
+  // so the deployed scanner can review the removals without a policy bypass.
+  [17,"URI","PLAIN","354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4","354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4",["33ef2168f84c4c541100e32af96b5e5de69d7d872cb90ccb1f4b5847b68d261e","bd8d0f6d252cb4df839d3331e4340cc153a9ca05429be7dc50b55917f3497522","3602545f29331d677e6c07e1945c509d1e7b44295d61cbdb7a9f44c2688b7988","8415ac8a8714834bc1bf1746b231a76d4b52512d9e7c875b63b8fb244f1cf750"],"test/agent-input-scan-mcp-apps.test.ts","100644",["f7835f69a3336b3382588c2fbdaefd630d682d1b767fee69f522be2fd7271b1f"]],
+  [17,"URI","HTML","354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4","354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4",["33ef2168f84c4c541100e32af96b5e5de69d7d872cb90ccb1f4b5847b68d261e","bd8d0f6d252cb4df839d3331e4340cc153a9ca05429be7dc50b55917f3497522","3602545f29331d677e6c07e1945c509d1e7b44295d61cbdb7a9f44c2688b7988","8415ac8a8714834bc1bf1746b231a76d4b52512d9e7c875b63b8fb244f1cf750"],"test/agent-input-scan-mcp-apps.test.ts","100644",["f7835f69a3336b3382588c2fbdaefd630d682d1b767fee69f522be2fd7271b1f"]],
+  [17,"URI","PLAIN","dab81a433bea3f155bdd2e6568380c6e21c4a629096e29443c949fcab4ab8adc","dab81a433bea3f155bdd2e6568380c6e21c4a629096e29443c949fcab4ab8adc",["e7173a8ac7ee26ee3846d6487ea01f33027e226087f561866b009f60dc34178e","508ded3f91728edcc7d4ee16d478fae1afd678604e85a9c1f5b701faead11057"],"test/agent-input-scan-git-metadata.test.ts","100644",["c19f73b2763d3641084c2c0f5031ff200972ec6b0c37d51697c2a6f510e195fc"]],
+  [17,"URI","HTML","dab81a433bea3f155bdd2e6568380c6e21c4a629096e29443c949fcab4ab8adc","dab81a433bea3f155bdd2e6568380c6e21c4a629096e29443c949fcab4ab8adc",["e7173a8ac7ee26ee3846d6487ea01f33027e226087f561866b009f60dc34178e","508ded3f91728edcc7d4ee16d478fae1afd678604e85a9c1f5b701faead11057"],"test/agent-input-scan-git-metadata.test.ts","100644",["c19f73b2763d3641084c2c0f5031ff200972ec6b0c37d51697c2a6f510e195fc"]],
+  [17,"URI","PLAIN","1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd","1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd",["3cd99e06be80f0f01f21d20433c9e1fa20245f0fac149007b0e45b1738f4a327"],"test/agent-input-scan-git-metadata.test.ts","100644",["c19f73b2763d3641084c2c0f5031ff200972ec6b0c37d51697c2a6f510e195fc"]],
+  [17,"URI","HTML","1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd","1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd",["3cd99e06be80f0f01f21d20433c9e1fa20245f0fac149007b0e45b1738f4a327"],"test/agent-input-scan-git-metadata.test.ts","100644",["c19f73b2763d3641084c2c0f5031ff200972ec6b0c37d51697c2a6f510e195fc"]],
+  [17,"URI","PLAIN","1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd","1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd",["3cd99e06be80f0f01f21d20433c9e1fa20245f0fac149007b0e45b1738f4a327"],"test/agent-input-scan-git-metadata.test.ts","100644",["63cd472f5420681fcb18b004204368b4f6fe31e8797324c9abf562a1f9ff8c44"]],
+  [17,"URI","HTML","1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd","1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd",["3cd99e06be80f0f01f21d20433c9e1fa20245f0fac149007b0e45b1738f4a327"],"test/agent-input-scan-git-metadata.test.ts","100644",["63cd472f5420681fcb18b004204368b4f6fe31e8797324c9abf562a1f9ff8c44"]],
   OCE_JDBC_ATTRIBUTION,
   // OCE harness-origin rejection fixture, pinned to exact historical source bytes.
   // Native 3.99.4 reports PLAIN or BASE64 for the same literal witness.
@@ -704,6 +715,13 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorType === 17 &&
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
+        (source === "test/agent-input-scan-mcp-apps.test.ts" &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          (decoder === "PLAIN" || decoder === "HTML") &&
+          Array.isArray(sourceSha256s) &&
+          sourceSha256s.length > 0 &&
+          sourceSha256s.every((digest) => sha256Pattern.test(digest))) ||
         (source === "docs/operations.md" &&
           detectorType === 968 &&
           detectorName === "Postgres" &&

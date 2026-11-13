@@ -1,0 +1,1 @@
+- Reviews can inspect the exact retired scanner test fixtures in PR 2201 while retaining their source, line, decoder, and value bindings.
