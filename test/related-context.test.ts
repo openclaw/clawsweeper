@@ -345,7 +345,7 @@ ${"e".repeat(512 * 1024)}
   }
 });
 
-test("structural relation probe treats an incomplete empty search as unknown", () => {
+test("structural relation probe treats an incomplete empty search as unknown", async () => {
   const previous = process.env.CLAWSWEEPER_RELATED_GITHUB_SEARCH;
   process.env.CLAWSWEEPER_RELATED_GITHUB_SEARCH = "1";
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-relation-probe-"));
@@ -359,9 +359,9 @@ test("structural relation probe treats an incomplete empty search as unknown", (
     const probe = (response: unknown) =>
       relatedContextWith({}, root, response).context.structuralExternalRelationSensitivity(issue);
     const related = { number: 195001, title: "Gateway crash on reconnect" };
-    assert.equal(probe({ incomplete_results: false, items: [] }), false);
-    assert.equal(probe({ incomplete_results: true, items: [] }), null);
-    assert.equal(probe({ incomplete_results: true, items: [related] }), true);
+    assert.equal(await probe({ incomplete_results: false, items: [] }), false);
+    assert.equal(await probe({ incomplete_results: true, items: [] }), null);
+    assert.equal(await probe({ incomplete_results: true, items: [related] }), true);
   } finally {
     if (previous === undefined) delete process.env.CLAWSWEEPER_RELATED_GITHUB_SEARCH;
     else process.env.CLAWSWEEPER_RELATED_GITHUB_SEARCH = previous;

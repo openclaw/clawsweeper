@@ -201,7 +201,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     updateReviewStructuralFrontMatter,
   } = dependencies;
 
-  function reviewCommand(args: Args): void {
+  async function reviewCommand(args: Args): Promise<void> {
     if (boolArg(args.help) && boolArg(args.preflight)) {
       console.log(
         "review --local-range --result-format json --preflight [--base <ref>] [--target-dir <path>] [--output-retention summary]",
@@ -777,7 +777,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             const structuralProbeStartedAt = Date.now();
             try {
               git = loadReviewGitInfo();
-              structuralRecord = fetchReviewStructuralRecord({
+              structuralRecord = await fetchReviewStructuralRecord({
                 item,
                 git,
                 reviewPolicy,
@@ -904,7 +904,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               let revalidatedPreviousReviewDigest: string | null = null;
               try {
                 git = loadReviewGitInfo();
-                revalidatedStructuralRecord = fetchReviewStructuralRecord({
+                revalidatedStructuralRecord = await fetchReviewStructuralRecord({
                   onPullIdentity: (identity) => { structuralScanIdentity = identity; },
                   item,
                   git,
@@ -1064,7 +1064,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         }
         const contextStartedAt = Date.now();
         hydrationRuns += 1;
-        const context = collectItemContext(item, {
+        const context = await collectItemContext(item, {
               pullRequestPayload,
               fullTimelineForRelations: true,
               reviewCacheDigest: true,
@@ -1142,7 +1142,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           const structuralRevalidationStartedAt = Date.now();
           try {
             git = loadReviewGitInfo();
-            const candidate = fetchReviewStructuralRecord({
+            const candidate = await fetchReviewStructuralRecord({
               item,
               git,
               reviewPolicy,
@@ -1184,14 +1184,14 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             (structuralCacheRevalidationReasons.get(anchorReason) ?? 0) + 1,
           );
         }
-        const refreshStructuralRecordForVerdict = (): ReviewStructuralRecord | null => {
+        const refreshStructuralRecordForVerdict = async (): Promise<ReviewStructuralRecord | null> => {
           if (!hydratedStructuralAnchor) return null;
           structuralCacheRevalidations += 1;
           const structuralRevalidationStartedAt = Date.now();
           let candidate: ReviewStructuralRecord | null = null;
           try {
             const refreshedGit = loadReviewGitInfo();
-            candidate = fetchReviewStructuralRecord({
+            candidate = await fetchReviewStructuralRecord({
               item,
               git: refreshedGit,
               reviewPolicy,
@@ -1345,7 +1345,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           // prior structural anchor, which names the reviewed target, so the 14-day
           // structural stage cannot extend the one-day drift window.
           const targetDriftCarry = contentCacheReview!.contentDigest !== contentDigest;
-          structuralRecord = targetDriftCarry ? null : refreshStructuralRecordForVerdict();
+          structuralRecord = targetDriftCarry ? null : await refreshStructuralRecordForVerdict();
           const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
           let carried = priorReview!.markdown;
           carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
@@ -1421,7 +1421,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           ? actionLedgerFailureDisposition(codexFailure.error)
           : null;
         if (codexFailure) codexFailures += 1;
-        structuralRecord = refreshStructuralRecordForVerdict();
+        structuralRecord = await refreshStructuralRecordForVerdict();
         const { action, reportPath } = writePreparedReviewReport({
           item, context, decision, git, runtime, artifactDir, snapshotHash, contentDigest,
           reviewPolicy, structuralRecord, acquiredReviewLease,

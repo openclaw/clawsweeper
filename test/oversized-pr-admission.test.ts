@@ -33,7 +33,7 @@ for (const source of [
   "metadata-overflow",
 ]) {
   for (const total of source.startsWith("metadata-") ? [166686] : [166686, 49999]) {
-    test(`reviewCommand ${source}: ${total} lines is checked before cache, lease, hydration and model`, () => {
+    test(`reviewCommand ${source}: ${total} lines is checked before cache, lease, hydration and model`, async () => {
       const root = mkdtempSync(join(tmpdir(), "pr-admission-"));
       const metadataOnly = source.startsWith("metadata-");
       const overflow = source === "metadata-overflow";
@@ -214,7 +214,7 @@ for (const source of [
             : ["--item-number", "123", "--review-source-action", source]),
         ]);
         if (metadataOnly) {
-          assert.throws(
+          await assert.rejects(
             () =>
               reviewCommand({
                 ...args,
@@ -226,7 +226,7 @@ for (const source of [
         }
         if (overflow) {
           let failure: unknown;
-          assert.throws(
+          await assert.rejects(
             () => reviewCommand(args),
             (error) => {
               failure = error;
@@ -242,7 +242,7 @@ for (const source of [
           assert.equal(observedReportPath, "");
           assert.deepEqual(stdout, []);
         } else if (total > 50000) {
-          reviewCommand(args);
+          await reviewCommand(args);
           assert.deepEqual(completions, ["completed"]);
           assert.equal(existsSync(observedReportPath), retention !== "none");
           assert.ok(renderedInput);
@@ -276,7 +276,7 @@ for (const source of [
             } else assert.deepEqual(stdout, [observedReport.trimEnd()]);
           }
         } else {
-          assert.throws(
+          await assert.rejects(
             () => reviewCommand(args),
             (error) => error === stop,
           );

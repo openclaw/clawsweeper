@@ -1,3 +1,4 @@
+import { assertGitcrawlClusterMutationSupported } from "./gitcrawl-cluster-service.js";
 import { sha256 } from "./content-hash.js";
 import { GitHubItemMovedError } from "./github-item-identity.js";
 import {
@@ -205,6 +206,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
   } = dependencies;
 
   function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudget): void {
+    assertGitcrawlClusterMutationSupported();
     const profile = repoFromArgs(args);
     const recordRoot = resolve(stringArg(args.record_root, ROOT));
     const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));

@@ -84,6 +84,38 @@ workflow and by refreshing the local checkout, for example with
 `git pull --ff-only` before a run. Both current portable gitcrawl tables and the
 older legacy cluster tables are supported on a best-effort basis.
 
+### Service-backed review context
+
+An explicit service selector replaces SQLite discovery for review context:
+
+```text
+CLAWSWEEPER_GITCRAWL_ENDPOINT=https://archive.example.org
+CLAWSWEEPER_GITCRAWL_ARCHIVE=public-clusters
+CLAWSWEEPER_GITCRAWL_READER_TOKEN=<reader token>
+```
+
+Use HTTPS, or loopback HTTP for an isolated preview. Do not also set
+`CLAWSWEEPER_GITCRAWL_DB`. A token alone does not select the service. Review
+preparation fails if the selected service is unavailable or unqualified; it
+never falls back to SQLite or treats that failure as an empty cluster.
+
+Each service probe reads the current immutable binding, then queries at that
+same completed snapshot. The reader admits only the public durable cluster
+profile, bounds responses and related issues, and retains native IDs as decimal
+text. Explicit links and local report relations still merge through the existing
+dedupe and 12-item context limit. No acquisition runs during a probe.
+
+Cluster completeness describes the retained historical view, not current GitHub
+freshness. Positive related evidence marks structural sensitivity; an empty
+service result remains unknown even when the view is structurally complete.
+Context includes capture and source/analysis clocks without inventing a freshness
+threshold. Credentials and service URLs are not included in context or errors.
+
+This first service integration supports read/review context only. Service-selected
+apply and review-start publication commands refuse before effects while their
+synchronous guards await a separate migration. Local read-only review remains
+available; no service selector preserves the existing SQLite behavior.
+
 ## Guardrails
 
 - Related discovery does not create new labels.

@@ -93,7 +93,7 @@ export interface CreateReviewCommandWorkflowDependencies {
       reviewCacheDigest?: boolean;
       reviewCacheGitDir?: string;
     },
-  ) => ItemContext;
+  ) => ItemContext | Promise<ItemContext>;
   commentId: (comment: Record<string, unknown> | undefined) => number | null;
   completePullChecksContext: (value: unknown) => boolean;
   DEFAULT_PLAN_BATCH_SIZE: 3;
@@ -137,7 +137,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     git: GitInfo;
     reviewPolicy: string;
     reviewModel: string;
-  }) => ReviewStructuralRecord | null;
+  }) => ReviewStructuralRecord | null | Promise<ReviewStructuralRecord | null>;
   finishReviewActionLedger: (options: {
     ledger: ReviewActionLedger;
     error?: unknown;

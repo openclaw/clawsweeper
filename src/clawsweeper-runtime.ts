@@ -391,17 +391,17 @@ const {
   selectCandidates,
 } = reviewPlanning;
 
-function fetchReviewStructuralRecord(options: {
+async function fetchReviewStructuralRecord(options: {
   item: Item;
   git: GitInfo;
   reviewPolicy: string;
   reviewModel: string;
   onPullIdentity?: (identity: { baseSha: string; headSha: string }) => void;
-}): ReviewStructuralRecord | null {
+}): Promise<ReviewStructuralRecord | null> {
   if (!options.git.releaseStateComplete) return null;
   const [owner, name] = options.item.repo.split("/");
   if (!owner || !name) return null;
-  const externalRelationSensitive = structuralExternalRelationSensitivity(options.item);
+  const externalRelationSensitive = await structuralExternalRelationSensitivity(options.item);
   if (externalRelationSensitive === null) {
     throw new Error(`structural relation probe failed for #${options.item.number}`);
   }
@@ -448,6 +448,14 @@ function fetchReviewStructuralRecord(options: {
 }
 
 const { collectItemContext } = createItemContext(relatedContext);
+
+async function collectReviewItemContext(
+  item: Item,
+  options?: Parameters<typeof collectItemContext>[1],
+): Promise<ItemContext> {
+  const relations = await relatedContext.prepareReviewRelations(item);
+  return createItemContext(relations).collectItemContext(item, options);
+}
 
 const reviewRuntime = createReviewRuntime({
   reviewItemPromptPaths: REVIEW_ITEM_PROMPT_PATHS,
@@ -685,7 +693,7 @@ const { reviewCommand: reviewCommandWithoutReceipts } = createReviewCommandWorkf
   ...contextHydration,
   buildLocalRangeReview,
   ...reviewRuntime,
-  collectItemContext,
+  collectItemContext: collectReviewItemContext,
   ...reviewCommentWorkflow,
   pullHeadShaFromContext,
   reviewStructuralPullStateFromContext,
@@ -713,8 +721,8 @@ const { reviewCommand: reviewCommandWithoutReceipts } = createReviewCommandWorkf
   targetRepo,
 });
 
-function reviewCommand(args: Args): void {
-  withMutationReceiptRunner(null, () => reviewCommandWithoutReceipts(args));
+function reviewCommand(args: Args): Promise<void> {
+  return withMutationReceiptRunner(null, () => reviewCommandWithoutReceipts(args));
 }
 
 const { applyDecisionsCommandInner: applyDecisionsWithoutReceipts } = createApplyDecisionWorkflow({

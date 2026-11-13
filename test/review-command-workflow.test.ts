@@ -242,7 +242,7 @@ function testScheduledCacheScenario(
       : publicationCase
         ? `${scenario} publication policy ${publicationCase.name}`
         : `scheduled ${scenario} preserves admission and terminal ledger classification`;
-  test(name, (t) => {
+  test(name, async (t) => {
     const refuseScan = scenario.endsWith("refusal");
     const closedBeforeSelection = scenario.startsWith("closed-");
     const invalidProofPrior = scenario.startsWith("changed-pr-proof-");
@@ -595,7 +595,7 @@ else {
       buildLocalRangeReview: () => {
         throw new Error("local range must not run");
       },
-      collectItemContext: () => {
+      collectItemContext: async () => {
         hydrationCalls += 1;
         if (!hydrated) throw new Error("scheduled structural cache hit must not hydrate");
         if (cacheRecovery) assert.equal(reviewTreeAttempts, 1);
@@ -669,7 +669,7 @@ process.exitCode = 1;
         lastFullReviewDecision: "keep_open",
         structuralRecord: (fresh || contentPath) && !cacheRecovery ? null : priorRecord,
       }),
-      fetchReviewStructuralRecord: ({ onPullIdentity }) => {
+      fetchReviewStructuralRecord: async ({ onPullIdentity }) => {
         structuralFetches += 1;
         if (pull) onPullIdentity?.({ baseSha: baseSha, headSha });
         return currentRecord;
@@ -975,7 +975,7 @@ process.exitCode = 1;
             ? ["--expected-source-revision", "c".repeat(64)]
             : []),
         ];
-        reviewCommand(
+        return reviewCommand(
           parseArgs(
             preflightCase
               ? [
@@ -1043,7 +1043,7 @@ process.exitCode = 1;
           console.error = () => {};
           process.exitCode = undefined;
           try {
-            execute();
+            await execute();
             assert.equal(process.exitCode, 1);
             assert.equal(generationCalls, 2);
             assert.equal(stdout.length, 1);
@@ -1059,10 +1059,10 @@ process.exitCode = 1;
             process.exitCode = priorExitCode;
           }
         } else if (outputCase.surface === "history") {
-          assert.throws(execute, /metadata exceeded/);
+          await assert.rejects(execute, /metadata exceeded/);
           assert.equal(readFileSync(historyPath, "utf8"), "prior history");
         } else if (mediaCase) {
-          execute();
+          await execute();
           assert.equal(generationCalls, 2);
           const calls = readFileSync(mediaCalls, "utf8").trim().split("\n");
           assert.deepEqual(
@@ -1089,7 +1089,7 @@ process.exitCode = 1;
             assert.equal(existsSync(join(artifactDir, "codex")), false);
           }
         } else {
-          assert.throws(execute, /(?:metadata|report).*exceeded.*byte limit/);
+          await assert.rejects(execute, /(?:metadata|report).*exceeded.*byte limit/);
           assert.equal(existsSync(join(artifactDir, `${ITEM_NUMBER}.md`)), false);
           assert.equal(generationCalls, outputCase.surface === "metadata" || !fresh ? 0 : 1);
           if (!fresh) {
@@ -1113,7 +1113,7 @@ process.exitCode = 1;
         console.error = (value?: unknown) => stderr.push(String(value));
         process.exitCode = undefined;
         try {
-          execute();
+          await execute();
           const expectedExit =
             partialJsonFailure === "findings"
               ? 79
@@ -1143,7 +1143,7 @@ process.exitCode = 1;
 
       if (refuseScan) {
         const reason = incompleteSource ? "incomplete_source" : "scanner_failed";
-        assert.throws(execute, (error) => {
+        await assert.rejects(execute, (error) => {
           assert.ok(error instanceof AgentInputScanError);
           assert.equal(error.reason, reason);
           assert.equal(agentInputScanFailureExitCode(error), incompleteSource ? 78 : null);
@@ -1187,7 +1187,7 @@ process.exitCode = 1;
         return;
       }
       if (settlementFailure) {
-        assert.throws(execute, (error) => error === unsettled);
+        await assert.rejects(execute, (error) => error === unsettled);
         assert.equal(reviewTreeAttempts, 1);
         assert.equal(reviewTreeCleanupCalls, 0);
         assert.equal(generationCalls, 0);
@@ -1209,7 +1209,7 @@ process.exitCode = 1;
               ? "review_blob_metadata_unavailable"
               : "review_checkout_unavailable";
         const nativeFailure = fetchFailure || nativeCheckoutFailure;
-        assert.throws(execute, (error) => {
+        await assert.rejects(execute, (error) => {
           assert.ok(error instanceof ReviewSourcePreparationError);
           assert.equal(error.diagnosticReason, reason);
           assert.equal(error instanceof ReviewGitError, nativeFailure);
@@ -1276,7 +1276,7 @@ process.exitCode = 1;
         return;
       }
       if (codexFailure || preparationFailure) {
-        assert.throws(execute, /Codex failed/);
+        await assert.rejects(execute, /Codex failed/);
         assert.equal(generationCalls, 1);
         assert.equal(reviewTreeCleanupCalls, 1);
         assert.equal(existsSync(providerCalls), false);
@@ -1304,7 +1304,7 @@ process.exitCode = 1;
         return;
       }
       if (heldElsewhere) {
-        execute();
+        await execute();
         // Another worker holds the elected lease. The workflow retries when that lease expires.
         assert.deepEqual(
           JSON.parse(readFileSync(join(artifactDir, "coordination-held.json"), "utf8")),
@@ -1316,11 +1316,11 @@ process.exitCode = 1;
         return;
       }
       if (scenario === "empty-batch-selection") {
-        assert.throws(execute, /A supplied review lease requires exactly one selected item/);
+        await assert.rejects(execute, /A supplied review lease requires exactly one selected item/);
         assert.equal(generationCalls, 0);
         return;
       }
-      execute();
+      await execute();
 
       if (preflightCase) {
         const report = readFileSync(join(artifactDir, `${ITEM_NUMBER}.md`), "utf8");

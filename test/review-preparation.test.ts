@@ -102,7 +102,7 @@ test("planned review compatibility and non-exact selection preserve existing beh
   assert.equal(isExplicitReviewDispatch(parseArgs([]), false), false);
 });
 
-test("initial fetch timeout retains native evidence before any review work", (t) => {
+test("initial fetch timeout retains native evidence before any review work", async (t) => {
   let nativeError: Error;
   try {
     runText(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { timeoutMs: 25 });
@@ -207,7 +207,7 @@ test("initial fetch timeout retains native evidence before any review work", (t)
           },
         }) as unknown as Parameters<typeof createReviewCommandWorkflow>[0],
       );
-      assert.throws(
+      await assert.rejects(
         () =>
           workflow.reviewCommand(
             parseArgs(["--artifact-dir", dir, "--output-retention", "debug", ...scenario.args]),

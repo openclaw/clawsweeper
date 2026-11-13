@@ -19,6 +19,11 @@ import { effectiveReviewStatus } from "./clawsweeper-record-metadata.js";
 import { reportReviewDecision, type ReportReviewDecision } from "./report-review-decision.js";
 import { ReviewRecordFormatError } from "./review-record.js";
 import { markdownFiles, numberForMarkdownFile } from "./clawsweeper-repository-paths.js";
+import {
+  assertGitcrawlClusterMutationSupported,
+  configuredGitcrawlClusterService,
+  readGitcrawlClusterService,
+} from "./gitcrawl-cluster-service.js";
 
 const CREDENTIAL_URI =
   /(https?:\/\/)[\w!#$%&()*+,\-./;<=>?@[\\\]^_{|}~]{0,50}:[\w!#$%&()*+,\-./:;<=>?[\\\]^_{|}~]{3,50}@([a-zA-Z0-9.-]+)/g;
@@ -703,12 +708,23 @@ export function createRelatedContext({
       }));
   }
 
-  function structuralExternalRelationSensitivity(item: Item): boolean | null {
+  async function structuralExternalRelationSensitivity(item: Item): Promise<boolean | null> {
     const seen = new Set<number>([item.number]);
     if (compactLocalRelatedTitleItems(item, seen).length > 0) return true;
     if (item.kind !== "issue") return false;
 
     const repo = targetRepo();
+    try {
+      const service = configuredGitcrawlClusterService();
+      if (service) {
+        const result = await readGitcrawlClusterService(service, repo.toLowerCase(), item.number);
+        // Historical structural completeness cannot prove current acquisition
+        // freshness. Positive relations are conservative; empty remains unknown.
+        return result.rows.length > 0 ? true : null;
+      }
+    } catch {
+      return null;
+    }
     const dbPath = gitcrawlDbPath(repo);
     if (dbPath) {
       const source = detectGitcrawlClusterSource(dbPath);
@@ -792,6 +808,57 @@ export function createRelatedContext({
     pullRequest?: unknown;
     pullReviewComments?: unknown[];
   }): unknown[] {
+    assertGitcrawlClusterMutationSupported();
+    return buildRelatedItemsContext(options, compactRelatedGitcrawlItems);
+  }
+
+  async function prepareReviewRelations(item: Item) {
+    const service = configuredGitcrawlClusterService();
+    if (!service) return { relatedItemsContext, referencingMergedPullRequestsForIssue };
+    const result =
+      item.kind === "issue"
+        ? await readGitcrawlClusterService(service, targetRepo().toLowerCase(), item.number)
+        : null;
+    const candidates =
+      result?.rows.map((row) => ({
+        mentionedIn: ["gitcrawl cluster"],
+        gitcrawlCluster: {
+          id: row.clusterId,
+          source: "service",
+          memberCount: row.memberCount,
+          representative: row.representative,
+          snapshotId: result.snapshotId,
+          capturedAt: result.capturedAt,
+          scopeStatus: result.scopeStatus,
+          structuralComplete: result.structuralComplete,
+          sourceThrough: result.sourceThrough,
+          sourceObservedAt: result.sourceObservedAt,
+          analysisSourceThrough: result.analysisSourceThrough,
+          analysisSourceObservedAt: result.analysisSourceObservedAt,
+        },
+        gitcrawlThread: {
+          number: row.number,
+          kind: row.kind,
+          state: row.state,
+          title: row.title,
+          updatedAt: row.updatedAt,
+          labels: row.labels,
+          body: redactCredentialUriUserinfo(truncateText(row.body, 800)),
+        },
+      })) ?? [];
+    return {
+      referencingMergedPullRequestsForIssue,
+      relatedItemsContext: (options: Parameters<typeof relatedItemsContext>[0]) =>
+        buildRelatedItemsContext(options, (_item, seen) =>
+          candidates.filter((row) => !seen.has(row.gitcrawlThread.number)),
+        ),
+    };
+  }
+
+  function buildRelatedItemsContext(
+    options: Parameters<typeof relatedItemsContext>[0],
+    gitcrawlItems: typeof compactRelatedGitcrawlItems,
+  ): unknown[] {
     const mentions = collectRelatedMentions(options);
     const explicitRelated = compactRelatedItems(
       [...mentions.entries()].sort(([left], [right]) => left - right).slice(0, 10),
@@ -803,7 +870,7 @@ export function createRelatedContext({
       appendUniqueRelatedItems(related, seen, compactLocalRelatedTitleItems(options.item, seen));
     }
     if (related.length < RELATED_ITEMS_LIMIT) {
-      appendUniqueRelatedItems(related, seen, compactRelatedGitcrawlItems(options.item, seen));
+      appendUniqueRelatedItems(related, seen, gitcrawlItems(options.item, seen));
     }
     if (related.length < RELATED_ITEMS_LIMIT) {
       appendUniqueRelatedItems(
@@ -824,6 +891,7 @@ export function createRelatedContext({
     quoteGitHubSearchTerm,
     referencingMergedPullRequestsForIssue,
     relatedItemsContext,
+    prepareReviewRelations,
     structuralExternalRelationSensitivity,
   };
 }

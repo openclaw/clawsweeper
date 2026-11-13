@@ -1,0 +1,1 @@
+- Read bounded public Gitcrawl cluster context from an explicitly selected service during review, preserving unknown freshness and holding apply and review-start publication until their guards support the service.

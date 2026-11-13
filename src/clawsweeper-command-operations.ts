@@ -1,3 +1,4 @@
+import { assertGitcrawlClusterMutationSupported } from "./gitcrawl-cluster-service.js";
 import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { recordWorkflowPhaseEvent } from "./action-ledger-runtime.js";
@@ -262,6 +263,7 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
   }
 
   function reserveReviewLeaseCommand(args: Args): void {
+    assertGitcrawlClusterMutationSupported();
     repoFromArgs(args);
     const itemNumber = numberArg(args.item_number, 0);
     const reviewTimeoutMs = numberArg(args.review_timeout_ms, 0);
@@ -541,6 +543,7 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
   }
 
   function applyDecisionsCommand(args: Args): void {
+    assertGitcrawlClusterMutationSupported();
     const runtimeBudget = applyRuntimeBudget(
       numberArg(args.max_runtime_ms, 0),
       process.env.CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS,
@@ -590,6 +593,7 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
   }
 
   function applyArtifactsCommand(args: Args): void {
+    assertGitcrawlClusterMutationSupported();
     const profile = repoFromArgs(args);
     const artifactDir = resolve(stringArg(args.artifact_dir, "artifacts"));
     const recordRoot = resolve(stringArg(args.record_root, ROOT));
