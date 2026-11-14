@@ -1,0 +1,1 @@
+- Release items held by the input scanner before the exact-value approvals in #2201 so they are reviewed again on their next scheduled pass.
