@@ -130,6 +130,7 @@ export async function cleanupProgressScenario(
         response.work.length === 0
       ) {
         interrupted = true;
+        f.kill();
         throw cleanupStop;
       }
     }
@@ -209,6 +210,7 @@ export async function cleanupProgressScenario(
       assert.ok(replayed);
       f.authority.queue = new ExactReviewQueue({ storage: f.authority.storage }, f.authority.env);
       f.advance(CENSUS.refreshMs);
+      f.kill(false);
       phase = "cleanup-resumed";
       await invoke("cleanup-resumed");
     }
@@ -272,20 +274,24 @@ export async function cleanupProgressScenario(
       removals.some((n) => n < CENSUS.cleanupRows),
       "last short batch is observed",
     );
-    const start = f.calls.findLast((c) => c.path.endsWith("/census/start"))!.body!,
-      control = censusHttpControl({
+    const control = censusHttpControl({
         baseUrl: "https://census-cli.invalid",
         secret: f.authority.secret,
         fetchImpl: globalThis.fetch,
       }),
       receiptCount = Number(sql("SELECT COUNT(*) AS n FROM coverage_census_receipts")[0]!.n);
-    const idle = await withReplayClock(f.time, () =>
-      control("/internal/review-coverage/census/next", {
+    // The finished run released its lease, so the probe takes a fresh one like the next run would.
+    const idle = await withReplayClock(f.time, async () => {
+      await control("/internal/review-coverage/census/prepare", {
         version: 2,
-        attempt: start.attempt,
+        attempt: "idle-probe",
+      });
+      return control("/internal/review-coverage/census/next", {
+        version: 2,
+        attempt: "idle-probe",
         excluded: [],
-      }),
-    );
+      });
+    });
     assert.deepEqual(idle.work, []);
     assert.equal(idle.pending, false, "nothing removable means no pending spin");
     assert.equal(

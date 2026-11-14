@@ -487,7 +487,8 @@ for (const [stage, kind] of [
         assert.equal(f.publicCoverageReads.length, 1);
         assert.equal(fault.countQueries, 1);
         assert.equal(fault.identityQueries, stage === "page" ? 1 : 0);
-        assert.equal(fault.requests.length, stage === "count" ? 0 : stage === "page" ? 2 : 1);
+        // A page outage also rejects the ACK observation and the best-effort lease release.
+        assert.equal(fault.requests.length, stage === "count" ? 0 : stage === "page" ? 3 : 1);
         assert.ok(!out.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
         assert.ok(!lastDiagnostics.includes(COVERAGE_FAILURE_PRIVATE_MARKER));
         assert.ok(

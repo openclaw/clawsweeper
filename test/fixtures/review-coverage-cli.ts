@@ -77,6 +77,8 @@ export async function coverageCliFixture(
     legacy = 0,
     lastQuery = "";
   let observer: ((event: { path: string; body?: Record<string, unknown> }) => void) | undefined;
+  // A killed producer never reaches its lease release; thrown test interrupts would.
+  let killed = false;
   let controlFailure = false;
   let publicCoverageOverride: ((request: Request) => Response | Promise<Response>) | undefined;
   const publicCoverageReads: {
@@ -281,6 +283,8 @@ export async function coverageCliFixture(
     }
     if (controlFailure && url.pathname.includes("/census/"))
       return new Response("controlled unsupported v2", { status: 404 });
+    if (killed && url.pathname.endsWith("/census/release"))
+      throw new Error("simulated producer kill");
     if (url.pathname.startsWith("/internal/review-coverage/")) {
       const response = await activeWorker.fetch(request, env, {});
       if (url.pathname.includes("/census/"))
@@ -365,6 +369,9 @@ export async function coverageCliFixture(
     },
     get lastQuery() {
       return lastQuery;
+    },
+    kill(value = true) {
+      killed = value;
     },
     observe(callback: typeof observer) {
       observer = callback;
