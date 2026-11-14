@@ -12,7 +12,7 @@ import { reviewPromptContext } from "../dist/clawsweeper-prompt-context.js";
 import { itemContentDigest } from "../dist/clawsweeper-source-revision.js";
 import { linkedIssueNumbersForImplementationProvenance } from "../dist/clawsweeper-status-context.js";
 import { exactReviewSourceRevisionMaterial } from "../dashboard/exact-review-source-revision.ts";
-import { hydratePrimaryBody, sourceTools } from "./primary-body-fixture.ts";
+import { hydratePrimaryBody } from "./primary-body-fixture.ts";
 
 const payload: ReviewPreflightPayload = {
   v: 1,
