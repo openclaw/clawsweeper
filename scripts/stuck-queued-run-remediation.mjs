@@ -29,6 +29,8 @@ const RUN_ID = /^[1-9]\d*$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const STARTED_STATUSES = new Set(["in_progress", "completed"]);
 const PRE_QUEUE_RERUN_CONFLICT = "Cannot cancel a workflow re-run that has not yet queued";
+// GitHub lists a first-attempt run as queued but refuses every cancel and delete for it.
+const NEVER_QUEUED_CONFLICT = "Cannot cancel a workflow run that has not been queued yet";
 
 export function selectStuckQueuedRuns({
   queuedRuns,
@@ -150,6 +152,15 @@ export async function remediateCandidate({ candidate, postCancellation, zombieSt
       force_cancel_status: null,
     };
   }
+  if (regular.status === 409 && String(regular.body || "").includes(NEVER_QUEUED_CONFLICT)) {
+    return recordZombie(
+      { candidate, zombieState, now, reason: "cancel_http_409_never_queued" },
+      {
+        cancel_status: 409,
+        force_cancel_status: null,
+      },
+    );
+  }
   if (regular.status !== 500) {
     return {
       run_id: candidate.run_id,
@@ -185,20 +196,22 @@ export async function remediateCandidate({ candidate, postCancellation, zombieSt
     };
   }
 
+  return recordZombie(
+    { candidate, zombieState, now, reason: "cancel_and_force_cancel_http_500" },
+    { cancel_status: 500, force_cancel_status: 500 },
+  );
+}
+
+function recordZombie({ candidate, zombieState, now, reason }, statuses) {
   zombieState.set(candidate.run_id, {
     run_id: candidate.run_id,
     workflow_id: candidate.workflow_id,
     workflow_path: candidate.workflow_path,
     created_at: candidate.created_at,
     recorded_at: now,
-    reason: "cancel_and_force_cancel_http_500",
+    reason,
   });
-  return {
-    run_id: candidate.run_id,
-    outcome: "permanent_zombie_recorded",
-    cancel_status: 500,
-    force_cancel_status: 500,
-  };
+  return { run_id: candidate.run_id, outcome: "permanent_zombie_recorded", ...statuses };
 }
 
 export function mergeZombieRecords(...states) {
@@ -537,10 +550,10 @@ function githubApi({ repository, token, deadlineAtMs }) {
     }
     throw new Error(`GET ${path} exhausted retries`);
   };
-  const listRuns = async (pathForPage) => {
+  const listRuns = async (pathForPage, maxPages = MAX_LIST_PAGES) => {
     const runs = [];
     let complete = false;
-    for (let page = 1; page <= MAX_LIST_PAGES; page += 1) {
+    for (let page = 1; page <= maxPages; page += 1) {
       const payload = await getJson(pathForPage(page));
       if (!Array.isArray(payload.workflow_runs))
         throw new Error("GitHub returned invalid run inventory");
@@ -572,10 +585,14 @@ function githubApi({ repository, token, deadlineAtMs }) {
       return { runs, complete: queued.complete && pending.complete };
     },
     listWorkflowRuns: ({ workflowId, earliestCreatedAtMs }) => {
+      // GitHub lists runs newest first, so the first page already holds the runs created
+      // after every candidate. Each page of a busy workflow takes about 2.5 seconds; paging
+      // through all of them spent the whole pass budget before any cancellation.
       const created = encodeURIComponent(`>=${new Date(earliestCreatedAtMs).toISOString()}`);
       return listRuns(
         (page) =>
           `/actions/workflows/${workflowId}/runs?created=${created}&per_page=${PER_PAGE}&page=${page}`,
+        1,
       );
     },
     getRun: (runId) => getJson(`/actions/runs/${runId}`),

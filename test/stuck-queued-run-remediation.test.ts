@@ -653,6 +653,103 @@ test("mid-remediation throttling stops after completed actions and exits success
   }
 });
 
+test("a busy workflow reads one history page, cancels, and records never-queued ghosts", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "clawsweeper-stuck-busy-"));
+  const output = join(scratch, "summary.json");
+  const zombieOutput = join(scratch, "zombies.json");
+  const zombieSeed = join(scratch, "seed.json");
+  await writeFile(zombieSeed, '{"schema_version":1,"zombies":[]}\n', "utf8");
+  const ghost = queuedRun(100, 3 * 24 * 60);
+  const stuck = queuedRun(101, 180);
+  // Newest first, as GitHub returns them: the first page is all newer started runs.
+  const newestPage = Array.from({ length: 100 }, (_, index) => ({
+    id: 10_000 - index,
+    workflow_id: workflowId,
+    status: "completed",
+    created_at: new Date(nowMs - index * 60_000).toISOString(),
+  }));
+  const historyPages: string[] = [];
+  const requests: string[] = [];
+  const server = createServer((request, response) => {
+    const url = new URL(request.url || "/", "http://loopback.invalid");
+    requests.push(`${request.method} ${url.pathname}`);
+    const base = "/repos/openclaw/clawsweeper";
+    const json = (status: number, body: unknown) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+    };
+    if (request.method === "GET" && url.pathname === `${base}/actions/runs`) {
+      const runs = url.searchParams.get("status") === "queued" ? [ghost, stuck] : [];
+      return json(200, { total_count: runs.length, workflow_runs: runs });
+    }
+    if (request.method === "GET" && url.pathname === `${base}/actions/workflows/42/runs`) {
+      historyPages.push(url.searchParams.get("page") || "");
+      return json(200, { total_count: 2500, workflow_runs: newestPage });
+    }
+    if (request.method === "GET" && url.pathname === `${base}/actions/runs/100`) {
+      return json(200, ghost);
+    }
+    if (request.method === "GET" && url.pathname === `${base}/actions/runs/101`) {
+      return json(200, stuck);
+    }
+    if (request.method === "POST" && url.pathname === `${base}/actions/runs/100/cancel`) {
+      return json(409, { message: "Cannot cancel a workflow run that has not been queued yet." });
+    }
+    if (request.method === "POST" && url.pathname === `${base}/actions/runs/101/cancel`) {
+      response.writeHead(202).end();
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  try {
+    const result = await runProduction({
+      apiUrl: `http://127.0.0.1:${address.port}`,
+      sharedDeadlineMs: Date.now() + DEAD_LETTER_RESERVED_MS + 30_000,
+      output,
+      zombieOutput,
+      zombieSeed,
+      execute: true,
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.deepEqual(historyPages, ["1"]);
+    const summary = JSON.parse(await readFile(output, "utf8"));
+    assert.equal(summary.deadline_reached, false);
+    assert.deepEqual(summary.actions, [
+      {
+        run_id: "100",
+        outcome: "permanent_zombie_recorded",
+        cancel_status: 409,
+        force_cancel_status: null,
+      },
+      {
+        run_id: "101",
+        outcome: "cancel_requested",
+        cancel_status: 202,
+        force_cancel_status: null,
+      },
+    ]);
+    assert.ok(!requests.includes("POST /repos/openclaw/clawsweeper/actions/runs/100/force-cancel"));
+    const zombies = JSON.parse(await readFile(zombieOutput, "utf8"));
+    assert.deepEqual(
+      zombies.zombies.map((zombie: { run_id: string; reason: string }) => [
+        zombie.run_id,
+        zombie.reason,
+      ]),
+      [["100", "cancel_http_409_never_queued"]],
+    );
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
 test("slow workflow discovery stops at the shared deadline with dead-letter headroom intact", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "clawsweeper-stuck-deadline-"));
   const output = join(scratch, "summary.json");
