@@ -32,7 +32,7 @@ import {
   withReviewRecord,
   workPlanCandidateReport,
 } from "./helpers.ts";
-import { scheduledReviewSemanticSourceRevision } from "../dist/scheduled-review-noop.js";
+import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../dist/media-proof-budget.js";
 import { runExactReviewDirectPublicationFromEnv } from "../dist/repair/exact-review-direct-publication.js";
 
@@ -1165,7 +1165,7 @@ test("scheduled claim-time no-op completes before target checkout with zero GitH
       created_at: "2026-08-09T19:00:00Z",
       updated_at: "2026-08-09T19:00:00Z",
     };
-    const revision = scheduledReviewSemanticSourceRevision(issue, [human]);
+    const revision = itemSourceRevisionSha256(issue, [human]);
     const comments = [
       human,
       {

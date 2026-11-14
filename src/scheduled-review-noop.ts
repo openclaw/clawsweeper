@@ -1,6 +1,5 @@
-import { reviewBodyWithoutPreflight } from "./review-preflight-body.ts";
-import { createHash } from "node:crypto";
 import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.ts";
+import { itemSourceRevisionSha256 } from "./clawsweeper-source-revision.ts";
 
 const TRUSTED_AUTHORS = new Set(
   [...CLAWSWEEPER_BOT_LOGINS, process.env.CLAWSWEEPER_COMMENT_AUTHOR_LOGIN?.toLowerCase()].filter(
@@ -28,68 +27,8 @@ function login(value: unknown): string {
   return scalar(object(value).login).trim().toLowerCase();
 }
 
-function labelName(value: unknown): string {
-  return scalar(object(value).name || value)
-    .trim()
-    .toLowerCase();
-}
-
-function ignorableOwnedLabel(label: string): boolean {
-  if (label === "proof: override") return false;
-  return (
-    /^(?:status|rating|proof|merge-risk|impact|issue-rating):/.test(label) ||
-    /^p[0-3]$/.test(label) ||
-    label === "maturity:stable" ||
-    (label.startsWith("clawsweeper:") &&
-      !["clawsweeper:human-review", "clawsweeper:manual-only", "clawsweeper:bulk-filed"].includes(
-        label,
-      )) ||
-    [
-      "clawsweeper-recovery-stuck",
-      "no-stale",
-      "stale",
-      "feature: ✨ showcase",
-      "good first issue",
-      "mantis: telegram-visible-proof",
-      "proof: telegram-e2e",
-      "triage: needs-real-behavior-proof",
-    ].includes(label)
-  );
-}
-
 function trustedClawSweeperComment(comment: JsonObject): boolean {
   return TRUSTED_AUTHORS.has(login(comment.user) || scalar(comment.author).trim().toLowerCase());
-}
-
-export function scheduledReviewSemanticSourceRevision(
-  issue: unknown,
-  comments: readonly unknown[],
-): string {
-  const source = object(issue);
-  const snapshot = {
-    title: scalar(source.title),
-    body: source.pull_request
-      ? reviewBodyWithoutPreflight(scalar(source.body))
-      : scalar(source.body),
-    labels: (Array.isArray(source.labels) ? source.labels : [])
-      .map(labelName)
-      .filter(Boolean)
-      .filter((label) => !ignorableOwnedLabel(label))
-      .sort(),
-    comments: comments
-      .map(object)
-      .filter((comment) => !trustedClawSweeperComment(comment))
-      .map((comment) => ({
-        id: scalar(comment.id),
-        author: scalar(login(comment.user) || comment.author),
-        body: scalar(comment.body),
-        updated_at: scalar(comment.updated_at ?? comment.updatedAt ?? comment.created_at),
-      }))
-      .sort((left, right) =>
-        `${left.id}:${left.updated_at}`.localeCompare(`${right.id}:${right.updated_at}`),
-      ),
-  };
-  return createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
 }
 
 function durableSourceRevision(body: string): string | null {
@@ -141,7 +80,8 @@ export function trustedOwnedActivityOnly(options: {
   const issue = object(options.issue);
   const liveUpdatedAt = Date.parse(scalar(issue.updated_at));
   if (!Number.isFinite(liveUpdatedAt)) return false;
-  const liveRevision = scheduledReviewSemanticSourceRevision(issue, options.comments);
+  // The writer's own revision function, so the recorded and live revisions cannot drift.
+  const liveRevision = itemSourceRevisionSha256(issue, [...options.comments]);
   for (const comment of [...options.comments].map(object).reverse()) {
     if (!trustedClawSweeperComment(comment)) continue;
     const recordedRevision = durableSourceRevision(scalar(comment.body));

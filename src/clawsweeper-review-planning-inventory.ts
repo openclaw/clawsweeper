@@ -319,6 +319,7 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
     isFresh,
     isCurrentForCadence,
     dueCandidate,
+    issueActivityIsOwnedReviewWrite,
     reviewBackfillCandidate,
     fetchOpenItemPage,
     fetchOpenItems,

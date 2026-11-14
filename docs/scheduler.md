@@ -845,9 +845,12 @@ ClawSweeper's own post-review writes can feed hot intake. Separately, `review_ru
 any item claims more than `EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY` reviews in a
 trailing day. [Automation limits](limits.md) owns both rules.
 
-Two deterministic no-ops are held instead of re-offered. Scheduled planning
+Three deterministic no-ops are held instead of re-offered. Scheduled planning
 skips open-but-locked conversations, because their review run can only
-complete as a guarded no-op. The queue also keeps a completed locked or
+complete as a guarded no-op. Hot intake also skips an already-reviewed issue
+whose latest activity is ClawSweeper's own review write, checked with the same
+durable-source ownership test the claim-time no-op uses; its normal cadence
+review stays with backfill. The queue also keeps a completed locked or
 oversized-PR generation parked as `locked_conversation` or
 `oversized_pull_request`, so other automatic producers and ClawSweeper's own
 lease-comment writes on an oversized PR cannot reclaim it. Organic events,

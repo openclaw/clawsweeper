@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import YAML from "yaml";
 import { issueSourceRevisionSha256 } from "../../dist/repair/issue-source-guard.js";
-import { scheduledReviewSemanticSourceRevision } from "../../src/scheduled-review-noop.ts";
+import { itemSourceRevisionSha256 } from "../../dist/clawsweeper-source-revision.js";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const root = resolve(dirname(scriptPath), "../..");
@@ -165,7 +165,7 @@ function scenarios() {
       body: `Synthetic evidence ${i}`,
       updated_at: "2026-08-09T19:00:00Z",
     }));
-    const revision = scheduledReviewSemanticSourceRevision(issue, comments);
+    const revision = itemSourceRevisionSha256(issue, comments);
     comments.push({
       id: 102,
       user: { login: "clawsweeper[bot]" },

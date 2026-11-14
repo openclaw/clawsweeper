@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  classifyScheduledReviewNoop,
-  scheduledReviewSemanticSourceRevision,
-} from "../dist/scheduled-review-noop.js";
+import { classifyScheduledReviewNoop } from "../dist/scheduled-review-noop.js";
 import { itemSourceRevisionSha256 } from "../dist/clawsweeper-source-revision.js";
 
 const issue = {
@@ -18,17 +15,17 @@ const issue = {
     { name: "mantis: telegram-visible-proof" },
   ],
 };
-function fixture(overrides: Record<string, unknown> = {}) {
+function fixture(overrides: Record<string, unknown> = {}, reporter = "reporter") {
   const humanComments = [
     {
       id: 1,
-      user: { login: "reporter" },
+      user: { login: reporter },
       body: "Human evidence",
       created_at: "2026-08-09T19:00:00Z",
       updated_at: "2026-08-09T19:00:00Z",
     },
   ];
-  const revision = scheduledReviewSemanticSourceRevision(issue, humanComments);
+  const revision = itemSourceRevisionSha256(issue, humanComments);
   const botComment = {
     id: 2,
     user: { login: "clawsweeper[bot]" },
@@ -62,12 +59,14 @@ test("claim-time classifier accepts trusted owned activity through timestamp set
   });
   assert.equal(classifyScheduledReviewNoop(outside).noop, false);
 });
-test("claim-time semantic identity matches the review runtime", () => {
-  const current = fixture();
-  assert.equal(
-    scheduledReviewSemanticSourceRevision(current.issue, current.comments),
-    itemSourceRevisionSha256(current.issue, current.comments),
-  );
+test("claim-time classifier recognizes owned activity when a commenter login has capitals", () => {
+  // Production: esp-openclaw-node#67 (commenter DonnieFi) and clawhub#3439 (MoltyCel) got a
+  // full review every hour. The guard recomputed the revision with lowercased logins, so it
+  // never matched the revision the review comment recorded.
+  assert.deepEqual(classifyScheduledReviewNoop(fixture({}, "DonnieFi")), {
+    noop: true,
+    reason: "trusted_owned_activity_only",
+  });
 });
 test("claim-time classifier preserves human and mixed source changes", () => {
   const current = fixture();
@@ -199,4 +198,55 @@ test("planner does not offer an issue whose only post-review activity is ClawSwe
     41,
   );
   assert.equal(later.reads.length, 0);
+});
+
+test("hot intake does not re-offer a cadence-due issue whose only activity is ClawSweeper's own write", async () => {
+  // Production: esp-openclaw-node#92 reached queue revision 364. It was due on its normal
+  // cadence, so the activity-only planner check never ran, and every hot pass offered it.
+  // Each offer ended as a trusted_owned_activity_only no-op that recorded nothing.
+  const { createReviewPlanningInventory } =
+    await import("../dist/clawsweeper-review-planning-inventory.js");
+  const { createReviewPlanningHotIntake } =
+    await import("../dist/clawsweeper-review-planning-hot-intake.js");
+  const repo = "openclaw/esp-openclaw-node";
+  const { issue: liveIssue, comments } = fixture({}, "DonnieFi");
+  const now = Date.parse("2026-08-20T00:00:00Z");
+  const item = {
+    repo,
+    number: 41,
+    kind: "issue",
+    labels: [],
+    createdAt: "2026-07-01T00:00:00Z",
+    updatedAt: liveIssue.updated_at,
+  };
+  const review = { reviewStatus: "complete", reviewedAt: "2026-08-09T21:12:33Z" };
+  const hotIntakeFor = (liveComments: unknown[]) => {
+    const dependencies = {
+      targetRepo: () => repo,
+      ghJson: (args: string[]) => (args[1]!.includes("/comments") ? [liveComments] : liveIssue),
+      ghJsonLines: () => [],
+      normalizeAuthorAssociation: () => "CONTRIBUTOR",
+    } as never;
+    const inventory = createReviewPlanningInventory(dependencies);
+    return createReviewPlanningHotIntake({ ...(dependencies as object), ...inventory } as never);
+  };
+
+  const owned = hotIntakeFor(comments);
+  assert.equal(owned.shouldSkipScheduledHotIntakeExactReview(item, review, now, undefined), true);
+
+  const human = {
+    id: 3,
+    user: { login: "DonnieFi" },
+    body: "Still broken on 2.1",
+    created_at: "2026-08-09T21:12:38Z",
+    updated_at: "2026-08-09T21:12:38Z",
+  };
+  const changed = hotIntakeFor([...comments, human]);
+  assert.equal(
+    changed.shouldSkipScheduledHotIntakeExactReview(item, review, now, undefined),
+    false,
+  );
+
+  // Never reviewed: a hot offer stays eligible without any ownership read.
+  assert.equal(owned.shouldSkipScheduledHotIntakeExactReview(item, null, now, undefined), false);
 });
