@@ -151,12 +151,13 @@ export function createReviewPlanningHotIntake(
     now: number,
     reviewPolicy: string,
   ): boolean {
-    if (hasReviewPolicyMismatch(review, reviewPolicy)) return false;
     // A hot offer for an issue whose latest activity is ClawSweeper's own review write
     // can only finish as a scheduled no-op, and nothing durable records that, so it
-    // was re-offered every hot pass. Its normal cadence review stays with backfill.
+    // was re-offered every hot pass. That includes a review-policy change: the claim-time
+    // no-op ignores policy, so the re-review never happened. Backfill owns both.
     if (item.kind !== "pull_request")
       return review !== null && issueActivityIsOwnedReviewWrite(item);
+    if (hasReviewPolicyMismatch(review, reviewPolicy)) return false;
     if (!review || hasUncapturedActivitySinceExactReview(item, review)) return false;
     const reviewed = hotIntakeExactReviewSnapshotFromReport(review, now);
     if (!reviewed) return false;

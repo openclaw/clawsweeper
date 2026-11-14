@@ -247,6 +247,31 @@ test("hot intake does not re-offer a cadence-due issue whose only activity is Cl
     false,
   );
 
+  // Production: esp-openclaw-node#92 and clawscan#69 kept getting hot offers after #2209
+  // because their reviews predate the current review policy. The claim-time no-op ignores
+  // policy, so each offer was a no-op and the policy re-review never happened.
+  const stalePolicy = { ...review, reviewPolicy: "old-policy" };
+  assert.equal(
+    owned.shouldSkipScheduledHotIntakeExactReview(item, stalePolicy, now, "new-policy"),
+    true,
+  );
+  assert.equal(
+    changed.shouldSkipScheduledHotIntakeExactReview(item, stalePolicy, now, "new-policy"),
+    false,
+  );
+  // Backfill still offers it, so the policy re-review happens there as a real review.
+  const backfill = createReviewPlanningInventory({
+    targetRepo: () => repo,
+    ghJson: (args: string[]) => (args[1]!.includes("/comments") ? [comments] : liveIssue),
+    ghJsonLines: () => [],
+    normalizeAuthorAssociation: () => "CONTRIBUTOR",
+  } as never);
+  const index = { byKey: new Map([[`${repo}#41`, stalePolicy]]) };
+  assert.equal(
+    backfill.dueCandidate(item, "/nonexistent", now, "new-policy", index)?.item.number,
+    41,
+  );
+
   // Never reviewed: a hot offer stays eligible without any ownership read.
   assert.equal(owned.shouldSkipScheduledHotIntakeExactReview(item, null, now, undefined), false);
 });
