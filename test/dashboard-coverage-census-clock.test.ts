@@ -206,3 +206,32 @@ test("persisted legacy v2 partial checkpoints cannot downgrade a newly negotiate
   assert.equal(f.states()[0].state.complete.issues, 101);
   assert.equal(f.states()[0].state.complete.pulls, 1);
 });
+
+test("a finished or failed run releases its own lease so the next run starts at once", async () => {
+  const f = censusFixture([{ name: "lease", issues: 1, pulls: 0 }]);
+  const first = prepared(f, "first-run");
+  f.store.release({ version: 2, attempt: "other-run" }, f.time);
+  assert.throws(() => prepared(f, "second-run"), /lease conflict/);
+  const result = await runReviewCoverageCensus({
+    observation: first,
+    repositories: f.population(),
+    control: f.control,
+    query: f.query,
+    now: () => f.time,
+  });
+  assert.equal(result.failed, 0);
+  // Same clock, well inside the five-minute lease: production failed here with a lease conflict.
+  const second = prepared(f, "second-run");
+  await assert.rejects(
+    runReviewCoverageCensus({
+      observation: second,
+      repositories: f.population(),
+      control: (path, body) =>
+        path.endsWith("/next") ? Promise.reject(new Error("lost control")) : f.control(path, body),
+      query: f.query,
+      now: () => f.time,
+    }),
+    /lost control/,
+  );
+  assert.ok(prepared(f, "third-run").observationWindow);
+});

@@ -131,6 +131,7 @@ export function censusFixture(
       return store.next(body, time);
     }
     if (path.endsWith("/fail")) return store.fail(body, time);
+    if (path.endsWith("/release")) return store.release(body, time);
     if (path.endsWith("/accept")) {
       const result = await store.accept(body, time);
       accepted++;

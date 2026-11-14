@@ -131,6 +131,8 @@ test("warm namespace schema initialization preserves the census cursor and canon
     let accepted = false;
     const control = async (path: string, body: Record<string, unknown>) => {
       if (accepted && path.endsWith("/next")) return { ok: true, work: [] };
+      // This test keeps driving the same attempt after the run returns, so it keeps the lease.
+      if (path.endsWith("/release")) return { ok: true };
       const response = await a.queue.fetch(
         new Request("https://local.invalid" + path.replace("/internal", ""), {
           method: "POST",

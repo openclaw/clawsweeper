@@ -1834,6 +1834,11 @@ Only POST is accepted on these exact external paths, without query parameters:
     /internal/review-coverage/census/next
     /internal/review-coverage/census/accept
     /internal/review-coverage/census/fail
+    /internal/review-coverage/census/release
+
+`release` ends the caller's own five-minute control lease when a producer run
+finishes or fails, so the next scheduled run does not fail with a lease
+conflict. It is a no-op for any other attempt.
 
 The signature input is the fixed domain followed by method, exact path and body:
 
