@@ -29,8 +29,6 @@ const RUN_ID = /^[1-9]\d*$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const STARTED_STATUSES = new Set(["in_progress", "completed"]);
 const PRE_QUEUE_RERUN_CONFLICT = "Cannot cancel a workflow re-run that has not yet queued";
-// GitHub lists a first-attempt run as queued but refuses every cancel and delete for it.
-const NEVER_QUEUED_CONFLICT = "Cannot cancel a workflow run that has not been queued yet";
 
 export function selectStuckQueuedRuns({
   queuedRuns,
@@ -152,9 +150,11 @@ export async function remediateCandidate({ candidate, postCancellation, zombieSt
       force_cancel_status: null,
     };
   }
-  if (regular.status === 409 && String(regular.body || "").includes(NEVER_QUEUED_CONFLICT)) {
+  // The caller just read this run as queued. GitHub still answers 409 ("has not been
+  // queued yet" or "is not in progress") for ghost runs it never cancels or deletes.
+  if (regular.status === 409) {
     return recordZombie(
-      { candidate, zombieState, now, reason: "cancel_http_409_never_queued" },
+      { candidate, zombieState, now, reason: "cancel_http_409" },
       {
         cancel_status: 409,
         force_cancel_status: null,

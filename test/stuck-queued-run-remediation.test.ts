@@ -197,6 +197,37 @@ test("records 500-500 as a permanent zombie and never selects it again", async (
   assert.equal(nextPlan.candidates[0]?.reason, "permanent_zombie");
 });
 
+test("a 409 for a run read as queued records a zombie for both GitHub messages", async () => {
+  for (const message of [
+    "Cannot cancel a workflow run that has not been queued yet.",
+    "Cannot cancel a workflow run that is not in progress.",
+  ]) {
+    const candidate = queuedRun(100, 180);
+    const plan = selection(
+      [candidate],
+      [
+        newerRun(1, candidate, "completed"),
+        newerRun(2, candidate, "completed"),
+        newerRun(3, candidate, "completed"),
+      ],
+    );
+    const zombieState = new Map();
+    const calls: string[] = [];
+    const action = await remediateCandidate({
+      candidate: plan.selected[0],
+      zombieState,
+      now: "2026-08-12T04:00:00Z",
+      postCancellation: async (_runId: string, endpoint: string) => {
+        calls.push(endpoint);
+        return { ok: false, status: 409, body: JSON.stringify({ message }) };
+      },
+    });
+    assert.deepEqual(calls, ["cancel"]);
+    assert.equal(action.outcome, "permanent_zombie_recorded");
+    assert.equal(zombieState.get("100")?.reason, "cancel_http_409");
+  }
+});
+
 test("does not force-cancel when regular cancellation fails with a non-500 status", async () => {
   const candidate = queuedRun(100, 180);
   const plan = selection(
@@ -741,7 +772,7 @@ test("a busy workflow reads one history page, cancels, and records never-queued 
         zombie.run_id,
         zombie.reason,
       ]),
-      [["100", "cancel_http_409_never_queued"]],
+      [["100", "cancel_http_409"]],
     );
   } finally {
     server.closeAllConnections();

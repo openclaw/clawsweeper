@@ -1,0 +1,1 @@
+- Stuck queued-run remediation now records a run as a permanent zombie on any HTTP 409 cancel response for a run it has just confirmed as queued. This includes GitHub's "is not in progress" variant, so the oldest ghost no longer takes a cancellation slot on every pass.
