@@ -1,0 +1,32 @@
+{
+  "clawsweeperBase": "eae7a713e211392f2a57ab91880a761efa1ae359",
+  "source": "src/infra/push-apns.test.ts",
+  "mode": "100644",
+  "nativeVersion": "3.99.4",
+  "nativeMacArm64Sha256": "e05963636bce6c5a48e0c780b26c98eb851ec8f87ab6efce8167753a9141b893",
+  "rawSha256": "e86d617b3e5670ce0a6c4f92f89148535c8a379bdb84a9fc144f2004ac4743a4",
+  "rawV2Sha256": "26450b6aba4123d2f67a8d940c50bf9b6c492993c657100d6a02c4345b67ea3a",
+  "completeLineSha256": "708fc8405f2610f3ccfea55cee78e6eceb2912c1ffa847609040442f554f7847",
+  "decoders": [
+    "PLAIN",
+    "HTML",
+    "ESCAPED_UNICODE"
+  ],
+  "baseSource": {
+    "revision": "154d60ec2bc612db80a39c13b61466a64acfc527",
+    "blob": "77724187431100ec599905e760c04c03ae8d1c51",
+    "line": 624
+  },
+  "headSource": {
+    "revision": "c91c36dfbdc2fded615c860f1eb68d28c4aea0eb",
+    "blob": "7fe77cd6c283f420aec0ca355cef8f1d1edc6b6a",
+    "line": 647
+  },
+  "policySourceSha256": "891168e7210b433e0e09fb0b145487133ac1a8ec40b9316898796850e502e6da",
+  "negativeControl": {
+    "kind": "disposable synthetic source repository, not OpenClaw PR execution",
+    "base": "4fe30ba16f5891fc7e22f166ea9d9e279db49535",
+    "head": "3dfada10178f0fdb72475fc9f8bd1874831feef6",
+    "mutation": "One credential byte; same source path and regular file mode; native verification unchanged."
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "head": "03195296e13d69b68b7db1af0435bad4c23295f9",
+  "platform": "darwin-arm64",
+  "node": "v26.7.0",
+  "scanner": "trufflehog 3.99.4",
+  "scannerSha256": "e05963636bce6c5a48e0c780b26c98eb851ec8f87ab6efce8167753a9141b893",
+  "sourceDirty": true,
+  "results": [
+    {
+      "name": "relay-reviewed",
+      "surface": "prompt",
+      "expected": true,
+      "admitted": true
+    },
+    {
+      "name": "relay-reviewed",
+      "surface": "committed",
+      "expected": true,
+      "admitted": true
+    },
+    {
+      "name": "relay-surrounding-edit",
+      "surface": "prompt",
+      "expected": true,
+      "admitted": true
+    },
+    {
+      "name": "relay-surrounding-edit",
+      "surface": "committed",
+      "expected": true,
+      "admitted": true
+    },
+    {
+      "name": "relay-password-changed",
+      "surface": "prompt",
+      "expected": false,
+      "admitted": false,
+      "reason": "findings"
+    },
+    {
+      "name": "relay-password-changed",
+      "surface": "committed",
+      "expected": false,
+      "admitted": false,
+      "reason": "findings"
+    },
+    {
+      "name": "relay-path-changed",
+      "surface": "prompt",
+      "expected": false,
+      "admitted": false,
+      "reason": "findings"
+    },
+    {
+      "name": "relay-path-changed",
+      "surface": "committed",
+      "expected": false,
+      "admitted": false,
+      "reason": "findings"
+    }
+  ],
+  "passed": true,
+  "limits": "Synthetic inputs and native admission only; no model call or live database authentication. Verification/error contracts additionally covered by focused tests."
+}

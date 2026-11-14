@@ -72,6 +72,39 @@ test("reviewed synthetic values survive surrounding edits and material changes",
   }
 });
 
+test("reviewed push relay fixture keeps exact native values across surrounding edits", () => {
+  const raw = ["https", "://", "user", ":", "pass", "@", "relay.example.com"].join("");
+  const value = raw + "/path";
+  for (const decoder of ["PLAIN", "HTML", "ESCAPED_UNICODE"]) {
+    const finding = uriFinding(value, { Raw: raw, DecoderName: decoder });
+    for (const prefix of ["", "// unrelated edit\n"]) {
+      const result = classify([finding], {
+        kind: "prompt",
+        id: "prompt",
+        bytes: Buffer.from(prefix + value),
+      });
+      assert.equal(result.kind, "classified", decoder);
+      assert.equal(JSON.stringify(result).includes(raw), false);
+    }
+    for (const override of [
+      { Raw: raw + "x" },
+      { RawV2: value + "x" },
+      { Verified: true },
+      { DetectorType: 10 },
+      { DetectorName: "Other" },
+      { DecoderName: "BASE64" },
+      { VerificationError: "" },
+      { SourceType: 0 },
+      { StructuredData: {} },
+      { SecretParts: { ...finding.SecretParts, password: "changed" } },
+      { ExtraData: {} },
+    ])
+      assert.equal(classify([{ ...finding, ...override }]).kind, "refused");
+    assert.equal(classify([finding], undefined, false).kind, "refused");
+    assert.equal(classify([finding, uriFinding(value + "x", { Raw: raw })]).kind, "refused");
+  }
+});
+
 test("reviewed password-only URI findings retain empty usernames", () => {
   for (const [raw, suffix] of [
     [["https://:", "example-password@status.example"].join(""), ""],
@@ -251,7 +284,7 @@ test("normalized Postgres findings never gain a value-only approval", () => {
 
 test("migrated approvals have distinct, complete detector and native value identities", () => {
   const keys = new Set<string>();
-  assert.equal(APPROVED_SYNTHETIC_VALUES.length, 92);
+  assert.equal(APPROVED_SYNTHETIC_VALUES.length, 93);
   for (const [type, name, decoders, raw, rawV2] of APPROVED_SYNTHETIC_VALUES) {
     assert.ok([10, 17, 895, 899, 938].includes(type));
     assert.ok(["JDBC", "URI", "MongoDB", "FTP", "Privacy"].includes(name));
