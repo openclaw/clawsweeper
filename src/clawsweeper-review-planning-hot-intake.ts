@@ -15,8 +15,14 @@ import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
 export function createReviewPlanningHotIntake(
   dependencies: ReviewPlanningDependencies & ReturnType<typeof createReviewPlanningInventory>,
 ) {
-  const { ghJson, fetchReviewedPrActivityCursor, ghPaged, githubCount, itemSourceRevisionSha256 } =
-    dependencies;
+  const {
+    ghJson,
+    fetchReviewedPrActivityCursor,
+    ghPaged,
+    githubCount,
+    itemSourceRevisionSha256,
+    issueActivityIsOwnedReviewWrite,
+  } = dependencies;
 
   type HotIntakeExactReviewSnapshot = {
     headSha: string;
@@ -145,8 +151,12 @@ export function createReviewPlanningHotIntake(
     now: number,
     reviewPolicy: string,
   ): boolean {
-    if (item.kind !== "pull_request") return false;
     if (hasReviewPolicyMismatch(review, reviewPolicy)) return false;
+    // A hot offer for an issue whose latest activity is ClawSweeper's own review write
+    // can only finish as a scheduled no-op, and nothing durable records that, so it
+    // was re-offered every hot pass. Its normal cadence review stays with backfill.
+    if (item.kind !== "pull_request")
+      return review !== null && issueActivityIsOwnedReviewWrite(item);
     if (!review || hasUncapturedActivitySinceExactReview(item, review)) return false;
     const reviewed = hotIntakeExactReviewSnapshotFromReport(review, now);
     if (!reviewed) return false;

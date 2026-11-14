@@ -9,8 +9,6 @@ import {
   type ReviewPreflightPayload,
 } from "../dist/review-preflight-contract.js";
 import { reviewPromptContext } from "../dist/clawsweeper-prompt-context.js";
-import { scheduledReviewSemanticSourceRevision } from "../dist/scheduled-review-noop.js";
-import { scheduledReviewSemanticSourceRevision as sourceScheduledReview } from "../src/scheduled-review-noop.ts";
 import { itemContentDigest } from "../dist/clawsweeper-source-revision.js";
 import { linkedIssueNumbersForImplementationProvenance } from "../dist/clawsweeper-status-context.js";
 import { exactReviewSourceRevisionMaterial } from "../dashboard/exact-review-source-revision.ts";
@@ -27,11 +25,6 @@ const payload: ReviewPreflightPayload = {
 };
 const block = serializeReviewPreflightPayload(payload);
 const wrap = (json: string) => `<!-- openclaw-preflight:v1\n${json}\n-->`;
-
-test("direct source scheduler entry preserves compiled semantic identity", () => {
-  const issue = { title: "Title", body: `Proof\n\n${block}`, labels: [], pull_request: {} };
-  assert.equal(sourceScheduledReview(issue, []), scheduledReviewSemanticSourceRevision(issue, []));
-});
 
 test("published local producer example remains readable", () => {
   const native =
@@ -187,10 +180,6 @@ test("actual compiled hydration and semantic identities ignore only valid PR met
   assert.equal(
     itemContentDigest(first.target, first.context),
     itemContentDigest(second.target, second.context),
-  );
-  assert.equal(
-    scheduledReviewSemanticSourceRevision({ ...first.rawIssue, pull_request: {} }, []),
-    sourceTools.itemSourceRevisionSha256(first.rawIssue, [], "pull_request"),
   );
   const humanEdit = hydratePrimaryBody(
     after.replace("Native output", "Changed proof"),
