@@ -301,6 +301,7 @@ function reviewPolicyHash(options: {
   model?: string;
   sandboxMode?: string;
   reviewModels?: [string, string];
+  runner?: "codex" | "openclaw";
 }): string {
   return sharedReviewPolicyHash(options, reviewRuntime);
 }

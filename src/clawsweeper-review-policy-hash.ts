@@ -5,7 +5,12 @@ import { targetRepo, targetProfile } from "./repository-profiles.js";
 import type { createReviewCoreRuntime } from "./clawsweeper-review-core.js";
 
 export function reviewPolicyHash(
-  options: { model?: string; sandboxMode?: string; reviewModels?: [string, string] },
+  options: {
+    model?: string;
+    sandboxMode?: string;
+    reviewModels?: [string, string];
+    runner?: "codex" | "openclaw";
+  },
   {
     reviewPromptTemplates,
     reviewDecisionSchemaText,
@@ -20,7 +25,13 @@ export function reviewPolicyHash(
       version: REVIEW_POLICY_VERSION,
       freshDays: FRESH_DAYS,
       ...(options.reviewModels
-        ? { independentReviews: { version: 1, models: options.reviewModels } }
+        ? {
+            independentReviews: {
+              version: 1,
+              models: options.reviewModels,
+              ...(options.runner === "openclaw" ? { runner: "openclaw", thinking: "high" } : {}),
+            },
+          }
         : {}),
       // Model changes roll through normal review cadence. Keep this sentinel
       // stable; bump REVIEW_POLICY_VERSION to invalidate stored reviews.

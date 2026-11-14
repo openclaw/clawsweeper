@@ -1,1 +1,1 @@
-- Add opt-in independent ordinary reviews with attributed results and conservative deterministic metadata reduction, without a consolidation model. Thanks @karkarl and @RomneyDa.
+- Add two independently bound native OpenClaw model reviews, including Claude–Astra at high thinking, with attributed results and conservative deterministic metadata reduction. Thanks @karkarl and @RomneyDa.

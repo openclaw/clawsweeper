@@ -1,3 +1,4 @@
+import { agentRunner } from "./agent-runner.js";
 import { independentReviewModels } from "./independent-reviews.js";
 import { reviewBodyWithoutPreflight } from "./review-preflight-body.js";
 import { readPrAdmissionInput } from "./clawsweeper-pr-admission-input.js";
@@ -357,7 +358,7 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
     const reviewPolicy = reviewPolicyHash({
       model,
       sandboxMode,
-      ...(reviewModels ? { reviewModels } : {}),
+      ...(reviewModels ? { reviewModels, runner: agentRunner() } : {}),
     });
     const explicitDispatch = isExplicitReviewDispatch(
       args,

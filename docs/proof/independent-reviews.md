@@ -2,6 +2,40 @@
 
 Status: historical controlled-runtime evidence, not provider qualification.
 
+## Native Claude–Astra binding
+
+The November 14 correction exercises the compiled ordinary review CLI through
+the installed OpenClaw 2026.11.3 (e741fd0) config reader, native agent loop,
+OpenRouter-compatible client and actual read-receipt plugin. The loopback model
+server supplies controlled responses; no real model provider is called.
+
+```sh
+CLAWSWEEPER_NATIVE_OPENCLAW_BIN="$(command -v openclaw)" \
+CLAWSWEEPER_NATIVE_PROOF_ARTIFACT_DIR="$PWD/.artifacts/claude-astra-native-boundary" \
+CLAWSWEEPER_REAL_SCANNER=1 node --test test/independent-openclaw-review.test.ts
+```
+
+Observed distinct native requests for `anthropic/claude-opus-5.5` and
+`openai/gpt-6-astra` under the explicit OpenRouter route. Both full reviews
+requested high thinking. Four fresh native CLI processes ran: each model's
+ordinary read-only inspection and full review. Actual read-tool receipts passed;
+neither full-review prompt received the other's answer. Both parsed Decisions,
+original recommendations, separate comment sections and proof holds survived.
+The regular controlled-process regression also checks failed-second/no-extra-
+review behavior and unchanged ambient-model selection for a single review.
+
+The public OpenRouter catalog on November 14 advertised both identifiers,
+reasoning and tool support. That metadata is not an execution receipt or
+long-context qualification. This proof uses a declared 128k fixture context,
+not the models' advertised larger windows. Artifacts are `calls.json`,
+`report.md` and `comment.md` in the requested ignored proof directory.
+
+**Real pair qualification remains incomplete** until the selected native
+credential handoff is admitted and both real provider results are retained.
+Controlled responses do not establish actual Claude/Astra reasoning or model
+identity. No credential/admin expansion, account fallback or paid inference retry
+is part of this proof. Existing Codex-path evidence follows as historical proof.
+
 ## Claim and surface
 
 The compiled ordinary review CLI can perform two independent full reviews,

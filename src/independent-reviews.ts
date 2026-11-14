@@ -20,11 +20,6 @@ export function independentReviewModels(args: Args): [string, string] | undefine
     );
   }
   if (args.review_models === undefined) return undefined;
-  if (process.env.CLAWSWEEPER_RUNNER && process.env.CLAWSWEEPER_RUNNER !== "codex") {
-    throw new UserFacingCommandError(
-      "--review-models currently supports only the existing Codex transport; it does not select OpenClaw providers.",
-    );
-  }
   const models = typeof args.review_models === "string" ? args.review_models.split(",") : [];
   if (
     models.length !== 2 ||

@@ -290,6 +290,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     model?: string;
     sandboxMode?: string;
     reviewModels?: [string, string];
+    runner?: "codex" | "openclaw";
   }) => string;
   reviewStructuralPullStateFromContext: (context: ItemContext) => ReviewStructuralPullState | null;
   runReviewCheckoutInspection: (options: {
@@ -306,6 +307,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     git: GitInfo;
     model: string;
     disableDecisionRepair?: boolean;
+    openclawModel?: string;
     openclawDir: string;
     reviewTreeRoot?: string;
     reasoningEffort: string;

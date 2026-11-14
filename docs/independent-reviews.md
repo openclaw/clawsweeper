@@ -10,18 +10,20 @@
   output limits, or ordinary execution guards change
 
 `review --review-models MODEL_A,MODEL_B` requests exactly two independent full
-ordinary reviews. Identifiers may be equal. Both use the existing Codex
-transport, author-selected effort/tier, repository AGENTS discovery, scanner,
+ordinary reviews. Identifiers may be equal. The default runner is Codex;
+BACKTICKCLAWSWEEPER_RUNNER=openclawBACKTICK selects the existing native OpenClaw harness.
+Both retain repository AGENTS discovery, scanner,
 read-only checkout inspection, credentials, source validation and output budgets.
-There is no new provider adapter, skill selector, coordinator setting, third
+There is no new provider SDK, skill selector, coordinator setting, third
 reviewer, consolidation model or generated consensus. The ordinary single-review
 path and its policy hash are unchanged when the flag is absent. The selected
-pair changes the opt-in policy hash, preventing single/pair cache interchange.
+pair changes the opt-in policy hash; OpenClaw pairs also bind runner/high-thinking
+identity, preventing reuse of a Codex-pair result for a native pair.
 Legacy `--multi-review-config`/`CLAWSWEEPER_MULTI_REVIEW_CONFIG` and
 coordinator JSON are rejected, not silently accepted or migrated.
 
 Each review starts fresh, receives an independently cloned original context,
-and has separate diagnostic/proof output. Neither receives the other's answer.
+and has separate diagnostic/proof output. Neither receives the other's current answer.
 The item deadline is shared, not reset for the second review. Both reviews share
 the existing retained model-output pools, reserved before media admission; media
 and report allowances and aggregate byte/file caps are not widened. Invalid output
@@ -30,6 +32,40 @@ has exactly two ordinary review invocations; scanner/deadline failure can stop
 earlier. No retry, rollout, apply or close is requested by this option.
 Requested identifiers are recorded as requests only: the executed model remains
 `unverified`. This is not evidence that two distinct actual models ran.
+
+## Claude and Astra through native OpenClaw
+
+```sh
+CLAWSWEEPER_RUNNER=openclaw pnpm run review -- --local-range --base origin/main \
+  --review-models openrouter/anthropic/claude-opus-5.5,openrouter/openai/gpt-6-astra
+```
+
+Each member selects its own provider-qualified model in its fresh native config
+and CLI invocation, including its existing checkout inspection. An ambient
+`CLAWSWEEPER_OPENCLAW_MODEL` cannot replace either member. Both full OpenClaw
+reviews request `--thinking high`. Codex pairs retain their existing author
+profile; single-review commands retain their existing model/effort selection.
+OpenRouter refs contain a provider plus a slash-bearing model id, as documented
+by the [native provider contract](https://docs.openclaw.ai/providers/openrouter).
+The equivalent direct Anthropic/OpenAI refs require those routes' own already
+admitted credentials; the command does not select a new account or fallback.
+
+The two ordinary OpenClaw reviews keep their two existing model-backed read-only
+checkout-inspection turns. These are capability checks, not a third review or a
+consolidator. Their read receipts, credential allowlist, source guards, shared
+deadline and aggregate output caps remain enforced. No shared Gateway state,
+reviewer admin access, key copying, provider fallback or credential setup is added.
+
+**Before enabling a real pair:** the isolated native processes must already have
+an operator-authorized credential binding for the chosen provider. A protected
+Gateway process-local sentinel is not proof of such a binding. Missing handoff
+is an external prerequisite, not permission to expose a key or switch accounts.
+The [native boundary proof](proof/independent-reviews.md#native-claudeastra-binding)
+uses real OpenClaw config/client code with controlled loopback responses; it is
+not live Claude/Astra reasoning qualification. No long-context variant is enabled
+or qualified here. Preserve explicit native provider context settings and qualify
+any separately requested context mode before enabling it; never relabel a default
+context run as long-context proof.
 
 ## Pure typed policies
 

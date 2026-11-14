@@ -6,7 +6,7 @@ import { writeFileSync } from "node:fs";
 import { UserFacingCommandError } from "./command.js";
 import { reviewStatusForDecision } from "./clawsweeper-report-document.js";
 import { AgentInputScanError } from "./agent-input-scan.js";
-import { reviewNetworkCapability } from "./agent-runner.js";
+import { agentRunner, reviewNetworkCapability } from "./agent-runner.js";
 import { mediaProofRuntimeHints } from "./clawsweeper-media-proof.js";
 import { PUBLIC_CODEX_MODEL } from "./codex-env.js";
 import { LOCAL_REVIEW_WEB_SEARCH_CONFIG } from "./commit-sweeper.js";
@@ -44,6 +44,7 @@ export function runPreparedReviewItem(
     git: GitInfo;
     model: string;
     reviewModels?: [string, string];
+    openclawModel?: string;
     disableDecisionRepair?: boolean;
     sandboxMode: string;
     localOnly: boolean;
@@ -86,6 +87,12 @@ export function runPreparedReviewItem(
         {
           ...ordinary,
           model,
+          ...(agentRunner() === "openclaw"
+            ? {
+                openclawModel: model,
+                itemCodexProfile: { ...options.itemCodexProfile, reasoningEffort: "high" },
+              }
+            : {}),
           disableDecisionRepair: true,
           context: {
             ...structuredClone(options.context),
@@ -241,6 +248,7 @@ export function runPreparedReviewItem(
           git,
           model,
           ...(options.disableDecisionRepair ? { disableDecisionRepair: true } : {}),
+          ...(options.openclawModel ? { openclawModel: options.openclawModel } : {}),
           openclawDir: reviewOpenclawDir,
           reviewTreeRoot: reviewTreesDir,
           reasoningEffort: itemCodexProfile.reasoningEffort,

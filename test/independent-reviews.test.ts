@@ -266,6 +266,11 @@ test("single-review policy hash is stable while opt-in pairs are distinct", () =
   assert.equal(single, reviewPolicyHash({ model: "other" }, dependencies));
   const pair = reviewPolicyHash({ reviewModels: ["a", "b"] }, dependencies);
   assert.notEqual(single, pair);
+  assert.equal(pair, reviewPolicyHash({ reviewModels: ["a", "b"], runner: "codex" }, dependencies));
+  assert.notEqual(
+    pair,
+    reviewPolicyHash({ reviewModels: ["a", "b"], runner: "openclaw" }, dependencies),
+  );
   assert.notEqual(pair, reviewPolicyHash({ reviewModels: ["b", "a"] }, dependencies));
 });
 
