@@ -1,0 +1,1 @@
+- Stuck queued-run remediation now reads only the newest page of each workflow's history, so a pass finishes in about 20 seconds instead of spending its whole 2-minute budget on history and cancelling nothing. Runs that GitHub refuses to cancel because they "have not been queued yet" are recorded as permanent zombies, so they stop using up the 10 cancellation slots each pass.
