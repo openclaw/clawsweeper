@@ -1378,6 +1378,7 @@ export class ExactReviewQueue {
         "/review-coverage/census/next",
         "/review-coverage/census/accept",
         "/review-coverage/census/fail",
+        "/review-coverage/census/release",
       ].includes(url.pathname)
     ) {
       try {
@@ -1390,7 +1391,9 @@ export class ExactReviewQueue {
               ? this.coverageCensus.next(body)
               : url.pathname.endsWith("/accept")
                 ? await this.coverageCensus.accept(body)
-                : this.coverageCensus.fail(body);
+                : url.pathname.endsWith("/release")
+                  ? this.coverageCensus.release(body)
+                  : this.coverageCensus.fail(body);
         return json(result);
       } catch (error) {
         // This reply is behind the signed, private census control route.

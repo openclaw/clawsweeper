@@ -28,6 +28,7 @@ export const CENSUS_PATHS = [
   "/internal/review-coverage/census/next",
   "/internal/review-coverage/census/accept",
   "/internal/review-coverage/census/fail",
+  "/internal/review-coverage/census/release",
 ] as const;
 export type CensusKind = "issue" | "pull_request";
 export type CensusRepository = {

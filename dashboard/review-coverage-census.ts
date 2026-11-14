@@ -1320,6 +1320,20 @@ export class ReviewCoverageCensusStore {
       return { ok: true };
     });
   }
+  // Only the attempt that holds the lease can end it early; any other caller is a no-op.
+  release(value: unknown, now = Date.now()) {
+    const v = censusRecord(value),
+      attempt = censusIdentifier(v.attempt);
+    if (v.version !== CENSUS.version) throw new Error("invalid census release");
+    return this.storage.transactionSync(() => {
+      const c = this.meta<Control>("control");
+      if (c && c.attempt === attempt && c.until >= now) {
+        c.until = now - 1;
+        this.putMeta("control", c);
+      }
+      return { ok: true };
+    });
+  }
   inventory(now = Date.now()): ReviewCoverageInventorySnapshot | null {
     const blocked = this.meta<boolean>("blocked") === true,
       capacity = this.meta<{ represented: boolean; sumOverflow: boolean }>("capacity");

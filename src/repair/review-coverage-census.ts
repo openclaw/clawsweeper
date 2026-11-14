@@ -10,6 +10,29 @@ export interface CensusProgressDiagnostic extends CensusDiagnostic {
   queries: number;
   accepted: number;
   failed: number;
+  readFault?: CensusReadFault;
+}
+type CensusReadFault = "timeout" | "rate_limited" | "http_5xx" | "http_4xx" | "graphql" | "unknown";
+// A closed label for a failed GitHub read. The message itself can name private
+// repositories or cursors, so it is matched here and never logged.
+function censusReadFault(error: unknown): CensusReadFault {
+  let text = "";
+  try {
+    const message =
+      error !== null && typeof error === "object"
+        ? Object.getOwnPropertyDescriptor(error, "message")
+        : undefined;
+    if (message && "value" in message && typeof message.value === "string") text = message.value;
+  } catch {
+    // Observability must not replace the original read failure.
+  }
+  if (/ETIMEDOUT|timed out|with signal SIG(TERM|KILL)/.test(text)) return "timeout";
+  if (/rate limit/i.test(text)) return "rate_limited";
+  const status = /HTTP (\d)\d\d/.exec(text)?.[1];
+  if (status === "5") return "http_5xx";
+  if (status === "4") return "http_4xx";
+  if (/^GraphQL:/m.test(text)) return "graphql";
+  return "unknown";
 }
 // Diagnostics are observational metadata, never a change to a caller-owned throw.
 const failureDiagnostics = new WeakMap<object, CensusDiagnostic>();
@@ -175,7 +198,21 @@ export async function prepareCensusObservation(
     throw error;
   }
 }
-export async function runReviewCoverageCensus(options: {
+export async function runReviewCoverageCensus(
+  options: Parameters<typeof collectReviewCoverageCensus>[0],
+) {
+  const attempt = options.observation?.attempt ?? options.attempt ?? randomUUID();
+  try {
+    return await collectReviewCoverageCensus({ ...options, attempt });
+  } finally {
+    // A finished attempt hands its lease back so the next scheduled run can start
+    // at once instead of failing with a lease conflict for five minutes.
+    await options
+      .control("/internal/review-coverage/census/release", { version: CENSUS.version, attempt })
+      .catch(() => undefined);
+  }
+}
+async function collectReviewCoverageCensus(options: {
   repositories: CensusRepository[];
   control: (path: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>;
   query: (query: string) => unknown | Promise<unknown>;
@@ -189,9 +226,15 @@ export async function runReviewCoverageCensus(options: {
   let queries = 0,
     accepted = 0,
     failed = 0;
-  const report = (diagnostic: CensusDiagnostic) => {
+  const report = (diagnostic: CensusDiagnostic, readFault?: CensusReadFault) => {
     try {
-      options.onDiagnostic?.({ ...diagnostic, queries, accepted, failed });
+      options.onDiagnostic?.({
+        ...diagnostic,
+        queries,
+        accepted,
+        failed,
+        ...(readFault ? { readFault } : {}),
+      });
     } catch {
       // Observability must not alter collection or replace its original failure.
     }
@@ -277,7 +320,10 @@ export async function runReviewCoverageCensus(options: {
             ? "graphql"
             : "schema",
       };
-      report(diagnostic);
+      report(
+        diagnostic,
+        diagnostic.category === "read_failed" ? censusReadFault(error) : undefined,
+      );
       failed++;
       try {
         await call("fail", { work });

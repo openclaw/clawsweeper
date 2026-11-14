@@ -411,6 +411,37 @@ test("throwing diagnostic observer cannot replace the primary control failure", 
       return true;
     },
   );
-  assert.equal(calls.length, 1);
+  // The only call after the failed start is the best-effort lease release.
+  assert.equal(calls.length, 2);
   assert.ok(calls[0].endsWith("start"));
+  assert.ok(calls[1].endsWith("release"));
 });
+
+for (const [message, readFault] of [
+  [`gh: Bad Gateway (HTTP 502) ${sentinel}`, "http_5xx"],
+  [`gh: API rate limit exceeded (HTTP 403) ${sentinel}`, "rate_limited"],
+  [`gh exited with signal SIGTERM ${sentinel}`, "timeout"],
+  [`GraphQL: Something went wrong ${sentinel}`, "graphql"],
+  [sentinel, "unknown"],
+]) {
+  test(`read failure reports closed read fault ${readFault} without the message`, async () => {
+    const diagnostics = [];
+    let assigned = false;
+    await runReviewCoverageCensus({
+      repositories,
+      query: () => {
+        throw new Error(message);
+      },
+      onDiagnostic: (d) => diagnostics.push(d),
+      control: async (path) => {
+        if (!path.endsWith("/next")) return { ok: true };
+        const items = assigned ? [] : [work];
+        assigned = true;
+        return { ok: true, work: items };
+      },
+    });
+    assert.equal(diagnostics[0].category, "read_failed");
+    assert.equal(diagnostics[0].readFault, readFault);
+    assert.ok(!JSON.stringify(diagnostics).includes(sentinel));
+  });
+}
