@@ -1,3 +1,4 @@
+import type { IndependentReview } from "./independent-reviews.js";
 import { isDeepStrictEqual } from "node:util";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import { parseOversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
@@ -266,6 +267,7 @@ function withoutRetiredDecisionFields(stored: Record<string, unknown>): Record<s
 function parseStoredDecision(value: unknown, subject: ReviewRecordSubject): Decision {
   const stored = withoutRetiredDecisionFields(storedObject(value, "decision"));
   const {
+    independentReviews,
     oversizedPullRequest,
     oversizedPullRequestSource,
     localCheckoutAccess,
@@ -318,6 +320,45 @@ function parseStoredDecision(value: unknown, subject: ReviewRecordSubject): Deci
       : { fixedPullRequest: parseFixedPullRequest(fixedPullRequest) },
     publicRegressionProvenance ? { regressionProvenance: publicRegressionProvenance } : {},
   );
+  if (independentReviews !== undefined) {
+    if (!Array.isArray(independentReviews) || independentReviews.length !== 2) {
+      throw new ReviewRecordFormatError("independentReviews must contain two reviews");
+    }
+    decision.independentReviews = independentReviews.map((value, index) => {
+      const review = storedObject(value, "independent review");
+      if (
+        Object.keys(review).some(
+          (key) =>
+            ![
+              "reviewer",
+              "requestedModel",
+              "executionModel",
+              "snapshotHash",
+              "status",
+              "decision",
+            ].includes(key),
+        ) ||
+        review.reviewer !== index + 1 ||
+        typeof review.requestedModel !== "string" ||
+        !review.requestedModel ||
+        review.executionModel !== "unverified" ||
+        typeof review.snapshotHash !== "string" ||
+        !/^[a-f0-9]{64}$/.test(review.snapshotHash) ||
+        (review.status !== "complete" && review.status !== "failed") ||
+        Object.hasOwn(storedObject(review.decision, "independent decision"), "independentReviews")
+      ) {
+        throw new ReviewRecordFormatError("invalid independent review metadata");
+      }
+      return {
+        reviewer: index === 0 ? 1 : 2,
+        requestedModel: review.requestedModel,
+        executionModel: "unverified",
+        snapshotHash: review.snapshotHash,
+        status: review.status,
+        decision: parseStoredDecision(review.decision, subject),
+      };
+    });
+  }
   const parsed = JSON.parse(JSON.stringify(decision)) as Record<string, unknown>;
   const changed = [...new Set([...Object.keys(parsed), ...Object.keys(stored)])].filter(
     (key) => !isDeepStrictEqual(parsed[key], stored[key]),
@@ -326,4 +367,15 @@ function parseStoredDecision(value: unknown, subject: ReviewRecordSubject): Deci
     throw new ReviewRecordFormatError(`decision.${changed.join(", decision.")} is not canonical`);
   }
   return decision;
+}
+
+/** Reuse ordinary presentation/policy with one immutable attributed decision. */
+export function reportForIndependentReview(markdown: string, review: IndependentReview): string {
+  let report = replaceFrontMatterValue(
+    markdown,
+    REVIEW_RECORD_KEY,
+    reviewRecordValue({ decision: review.decision }),
+  );
+  report = replaceFrontMatterValue(report, "review_status", review.status);
+  return report;
 }

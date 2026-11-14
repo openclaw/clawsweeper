@@ -1,0 +1,1 @@
+- Add two independently bound native OpenClaw model reviews, including Claude–Astra at high thinking, with attributed results and conservative deterministic metadata reduction. Thanks @karkarl and @RomneyDa.
