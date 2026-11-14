@@ -11,7 +11,7 @@
 
 `review --review-models MODEL_A,MODEL_B` requests exactly two independent full
 ordinary reviews. Identifiers may be equal. The default runner is Codex;
-BACKTICKCLAWSWEEPER_RUNNER=openclawBACKTICK selects the existing native OpenClaw harness.
+`CLAWSWEEPER_RUNNER=openclaw` selects the existing native OpenClaw harness.
 Both retain repository AGENTS discovery, scanner,
 read-only checkout inspection, credentials, source validation and output budgets.
 There is no new provider SDK, skill selector, coordinator setting, third
