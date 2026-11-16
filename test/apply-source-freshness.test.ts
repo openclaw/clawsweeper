@@ -121,7 +121,6 @@ function sourceFreshness(options: {
   truncatedActivity?: boolean;
   labelSyncRecorded?: boolean;
   timeline?: { event: string; actor: string; createdAt: string; label?: string }[];
-  markdown?: string;
 }) {
   const record = (value: unknown) =>
     value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -161,7 +160,7 @@ function sourceFreshness(options: {
       currentItemContext: () => context,
       currentState: () => ({
         isCloseProposal: options.isCloseProposal ?? true,
-        markdown: options.markdown ?? "---\ntype: pull_request\n---\n",
+        markdown: "---\ntype: pull_request\n---\n",
         storedUpdatedAt: reviewSnapshotAt,
       }),
       existingReviewComment: options.existingReviewComment ?? {
@@ -328,30 +327,6 @@ test("released review lease receipt cannot mask external or unrecorded activity"
     const freshness = releasedLeaseFreshness(options);
     assert.equal(freshness.automationOnlyUpdate, false, name);
     assert.equal(freshness.reviewedSourceFresh(), false, name);
-  }
-});
-
-test("apply's recorded lease release accounts for an update with no live trace", () => {
-  // Production: openclaw/openclaw#196836. Apply deleted its own lease comment ~10 minutes after
-  // the durable sync, outside the review-lease window, and the next apply requeued a review.
-  const releasedAt = "2026-09-28T01:40:00Z";
-  const recorded = `---\ntype: pull_request\nautomation_item_updated_at: ${releasedAt}\n---\n`;
-  assert.equal(releasedLeaseFreshness({ itemUpdatedAt: releasedAt }).automationOnlyUpdate, false);
-  const fresh = releasedLeaseFreshness({ itemUpdatedAt: releasedAt, markdown: recorded });
-  assert.equal(fresh.automationOnlyUpdate, true);
-  assert.equal(fresh.reviewedSourceFresh(), true);
-  for (const [name, options] of [
-    ["later update", { itemUpdatedAt: "2026-09-28T01:40:01Z" }],
-    ["changed activity receipt", { receiptMatches: false }],
-    ["non-automation activity", { nonAutomationActivityAfterSnapshot: true }],
-    ["tuple-less legacy review", { completeIdentity: false }],
-  ] as const) {
-    const stale = releasedLeaseFreshness({
-      itemUpdatedAt: releasedAt,
-      markdown: recorded,
-      ...options,
-    });
-    assert.equal(stale.automationOnlyUpdate, false, name);
   }
 });
 

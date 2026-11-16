@@ -464,21 +464,19 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     } | null = null;
     const currentPublicationLease = (): AcquiredReviewStartLease | null =>
       activeApplyMutationLease?.lease ?? null;
-    const releaseActiveApplyMutationLease = (): boolean => {
+    const releaseActiveApplyMutationLease = (): void => {
       const active = activeApplyMutationLease;
       activeApplyMutationLease = null;
-      if (!active) return false;
+      if (!active) return;
       try {
         deleteOwnedDedicatedReviewStartLease(active.itemNumber, active.lease, {
           throwOnError: true,
         });
-        return true;
       } catch (error) {
         if (error instanceof GitHubRateLimitError) throw error;
         console.error(
           `[apply] could not delete owned review lease comment ${active.lease.commentId}: ${mutationErrorMessage(error)}`,
         );
-        return false;
       }
     };
     runtimeBudget.onFailure = (error: unknown): void => {
@@ -570,6 +568,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const applyItemResultStart = results.length;
       let applyItemFailed = false;
       let currentApplyMutationGuard: (() => string | null) | null = null;
+      let postDeferredItemMutationLease: (() => string | null) | null = null;
       let currentCloseMutationPolicyGuard: ((mutationNumber: number) => string | null) | null = null;
       let recordApplyMutationGuardReason: ((reason: string) => boolean) | null = null;
       let issueLabelBatchActive = false;
@@ -703,6 +702,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         // Live guards and read invalidation apply even when receipt recording is disabled.
         try {
           if (!options.identity.startsWith("review_lease_")) {
+            const deferredLeaseReason = postDeferredItemMutationLease?.();
+            if (deferredLeaseReason) throw new ApplyMutationReviewGuardError(deferredLeaseReason);
             const mutationGuardReason = currentApplyMutationGuard?.();
             if (mutationGuardReason) {
               throw new ApplyMutationReviewGuardError(mutationGuardReason);
@@ -1254,9 +1255,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const {
         acquireApplyMutationLease,
         currentApplyMutationLeaseBlockReason,
+        postDeferredApplyMutationLease,
         refreshReviewStartLeaseState,
       } = createApplyLeaseGuards({
         ...applyReadDependencies,
+        deferLeasePost: true,
         canonicalBoundStaleReviewReason: (...args) => canonicalBoundStaleReviewReason(...args),
         closeDelayMs,
         currentReviewActivityBlock,
@@ -1285,6 +1288,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         return reason;
       };
       currentApplyMutationGuard = currentApplyMutationBoundaryBlockReason;
+      postDeferredItemMutationLease = postDeferredApplyMutationLease;
       let existingReviewComment: Record<string, unknown> | undefined;
       const pendingStaleCanonicalCommentReason = staleCanonicalCommentSyncPending
         ? staleCanonicalCommentSyncPendingReason(markdown)
@@ -2880,21 +2884,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         throw error;
       } finally {
         discardIssueLabelBatch();
-        // Deleting the lease comment moves updated_at with no live trace. Without a receipt the
-        // next apply saw source drift and requeued a review: openclaw/openclaw#196836 and #197741
-        // were re-reviewed about hourly for days. An open item keeps its report here.
-        if (releaseActiveApplyMutationLease() && !applyItemFailed && existsSync(path)) {
-          try {
-            const releasedAt = fetchApplyItem(number, { bypassGenerationCache: true }).item.updatedAt;
-            writeReportMarkdown(
-              path,
-              replaceFrontMatterValue(readFileSync(path, "utf8"), "automation_item_updated_at", releasedAt),
-            );
-          } catch (error) {
-            // Best effort: a missing receipt only means the next apply reads drift, as before.
-            console.error(`[apply] could not record lease release for #${number}: ${mutationErrorMessage(error)}`);
-          }
-        }
+        releaseActiveApplyMutationLease();
         setGuardReadGeneration(null);
         dependencies.activeApplyMutationRunner = previousApplyMutationRunner;
         if (!applyItemFailed) {
