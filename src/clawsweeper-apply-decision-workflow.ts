@@ -2891,7 +2891,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
               replaceFrontMatterValue(readFileSync(path, "utf8"), "automation_item_updated_at", releasedAt),
             );
           } catch (error) {
-            if (error instanceof GitHubRateLimitError) throw error;
+            // Best effort: a missing receipt only means the next apply reads drift, as before.
             console.error(`[apply] could not record lease release for #${number}: ${mutationErrorMessage(error)}`);
           }
         }
