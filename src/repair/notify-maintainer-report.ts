@@ -7,6 +7,7 @@ import { asJsonObject } from "./json-types.js";
 import { writeJsonFile } from "./json-file.js";
 import { parseArgs, repoRoot } from "./lib.js";
 import { boolEnv, stringOrNull } from "../value-coerce.js";
+import { readPublishedDailyReport } from "./maintainer-report-service.js";
 import {
   describeHookDelivery,
   errorText,
@@ -44,6 +45,8 @@ export type MaintainerReportNotifierRuntime = {
 };
 
 const DEFAULT_BASE_URL = "https://reports.openclaw.ai/";
+const DEFAULT_SERVICE_URL = "https://reports.openclaw.ai/service-preview/";
+const DEFAULT_DESTINATION = "https://reports.openclaw.ai/service/";
 const DEFAULT_REPORT_PATH = "notifications/maintainer-report-discord.json";
 const MAX_HIGHLIGHTS = 3;
 const MAX_HIGHLIGHT_CHARS = 220;
@@ -80,9 +83,11 @@ export function resolveDailyReportPointer({
 export function renderMaintainerReportMessage({
   report,
   reportUrl,
+  service = false,
 }: {
   report: JsonObject;
   reportUrl: string;
+  service?: boolean;
 }): string {
   const period = asJsonObject(report.period);
   const date =
@@ -97,10 +102,13 @@ export function renderMaintainerReportMessage({
   const topRows = highlights.length ? highlights : topMaintainerRows(report);
   const lines = [
     `OpenClaw maintainer report: ${title}`,
-    `${numberText(report.activeMaintainers)}/${numberText(report.maintainerCount)} active; ${numberText(github.commits)} commits, ${numberText(github.prsMerged)} merged PRs, ${numberText(github.issueComments)} issue/PR comments, ${numberText(discord.messages)} Discord messages.`,
+    `${numberText(report.activeMaintainers)}/${numberText(report.maintainerCount)} active; ${reportMetric(report, "github", "commits", github.commits)} commits, ${reportMetric(report, "github", "prsMerged", github.prsMerged)} merged PRs, ${reportMetric(report, "github", "issueComments", github.issueComments)} issue/PR comments, ${reportMetric(report, "discord", "messages", discord.messages)} Discord messages.`,
+    report.sources?.database
+      ? `Activity through ${report.sources.database.cutoff}. ${report.sources.database.complete === true ? "Complete source coverage." : "Partial source coverage; some activity may be missing."}`
+      : "",
     topRows.length ? "Highlights:" : "",
     ...topRows.map((row) => `- ${row}`),
-    `Full report: ${reportUrl}`,
+    `${service ? "Report reader" : "Full report"}: ${reportUrl}`,
   ];
   return lines.filter(Boolean).join("\n");
 }
@@ -115,9 +123,8 @@ export async function runMaintainerReportNotifier(
   const fetcher = runtime.fetch ?? fetch;
   const log = runtime.log ?? console.log;
   const now = runtime.now ?? (() => new Date());
-  const baseUrl = normalizeBaseUrl(
-    stringArg(args["base-url"]) ?? env.REPORTS_BASE_URL ?? DEFAULT_BASE_URL,
-  );
+  // Static input remains an explicit CLI compatibility mode for retained fixtures.
+  const staticBase = stringArg(args["base-url"]) ?? env.REPORTS_BASE_URL;
   const publicBaseUrl = normalizeBaseUrl(
     stringArg(args["public-base-url"]) ?? env.REPORTS_PUBLIC_BASE_URL ?? DEFAULT_BASE_URL,
   );
@@ -128,21 +135,50 @@ export async function runMaintainerReportNotifier(
   const deliver = boolEnv(env.CLAWSWEEPER_MAINTAINER_REPORT_DELIVER, true);
   const accessHeaders = resolveReportsAccessHeaders(env);
 
-  const pointer = await fetchReportPointer({
-    fetcher,
-    baseUrl,
-    publicBaseUrl,
-    ...(accessHeaders ? { headers: accessHeaders } : {}),
-    ...(date ? { date } : {}),
-  });
+  let pointer: MaintainerReportPointer | null;
+  let report: JsonObject;
+  if (staticBase) {
+    pointer = await fetchReportPointer({
+      fetcher,
+      baseUrl: normalizeBaseUrl(staticBase),
+      publicBaseUrl,
+      ...(accessHeaders ? { headers: accessHeaders } : {}),
+      ...(date ? { date } : {}),
+    });
+    report = pointer ? await fetchJson(fetcher, pointer.dataUrl, accessHeaders) : {};
+  } else {
+    const selected = await readPublishedDailyReport({
+      fetcher,
+      baseUrl: normalizeBaseUrl(
+        stringArg(args["service-url"]) ?? env.REPORTS_SERVICE_URL ?? DEFAULT_SERVICE_URL,
+      ),
+      destination:
+        stringArg(args["service-destination"]) ??
+        env.REPORTS_SERVICE_DESTINATION ??
+        DEFAULT_DESTINATION,
+      ...(accessHeaders ? { headers: accessHeaders } : {}),
+      ...(date ? { date } : {}),
+    });
+    pointer = selected
+      ? {
+          date: selected.date,
+          dataUrl: selected.dataUrl,
+          reportUrl: new URL("#current-reports", publicBaseUrl).href,
+        }
+      : null;
+    report = selected?.report ?? {};
+  }
   if (!pointer) {
     const summary = summaryRow("skipped", 0, 0, "daily report not found", null, null, strict);
     log(JSON.stringify(summary));
     return summary;
   }
 
-  const report = await fetchJson(fetcher, pointer.dataUrl, accessHeaders);
-  const message = renderMaintainerReportMessage({ report, reportUrl: pointer.reportUrl });
+  const message = renderMaintainerReportMessage({
+    report,
+    reportUrl: pointer.reportUrl,
+    service: !staticBase,
+  });
   const config = resolveOpenClawHookConfig(env);
   if (!config) {
     if (args["write-report"]) {
@@ -377,6 +413,39 @@ function numberValue(value: unknown): number {
 
 function numberText(value: unknown): string {
   return new Intl.NumberFormat("en-US").format(numberValue(value));
+}
+
+// Match the report reader's observed/unavailable distinction instead of turning
+// missing source coverage into apparently measured zeroes in a notification.
+function reportMetric(report: JsonObject, source: string, family: string, value: unknown): string {
+  const database = report.sources?.database;
+  if (!database) return numberText(value);
+  const cells = (report.sources.coverage ?? []).filter(
+    (cell: JsonObject) => cell.source === source && cell.family === family,
+  );
+  const located =
+    source !== "github" ||
+    (!database.unlocatedObservations && report.observationAvailability?.github?.[family]);
+  const complete =
+    cells.length > 0 &&
+    located &&
+    cells.every(
+      (cell: JsonObject) =>
+        cell.state === "complete" &&
+        cell.snapshot_id &&
+        cell.until &&
+        cell.covered_until >= cell.until,
+    );
+  if (complete) return numberText(value);
+  const observed = cells.some(
+    (cell: JsonObject) =>
+      cell.snapshot_id &&
+      ["complete", "partial"].includes(cell.state) &&
+      cell.covered_until > cell.since,
+  );
+  return numberValue(value) > 0 || observed
+    ? `${numberText(value)} observed (partial)`
+    : "Unavailable";
 }
 
 function clipText(value: string): string {

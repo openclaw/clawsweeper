@@ -21,8 +21,9 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
   REPORTS_PUBLIC_BASE_URL: https://reports.openclaw.ai/
+  REPORTS_SERVICE_URL: https://reports.openclaw.ai/service-preview/
+  REPORTS_SERVICE_DESTINATION: https://reports.openclaw.ai/service/
 
 concurrency:
   group: openclaw-maintainer-report-discord
@@ -34,26 +35,8 @@ jobs:
     runs-on: ${{ vars.CLAWSWEEPER_REPORT_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 10
     steps:
-      - name: Create maintainer repo token
-        id: maintainers_token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: openclaw
-          repositories: maintainers
-          permission-contents: read
-
       - uses: actions/checkout@v7
         with:
-          filter: blob:none
-          persist-credentials: false
-
-      - uses: actions/checkout@v7
-        with:
-          repository: openclaw/maintainers
-          path: maintainers
-          token: ${{ steps.maintainers_token.outputs.token }}
           filter: blob:none
           persist-credentials: false
 
@@ -67,7 +50,6 @@ jobs:
           CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: ${{ secrets.CLAWSWEEPER_OPENCLAW_HOOK_TOKEN }}
           CLAWSWEEPER_OPENCLAW_AGENT_ID: ${{ vars.CLAWSWEEPER_OPENCLAW_AGENT_ID || 'clawsweeper' }}
           CLAWSWEEPER_DISCORD_TARGET: ${{ vars.CLAWSWEEPER_DISCORD_TARGET || 'channel:1456744319972282449' }}
-          REPORTS_BASE_URL: file://${{ github.workspace }}/maintainers/reports/
           REPORTS_ACCESS_CLIENT_ID: ${{ secrets.OPENCLAW_REPORTS_ACCESS_CLIENT_ID || secrets.CLOUDFLARE_ACCESS_CLIENT_ID }}
           REPORTS_ACCESS_CLIENT_SECRET: ${{ secrets.OPENCLAW_REPORTS_ACCESS_CLIENT_SECRET || secrets.CLOUDFLARE_ACCESS_CLIENT_SECRET }}
           CLAWSWEEPER_MAINTAINER_REPORT_DATE: ${{ github.event_name == 'workflow_dispatch' && inputs.date || '' }}

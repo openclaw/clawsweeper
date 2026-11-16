@@ -121,19 +121,22 @@ test("runMaintainerReportNotifier fetches the live report and posts the hook", a
     });
   };
 
-  const summary = await runMaintainerReportNotifier(["--write-report"], {
-    root,
-    fetch: fetcher,
-    log: () => undefined,
-    now: () => new Date("2026-05-22T12:00:00.000Z"),
-    env: {
-      CLAWSWEEPER_OPENCLAW_HOOK_URL: "https://claw.example/hooks",
-      CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: "secret",
-      CLAWSWEEPER_DISCORD_TARGET: "channel:123",
-      REPORTS_ACCESS_CLIENT_ID: "access-id",
-      REPORTS_ACCESS_CLIENT_SECRET: "access-secret",
+  const summary = await runMaintainerReportNotifier(
+    ["--write-report", "--base-url", "https://reports.openclaw.ai/"],
+    {
+      root,
+      fetch: fetcher,
+      log: () => undefined,
+      now: () => new Date("2026-05-22T12:00:00.000Z"),
+      env: {
+        CLAWSWEEPER_OPENCLAW_HOOK_URL: "https://claw.example/hooks",
+        CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: "secret",
+        CLAWSWEEPER_DISCORD_TARGET: "channel:123",
+        REPORTS_ACCESS_CLIENT_ID: "access-id",
+        REPORTS_ACCESS_CLIENT_SECRET: "access-secret",
+      },
     },
-  });
+  );
 
   assert.equal(summary.sent, 1);
   assert.equal(summary.date, "2026-05-22");
@@ -178,22 +181,28 @@ test("runMaintainerReportNotifier supports dry-run and strict missing config", a
     return Response.json(report);
   };
 
-  const dryRun = await runMaintainerReportNotifier(["--dry-run"], {
-    fetch: fetcher,
-    log: () => undefined,
-    env: {
-      CLAWSWEEPER_OPENCLAW_HOOK_URL: "https://claw.example/hooks",
-      CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: "secret",
-      CLAWSWEEPER_DISCORD_TARGET: "channel:123",
+  const dryRun = await runMaintainerReportNotifier(
+    ["--dry-run", "--base-url", "https://reports.openclaw.ai/"],
+    {
+      fetch: fetcher,
+      log: () => undefined,
+      env: {
+        CLAWSWEEPER_OPENCLAW_HOOK_URL: "https://claw.example/hooks",
+        CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: "secret",
+        CLAWSWEEPER_DISCORD_TARGET: "channel:123",
+      },
     },
-  });
+  );
   assert.equal(dryRun.sent, 1);
 
-  const missingConfig = await runMaintainerReportNotifier(["--strict"], {
-    fetch: fetcher,
-    log: () => undefined,
-    env: {},
-  });
+  const missingConfig = await runMaintainerReportNotifier(
+    ["--strict", "--base-url", "https://reports.openclaw.ai/"],
+    {
+      fetch: fetcher,
+      log: () => undefined,
+      env: {},
+    },
+  );
   assert.equal(missingConfig.status, "skipped");
   assert.equal(missingConfig.exitCode, 1);
 });

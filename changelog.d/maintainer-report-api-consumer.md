@@ -1,0 +1,1 @@
+- Read daily maintainer notifications from the verified published-report API instead of checking out report files, retaining public links and explicit partial coverage.

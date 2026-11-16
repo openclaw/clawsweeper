@@ -188,6 +188,42 @@ When adding another ClawSweeper-to-OpenClaw event:
 Do not send directly from every worker. Send once from the publish/finalizer job
 after deterministic apply has produced a single authoritative report.
 
+## Maintainer Report Notifications
+
+The daily maintainer-report workflow reads the published-report API at
+`https://reports.openclaw.ai/service-preview/`, selecting the confirmed
+`https://reports.openclaw.ai/service/` destination. It no longer checks out the
+maintainers repository to read report files. Existing `REPORTS_ACCESS_CLIENT_ID`
+and `REPORTS_ACCESS_CLIENT_SECRET` aliases provide Cloudflare Access credentials;
+the workflow uses its existing repository secrets.
+
+The notifier reads the complete bounded catalog, pins its snapshot and receipt,
+verifies the report artifact hash, and decodes `report-json/v1` when compressed.
+Coverage acknowledgements and source cutoffs remain part of verification.
+Unavailable metrics are labeled unavailable; partial counts remain observed
+counts. No static report fallback runs on an API failure. The separate public link
+points to the API-backed reader at `https://reports.openclaw.ai/#current-reports`;
+date-specific static links remain only in explicit static input mode.
+
+Use `--service-url` / `REPORTS_SERVICE_URL` and `--service-destination` /
+`REPORTS_SERVICE_DESTINATION` to select an existing service. The client bounds a
+catalog to 10,000 entries, 256 KiB per page and 32 MiB total, a report to 20 MiB
+on the wire and 64 MiB decoded, and the complete read to 60 seconds. Redirects
+are rejected.
+`--date YYYY-MM-DD` selects that exact daily report; a missing date never falls
+back to the newest report. For a notification-free check:
+
+```sh
+pnpm run repair:notify-maintainer-report -- --dry-run --date 2026-05-22
+```
+
+The explicit `--base-url` / `REPORTS_BASE_URL` static input mode remains for
+existing offline fixtures. The scheduled workflow does not select it.
+`REPORTS_PUBLIC_BASE_URL` controls links independently of the API location.
+The API adapter follows the maintained `report-accepted-export.mjs`,
+`report-json.mjs`, and `report-public-acceptance.mjs` contracts in
+`openclaw/maintainers`; changes to those wire contracts must update its tests.
+
 ## GitHub Activity Stream
 
 The `github activity to openclaw` workflow feeds GitHub activity to the
