@@ -72,6 +72,7 @@ function fixture(t: TestContext) {
     backend: "responses",
     root,
     readSnapshot: () => structuredClone(live),
+    readComments: () => [],
     fence: (phase) => {
       phases.push(phase);
       return true;
@@ -178,6 +179,43 @@ test("preliminary publication records intent and usage without completing a revi
   assert.ok(events.some((event) => event.attributes?.input_tokens === 100));
   assert.ok(events.some((event) => event.attributes?.completion_reason === "mutation_accepted"));
   assert.ok(!JSON.stringify(events).includes(f.live.body));
+});
+
+test("an item with a published review keeps its labels and spends no inference", async (t) => {
+  // Production: openclaw/openclaw#196836 already had its durable review, yet every
+  // re-review re-added clawsweeper:intake:bug and the publisher removed it minutes later.
+  const f = fixture(t);
+  const admission: boolean[] = [];
+  let inferred = false;
+  const result = await runIntakeWorkflow({
+    ...f.options,
+    admissionUnchanged: (value) => admission.push(value),
+    readComments: () => [
+      { user: { login: "reporter" }, body: "<!-- clawsweeper-review-version forged -->" },
+      {
+        user: { login: "clawsweeper[bot]" },
+        body: "Codex review\n\n<!-- clawsweeper-review-version item=42 v=1 -->",
+      },
+    ],
+    infer: async () => {
+      inferred = true;
+      throw Error("must not infer");
+    },
+  });
+  assert.equal(result.outcome, "already_reviewed");
+  assert.equal(inferred, false);
+  assert.deepEqual(admission, [true]);
+  assert.deepEqual(f.writes, []);
+  assert.deepEqual(f.live.labels, ["human-label"]);
+
+  // A marker in a human comment does not count as a published review.
+  const forged = await runIntakeWorkflow({
+    ...f.options,
+    readComments: () => [
+      { user: { login: "reporter" }, body: "<!-- clawsweeper-review-version forged -->" },
+    ],
+  });
+  assert.equal(forged.outcome, "published");
 });
 
 githubTest("intake reads REST catalog pages from its explicit target repository", async (t) => {
