@@ -340,11 +340,6 @@ export function createApplySourceFreshness(
       itemUpdatedAtMs - latestOwnedWriteMs <= OWNED_LEASE_RELEASE_RECEIPT_WINDOW_MS
     );
   };
-  // Apply's own mutation lease is a dedicated comment that apply deletes on release, so GitHub
-  // moves updated_at and leaves no live trace. Apply records the resulting updated_at as
-  // automation_item_updated_at, like its other owned writes; the checks below still apply.
-  const recordedOwnedWriteAccountsForUpdate = (): boolean =>
-    frontMatterValue(markdown, "automation_item_updated_at") === item.updatedAt;
   // Every receipt also requires that no non-automation comment, review comment, or timeline
   // event (including a human edit of a managed label) is visible after the review snapshot.
   // The first failed condition is kept for drift diagnostics; evaluation order and short-circuit
@@ -358,13 +353,7 @@ export function createApplySourceFreshness(
     if (!updatedSinceReview) return fail("not_updated_since_review");
     if (!reviewHasCompleteActivityIdentity) return fail("no_complete_activity_identity");
     if (storedUpdatedAtMs === null) return fail("no_stored_updated_at");
-    if (
-      !(
-        exactOwnedWriteAccountsForUpdate() ||
-        releasedReviewLeaseAccountsForUpdate() ||
-        recordedOwnedWriteAccountsForUpdate()
-      )
-    ) {
+    if (!(exactOwnedWriteAccountsForUpdate() || releasedReviewLeaseAccountsForUpdate())) {
       return fail("no_owned_write_at_item_updated_at");
     }
     if (!completeAutomationReceiptMatchesReview()) return fail("activity_receipt_mismatch");

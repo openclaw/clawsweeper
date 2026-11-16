@@ -856,6 +856,14 @@ oversized-PR generation parked as `locked_conversation` or
 lease-comment writes on an oversized PR cannot reclaim it. Organic events,
 commands, a pushed head, and parked-review reconciliation release the hold.
 
+Apply posts its own mutation lease comment only right before its first write to an
+item, and deletes it when the item is done. Deleting a comment moves the item's
+`updated_at` and leaves no live trace, and GitHub can still return the old value
+on a read right after the delete. So a visit that writes nothing (for example a
+close proposal kept open for a maintainer decision) must not post one, or the
+next apply visit reads its own lease as source drift and requeues a review. A
+visit that writes can cause one such requeue; the following visit writes nothing.
+
 Exact PR review marks ClawSweeper's own acknowledgement comment
 (`clawsweeper-pr-ack`) complete after the review snapshot and before direct
 publication, and GitHub moves the PR's `updated_at` for that edit. The producer's
@@ -878,11 +886,6 @@ matches the live item:
   the latest update follows the generation's last recorded ClawSweeper write by
   at most five minutes (the shortest apply-lease hold), and no non-automation
   comment, review comment, or timeline event is visible after the snapshot.
-- the item's latest `updated_at` equals the report's `automation_item_updated_at`.
-  Apply records that value after its own writes, including releasing its
-  mutation lease: deleting the lease comment moves `updated_at` and leaves no
-  live comment to match. The complete activity receipt must still match, and no
-  non-automation activity can follow the snapshot.
 
 Any other change in the window, including a human comment, title/body or label
 edit, PR review, or new head, still records `skipped_changed_since_review` and

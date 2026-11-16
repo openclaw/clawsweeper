@@ -37,6 +37,8 @@ type ApplyLeaseGuardDependencies = Pick<
   number: number;
   reportReviewRevision: string | null;
   requiresApplyMutationLease: boolean;
+  /** Post apply's own lease at the first item write instead of before the decision. */
+  deferLeasePost?: boolean;
   setActiveApplyMutationLease: (lease: ActiveApplyMutationLease) => void;
 };
 
@@ -59,6 +61,7 @@ export function createApplyLeaseGuards({
   postReviewStartStatusComment,
   reportReviewRevision,
   requiresApplyMutationLease,
+  deferLeasePost = false,
   setActiveApplyMutationLease,
   shouldPreserveReviewStartLease,
   targetRepo,
@@ -252,6 +255,11 @@ export function createApplyLeaseGuards({
     }
   };
 
+  // Posting apply's own lease comment is deferred until the first item write: deleting it
+  // later moves the item's updated_at with no live trace, and GitHub reads back the old
+  // value right after the delete, so a visit that writes nothing must not post one.
+  // openclaw/openclaw#196836 was re-reviewed hourly because every kept_open visit did.
+  let deferredLeaseHeadSha: string | null = null;
   const acquireApplyMutationLease = (
     leaseState: ReturnType<typeof refreshReviewStartLeaseState>,
   ): string | null => {
@@ -266,24 +274,32 @@ export function createApplyLeaseGuards({
         commentId: leaseState.lease.commentId,
         headSha: leaseState.headSha,
       };
+    } else if (deferLeasePost) {
+      deferredLeaseHeadSha = leaseState.headSha;
+      return null;
     } else {
-      const posted = postReviewStartStatusComment({
-        item,
-        headSha: leaseState.headSha,
-        reviewTimeoutMs: Math.max(5 * 60 * 1000, closeDelayMs + 60 * 1000),
-        position: 1,
-        total: 1,
-        shardIndex: 1,
-        shardCount: 1,
-        purpose: "apply",
-      });
-      if (posted.status !== "posted") {
-        return `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper lease was acquired concurrently`;
-      }
-      lease = posted.lease;
+      return postApplyMutationLease(leaseState.headSha);
     }
     setActiveApplyMutationLease({ itemNumber: number, lease });
     return ownedApplyMutationLeaseBlockReason(lease);
+  };
+
+  const postApplyMutationLease = (headSha: string): string | null => {
+    const posted = postReviewStartStatusComment({
+      item,
+      headSha,
+      reviewTimeoutMs: Math.max(5 * 60 * 1000, closeDelayMs + 60 * 1000),
+      position: 1,
+      total: 1,
+      shardIndex: 1,
+      shardCount: 1,
+      purpose: "apply",
+    });
+    if (posted.status !== "posted") {
+      return `${item.kind === "pull_request" ? "same-head" : "same-revision"} ClawSweeper lease was acquired concurrently`;
+    }
+    setActiveApplyMutationLease({ itemNumber: number, lease: posted.lease });
+    return ownedApplyMutationLeaseBlockReason(posted.lease);
   };
 
   const currentApplyMutationLeaseBlockReason = (): string | null => {
@@ -291,15 +307,25 @@ export function createApplyLeaseGuards({
     if (reviewActivityBlock) return reviewActivityBlock;
     if (dryRun || !requiresApplyMutationLease) return null;
     const active = getActiveApplyMutationLease();
+    // A deferred lease is posted by the mutation runner right before the first write.
+    if ((!active || active.itemNumber !== number) && deferredLeaseHeadSha !== null) return null;
     if (!active || active.itemNumber !== number) return "apply mutation lease is not held";
     // The live two-read activity barrier above already ran for this boundary;
     // repeating it back to back would only add two GraphQL round trips.
     return ownedApplyMutationLeaseBlockReason(active.lease, true);
   };
 
+  const postDeferredApplyMutationLease = (): string | null => {
+    if (deferredLeaseHeadSha === null) return null;
+    const headSha = deferredLeaseHeadSha;
+    deferredLeaseHeadSha = null;
+    return postApplyMutationLease(headSha);
+  };
+
   return {
     acquireApplyMutationLease,
     currentApplyMutationLeaseBlockReason,
+    postDeferredApplyMutationLease,
     refreshReviewStartLeaseState,
   };
 }
