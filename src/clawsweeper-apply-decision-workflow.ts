@@ -464,19 +464,21 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     } | null = null;
     const currentPublicationLease = (): AcquiredReviewStartLease | null =>
       activeApplyMutationLease?.lease ?? null;
-    const releaseActiveApplyMutationLease = (): void => {
+    const releaseActiveApplyMutationLease = (): boolean => {
       const active = activeApplyMutationLease;
       activeApplyMutationLease = null;
-      if (!active) return;
+      if (!active) return false;
       try {
         deleteOwnedDedicatedReviewStartLease(active.itemNumber, active.lease, {
           throwOnError: true,
         });
+        return true;
       } catch (error) {
         if (error instanceof GitHubRateLimitError) throw error;
         console.error(
           `[apply] could not delete owned review lease comment ${active.lease.commentId}: ${mutationErrorMessage(error)}`,
         );
+        return false;
       }
     };
     runtimeBudget.onFailure = (error: unknown): void => {
@@ -2878,7 +2880,21 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         throw error;
       } finally {
         discardIssueLabelBatch();
-        releaseActiveApplyMutationLease();
+        // Deleting the lease comment moves updated_at with no live trace. Without a receipt the
+        // next apply saw source drift and requeued a review: openclaw/openclaw#196836 and #197741
+        // were re-reviewed about hourly for days. An open item keeps its report here.
+        if (releaseActiveApplyMutationLease() && !applyItemFailed && existsSync(path)) {
+          try {
+            const releasedAt = fetchApplyItem(number, { bypassGenerationCache: true }).item.updatedAt;
+            writeReportMarkdown(
+              path,
+              replaceFrontMatterValue(readFileSync(path, "utf8"), "automation_item_updated_at", releasedAt),
+            );
+          } catch (error) {
+            // Best effort: a missing receipt only means the next apply reads drift, as before.
+            console.error(`[apply] could not record lease release for #${number}: ${mutationErrorMessage(error)}`);
+          }
+        }
         setGuardReadGeneration(null);
         dependencies.activeApplyMutationRunner = previousApplyMutationRunner;
         if (!applyItemFailed) {

@@ -1924,6 +1924,12 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
     assert.deepEqual(JSON.parse(readText(reportPath)), []);
     assert.match(readText(join(itemsDir, "321.md")), /^action_taken: kept_open$/m);
     assert.equal(existsSync(leaseDeleted), true);
+    // Deleting the lease comment leaves no live trace, so apply records the item's resulting
+    // updated_at; the next apply would otherwise read it as source drift and requeue a review.
+    assert.match(
+      readText(join(itemsDir, "321.md")),
+      new RegExp(`^automation_item_updated_at: ${reviewedAt}$`, "m"),
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

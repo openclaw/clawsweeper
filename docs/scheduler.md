@@ -878,6 +878,11 @@ matches the live item:
   the latest update follows the generation's last recorded ClawSweeper write by
   at most five minutes (the shortest apply-lease hold), and no non-automation
   comment, review comment, or timeline event is visible after the snapshot.
+- the item's latest `updated_at` equals the report's `automation_item_updated_at`.
+  Apply records that value after its own writes, including releasing its
+  mutation lease: deleting the lease comment moves `updated_at` and leaves no
+  live comment to match. The complete activity receipt must still match, and no
+  non-automation activity can follow the snapshot.
 
 Any other change in the window, including a human comment, title/body or label
 edit, PR review, or new head, still records `skipped_changed_since_review` and
