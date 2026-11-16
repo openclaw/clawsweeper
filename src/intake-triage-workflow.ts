@@ -31,6 +31,7 @@ import {
 import { runResponsesIntake, type IntakeApiOptions } from "./intake-triage-api.js";
 import { runDecisionsIntake } from "./intake-triage-decisions.js";
 import { isRecord } from "./value-coerce.js";
+import { isClawSweeperComment } from "./clawsweeper-review-comments.js";
 
 export interface IntakeSnapshot extends IntakePacket {
   state: string;
@@ -52,6 +53,7 @@ export interface IntakeWorkflowOptions {
   gh?: LabelGh;
   infer?: (options: IntakeApiOptions) => Promise<IntakeResult>;
   admissionUnchanged?: (value: boolean) => void;
+  readComments?: () => unknown[];
 }
 class IntakeGuardError extends Error {
   constructor() {
@@ -118,12 +120,11 @@ function snapshotIdentity(snapshot: IntakeSnapshot): string {
 export async function runIntakeWorkflow(
   options: IntakeWorkflowOptions,
 ): Promise<{ outcome: string; labels: string[] }> {
-  // Bypass the old admission handoff before any possible item write. The next
-  // review must hydrate post-intake labels and timestamps, including uncertain writes.
   const model = options.model?.trim() || INTAKE_DEFAULT_MODEL;
-  const disabled = !options.apiKey.trim() || model === "off";
-  options.admissionUnchanged?.(disabled);
-  if (disabled) return { outcome: "disabled", labels: [] };
+  if (!options.apiKey.trim() || model === "off") {
+    options.admissionUnchanged?.(true);
+    return { outcome: "disabled", labels: [] };
+  }
   return withGitHubRun(async () => {
     const env = process.env;
     const root = options.root ?? repoRoot();
@@ -144,6 +145,36 @@ export async function runIntakeWorkflow(
       (snapshot.kind === "pull_request" && snapshot.headSha !== env.EXACT_REVIEW_SOURCE_HEAD_SHA)
     )
       throw new IntakeGuardError();
+    // Preliminary labels mean "full source review pending". Once a review is published,
+    // the publisher removes them, and re-adding one on every re-review moved the item
+    // after each review: openclaw#196836 was labeled and unlabeled 48 times, each removal
+    // arriving as an organic `unlabeled` event that reset the source-drift loop breaker.
+    const comments =
+      options.readComments?.() ??
+      ghJson<unknown[][]>(
+        [
+          "api",
+          `repos/${options.repository}/issues/${options.number}/comments?per_page=100`,
+          "--paginate",
+          "--slurp",
+        ],
+        { timeoutMs: 10_000 },
+      ).flat();
+    if (
+      comments.some(
+        (comment) =>
+          isClawSweeperComment(comment) &&
+          isRecord(comment) &&
+          typeof comment.body === "string" &&
+          comment.body.includes("<!-- clawsweeper-review-version "),
+      )
+    ) {
+      options.admissionUnchanged?.(true);
+      return { outcome: "already_reviewed", labels: [] };
+    }
+    // Bypass the old admission handoff before any possible item write. The next
+    // review must hydrate post-intake labels and timestamps, including uncertain writes.
+    options.admissionUnchanged?.(false);
     const request = intakeRequest(snapshot);
     const subject = {
       repository: options.repository,

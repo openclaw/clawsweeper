@@ -66,8 +66,10 @@ and trusted scanner setup, before target-source checkout and review hydration.
 Held or superseded reservations skip runner and target-source preparation.
 Its preliminary labels remain visible during target-source preparation and the
 full review. This is a bounded serial intake phase, not a second background
-writer. Oversized metadata-only reviews skip it. A failed optional phase does
-not block full review. The automatic acknowledgement changes to reviewing only
+writer. Oversized metadata-only reviews skip it, and so does an item that
+already carries a published ClawSweeper review comment: its labels would only
+be removed again by that review's publisher, and each removal looked like new
+source activity. A failed optional phase does not block full review. The automatic acknowledgement changes to reviewing only
 after source preparation succeeds.
 
 The publisher checks the queue lease/generation and unchanged item snapshot
@@ -78,7 +80,7 @@ existing action ledger. Interrupted writes are finalized as unknown outcomes,
 even when the later full review succeeds. They never complete a review request
 or its cache.
 
-Enabled intake invalidates the earlier PR-admission handoff even after an
+Enabled intake that may write invalidates the earlier PR-admission handoff even after an
 uncertain write or process failure, so source review hydrates current labels
 and timestamps. Only a current complete review removes preliminary labels,
 through the existing guarded label batch. Failed, stale and incomplete reviews
