@@ -133,7 +133,7 @@ const st = JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}, "utf8"));
 const save = () => fs.writeFileSync(${JSON.stringify(statePath)}, JSON.stringify(st));
 const now = () => { st.tick += 1; return new Date(Date.now() + st.tick * 1000).toISOString().replace(/\\.\\d+Z$/, "Z"); };
 const include = args.includes("-i") || args.includes("--include");
-const path = args.find((a, i) => i > 0 && !a.startsWith("-") && !["GET","POST","PATCH","DELETE"].includes(a) && !/^(body|-)/.test(a) && (args[i-1] || "") !== "-H" && (args[i-1] || "") !== "-f" && (args[i-1] || "") !== "--raw-field" && (args[i-1] || "") !== "--input" && (args[i-1] || "") !== "-X" && (args[i-1] || "") !== "--method" && (args[i-1] || "") !== "--jq" && (args[i-1] || "") !== "-q") || "";
+const path = args.find((arg, index) => index > 0 && /^(repos|search)\\//.test(arg)) || "";
 const mi = args.findIndex((a) => a === "-X" || a === "--method");
 const method = mi >= 0 ? args[mi + 1].toUpperCase() : "GET";
 const out = (v) => console.log(include ? "HTTP/2 200\\n\\n" + JSON.stringify(v) : JSON.stringify(v));
