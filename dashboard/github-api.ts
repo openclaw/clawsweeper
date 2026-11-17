@@ -144,8 +144,10 @@ export async function githubAppJson(
   options: GithubAppJsonOptions = {},
   env: GithubApiEnv = {},
 ) {
-  if (options.maxResponseBytes !== undefined &&
-    (!Number.isSafeInteger(options.maxResponseBytes) || options.maxResponseBytes < 1)) {
+  if (
+    options.maxResponseBytes !== undefined &&
+    (!Number.isSafeInteger(options.maxResponseBytes) || options.maxResponseBytes < 1)
+  ) {
     throw new Error("Invalid GitHub response byte limit");
   }
   const signal = AbortSignal.timeout(GITHUB_APP_TIMEOUT_MS);
@@ -171,7 +173,8 @@ export async function githubAppJson(
       const reader = response.body?.getReader();
       if (!reader) return "";
       const decoder = new TextDecoder();
-      let bytes = 0, result = "";
+      let bytes = 0,
+        result = "";
       try {
         while (true) {
           const part = await reader.read();

@@ -119,13 +119,19 @@ export function resolveReviewAuthority(
     !Number.isFinite(options.maxAgeMs) ||
     options.maxAgeMs < 0 ||
     (options.outsideCollaboratorId !== undefined &&
-      (!Number.isSafeInteger(options.outsideCollaboratorId) || options.outsideCollaboratorId <= 0 ||
+      (!Number.isSafeInteger(options.outsideCollaboratorId) ||
+        options.outsideCollaboratorId <= 0 ||
         options.organizationMembership !== undefined)) ||
-    (options.organizationOutsideCollaborator !== undefined && options.outsideCollaboratorId === undefined)
+    (options.organizationOutsideCollaborator !== undefined &&
+      options.outsideCollaboratorId === undefined)
   ) {
     return result("unknown", "invalid_evidence");
   }
-  for (const observation of [options.repositoryPermission, options.organizationMembership, options.organizationOutsideCollaborator]) {
+  for (const observation of [
+    options.repositoryPermission,
+    options.organizationMembership,
+    options.organizationOutsideCollaborator,
+  ]) {
     if (!observation) continue;
     if (identity(observation.repository) !== repository || identity(observation.actor) !== actor) {
       return result("unknown", "subject_mismatch");
@@ -148,8 +154,12 @@ export function resolveReviewAuthority(
     const outside = asRecord(options.organizationOutsideCollaborator?.value);
     if (!Object.keys(outside).length) return result("unknown", "unavailable");
     const user = asRecord(asRecord(options.repositoryPermission?.value).user);
-    if (outside.id !== options.outsideCollaboratorId || user.id !== outside.id ||
-      identity(outside.login) !== actor || identity(user.login) !== actor) {
+    if (
+      outside.id !== options.outsideCollaboratorId ||
+      user.id !== outside.id ||
+      identity(outside.login) !== actor ||
+      identity(user.login) !== actor
+    ) {
       return result("unknown", "subject_mismatch");
     }
   }

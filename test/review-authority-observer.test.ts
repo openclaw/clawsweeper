@@ -32,13 +32,23 @@ const operatorArguments = [
 ];
 
 test("outside mode selects one exact identity from a complete 100-entry page", async () => {
-  const page = Array.from({ length: 100 }, (_, index) => ({ id: index + 1, login: `other-${index}`, email: "private-canary" }));
+  const page = Array.from({ length: 100 }, (_, index) => ({
+    id: index + 1,
+    login: `other-${index}`,
+    email: "private-canary",
+  }));
   page[99] = { id: 100, login: "ReViEwEr", email: "private-canary" };
   const calls: unknown[] = [];
-  const actual = await observeReviewAuthority({ ...subject, outsideCollaboratorId: 100 }, "fixture-token", async (path, options) => {
-    calls.push([path, options]);
-    return path.startsWith("repos/") ? { ...repository, role_name: "write", user: { id: 100, login: "reviewer" } } : page;
-  });
+  const actual = await observeReviewAuthority(
+    { ...subject, outsideCollaboratorId: 100 },
+    "fixture-token",
+    async (path, options) => {
+      calls.push([path, options]);
+      return path.startsWith("repos/")
+        ? { ...repository, role_name: "write", user: { id: 100, login: "reviewer" } }
+        : page;
+    },
+  );
   assert.deepEqual(calls, [
     ["repos/example/project/collaborators/reviewer/permission", {}],
     ["orgs/example/outside_collaborators?filter=all&per_page=100", { maxResponseBytes: 262_144 }],
@@ -54,35 +64,61 @@ test("outside mode selects one exact identity from a complete 100-entry page", a
 
 test("outside missing, malformed, conflicting and duplicate pages never expose a partial grant", async () => {
   const selected = { id: 7, login: "reviewer" };
-  for (const page of [[], [{ id: 8, login: "elsewhere" }],
+  for (const page of [
+    [],
+    [{ id: 8, login: "elsewhere" }],
     Array.from({ length: 100 }, (_, index) => ({ id: index + 100, login: `other-${index}` })),
-    null, {}, [selected, null], [selected, { id: 8, login: " padded " }],
-    [selected, selected], [{ id: 8, login: "reviewer" }], [{ id: 7, login: "elsewhere" }],
-    Array.from({ length: 101 }, (_, index) => ({ id: index + 1, login: `user-${index}` }))]) {
-    const actual = await observeReviewAuthority({ ...subject, outsideCollaboratorId: 7 }, "fixture-token", async (path) =>
-      path.startsWith("repos/") ? { ...repository, user: { id: 7, login: "reviewer" } } : page);
+    null,
+    {},
+    [selected, null],
+    [selected, { id: 8, login: " padded " }],
+    [selected, selected],
+    [{ id: 8, login: "reviewer" }],
+    [{ id: 7, login: "elsewhere" }],
+    Array.from({ length: 101 }, (_, index) => ({ id: index + 1, login: `user-${index}` })),
+  ]) {
+    const actual = await observeReviewAuthority(
+      { ...subject, outsideCollaboratorId: 7 },
+      "fixture-token",
+      async (path) =>
+        path.startsWith("repos/") ? { ...repository, user: { id: 7, login: "reviewer" } } : page,
+    );
     assert.equal(actual.authority.role, "unknown");
     assert.equal(actual.organizationOutsideCollaborator.value, null);
   }
-  for (const user of [{ id: 8, login: "reviewer" }, { id: 7, login: "other" }, { id: 7, login: " reviewer " }]) {
-    const actual = await observeReviewAuthority({ ...subject, outsideCollaboratorId: 7 }, "fixture-token", async (path) =>
-      path.startsWith("repos/") ? { ...repository, user } : [selected]);
+  for (const user of [
+    { id: 8, login: "reviewer" },
+    { id: 7, login: "other" },
+    { id: 7, login: " reviewer " },
+  ]) {
+    const actual = await observeReviewAuthority(
+      { ...subject, outsideCollaboratorId: 7 },
+      "fixture-token",
+      async (path) => (path.startsWith("repos/") ? { ...repository, user } : [selected]),
+    );
     assert.equal(actual.authority.role, "unknown");
   }
 });
 
 test("selected outside errors retain their status and never try membership", async () => {
   const calls: string[] = [];
-  await assert.rejects(observeReviewAuthority({ ...subject, outsideCollaboratorId: 7 }, "fixture-token", async (path) => {
-    calls.push(path);
-    if (path.startsWith("repos/")) return repository;
-    throw new GitHubRequestError("private-canary", 404);
-  }), (error: { phase: string; httpStatus: number; message: string }) => {
-    assert.equal(error.phase, "organization_outside_collaborator");
-    assert.equal(error.httpStatus, 404);
-    assert.doesNotMatch(error.message, /private-canary/);
-    return true;
-  });
+  await assert.rejects(
+    observeReviewAuthority(
+      { ...subject, outsideCollaboratorId: 7 },
+      "fixture-token",
+      async (path) => {
+        calls.push(path);
+        if (path.startsWith("repos/")) return repository;
+        throw new GitHubRequestError("private-canary", 404);
+      },
+    ),
+    (error: { phase: string; httpStatus: number; message: string }) => {
+      assert.equal(error.phase, "organization_outside_collaborator");
+      assert.equal(error.httpStatus, 404);
+      assert.doesNotMatch(error.message, /private-canary/);
+      return true;
+    },
+  );
   assert.equal(calls.length, 2);
   assert(!calls.some((path) => path.includes("/memberships/")));
 });
@@ -98,7 +134,11 @@ test("observer retains canonical subject/timestamps and only classifier-relevant
     "orgs/example/memberships/reviewer",
   ]);
   assert.equal(actual.authority.role, "maintainer");
-  assert.deepEqual(Object.keys(actual), ["authority", "repositoryPermission", "organizationMembership"]);
+  assert.deepEqual(Object.keys(actual), [
+    "authority",
+    "repositoryPermission",
+    "organizationMembership",
+  ]);
   assert.equal(
     actual.repositoryPermission.observedAt,
     actual.authority.repositoryPermissionObservedAt,
@@ -332,16 +372,36 @@ test("actual outside CLI keeps exact selection private and rejects truncated or 
   const directory = mkdtempSync(join(tmpdir(), "outside-observer-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   for (const variant of ["match", "absent", "truncated", "oversized"]) {
-    const output = join(directory, `${variant}.json`), fd = openSync(output, "wx", 0o600);
-    const response = variant === "truncated" ? "new Response('[{')" : variant === "oversized"
-      ? "new Response('x'.repeat(262145))" : `Response.json(${variant === "match" ? '[{id:7,login:"REVIEWER",email:"private-canary"}]' : '[]'})`;
+    const output = join(directory, `${variant}.json`),
+      fd = openSync(output, "wx", 0o600);
+    const response =
+      variant === "truncated"
+        ? "new Response('[{')"
+        : variant === "oversized"
+          ? "new Response('x'.repeat(262145))"
+          : `Response.json(${variant === "match" ? '[{id:7,login:"REVIEWER",email:"private-canary"}]' : "[]"})`;
     const preload = `let count=0;globalThis.fetch=async(url,options)=>{count++;if(count>2||options.method!=='GET'||url.includes('/memberships/'))throw new Error('unexpected call');return url.includes('/collaborators/')?Response.json({permission:'write',role_name:'write',user:{id:7,login:'reviewer'}}):${response};};`;
     let result;
     try {
-      result = spawnSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`,
-        "scripts/review-authority-observer.mjs", ...operatorArguments, "--outside-collaborator-id", "7"],
-        { cwd: resolve(import.meta.dirname, ".."), env: { GITHUB_TOKEN: "fixture-token" }, stdio: ["ignore", fd, "pipe"] });
-    } finally { closeSync(fd); }
+      result = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          `data:text/javascript,${encodeURIComponent(preload)}`,
+          "scripts/review-authority-observer.mjs",
+          ...operatorArguments,
+          "--outside-collaborator-id",
+          "7",
+        ],
+        {
+          cwd: resolve(import.meta.dirname, ".."),
+          env: { GITHUB_TOKEN: "fixture-token" },
+          stdio: ["ignore", fd, "pipe"],
+        },
+      );
+    } finally {
+      closeSync(fd);
+    }
     const bytes = readFileSync(output, "utf8");
     if (["match", "absent"].includes(variant)) {
       assert.equal(result.status, 0, result.stderr.toString());
@@ -352,7 +412,10 @@ test("actual outside CLI keeps exact selection private and rejects truncated or 
     } else {
       assert.equal(result.status, 1);
       assert.equal(bytes, "");
-      assert.deepEqual(JSON.parse(result.stderr.toString()), { phase: "organization_outside_collaborator", ...(variant === "oversized" ? { httpStatus: 200 } : {}) });
+      assert.deepEqual(JSON.parse(result.stderr.toString()), {
+        phase: "organization_outside_collaborator",
+        ...(variant === "oversized" ? { httpStatus: 200 } : {}),
+      });
     }
   }
 });

@@ -41,8 +41,10 @@ export async function observeReviewAuthority(
   let outsideObservation;
   const selected = (phase) => async (path) => {
     try {
-      return (values[phase] = await read(path, phase === "organization_outside_collaborator"
-        ? { maxResponseBytes: 262_144 } : {}));
+      return (values[phase] = await read(
+        path,
+        phase === "organization_outside_collaborator" ? { maxResponseBytes: 262_144 } : {},
+      ));
     } catch (error) {
       throw Object.assign(new Error("Review authority observation failed"), {
         phase,
@@ -56,12 +58,21 @@ export async function observeReviewAuthority(
     ...subject,
     now: Date.now,
     readRepositoryPermission: selected("repository_permission"),
-    ...(outsideMode ? {
-      readOrganizationOutsideCollaborators: selected("organization_outside_collaborator"),
-      observeOrganizationOutsideCollaborator: (observation) => { outsideObservation = observation; },
-    } : { readOrganizationMembership: selected("organization_membership") }),
+    ...(outsideMode
+      ? {
+          readOrganizationOutsideCollaborators: selected("organization_outside_collaborator"),
+          observeOrganizationOutsideCollaborator: (observation) => {
+            outsideObservation = observation;
+          },
+        }
+      : { readOrganizationMembership: selected("organization_membership") }),
   });
-  if (!Object.hasOwn(values, outsideMode ? "organization_outside_collaborator" : "organization_membership"))
+  if (
+    !Object.hasOwn(
+      values,
+      outsideMode ? "organization_outside_collaborator" : "organization_membership",
+    )
+  )
     throw Object.assign(new Error("Invalid observation subject"), { phase: "configuration" });
   const repository = record(values.repository_permission),
     membership = record(values.organization_membership);
@@ -82,11 +93,15 @@ export async function observeReviewAuthority(
           : {}),
       },
     }),
-    ...(outsideMode ? { organizationOutsideCollaborator: outsideObservation } : { organizationMembership: envelope(authority.organizationMembershipObservedAt, {
-      ...pick(membership, ["state", "role"]),
-      user: pick(record(membership.user), ["login"]),
-      organization: pick(record(membership.organization), ["login"]),
-    }) }),
+    ...(outsideMode
+      ? { organizationOutsideCollaborator: outsideObservation }
+      : {
+          organizationMembership: envelope(authority.organizationMembershipObservedAt, {
+            ...pick(membership, ["state", "role"]),
+            user: pick(record(membership.user), ["login"]),
+            organization: pick(record(membership.organization), ["login"]),
+          }),
+        }),
   };
 }
 
@@ -124,8 +139,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       !values.actor ||
       values["max-age-ms"] === undefined ||
       !Number.isSafeInteger(maxAgeMs) ||
-      maxAgeMs < 0 || (values["outside-collaborator-id"] !== undefined &&
-        (!/^[1-9][0-9]*$/.test(values["outside-collaborator-id"]) || !Number.isSafeInteger(Number(values["outside-collaborator-id"]))))
+      maxAgeMs < 0 ||
+      (values["outside-collaborator-id"] !== undefined &&
+        (!/^[1-9][0-9]*$/.test(values["outside-collaborator-id"]) ||
+          !Number.isSafeInteger(Number(values["outside-collaborator-id"]))))
     )
       throw new Error("Invalid observation configuration");
     if (!process.env.GITHUB_TOKEN) {
@@ -134,8 +151,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     }
     phase = "observation";
     const result = await observeReviewAuthority(
-      { repository: values.repo, actor: values.actor, maxAgeMs,
-        ...(values["outside-collaborator-id"] !== undefined ? { outsideCollaboratorId: Number(values["outside-collaborator-id"]) } : {}) },
+      {
+        repository: values.repo,
+        actor: values.actor,
+        maxAgeMs,
+        ...(values["outside-collaborator-id"] !== undefined
+          ? { outsideCollaboratorId: Number(values["outside-collaborator-id"]) }
+          : {}),
+      },
       process.env.GITHUB_TOKEN,
     );
     const bytes = Buffer.from(`${JSON.stringify(result)}\n`);
