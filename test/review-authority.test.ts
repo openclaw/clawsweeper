@@ -208,3 +208,23 @@ test("association and labels are not authority evidence", () => {
   const untrusted = { ...subject, ...clock, authorAssociation: "OWNER", labels: ["maintainer"] };
   assert.equal(resolveReviewAuthority(untrusted).role, "unknown");
 });
+
+test("positive outside evidence binds numeric identity and never substitutes for missing selected evidence", () => {
+  const outside = { ...subject, observedAt, value: { id: 7, login: "ReViEwEr" } };
+  const repo = { ...permission("write", "write"), value: { permission: "write", role_name: "write", user: { id: 7, login: subject.actor } } };
+  const options = { ...subject, ...clock, repositoryPermission: repo, outsideCollaboratorId: 7, organizationOutsideCollaborator: outside };
+  assert.equal(resolveReviewAuthority(options).role, "ordinary");
+  assert.equal(resolveReviewAuthority(options).organizationMembershipObservedAt, null);
+  for (const change of [
+    { organizationOutsideCollaborator: undefined },
+    { organizationOutsideCollaborator: { ...outside, value: null } },
+    { organizationOutsideCollaborator: { ...outside, value: { id: 8, login: subject.actor } } },
+    { organizationOutsideCollaborator: { ...outside, value: { id: 7, login: " reviewer " } } },
+    { organizationOutsideCollaborator: { ...outside, actor: "someone" } },
+    { organizationOutsideCollaborator: { ...outside, observedAt: "2026-10-13T11:00:00Z" } },
+    { outsideCollaboratorId: 0 },
+    { outsideCollaboratorId: undefined },
+    { organizationMembership: membership("member") },
+    { repositoryPermission: { ...repo, value: { ...repo.value, user: { id: 8, login: subject.actor } } } },
+  ]) assert.equal(resolveReviewAuthority({ ...options, ...change }).role, "unknown");
+});

@@ -31,7 +31,8 @@ exception propagates unchanged: a denied or private membership lookup, malformed
 JSON, exhausted rate limit, budget, or deadline yields no authority result. A
 successful first read cannot produce a partial grant after the second fails.
 The existing transport owns retry and error handling; this binding defines no
-ordinary-user fallback. The envelope records the requested subject and time,
+ordinary-user fallback. An explicitly selected outside-collaborator reader replaces
+the membership reader; the two cannot run together or substitute for a failed read. The envelope records the requested subject and time,
 not authentication or credential-scope attestation.
 
 ## Evidence
@@ -123,6 +124,25 @@ only a fixed phase and HTTP status, and produces no partial authority. The
 launcher must remove failed partial output. Successful output is capped at
 64 KiB; this is not a cap on the existing HTTP owner's response body. Its normal
 request timeout still applies.
+
+For a preselected outside collaborator, add `--outside-collaborator-id <user-id>`.
+The ID must be a positive safe integer. This mode replaces the membership GET
+with one `GET /orgs/{owner}/outside_collaborators?filter=all&per_page=100` under
+the same [Members read grant](https://docs.github.com/en/rest/orgs/outside-collaborators#list-outside-collaborators-for-an-organization). It validates the entire page and requires exactly
+one matching numeric ID and case-insensitive, unpadded login, also bound to the
+repository-permission response. A valid full page can prove presence. No match,
+malformed entries, conflicts, or duplicates yield `unknown`; there is no next-page
+request, lookup fallback, or inference from a 404.
+
+Only this mode emits `organizationOutsideCollaborator` instead of
+`organizationMembership`. Its existing subject/time envelope contains just
+`{id, login}` or `null`; no other users or full list are exported. The canonical
+result keeps `organizationMembershipObservedAt: null`, with the outside read's
+own completion timestamp on its envelope. The final classifier clock checks
+both selected observations. A selected null cannot grant a repository role.
+The outside-list response is streamed with a 256 KiB byte limit; oversize or
+truncated JSON fails without output. Error responses preserve their HTTP status.
+Default membership behavior and output remain unchanged.
 
 Configuration refusals keep `phase: configuration` and add a fixed `reason`
 (`private_output`, `arguments`, or `credentials`) and an actionable `hint`.

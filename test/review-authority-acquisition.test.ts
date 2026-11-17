@@ -325,3 +325,35 @@ if (args[1] === "repos/example/project/collaborators/reviewer/permission") {
     );
   },
 );
+
+test("selected outside evidence shares completion stamps and final freshness without membership fallback", async () => {
+  let now = epoch;
+  const paths: string[] = [];
+  let captured: unknown;
+  const result = await acquireReviewAuthority({
+    ...subject, now: () => now, maxAgeMs: 3000, outsideCollaboratorId: 7,
+    readRepositoryPermission: (path) => { paths.push(path); now += 1000; return { ...permission("write"), user: { id: 7, login: subject.actor } }; },
+    readOrganizationOutsideCollaborators: (path) => { paths.push(path); now += 2000; return [{ id: 7, login: "REVIEWER", ignored: "private" }]; },
+    observeOrganizationOutsideCollaborator: (value) => { captured = value; },
+  });
+  assert.equal(result.role, "ordinary");
+  assert.equal(result.organizationMembershipObservedAt, null);
+  assert.equal(result.repositoryPermissionObservedAt, new Date(epoch + 1000).toISOString());
+  assert.deepEqual(captured, { ...subject, observedAt: new Date(epoch + 3000).toISOString(), value: { id: 7, login: "REVIEWER" } });
+  assert.deepEqual(paths, ["repos/example/project/collaborators/reviewer/permission", "orgs/example/outside_collaborators?filter=all&per_page=100"]);
+  const error = new Error("selected outside failure");
+  await assert.rejects(acquireReviewAuthority({ ...subject, ...clock, outsideCollaboratorId: 7,
+    readRepositoryPermission: () => permission("admin"), readOrganizationOutsideCollaborators: () => { throw error; },
+  }), (actual) => actual === error);
+  let calls = 0;
+  await assert.rejects(acquireReviewAuthority({ ...subject, ...clock, outsideCollaboratorId: 7,
+    readRepositoryPermission: () => { calls++; return permission(); }, readOrganizationMembership: () => membership(),
+    readOrganizationOutsideCollaborators: () => [],
+  }), /one organization evidence/);
+  assert.equal(calls, 0);
+  const stale = await acquireReviewAuthority({ ...subject, now: () => now, maxAgeMs: 1000, outsideCollaboratorId: 7,
+    readRepositoryPermission: () => ({ ...permission("write"), user: { id: 7, login: subject.actor } }),
+    readOrganizationOutsideCollaborators: () => { now += 2000; return [{ id: 7, login: subject.actor }]; },
+  });
+  assert.equal(stale.reason, "stale_evidence");
+});
