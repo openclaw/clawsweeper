@@ -105,6 +105,42 @@ test("reviewed push relay fixture keeps exact native values across surrounding e
   }
 });
 
+test("ClawRouter bootstrap rejection fixture retains its exact native pair", () => {
+  const raw = ["https://", "fixture-user:fixture-password@invalid.example"].join("");
+  const value = raw + "/path";
+  const finding = uriFinding(value, { Raw: raw });
+  for (const input of [
+    { kind: "blob", id: "blob", references: [], bytes: Buffer.from(value) },
+    {
+      kind: "patch",
+      id: "patch",
+      from: "a".repeat(40),
+      to: "b".repeat(40),
+      bytes: Buffer.from("+ " + value),
+    },
+  ] satisfies StagedScanInput[]) {
+    const result = classify([finding], input);
+    assert.equal(result.kind, "classified");
+    assert.equal(JSON.stringify(result).includes("fixture-password"), false);
+  }
+  for (const override of [
+    { Raw: raw + "x" },
+    { RawV2: value + "x" },
+    { Verified: true },
+    { DetectorType: 10 },
+    { DetectorName: "Other" },
+    { DecoderName: "HTML" },
+    { VerificationError: "" },
+    { SourceType: 0 },
+    { StructuredData: {} },
+    { SecretParts: { ...finding.SecretParts, password: "changed" } },
+    { ExtraData: {} },
+  ])
+    assert.equal(classify([{ ...finding, ...override }]).kind, "refused");
+  assert.equal(classify([finding], undefined, false).kind, "refused");
+  assert.equal(classify([finding, uriFinding(value + "x", { Raw: raw })]).kind, "refused");
+});
+
 test("reviewed password-only URI findings retain empty usernames", () => {
   for (const [raw, suffix] of [
     [["https://:", "example-password@status.example"].join(""), ""],
@@ -284,7 +320,7 @@ test("normalized Postgres findings never gain a value-only approval", () => {
 
 test("migrated approvals have distinct, complete detector and native value identities", () => {
   const keys = new Set<string>();
-  assert.equal(APPROVED_SYNTHETIC_VALUES.length, 93);
+  assert.equal(APPROVED_SYNTHETIC_VALUES.length, 94);
   for (const [type, name, decoders, raw, rawV2] of APPROVED_SYNTHETIC_VALUES) {
     assert.ok([10, 17, 895, 899, 938].includes(type));
     assert.ok(["JDBC", "URI", "MongoDB", "FTP", "Privacy"].includes(name));

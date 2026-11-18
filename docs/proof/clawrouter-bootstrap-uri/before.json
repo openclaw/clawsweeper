@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "at": "2026-11-18T07:42:01.555Z",
+  "provider": "local macOS arm64",
+  "node": "v26.4.0",
+  "policyHead": "4be04201a28b893207fdea219c951ec0dd143291",
+  "sourceDirty": false,
+  "target": {
+    "base": "6605ddd8730d3626d358b22643277a59ae5b3e65",
+    "head": "e3bfa63b8bd162d2bfd632bafec8842902f74a28"
+  },
+  "scannerVersion": "3.99.4",
+  "compiledInputs": {
+    "agent-input-scan.js": "e3744c7e7323d0d5f77d081ea7d5c574f41e7571484809f9fa4fc10a454327fe",
+    "agent-input-scan-classifier.js": "46ab8dd380bc80b3b99588ad05735541cfc29a054a305ed88e6ab89e424fae84",
+    "agent-input-scan-approved-values.js": "b23331f60c862f67be46546e1639f98ef91cd62dc0407b40335681eaf58aea22",
+    "review-tool-bootstrap.js": "8ec8de25507872c98d9c548e59fb0e99ecef09f15e312f4f77d0d121f59c6874"
+  },
+  "notices": [],
+  "result": "refused",
+  "limits": "Exact complete committed source and controlled prompt; native verification enabled, no model call. Hosted review must admit its own prompt/schema and source after policy lands.",
+  "failure": {
+    "reason": "findings",
+    "diagnostic": {
+      "kind": "unclassified_finding",
+      "reason": "finding_not_reviewed",
+      "findingCount": 2,
+      "findingIndex": 0,
+      "detectorType": 17,
+      "decoder": "PLAIN",
+      "verified": false,
+      "scannerLine": 586,
+      "material": {
+        "kind": "patch",
+        "id": "1",
+        "from": "6605ddd8730d3626d358b22643277a59ae5b3e65",
+        "to": "e3bfa63b8bd162d2bfd632bafec8842902f74a28"
+      }
+    }
+  },
+  "elapsedMs": 3671
+}
