@@ -1,0 +1,1 @@
+- Let ClawSweeper review ClawRouter's synthetic bootstrap origin-rejection fixture while retaining exact value, detector, decoder and verification checks.

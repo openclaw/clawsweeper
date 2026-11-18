@@ -13,6 +13,8 @@ export type ApprovedSyntheticValue = readonly [
 
 // oxfmt-ignore
 export const APPROVED_SYNTHETIC_VALUES: readonly ApprovedSyntheticValue[] = [
+  // ClawRouter bootstrap origin-rejection fixture: https://github.com/openclaw/clawrouter/pull/1129
+  [17,"URI",["PLAIN"],"d415e2827cf7641e765dc23e49f2a658e44ed851ec8534e4e40e161e3e8d0a80","e363221b5469fd4312529363507f3b057f262ba418dae7c37b3774f81e4ecfe4"],
   // tests/integration/configuration-controller.test.mjs
   [10,"JDBC",["PLAIN"],"7f73c5b7c4cb379bbcc944971cff2c6a15ac0b0398b4c66ded6c8fb5db2c1833","e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
   // extensions/mattermost/src/mattermost/slash-http.test.ts

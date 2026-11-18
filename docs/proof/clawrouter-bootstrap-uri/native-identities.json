@@ -1,0 +1,49 @@
+{
+  "scannerVersion": "3.99.4",
+  "scannerSha256": "e05963636bce6c5a48e0c780b26c98eb851ec8f87ab6efce8167753a9141b893",
+  "status": 183,
+  "findings": [
+    {
+      "material": "fixture",
+      "line": 29,
+      "detectorType": 17,
+      "detectorName": "URI",
+      "decoder": "PLAIN",
+      "verified": false,
+      "rawSha256": "d415e2827cf7641e765dc23e49f2a658e44ed851ec8534e4e40e161e3e8d0a80",
+      "rawV2Sha256": "e363221b5469fd4312529363507f3b057f262ba418dae7c37b3774f81e4ecfe4",
+      "rawMatchesAuthority": true,
+      "rawV2MatchesFullFixture": true,
+      "verificationErrorNonempty": true,
+      "extraDataNull": true,
+      "structuredDataNull": true,
+      "secretPartKeys": [
+        "host",
+        "password",
+        "username"
+      ]
+    },
+    {
+      "material": "patch",
+      "line": 586,
+      "detectorType": 17,
+      "detectorName": "URI",
+      "decoder": "PLAIN",
+      "verified": false,
+      "rawSha256": "d415e2827cf7641e765dc23e49f2a658e44ed851ec8534e4e40e161e3e8d0a80",
+      "rawV2Sha256": "e363221b5469fd4312529363507f3b057f262ba418dae7c37b3774f81e4ecfe4",
+      "rawMatchesAuthority": true,
+      "rawV2MatchesFullFixture": true,
+      "verificationErrorNonempty": true,
+      "extraDataNull": true,
+      "structuredDataNull": true,
+      "secretPartKeys": [
+        "host",
+        "password",
+        "username"
+      ]
+    }
+  ],
+  "completeLogObserved": true,
+  "limits": "Native identity reproduction over complete branch patch and new test blob; no raw scanner values or errors retained. Full-source public-entrypoint proof is separate."
+}

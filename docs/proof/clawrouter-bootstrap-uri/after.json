@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "at": "2026-11-18T07:43:15.641Z",
+  "provider": "local macOS arm64",
+  "node": "v26.4.0",
+  "policyHead": "4be04201a28b893207fdea219c951ec0dd143291",
+  "sourceDirty": true,
+  "target": {
+    "base": "6605ddd8730d3626d358b22643277a59ae5b3e65",
+    "head": "e3bfa63b8bd162d2bfd632bafec8842902f74a28"
+  },
+  "scannerVersion": "3.99.4",
+  "compiledInputs": {
+    "agent-input-scan.js": "e3744c7e7323d0d5f77d081ea7d5c574f41e7571484809f9fa4fc10a454327fe",
+    "agent-input-scan-classifier.js": "46ab8dd380bc80b3b99588ad05735541cfc29a054a305ed88e6ab89e424fae84",
+    "agent-input-scan-approved-values.js": "cc059b6ac012490cb981e401a5a8c46498c68da85be760006c85dab5812f8c99",
+    "review-tool-bootstrap.js": "8ec8de25507872c98d9c548e59fb0e99ecef09f15e312f4f77d0d121f59c6874"
+  },
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Previously reviewed synthetic values classified as non-sensitive.",
+      "classification": "approved_value",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "0fb3cff7fb85e26fa13e9aae5ddbd76554631eac",
+          "scannerLine": 29,
+          "decoder": "PLAIN",
+          "occurrences": 1
+        },
+        {
+          "blob": "1",
+          "scannerLine": 586,
+          "decoder": "PLAIN",
+          "occurrences": 1
+        }
+      ]
+    }
+  ],
+  "result": "admitted",
+  "limits": "Exact complete committed source and controlled prompt; native verification enabled, no model call. Hosted review must admit its own prompt/schema and source after policy lands.",
+  "elapsedMs": 3279
+}
