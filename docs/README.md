@@ -25,7 +25,7 @@ manual.
 | Inspect observer routes and configuration ownership | [Public observer API](public-api.md)          | [Operator configuration](operator-configuration.md) |
 | Prepare proof for a change                          | [Contributing](../CONTRIBUTING.md)            | [Agent instructions](../AGENTS.md)                  |
 | Review a local committed range                      | [Local branch review](commit-sweeper.md)      | `pnpm local-review -- --base origin/main`           |
-| Qualify the full local review artifact              | [Private local package](local-package.md)     | Build, pack, and install outside the checkout       |
+| Qualify the full local review artifact              | [Local review package](local-package.md)       | Build, pack, and install outside the checkout       |
 
 Production mutation commands are intentionally not repeated here. Follow the
 linked runbook, confirm its status and source of truth, and keep deployment,

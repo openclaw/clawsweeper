@@ -1,20 +1,28 @@
 # Local review package
 
-- Status: active development and qualification guide; 0.3.3 is a proposed release
-- Published baseline: [v0.3.2](https://github.com/openclaw/clawsweeper/releases/tag/v0.3.2)
+- Status: active published-package and development qualification guide
+- Published baseline: [v0.3.3](https://github.com/openclaw/clawsweeper/releases/tag/v0.3.3)
+- Published source: `511462151487bd544a2778ef4868451b07f08683`
 - Owner: ClawSweeper local-runtime maintainers
 - Source of truth: `scripts/stage-local-package.mjs`, `src/clawsweeper-local.ts`,
   and `.github/workflows/local-package-qualification.yml`
 - Last verified source baseline: `b9d03d33fedd9100c8079bc7df77d5f1a1e406d5` (source contracts only); CI artifacts identify the tested candidate and diff
 - Update when: the local entrypoint, imports, workers, assets, package format, or qualification matrix changes
 
-The private package candidate contains the full committed-range reviewer. It
+The local package contains the full committed-range reviewer. It
 does not contain hosted admission, publication, or service state. The scoped
-package stays private as `@openclaw/clawsweeper` and exposes the `clawsweeper`
-command. It does not require npm registry publication.
+package uses private npm metadata under `@openclaw/clawsweeper` and exposes
+the `clawsweeper` command. It does not require npm registry publication.
 
-From a development checkout with dependencies installed, build and stage into
-a new directory outside the checkout:
+The [v0.3.3 release](https://github.com/openclaw/clawsweeper/releases/tag/v0.3.3)
+provides `clawsweeper-local-envelope.tar.gz`. It contains `clawsweeper-local.tgz`,
+`package.json`, `package-lock.json`, and `manifest.json`. The release also
+provides `SHA256SUMS` for the published assets. Its npm metadata remains
+private. GitHub release publication does not publish it to the npm registry.
+
+The following commands build a new development candidate. They do not install
+the published release. From a development checkout with dependencies installed,
+build and stage into a new directory outside the checkout:
 
 ```sh
 pnpm run package:local /tmp/clawsweeper-local-stage
@@ -88,11 +96,11 @@ the original four files and resolved graph must remain unchanged. Input and
 output modes cannot be combined.
 
 CI uploads one canonical Linux-produced envelope, then downloads that exact
-artifact ID for Linux, Windows and macOS consumers. These are private package
-qualification artifacts, not published releases. They freeze the observed npm
-resolution; dependency tarballs still need a populated cache or registry access.
-This is not an empty-cache offline bundle or a Homebrew-ready distribution.
-A future release must choose and qualify its dependency delivery contract.
+artifact ID for Linux, Windows and macOS consumers. These CI artifacts qualify
+development candidates. The published v0.3.3 release wraps its qualified
+four-file envelope. Both paths freeze the observed npm resolution. Dependency
+tarballs still need a populated cache or registry access. Neither provides an
+empty-cache offline bundle or a Homebrew-ready distribution.
 
 CI runs the installed-package harness on Linux, Windows, and macOS with Node 24. Each consumer builds local entrypoints for source-unit assertions and
 negative import probes, but installs the unchanged producer tarball outside
