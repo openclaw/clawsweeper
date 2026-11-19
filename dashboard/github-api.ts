@@ -17,7 +17,12 @@ const workerTransportErrors = new WeakMap<GitHubRequestError, unknown>();
 
 type GithubApiEnv = Record<string, unknown>;
 
-export type GithubAppJsonOptions = { method?: string; body?: BodyInit; errorLabel?: string };
+export type GithubAppJsonOptions = {
+  method?: string;
+  body?: BodyInit;
+  errorLabel?: string;
+  maxResponseBytes?: number;
+};
 export type GitHubRequestValidationDetail = {
   validationFields: string[];
   validationCodes: string[];
@@ -139,6 +144,12 @@ export async function githubAppJson(
   options: GithubAppJsonOptions = {},
   env: GithubApiEnv = {},
 ) {
+  if (
+    options.maxResponseBytes !== undefined &&
+    (!Number.isSafeInteger(options.maxResponseBytes) || options.maxResponseBytes < 1)
+  ) {
+    throw new Error("Invalid GitHub response byte limit");
+  }
   const signal = AbortSignal.timeout(GITHUB_APP_TIMEOUT_MS);
   let response: Response;
   let text: string;
@@ -157,11 +168,34 @@ export async function githubAppJson(
       },
       ...(options.body === undefined ? {} : { body: options.body }),
     });
-    text = await response.text().catch((error) => {
+    const readText = async () => {
+      if (options.maxResponseBytes === undefined) return response.text();
+      const reader = response.body?.getReader();
+      if (!reader) return "";
+      const decoder = new TextDecoder();
+      let bytes = 0,
+        result = "";
+      try {
+        while (true) {
+          const part = await reader.read();
+          if (part.done) return result + decoder.decode();
+          bytes += part.value.byteLength;
+          if (bytes > options.maxResponseBytes) {
+            void reader.cancel().catch(() => {});
+            throw new GitHubRequestError("GitHub response exceeded byte limit", response.status);
+          }
+          result += decoder.decode(part.value, { stream: true });
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    };
+    text = await readText().catch((error) => {
       if (response.ok) throw error;
       return "";
     });
   } catch (error) {
+    if (options.maxResponseBytes !== undefined && error instanceof GitHubRequestError) throw error;
     const timedOut =
       signal.aborted ||
       (error instanceof Error && (error.name === "AbortError" || error.message === "timeout"));

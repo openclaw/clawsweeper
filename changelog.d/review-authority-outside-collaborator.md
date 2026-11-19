@@ -1,0 +1,1 @@
+- Add an explicit private observer mode that binds a positive outside-collaborator ID and login without treating membership lookup failures as non-membership.

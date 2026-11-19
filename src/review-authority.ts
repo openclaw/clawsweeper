@@ -95,6 +95,8 @@ export function resolveReviewAuthority(
     maxAgeMs: number;
     repositoryPermission?: ReviewAuthorityObservation;
     organizationMembership?: ReviewAuthorityObservation;
+    outsideCollaboratorId?: number;
+    organizationOutsideCollaborator?: ReviewAuthorityObservation;
   },
 ): ReviewAuthority {
   const repository = identity(options.repository);
@@ -115,11 +117,21 @@ export function resolveReviewAuthority(
     !boundedIdentity(actor) ||
     !Number.isFinite(options.now) ||
     !Number.isFinite(options.maxAgeMs) ||
-    options.maxAgeMs < 0
+    options.maxAgeMs < 0 ||
+    (options.outsideCollaboratorId !== undefined &&
+      (!Number.isSafeInteger(options.outsideCollaboratorId) ||
+        options.outsideCollaboratorId <= 0 ||
+        options.organizationMembership !== undefined)) ||
+    (options.organizationOutsideCollaborator !== undefined &&
+      options.outsideCollaboratorId === undefined)
   ) {
     return result("unknown", "invalid_evidence");
   }
-  for (const observation of [options.repositoryPermission, options.organizationMembership]) {
+  for (const observation of [
+    options.repositoryPermission,
+    options.organizationMembership,
+    options.organizationOutsideCollaborator,
+  ]) {
     if (!observation) continue;
     if (identity(observation.repository) !== repository || identity(observation.actor) !== actor) {
       return result("unknown", "subject_mismatch");
@@ -135,6 +147,21 @@ export function resolveReviewAuthority(
     : null;
   if (evidence?.reason && evidence.reason !== "ambiguous_repository_role") {
     return result("unknown", evidence.reason);
+  }
+  if (options.outsideCollaboratorId !== undefined) {
+    // Positive outside evidence replaces membership only when explicitly selected.
+    // A missing match never permits a partial repository-role grant.
+    const outside = asRecord(options.organizationOutsideCollaborator?.value);
+    if (!Object.keys(outside).length) return result("unknown", "unavailable");
+    const user = asRecord(asRecord(options.repositoryPermission?.value).user);
+    if (
+      outside.id !== options.outsideCollaboratorId ||
+      user.id !== outside.id ||
+      identity(outside.login) !== actor ||
+      identity(user.login) !== actor
+    ) {
+      return result("unknown", "subject_mismatch");
+    }
   }
   let organizationOwner = false;
   if (options.organizationMembership) {
