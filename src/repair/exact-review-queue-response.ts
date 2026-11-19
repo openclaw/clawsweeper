@@ -126,7 +126,10 @@ const commands: Record<string, () => void> = {
         : (legacyDecision as unknown as Decision);
     const targetRepo = String(decision?.targetRepo || "");
     const itemNumber = Number(decision?.itemNumber);
-    const itemKey = `${targetRepo}#${itemNumber}`;
+    // GitHub repository names ignore case; queue keys are exact lease identities.
+    // Preserve the claimed spelling for later heartbeat and completion requests.
+    const targetItemKey = `${targetRepo}#${itemNumber}`;
+    const itemKey = response.item_key || requestedItemKey || targetItemKey;
     const leaseRevision =
       responseProtocol === 2
         ? Number(response.lease_revision)
@@ -144,7 +147,7 @@ const commands: Record<string, () => void> = {
     ) {
       process.exit(1);
     }
-    if (response.item_key && response.item_key !== itemKey) process.exit(1);
+    if (itemKey.toLowerCase() !== targetItemKey.toLowerCase()) process.exit(1);
     if (requestedItemKey && requestedItemKey !== itemKey) process.exit(1);
     if (
       responseProtocol === 2 &&
@@ -181,13 +184,12 @@ const commands: Record<string, () => void> = {
     const publicationLeaseRevision = Number(publication?.leaseRevision);
     const directItemKey = `${decision?.targetRepo}#${decision?.itemNumber}`;
     const expectedDeferredItemKey = `${directItemKey}@publish:${publication?.producerRunId}:${publication?.producerRunAttempt}`;
-    // Direct publication converts its already-leased base item into a
-    // recoverable publication. Its saved revision must still match
-    // this publisher lease before any external router handoff;
-    // deferred publication has its own key.
+    // Direct publication keeps the review's exact key and revision even when
+    // its decision uses different repo casing. Deferred publication has its
+    // own key and cannot use this saved lifecycle.
     const directLifecycleRecovery =
-      response.item_key === directItemKey &&
-      publication?.itemKey === directItemKey &&
+      response.item_key?.toLowerCase() === directItemKey.toLowerCase() &&
+      publication?.itemKey === response.item_key &&
       Number.isInteger(publicationLeaseRevision) &&
       publicationLeaseRevision === leaseRevision;
     const directLifecycle = directLifecycleRecovery ? publication?.directLifecycle : null;
