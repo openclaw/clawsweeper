@@ -1,6 +1,6 @@
 # Review authority contract
 
-- Status: accepted role projections; explicit operator; proposed admission integration
+- Status: accepted role projections and operator; unlanded D03 requester candidate
 - Owner: ClawSweeper permission and review-policy maintainers
 - Source: [`src/review-authority.ts`](../src/review-authority.ts),
   [`src/review-authority-acquisition.ts`](../src/review-authority-acquisition.ts),
@@ -12,8 +12,9 @@
 
 `resolveReviewAuthority` classifies trusted API observations as `maintainer`,
 `ordinary`, or `unknown`. It does not fetch GitHub data, cache results, change
-admission, or authorize a command. Existing review and mutation gates remain
-unchanged. Integration and activation require a separate policy change.
+admission, or authorize a command. The unlanded requester candidate below consumes
+its result at existing command boundaries. Deployment and wider policy activation
+remain separate gates.
 
 `acquireReviewAuthority` supplies the missing observation binding. Its required
 repository-permission reader and optional organization-membership reader are
@@ -157,22 +158,49 @@ production activation is added by this operator capability.
 
 ### Admission callers
 
-These paths retain their current behavior. None imports the acquisition adapter.
+Author cohort paths retain their current behavior. The requester candidate uses
+existing transports and the classifier directly; no caller imports a second HTTP adapter.
 
 | Owner | Current observation and cache | Separate integration work |
 | --- | --- | --- |
 | `src/clawsweeper-context-hydration.ts`, `bulkFilerRepositoryPermission` | Author role string, preferring `role_name`, with a command-scoped author map | Preserve full response and acquisition time; bind target repository and resolve author independently |
-| `src/repair/comment-router.ts` permission readers | Requester's legacy permission, cached by login within routing; rate-limit errors propagate | Preserve native retry/control behavior and requester identity; review the command-specific write-access policy separately |
+| `src/repair/comment-router.ts` permission readers | Requester access projection at response completion; initial classification cache only | D03 candidate rechecks every label mutation attempt and review enqueue |
 | `src/repair/exact-review-admission.ts` author promotion | Contributor lookup before the later older-item hold; legacy permission and existing author-association fallback | Prove author cohort behavior without treating a maintainer request as author evidence |
 | `dashboard/maintainer-author.ts` | Older contributor items only; legacy permission cached for one hour by repository/login; lookup failures keep existing behavior | Preserve the current cache owner until cache provenance, freshness and revocation are explicitly integrated |
 
-Requester migration must cover both `src/repair/comment-router/admission.ts` and
-the direct hosted re-review path in `dashboard/worker.ts`. The router currently
-retains its configured OWNER-association fallback when permission is unavailable.
-Direct hosted intake derives `maintainerAuthorized` from comment association and
-can reach `/command-intake` without CLI router revalidation. Neither path consumes
-the new requester projection. Changing only the CLI path cannot activate this
-policy consistently.
+### Unlanded D03 requester candidate
+
+`reviewCommandAccess` consumes one bound repository-permission response for two
+separate decisions: canonical maintainer role and existing WRITE command access.
+Only effective maintain/admin roles establish maintainer authority. Ordinary
+WRITE remains allowed for existing commands; an ambiguous custom/absent role can
+retain WRITE access only when the full response validates that capability.
+Malformed, stale, mismatched or contradictory evidence grants neither. OWNER
+association never substitutes for a permission read.
+
+The router retains its initial per-invocation classification cache, then bypasses
+it inside every label operation, including one-shot label creation and later
+command attempts. Existing label writes remain single-attempt.
+A denied attempt is recorded as a known non-mutation. Both signed App and OIDC
+intake use the same hosted handler. Standalone webhook intake uses the same
+projection; failed permission transport stays retryable.
+
+The durable review queue re-reads the source comment/version, live item author
+and permission at every resumed enqueue. It rebuilds prompt context from that
+comment and current capability, discarding producer or persisted privilege.
+An already accepted enqueue is not re-authorized during acknowledgement repair:
+`effects_pending` neither cancels nor repeats the accepted review.
+
+A live, matching item author retains ordinary self-review even when permission
+acquisition fails. A failed read grants no extra context or maintainer powers.
+Existing review aliases share this behavior. No role is added to serialized
+intake, no schema changes, and no organization-member or outside-list lookup is
+added to command handling.
+
+This is source and controlled-fixture preparation only. Actual per-route App
+permission, live revocation, old/new decision comparison and rollout evidence
+remain required before deployment. Author cohort/cadence, limits, sponsorship,
+caches, producer expansion and organization policy remain held.
 
 The Worker author reader also restricts permission lookup to older CONTRIBUTOR
 items and a narrower login grammar. Current MEMBER-author paths can skip the
@@ -194,7 +222,8 @@ accepted ordinary author cohort is an availability decision, not a privileged
 grant. Existing October 15 first-review cadence and independent protections stay
 unchanged until their owning callers are deliberately migrated.
 
-The classifier and acquisition binding remain unconsumed by production admission callers.
+Author cohort projections and the acquisition adapter remain unconsumed by
+production admission callers. The D03 requester candidate is not deployed.
 Integration fixtures cover full-role payload parity, target and actor binding,
 completion-time freshness, selected errors and repeated fresh reads after a
 simulated revocation. These do not activate an admission rule. Future caller

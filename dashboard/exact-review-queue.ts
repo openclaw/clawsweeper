@@ -57,7 +57,14 @@ import {
   type HostedTargetEligibility,
   type HostedTargetAdmission,
 } from "../src/hosted-target-admission.ts";
-import { renderClawSweeperQueuedAcknowledgement } from "../src/repair/comment-command-text.ts";
+import {
+  directReReviewAdditionalPrompt,
+  renderClawSweeperQueuedAcknowledgement,
+} from "../src/repair/comment-command-text.ts";
+import {
+  isAuthorReadOnlyCommandAllowed,
+  reviewCommandAccess,
+} from "../src/repair/comment-router/admission.ts";
 import { commandAckMarker } from "../src/repair/markers.ts";
 import { planCommandAckConvergence } from "../src/repair/command-ack-convergence.ts";
 import type { DirectReReviewDecision } from "../src/repair/direct-re-review-admission.ts";
@@ -14554,6 +14561,7 @@ export class ExactReviewQueue {
       const token = () => (tokenPromise ??= exactReviewCommandTargetToken(this.env, record.intake));
       try {
         let current = record;
+        let verifiedThisAttempt = false;
         if (current.stage === "verify_pending") {
           const decision = await this.verifyCommandIntake(current, token());
           if (!decision) continue;
@@ -14573,6 +14581,7 @@ export class ExactReviewQueue {
             decision,
           );
           current = { ...current, stage: "enqueue_pending", verifiedDecision: decision };
+          verifiedThisAttempt = true;
         }
         if (current.stage === "enqueue_pending") {
           if (!this.commandIntakeStore.isCurrent(current)) {
@@ -14584,8 +14593,13 @@ export class ExactReviewQueue {
             );
             continue;
           }
-          const decision = current.verifiedDecision;
-          if (!decision) throw new Error("verified command decision is missing");
+          // A persisted verification is not authority for a later enqueue attempt.
+          // Re-read the command, item author and permission after any deferral.
+          const decision = verifiedThisAttempt
+            ? current.verifiedDecision
+            : await this.verifyCommandIntake(current, token());
+          if (!decision) continue;
+          current = { ...current, verifiedDecision: decision };
           const response = await this.fetch(
             new Request("https://clawsweeper-exact-review-queue/enqueue", {
               method: "POST",
@@ -14773,6 +14787,65 @@ export class ExactReviewQueue {
       );
       return null;
     }
+    const requester = objectValue(sourceComment.user).login;
+    if (typeof requester !== "string" || !requester || requester !== requester.trim()) {
+      this.commandIntakeStore.finish(
+        intake.commandVersionId,
+        "rejected",
+        Date.now(),
+        "requester_not_authorized",
+      );
+      return null;
+    }
+    const selfReview = isAuthorReadOnlyCommandAllowed({
+      command: { intent: "re_review", author: requester },
+      target: { author: objectValue(item.user).login },
+    });
+    let commandAllowed = false;
+    try {
+      const value = await githubTokenJson({
+        env: this.env,
+        token: await token,
+        path: `/repos/${decision.targetRepo}/collaborators/${encodeURIComponent(requester)}/permission`,
+        method: "GET",
+        body: undefined,
+        errorLabel: "review requester repository permission",
+      });
+      const now = Date.now();
+      commandAllowed = reviewCommandAccess({
+        repository: decision.targetRepo,
+        actor: requester,
+        now,
+        maxAgeMs: 0,
+        repositoryPermission: {
+          repository: decision.targetRepo,
+          actor: requester,
+          value,
+          observedAt: new Date(now).toISOString(),
+        },
+      }).allowed;
+    } catch (error) {
+      // The live author match is independent of permission availability.
+      // Preserve self-review without granting privileged prompt context.
+      if (!selfReview) throw error;
+    }
+    if (!commandAllowed && !selfReview) {
+      this.commandIntakeStore.finish(
+        intake.commandVersionId,
+        "rejected",
+        Date.now(),
+        "requester_not_authorized",
+      );
+      return null;
+    }
+    // Discard producer or persisted context whenever authority is re-evaluated.
+    // Matching authors retain self-review without acquiring maintainer powers.
+    decision.additionalPrompt = directReReviewAdditionalPrompt({
+      body: sourceComment.body,
+      maintainerAuthorized: commandAllowed,
+      author: requester,
+      commentUrl: sourceComment.html_url,
+    });
     const revisionMaterial = exactReviewSourceRevisionMaterial(item);
     if (!revisionMaterial) throw new Error("live review source metadata is incomplete");
     decision = {

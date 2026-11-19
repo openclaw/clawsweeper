@@ -1,19 +1,18 @@
-import { markdownTopLevelSection } from "../../clawsweeper-markdown.js";
-import { hasReviewStartLeaseCommentMarker } from "../../review-comment-markers.js";
+import { markdownTopLevelSection } from "../../clawsweeper-markdown.ts";
+import { hasReviewStartLeaseCommentMarker } from "../../review-comment-markers.ts";
 import {
   normalizeClawSweeperCommandLine,
   isClawSweeperReReviewCommandText,
   reReviewContextFromClawSweeperComment,
-} from "../comment-command-text.js";
-import { asJsonObject, type JsonObject, type JsonValue, type LooseRecord } from "../json-types.js";
-import { markerAttributes } from "../markers.js";
+} from "../comment-command-text.ts";
+import { asJsonObject, type JsonObject, type JsonValue, type LooseRecord } from "../json-types.ts";
+import { markerAttributes } from "../markers.ts";
+import { resolveReviewAuthority } from "../../review-authority.ts";
 
 export const DEFAULT_ALLOWED_REPOSITORY_PERMISSIONS = ["admin", "maintain", "write"];
 
 export function isMaintainerCommandAllowed({
-  authorAssociation,
   repositoryPermission = null,
-  allowedAssociations,
   allowedRepositoryPermissions = DEFAULT_ALLOWED_REPOSITORY_PERMISSIONS,
 }: LooseRecord) {
   const permission = String(repositoryPermission ?? "")
@@ -24,24 +23,42 @@ export function isMaintainerCommandAllowed({
       .map((value: string) => String(value).trim().toLowerCase())
       .filter(Boolean),
   );
-  if (permission) return permissionSet.has(permission);
+  return permissionSet.has(permission);
+}
 
-  const association = String(authorAssociation ?? "")
-    .trim()
-    .toUpperCase();
-  const associationSet = new Set(
-    [...allowedAssociations]
-      .map((value: string) => String(value).trim().toUpperCase())
-      .filter(Boolean),
-  );
-  return association === "OWNER" && associationSet.has(association);
+// Command WRITE access is broader than maintainer authority. Both decisions
+// consume the same bound response; association never substitutes for that read.
+export function reviewCommandAccess(
+  options: Parameters<typeof resolveReviewAuthority>[0] & {
+    allowedRepositoryPermissions?: Iterable<string>;
+  },
+) {
+  const authority = resolveReviewAuthority(options);
+  const permission = asJsonObject(options.repositoryPermission?.value).permission;
+  const knownCapability =
+    authority.role !== "unknown" ||
+    (authority.reason === "ambiguous_repository_role" && permission === "write");
+  return {
+    authority,
+    repositoryPermission: typeof permission === "string" ? permission : null,
+    allowed:
+      knownCapability &&
+      isMaintainerCommandAllowed({
+        repositoryPermission: permission,
+        allowedRepositoryPermissions: options.allowedRepositoryPermissions,
+      }),
+  };
 }
 
 export function isAuthorReadOnlyCommandAllowed({ command, target }: LooseRecord) {
   const intent = String(command?.intent ?? "");
   if (intent !== "re_review") return false;
-  const author = normalizedLogin(command?.author);
-  const targetAuthor = normalizedLogin(target?.author);
+  const rawAuthor = command?.author;
+  const rawTargetAuthor = target?.author;
+  if (typeof rawAuthor !== "string" || typeof rawTargetAuthor !== "string") return false;
+  if (rawAuthor !== rawAuthor.trim() || rawTargetAuthor !== rawTargetAuthor.trim()) return false;
+  const author = rawAuthor.toLowerCase();
+  const targetAuthor = rawTargetAuthor.toLowerCase();
   return Boolean(author && targetAuthor && author === targetAuthor);
 }
 

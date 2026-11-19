@@ -135,9 +135,9 @@ not as a handoff.
    Metadata edits can still trigger raw event or concurrency guards.
 5. Request `@clawsweeper re-review` only after the branch, body, proof, and
    relevant checks are current. PR authors and users with repository write
-   access may use `@clawsweeper re-review` or `@clawsweeper re-run`; plain
-   `@clawsweeper review` is maintainer-only. Do not dispatch a review workflow
-   directly.
+   access may use `@clawsweeper re-review`, `@clawsweeper re-run`, or
+   `@clawsweeper review`. These aliases use the same review admission path.
+   Do not dispatch a review workflow directly.
 
 `status: ⏳ waiting on author` or `status: 📣 needs proof` means the next action
 belongs to the author. `status: ⏳ waiting on maintainer` instead means only

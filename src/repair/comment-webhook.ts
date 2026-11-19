@@ -15,6 +15,7 @@ import {
   isAssistPublicationCommentBody,
   isProofNudgeCommentBody,
   parseCommand,
+  reviewCommandAccess,
 } from "./comment-router/admission.js";
 import { staleClosedItemCommandReason } from "./comment-router-core.js";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
@@ -42,7 +43,6 @@ const GITHUB_FETCH_TIMEOUT_MS = 15_000;
 const REVIEW_REPO = "openclaw/clawsweeper";
 const COMMAND_PATTERN =
   /(^|[ \t\r\n])@(?:clawsweeper|openclaw-clawsweeper)\b(?:\[bot\])?|(^|[ \t\r\n])\/(?:clawsweeper|review|re-review|rerun[ -]?review|status|explain|fix|build|implement|create[ -]?pr|fix[ -]?issue|autofix|auto[ -]?fix|automerge|auto[ -]?merge|approve|stop|autoclose)\b/i;
-const ALLOWED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const ISSUE_ITEM_ACTIONS = new Set(["opened", "reopened", "edited", "unlocked", "unlabeled"]);
 const PULL_ITEM_ACTIONS = new Set([
   "opened",
@@ -221,6 +221,37 @@ export async function handleGitHubWebhook({
       pull_requests: "write",
     },
   });
+  let permission: unknown;
+  try {
+    permission = await githubFetch({
+      token: targetToken,
+      path: `/repos/${accepted.targetRepo}/collaborators/${encodeURIComponent(accepted.commentAuthor)}/permission`,
+      method: "GET",
+    });
+  } catch {
+    return {
+      statusCode: 503,
+      body: { ok: false, error: "requester_permission_unavailable", retryable: true },
+    };
+  }
+  const now = Date.now();
+  const access = reviewCommandAccess({
+    repository: accepted.targetRepo,
+    actor: accepted.commentAuthor,
+    now,
+    maxAgeMs: 0,
+    repositoryPermission: {
+      repository: accepted.targetRepo,
+      actor: accepted.commentAuthor,
+      value: permission,
+      observedAt: new Date(now).toISOString(),
+    },
+  });
+  if (!access.allowed)
+    return {
+      statusCode: 202,
+      body: { ok: true, accepted: false, reason: "requester_not_authorized" },
+    };
   const statusCommentId = await createFastAckCommentOnce({
     token: targetToken,
     repo: accepted.targetRepo,
@@ -274,7 +305,6 @@ export function classifyIssueCommentWebhook({
   const comment = asJsonObject(payload.comment);
   const issue = asJsonObject(payload.issue);
   const repo = asJsonObject(payload.repository);
-  const association = String(comment.author_association ?? "").toUpperCase();
   if (isAssistPublicationCommentBody(String(comment.body ?? ""))) {
     return { accepted: false, reason: "assist publication comment" };
   }
@@ -286,15 +316,6 @@ export function classifyIssueCommentWebhook({
   }
   const parsedCommand = parseCommand(String(comment.body ?? ""));
   if (!parsedCommand) return { accepted: false, reason: "no routable ClawSweeper command" };
-  if (
-    !ALLOWED_ASSOCIATIONS.has(association) &&
-    !isAuthorReadOnlyWebhookCommand({ comment, issue })
-  ) {
-    return {
-      accepted: false,
-      reason: `author association ${association || "unknown"} is not allowed`,
-    };
-  }
   const targetRepo = String(repo.full_name ?? "");
   const targetBranch = targetDefaultBranch(repo);
   if (!isEligibleRepositoryPayload(repo)) {
@@ -337,7 +358,7 @@ export function classifyIssueCommentWebhook({
     commentBody: String(comment.body ?? ""),
     commentAuthor: String(asJsonObject(comment.user).login ?? ""),
     commentUrl: String(comment.html_url ?? ""),
-    maintainerAuthorized: ALLOWED_ASSOCIATIONS.has(association),
+    maintainerAuthorized: false,
     ...(commentUpdatedAt
       ? {
           commentUpdatedAt,
@@ -507,20 +528,6 @@ function targetDefaultBranch(repo: LooseRecord) {
 function isClawsweeperWebhookSender(sender: LooseRecord) {
   const login = normalizedLogin(sender.login);
   return login.endsWith("[bot]") && CLAWSWEEPER_BOT_LOGINS.has(login);
-}
-
-function isAuthorReadOnlyWebhookCommand({
-  comment,
-  issue,
-}: {
-  comment: LooseRecord;
-  issue: LooseRecord;
-}) {
-  const parsed = parseCommand(String(comment.body ?? ""));
-  if (parsed?.intent !== "re_review") return false;
-  const commentAuthor = normalizedLogin(asJsonObject(comment.user).login);
-  const issueAuthor = normalizedLogin(asJsonObject(issue.user).login);
-  return Boolean(commentAuthor && issueAuthor && commentAuthor === issueAuthor);
 }
 
 function normalizedLogin(value: JsonValue) {

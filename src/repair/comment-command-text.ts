@@ -103,7 +103,7 @@ export function directReReviewAdditionalPrompt(options: {
   const context = reReviewContextFromClawSweeperComment(options.body);
   if (!context) return "";
   return [
-    "Maintainer context from an @clawsweeper re-review command.",
+    "Reviewer context from an @clawsweeper re-review command.",
     "",
     `Author: ${String(options.author || "unknown")}`,
     `Comment: ${String(options.commentUrl || "unknown")}`,

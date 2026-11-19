@@ -1,0 +1,1 @@
+- Prepare requester permission checks that preserve WRITE and self-review rights, reject association-only grants, and refresh authority before label writes and resumed review admission.

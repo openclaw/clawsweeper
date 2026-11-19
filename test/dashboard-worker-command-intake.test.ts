@@ -734,6 +734,159 @@ test("hosted durable command intake deduplicates redelivery and records canonica
   );
 });
 
+test("resumed enqueue refreshes authority and context without revisiting accepted reviews", async (t) => {
+  for (const scenario of ["write", "revoked", "edited", "self", "effects"] as const) {
+    await t.test(scenario, async (t) => {
+      const fixture = await startGithubLoopback();
+      t.after(() => fixture.close());
+      fixture.sourceAuthor = scenario === "self" ? "contributor" : "requester";
+      fixture.sourceAssociation = "OWNER";
+      fixture.repositoryRole = "maintain";
+      fixture.failAcknowledgement = scenario === "effects";
+      const storage = new MemoryDurableStorage();
+      const { privateKey } = generateKeyPairSync("rsa", {
+        modulusLength: 2048,
+        privateKeyEncoding: { type: "pkcs8", format: "pem" },
+        publicKeyEncoding: { type: "spki", format: "pem" },
+      });
+      const queue = new ExactReviewQueue(
+        { storage },
+        {
+          GITHUB_API_URL: fixture.origin,
+          CLAWSWEEPER_APP_CLIENT_ID: "Iv23authority-fixture",
+          CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+          EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
+        },
+      );
+      const fetchQueue = queue.fetch.bind(queue);
+      let attempts = 0;
+      queue.fetch = async (request) => {
+        if (new URL(request.url).pathname === "/enqueue") {
+          attempts += 1;
+          if (attempts === 1 && scenario !== "effects")
+            throw new Error("controlled pre-enqueue deferral");
+        }
+        return fetchQueue(request);
+      };
+      const intake = intakeFixture({ updatedAt: COMMAND_UPDATED_AT, body: COMMAND_BODY });
+      const admitted = await queue.fetch(
+        new Request("https://queue/command-intake", {
+          method: "POST",
+          body: JSON.stringify(intake),
+        }),
+      );
+      assert.equal(admitted.status, 202);
+      await queue.alarm();
+      assert.equal(
+        commandIntakeRecord(storage, intake.commandVersionId)?.stage,
+        scenario === "effects" ? "effects_pending" : "enqueue_pending",
+      );
+      const readsBefore = fixture.sourceCommentReads;
+      const permissionBefore = fixture.permissionReads;
+      fixture.repositoryRole = "write";
+      fixture.repositoryPermission =
+        scenario === "revoked" || scenario === "effects" ? "read" : "write";
+      if (scenario === "edited") fixture.sourceCommentBody += " edited";
+      if (scenario === "self") fixture.permissionStatus = 403;
+      fixture.failAcknowledgement = false;
+      storage.sql.exec("UPDATE exact_review_command_intakes SET next_attempt_at = 0");
+      await queue.alarm();
+      if (scenario === "revoked" || scenario === "edited") {
+        assert.equal(attempts, 1, "rejected before a second enqueue");
+        assert.equal(commandReceiptOutcome(storage), "rejected");
+        assert.equal(fixture.acknowledgements.length, 0);
+      } else {
+        assert.equal(commandReceiptOutcome(storage), "completed");
+        assert.equal(fixture.acknowledgements.length, 1);
+        const state = (await storage.get("exact-review-queue")) as {
+          items: Record<string, { decision: { additionalPrompt: string } }>;
+        };
+        const prompt = state.items["openclaw/openclaw#42"].decision.additionalPrompt;
+        if (scenario === "self") assert.equal(prompt, "");
+        else assert.match(prompt, /Reviewer context/);
+      }
+      if (scenario === "effects") {
+        assert.equal(attempts, 1, "accepted enqueue is not repeated");
+        assert.equal(fixture.sourceCommentReads, readsBefore);
+        assert.equal(fixture.permissionReads, permissionBefore);
+      } else assert.equal(fixture.sourceCommentReads, readsBefore + 1);
+    });
+  }
+});
+
+test("same-actor batch throttling preserves independently verified self-review", async (t) => {
+  const fixture = await startGithubLoopback();
+  t.after(() => fixture.close());
+  fixture.isPullRequest = false;
+  fixture.permissionStatus = 403;
+  fixture.permissionResponse = { message: "API rate limit exceeded" };
+  fixture.extraSourceComments.push({
+    ...commandWebhookPayload().comment,
+    id: COMMAND_COMMENT_ID + 1,
+    body: "@clawsweeper help",
+    issue_url: `https://api.github.com/repos/openclaw/openclaw/issues/${ITEM_NUMBER}`,
+  });
+  const router = keylessCommentRouter(fixture.origin);
+  t.after(() => router.close());
+  const report = await router.run(
+    { target_repo: "openclaw/openclaw", comment_id: COMMAND_COMMENT_ID, item_number: ITEM_NUMBER },
+    {
+      execute: false,
+      commentIds: [COMMAND_COMMENT_ID, COMMAND_COMMENT_ID + 1],
+    },
+  );
+  assert.equal(report.status, "deferred");
+  assert.equal(report.operator_skip.reason, "github_throttled");
+  const review = report.commands.find((command) => command.intent === "re_review");
+  const help = report.commands.find((command) => command.intent === "help");
+  assert.equal(review.status, "ready");
+  assert.equal(review.author_readonly_authorized, true);
+  assert.equal(review.maintainer_authorized, false);
+  assert.equal(help.status, "waiting");
+  assert.deepEqual(fixture.labelWrites, []);
+});
+
+test("direct admission rejects OWNER with unknown, mismatched or contradictory permission", async (t) => {
+  for (const value of [
+    { permission: "write" },
+    { permission: "write", role_name: "maintain", user: { login: "other" } },
+    { permission: "read", role_name: "admin", user: { login: "requester" } },
+  ]) {
+    const fixture = await startGithubLoopback();
+    t.after(() => fixture.close());
+    fixture.sourceAuthor = "requester";
+    fixture.sourceAssociation = "OWNER";
+    fixture.permissionResponse = value;
+    const storage = new MemoryDurableStorage();
+    const { privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" },
+    });
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        GITHUB_API_URL: fixture.origin,
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23authority-fixture",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+      },
+    );
+    const intake = intakeFixture({ updatedAt: COMMAND_UPDATED_AT, body: COMMAND_BODY });
+    await queue.fetch(
+      new Request("https://queue/command-intake", { method: "POST", body: JSON.stringify(intake) }),
+    );
+    await queue.alarm();
+    assert.equal(commandReceipt(storage)?.detail, "requester_not_authorized");
+    assert.equal(fixture.acknowledgements.length, 0);
+    assert.equal(
+      ((await storage.get("exact-review-queue")) as { items?: Record<string, unknown> })?.items?.[
+        "openclaw/openclaw#42"
+      ],
+      undefined,
+    );
+  }
+});
+
 test("command acknowledgement ignores forged markers and paginates to the trusted receipt", async (t) => {
   const fixture = await startGithubLoopback();
   t.after(() => fixture.close());
@@ -896,6 +1049,11 @@ async function startGithubLoopback() {
     sourceAssociation: "CONTRIBUTOR",
     sourceAuthor: "contributor",
     repositoryPermission: "write",
+    repositoryRole: "write",
+    permissionResponse: undefined as unknown,
+    permissionStatus: 200,
+    permissionSequence: [] as unknown[],
+    extraSourceComments: [] as Record<string, unknown>[],
     permissionReads: 0,
     isPullRequest: true,
     labels: [] as string[],
@@ -909,6 +1067,10 @@ async function startGithubLoopback() {
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url || "/", "http://127.0.0.1");
     const body = await readJson(request);
+    const extraComment = state.extraSourceComments.find(
+      (comment) => url.pathname === `/repos/openclaw/openclaw/issues/comments/${comment.id}`,
+    );
+    if (extraComment) return sendJson(response, 200, extraComment);
     if (url.pathname === `/repos/openclaw/openclaw/issues/comments/${COMMAND_COMMENT_ID}`) {
       state.sourceCommentReads += 1;
       if (state.throttleSourceComment) {
@@ -944,7 +1106,19 @@ async function startGithubLoopback() {
       url.pathname === `/repos/openclaw/openclaw/collaborators/${state.sourceAuthor}/permission`
     ) {
       state.permissionReads += 1;
-      return sendJson(response, 200, { permission: state.repositoryPermission });
+      return sendJson(
+        response,
+        state.permissionStatus,
+        state.permissionSequence.shift() ??
+          state.permissionResponse ?? {
+            permission: state.repositoryPermission,
+            role_name:
+              state.repositoryPermission === "write"
+                ? state.repositoryRole
+                : state.repositoryPermission,
+            user: { login: state.sourceAuthor },
+          },
+      );
     }
     if (url.pathname === "/user") {
       return sendJson(response, 200, { login: "clawsweeper[bot]" });
@@ -979,6 +1153,7 @@ async function startGithubLoopback() {
     if (url.pathname === `/repos/openclaw/openclaw/pulls/${ITEM_NUMBER}`) {
       return sendJson(response, 200, {
         ...REVIEW_SOURCE,
+        user: { login: "contributor" },
         state: "open",
         updated_at: COMMAND_UPDATED_AT,
         head: { sha: HEAD_SHA },
@@ -1272,7 +1447,7 @@ test("keyless OIDC comment intake uses live authority and coalesces with the App
     "App-first command edit coalesces by body digest",
   );
 
-  // Non-review commands reuse the App-webhook router and trust live association only.
+  // Non-review commands use the same live permission evidence, never association.
   fixture.sourceCommentBody = "@clawsweeper status";
   fixture.sourceAssociation = "OWNER";
   const routed = await post();
@@ -1286,9 +1461,11 @@ test("keyless OIDC comment intake uses live authority and coalesces with the App
     createHash("sha256").update(fixture.sourceCommentBody).digest("hex"),
   );
   fixture.sourceAssociation = "NONE";
+  fixture.repositoryPermission = "read";
   assert.equal((await (await post()).json()).accepted, false);
   assert.equal(fixture.dispatches.length, 1);
   fixture.sourceAssociation = "OWNER";
+  fixture.repositoryPermission = "write";
   fixture.sourceCommentBody = "ordinary comment";
   assert.equal((await (await post()).json()).accepted, false);
   fixture.sourceCommentBody = "@clawsweeper fix";
@@ -1381,6 +1558,47 @@ test("keyless OIDC comment intake uses live authority and coalesces with the App
     assert.deepEqual(fixture.labels, ["clawsweeper:autofix", "clawsweeper:automerge"], attempt);
   }
   assert.equal(fixture.permissionReads - permissionReadsBefore, 2);
+  // Revoke at each actual effect boundary; label writes never retry blindly.
+  for (const beforeRemove of [false, true]) {
+    const router = keylessCommentRouter(fixture.origin);
+    t.after(() => router.close());
+    fixture.repositoryPermission = "write";
+    fixture.repositoryRole = "maintain";
+    fixture.sourceCommentUpdatedAt = beforeRemove ? "2026-08-12T16:28:26Z" : "2026-08-12T16:27:26Z";
+    const permitted = {
+      permission: "write",
+      role_name: "maintain",
+      user: { login: fixture.sourceAuthor },
+    };
+    const revoked = {
+      permission: "read",
+      role_name: "read",
+      user: { login: fixture.sourceAuthor },
+    };
+    assert.equal((await post()).status, 202);
+    const payload = fixture.dispatches.at(-1)!.client_payload as Record<string, unknown>;
+    fixture.permissionSequence = beforeRemove
+      ? [permitted, permitted, permitted, revoked]
+      : [permitted, revoked];
+    const result = await router.run(payload);
+    assert.equal(result.commands[0].status, "ignored");
+    assert.equal(result.commands[0].maintainer_authorized, false);
+    assert.deepEqual(
+      fixture.labelWrites.slice(writesAfterAllowed),
+      beforeRemove ? ["add:clawsweeper:human-review"] : [],
+    );
+    assert.deepEqual(
+      fixture.labels,
+      beforeRemove
+        ? ["clawsweeper:autofix", "clawsweeper:automerge", "clawsweeper:human-review"]
+        : ["clawsweeper:autofix", "clawsweeper:automerge"],
+    );
+    assert.equal(
+      fixture.permissionSequence.length,
+      0,
+      "fresh evidence consumed at the exact attempted effect",
+    );
+  }
   await Promise.all(pending);
   console.log(
     JSON.stringify({
