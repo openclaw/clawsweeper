@@ -19,6 +19,7 @@ import { selectedLabelJustifications } from "./clawsweeper-label-selection.js";
  */
 export type ReportReviewDecision = Pick<
   Decision,
+  | "independentReviews"
   | "triagePriority"
   | "impactLabels"
   | "mergeRiskLabels"

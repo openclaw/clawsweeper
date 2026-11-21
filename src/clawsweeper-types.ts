@@ -568,6 +568,8 @@ export interface ReviewCommentRenderOptions {
 }
 
 export interface Decision {
+  /** Runner-owned independent ordinary reviews; never accepted from model output. */
+  independentReviews?: import("./independent-reviews.js").IndependentReview[];
   oversizedPullRequestSource?: import("./clawsweeper-oversized-pr-freshness.js").OversizedPrSourceSnapshot;
   /** Runner-owned GitHub metadata; never populated from model output. */
   oversizedPullRequest?: import("./clawsweeper-oversized-pr-policy.js").OversizedPullRequestEvidence;

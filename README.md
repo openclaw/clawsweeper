@@ -579,6 +579,14 @@ pnpm run audit -- --target-repo openclaw/openclaw --max-pages 250 --sample-limit
 pnpm run reconcile -- --target-repo openclaw/openclaw --dry-run
 ```
 
+Optional independent ordinary reviews (no coordinator): add
+`--review-models MODEL_A,MODEL_B` to `review`. It runs two fresh ordinary
+reviews sequentially through the selected existing runner and renders both in
+one comment. Select `CLAWSWEEPER_RUNNER=openclaw` for a provider-qualified
+Claude–Astra pair at high thinking. Omit the pair flag for the unchanged single-review path. See the
+[typed reduction contract](docs/independent-reviews.md) before opting in;
+this does not deploy or enable the mode in hosted workflows.
+
 Advisory exact local issue/PR review:
 
 For Codex users, the repo-local skill `$local-clawsweeper-review` wraps this

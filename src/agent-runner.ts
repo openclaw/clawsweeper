@@ -400,7 +400,7 @@ function openclawModel(env: NodeJS.ProcessEnv): string {
   if (!model) {
     throw new Error("CLAWSWEEPER_OPENCLAW_MODEL is required when CLAWSWEEPER_RUNNER=openclaw.");
   }
-  if (!/^[^\s/]+\/[^\s/]+$/.test(model)) {
+  if (!/^[^\s/]+\/[^\s/]+(?:\/[^\s/]+)*$/.test(model)) {
     throw new Error(
       "CLAWSWEEPER_OPENCLAW_MODEL must use provider/model form when CLAWSWEEPER_RUNNER=openclaw.",
     );
