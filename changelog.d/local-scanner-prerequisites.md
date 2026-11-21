@@ -1,1 +1,0 @@
-- Link local review scanner prerequisites and classification guidance to the canonical TruffleHog bootstrap pin.

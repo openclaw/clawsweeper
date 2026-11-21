@@ -1,1 +1,0 @@
-- Report the real read-only checkout inspection failure reason instead of OpenClaw plugin warnings printed to stderr.

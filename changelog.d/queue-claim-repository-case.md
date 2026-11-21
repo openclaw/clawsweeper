@@ -1,1 +1,0 @@
-- Keep exact-review leases usable when a GitHub repository's casing differs from its stored queue key.

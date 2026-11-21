@@ -1,1 +1,0 @@
-- Keep dashboard workflow counts, activity, and health sampling consistent when GitHub feeds return different states of the same run.

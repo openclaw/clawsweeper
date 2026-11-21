@@ -1,1 +1,0 @@
-- Allow service-selected review runs to import completed review artifacts and work plans without requiring a cluster read; GitHub apply remains held.

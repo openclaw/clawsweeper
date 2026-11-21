@@ -1,1 +1,0 @@
-- Qualify the exact synthetic Chrome MCP endpoint-rejection fixture so browser snapshot reviews can pass source admission without weakening scanner checks.

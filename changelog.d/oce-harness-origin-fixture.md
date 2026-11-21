@@ -1,1 +1,0 @@
-- Recognize the exact historical OCE harness-origin rejection fixture in its retained source and patch.

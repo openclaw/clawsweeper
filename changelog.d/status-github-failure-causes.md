@@ -1,1 +1,0 @@
-- Dashboard status warnings retain bounded GitHub failure causes through projection and caching, distinguishing HTTP rejection, timeout, transport failure and incomplete census without exposing upstream text.

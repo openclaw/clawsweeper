@@ -1,1 +1,0 @@
-- Update Markdown parsing and dashboard dependencies to fix denial-of-service, TLS, redirect, integrity, and development-server vulnerabilities, and refresh compatible validation tools.

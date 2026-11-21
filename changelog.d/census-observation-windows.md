@@ -1,1 +1,0 @@
-- Keep fresh Coverage census queries from failing cross-host timestamp fences by negotiating bounded, server-issued observation windows while retaining legacy, stale-source, capacity, and checkpoint guards.

@@ -1,1 +1,0 @@
-- The structural relation probe treats an incomplete GitHub issue search with no match as unknown, so a review is not reused from cache on a possibly missing related issue.
