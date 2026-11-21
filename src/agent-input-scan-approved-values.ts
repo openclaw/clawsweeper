@@ -43,8 +43,10 @@ export const APPROVED_SYNTHETIC_VALUES: readonly ApprovedSyntheticValue[] = [
   [17,"URI",["HTML","PLAIN"],"1aa166a254353a56288ad1942fdac6d92342f9ca53ca6690247bae6cc0ac3738","99c6ba8a9fbc40225ed3839f4cadf69924aa66ca191aa2bc647d0a18aaabe731"],
   // src/infra/update-failure-report-config.test.ts
   [17,"URI",["HTML","PLAIN"],"1b950d6c665b182a7aa7a553add23364cedb3ea08771873aea9547b3fd3dcb11","a844b0f4456fddf3bf5e3d3e62391e29458c00c54fadd3ea087242f09889fae9"],
-  // extensions/browser/src/browser/routes/basic.existing-session.test.ts
-  [17,"URI",["PLAIN"],"1d71159c56ca84a71d1b34c10e8d645f3ced3c75a5ac818104338ff58bb95993","1d71159c56ca84a71d1b34c10e8d645f3ced3c75a5ac818104338ff58bb95993"],
+  // Browser config process-only relay fixture; native qualification: openclaw/openclaw#203159
+  [17,"URI",["HTML","PLAIN"],"71376e8b966e1701ab705a5cbe8f5183f132a44a7c7e8f2092e70aadc6147a56","71376e8b966e1701ab705a5cbe8f5183f132a44a7c7e8f2092e70aadc6147a56"],
+  // Browser status redaction fixture; native qualification: openclaw/openclaw#203159
+  [17,"URI",["HTML","PLAIN"],"1d71159c56ca84a71d1b34c10e8d645f3ced3c75a5ac818104338ff58bb95993","1d71159c56ca84a71d1b34c10e8d645f3ced3c75a5ac818104338ff58bb95993"],
   // ui/src/pages/custodian/custodian-session-store.test.ts
   [17,"URI",["HTML","PLAIN"],"1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd","1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd"],
   // src/infra/git-source.test.ts

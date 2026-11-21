@@ -141,6 +141,49 @@ test("ClawRouter bootstrap rejection fixture retains its exact native pair", () 
   assert.equal(classify([finding, uriFinding(value + "x", { Raw: raw })]).kind, "refused");
 });
 
+test("browser relay fixtures retain exact native pairs across plain and HTML decoding", () => {
+  const values = [
+    ["http://", "openclaw:relay-token@127.0.0.1:18800"].join(""),
+    ["http://", "openclaw-internal:process-only-token@127.0.0.1"].join(""),
+  ];
+  for (const value of values) {
+    for (const decoder of ["PLAIN", "HTML"]) {
+      const finding = uriFinding(value, { DecoderName: decoder });
+      for (const input of [
+        { kind: "blob", id: "base", references: [], bytes: Buffer.from(value) },
+        { kind: "blob", id: "head", references: [], bytes: Buffer.from(value) },
+        {
+          kind: "patch",
+          id: "patch",
+          from: "a".repeat(40),
+          to: "b".repeat(40),
+          bytes: Buffer.from(" " + value),
+        },
+      ] satisfies StagedScanInput[]) {
+        const result = classify([finding], input);
+        assert.equal(result.kind, "classified");
+        assert.equal(JSON.stringify(result).includes(value), false);
+      }
+      for (const override of [
+        { Raw: value + "x" },
+        { RawV2: value + "x" },
+        { Verified: true },
+        { DetectorType: 10 },
+        { DetectorName: "Other" },
+        { DecoderName: "BASE64" },
+        { VerificationError: "" },
+        { SourceType: 0 },
+        { StructuredData: {} },
+        { SecretParts: { ...finding.SecretParts, password: "changed" } },
+        { ExtraData: {} },
+      ])
+        assert.equal(classify([{ ...finding, ...override }]).kind, "refused");
+      assert.equal(classify([finding], undefined, false).kind, "refused");
+      assert.equal(classify([finding, uriFinding(value + "/changed")]).kind, "refused");
+    }
+  }
+});
+
 test("reviewed password-only URI findings retain empty usernames", () => {
   for (const [raw, suffix] of [
     [["https://:", "example-password@status.example"].join(""), ""],
@@ -320,7 +363,7 @@ test("normalized Postgres findings never gain a value-only approval", () => {
 
 test("migrated approvals have distinct, complete detector and native value identities", () => {
   const keys = new Set<string>();
-  assert.equal(APPROVED_SYNTHETIC_VALUES.length, 94);
+  assert.equal(APPROVED_SYNTHETIC_VALUES.length, 95);
   for (const [type, name, decoders, raw, rawV2] of APPROVED_SYNTHETIC_VALUES) {
     assert.ok([10, 17, 895, 899, 938].includes(type));
     assert.ok(["JDBC", "URI", "MongoDB", "FTP", "Privacy"].includes(name));

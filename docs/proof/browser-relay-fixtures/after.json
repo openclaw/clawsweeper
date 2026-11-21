@@ -1,0 +1,9 @@
+{
+  "policyBase": "fb7b06fad55acdadbf8dc69071da137a7f79b170",
+  "base": "165f1297b8c0e139257f85597dafd9127b983499",
+  "head": "37ddf036b04bf56f2b4eddfdb2569dfc9f9b99bc",
+  "node": "v24.22.3",
+  "platform": "darwin",
+  "arch": "arm64",
+  "result": "admitted"
+}

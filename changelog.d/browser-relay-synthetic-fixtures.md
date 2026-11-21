@@ -1,0 +1,1 @@
+- Let input scans recognize the exact synthetic browser relay fixtures in plain and HTML decoding without relaxing credential verification.
