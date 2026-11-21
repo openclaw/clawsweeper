@@ -25,7 +25,7 @@ import {
   isAllowedMutationActor,
   isAuthorReadOnlyCommandAllowed,
   isGitHubAppIntegrationAuthError,
-  isMaintainerCommandAllowed,
+  reviewCommandAccess,
   isTrustedStatusCommentAuthor,
   parseRoutedCommentCommand,
 } from "./comment-router/admission.js";
@@ -83,6 +83,8 @@ import {
 import { directReReviewIntake } from "./direct-re-review-admission.js";
 import { postExactReviewCommandIntakeSync } from "./exact-review-command-queue.js";
 
+class CommandAuthorityDenied extends Error {}
+
 const args = parseArgs(process.argv.slice(2));
 const config = readCommentRouterConfig(args);
 const {
@@ -101,7 +103,6 @@ const {
   itemNumbers,
   commentIds,
   statusCommentId,
-  allowedAssociations,
   allowedRepositoryPermissions,
   trustedBots,
 } = config;
@@ -162,7 +163,7 @@ const retryPendingCommentVersions = new Set(
 );
 // Pending replay is intentional: active-run checks prevent duplicate workers, and
 // marker-backed status replies are updated in place until dispatch can continue.
-const collaboratorPermissionCache = new Map();
+const collaboratorPermissionCache = new Map<string, ReturnType<typeof reviewCommandAccess>>();
 const liveTargetCache = new Map<number, LooseRecord>();
 const issueCommentsCache = new Map<number, JsonValue[]>();
 const throttledIssueCommentLookups = new Set<number>();
@@ -480,8 +481,8 @@ async function prehydrateCommandLookups(
   );
   const logins = unique(
     pending
-      .filter((command) => !command.trusted_bot)
-      .map((command) => String(command.author ?? "").trim())
+      .filter((command) => !command.trusted_bot && command.intent !== "re_review")
+      .map((command) => String(command.author ?? ""))
       .filter(Boolean),
   );
   const issueNumbers = unique(
@@ -523,38 +524,46 @@ function classifyCommand(command: LooseRecord): JsonValue {
   if (command.comment_version_key && supersededReReviewVersions.has(command.comment_version_key)) {
     return { ...command, status: "skipped", reason: SUPERSEDED_RE_REVIEW_REASON };
   }
-  if (
-    throttledIssueCommentLookups.has(Number(command.issue_number)) ||
-    throttledCollaboratorLookups.has(String(command.author ?? "").toLowerCase())
-  ) {
+  if (throttledIssueCommentLookups.has(Number(command.issue_number))) {
     return {
       ...command,
       status: "waiting",
       reason: "GitHub throttled required routing context; the next cycle will retry",
     };
   }
-  let authorization: LooseRecord | null = null;
-  if (command.trusted_bot) {
-    if (!trustedBots.has(String(command.author ?? "").toLowerCase())) {
-      return { ...command, status: "ignored", reason: "trusted automation author is not allowed" };
-    }
-  } else {
-    authorization = resolveMaintainerCommandAuthorization(command);
-    command.author_repository_permission = authorization.repositoryPermission;
+  if (command.trusted_bot && !trustedBots.has(String(command.author ?? "").toLowerCase())) {
+    return { ...command, status: "ignored", reason: "trusted automation author is not allowed" };
   }
   if (!command.issue_number) {
     return { ...command, status: "ignored", reason: "could not resolve issue or PR number" };
   }
-
   const liveTarget = fetchLiveTarget(command);
   if (liveTarget.status === "waiting") return liveTarget;
   const { issue, pull } = liveTarget;
   const target = pull ? classifyPullTarget(pull) : classifyIssueTarget(issue);
-  const authorReadOnlyAllowed =
-    !command.trusted_bot &&
-    authorization &&
-    !authorization.allowed &&
-    isAuthorReadOnlyCommandAllowed({ command, target });
+  const selfReview = !command.trusted_bot && isAuthorReadOnlyCommandAllowed({ command, target });
+  if (!selfReview && throttledCollaboratorLookups.has(String(command.author ?? "").toLowerCase())) {
+    return {
+      ...command,
+      status: "waiting",
+      reason: "GitHub throttled required routing context; the next cycle will retry",
+    };
+  }
+  let authorization: ReturnType<typeof resolveMaintainerCommandAuthorization> | null = null;
+  try {
+    if (!command.trusted_bot)
+      authorization = resolveMaintainerCommandAuthorization(command, false, selfReview);
+  } catch (error) {
+    if (!(error instanceof GitHubRateLimitError)) throw error;
+    deferGitHubThrottle(error);
+    return {
+      ...command,
+      status: "waiting",
+      reason: "GitHub throttled required routing context; the next cycle will retry",
+    };
+  }
+  if (authorization) command.author_repository_permission = authorization.repositoryPermission;
+  const authorReadOnlyAllowed = selfReview && !authorization?.allowed;
   const next = {
     ...command,
     target,
@@ -738,6 +747,15 @@ function executeCommandWithReceipt(command: LooseRecord) {
     executeCommand(command);
     recordCommandOutcome(command);
   } catch (error) {
+    if (error instanceof CommandAuthorityDenied) {
+      command.status = "ignored";
+      command.reason = "requester repository permission is not allowed";
+      command.actions = command.actions.map((action: JsonValue) =>
+        action.status === "executed" ? action : { ...action, status: "skipped" },
+      );
+      recordCommandOutcome(command);
+      return;
+    }
     recordCommandFailure(command, error);
     if (error instanceof GitHubRateLimitError) {
       deferGitHubThrottle(error);
@@ -762,11 +780,14 @@ function runGitHubTextMutation(
   return runCommandMutationWithRetry(command, {
     kind,
     identity,
-    operation: () => ghTextWithRetry(ghArgs, { ...runOptions, attempts: 1 }),
+    operation: () => {
+      if (kind.startsWith("label_")) requireCurrentCommandAccess(command);
+      return ghTextWithRetry(ghArgs, { ...runOptions, attempts: 1 });
+    },
     attempts,
     shouldRetry: (error) => {
       try {
-        if (knownNoMutation?.(error)) return false;
+        if (error instanceof CommandAuthorityDenied || knownNoMutation?.(error)) return false;
       } catch {
         // The receipt already conservatively classified a failing predicate as unknown.
       }
@@ -779,7 +800,8 @@ function runGitHubTextMutation(
         0,
         ghRetryWaitMs("transient", attempt - 1),
       ),
-    ...(knownNoMutation ? { knownNoMutation } : {}),
+    knownNoMutation: (error) =>
+      error instanceof CommandAuthorityDenied || knownNoMutation?.(error) === true,
   });
 }
 
@@ -794,8 +816,12 @@ function runGitHubTextMutationOnce(
   return runCommandMutation(command, {
     kind,
     identity,
-    operation: () => ghTextWithRetry(ghArgs, { ...options, attempts: 1 }),
-    ...(knownNoMutation ? { knownNoMutation } : {}),
+    operation: () => {
+      if (kind.startsWith("label_")) requireCurrentCommandAccess(command);
+      return ghTextWithRetry(ghArgs, { ...options, attempts: 1 });
+    },
+    knownNoMutation: (error) =>
+      error instanceof CommandAuthorityDenied || knownNoMutation?.(error) === true,
   });
 }
 
@@ -810,7 +836,8 @@ function runGitHubBestEffortMutation(
     runGitHubTextMutationOnce(command, kind, identity, ghArgs, {}, knownNoMutation);
     return true;
   } catch (error) {
-    if (error instanceof GitHubRateLimitError) throw error;
+    if (error instanceof GitHubRateLimitError || error instanceof CommandAuthorityDenied)
+      throw error;
     return false;
   }
 }
@@ -901,6 +928,7 @@ function acknowledgeTerminalNoopMaintainerCommand(command: LooseRecord) {
 }
 
 function enqueueClawSweeperReReview(command: LooseRecord): LooseRecord {
+  requireCurrentCommandAccess(command);
   const dispatchKey = dispatchReceiptKey(command);
   const itemKind = command.target?.kind === "pull_request" ? "pull_request" : "issue";
   const intake = directReReviewIntake({
@@ -948,7 +976,7 @@ function freeformReviewPrompt(command: LooseRecord): string {
   if (command.intent === "re_review") {
     if (command.maintainer_authorized !== true) return "";
     return [
-      "Maintainer context from an @clawsweeper re-review command.",
+      "Reviewer context from an @clawsweeper re-review command.",
       "",
       `Author: ${command.author ?? "unknown"}`,
       `Comment: ${command.comment_url ?? "unknown"}`,
@@ -1178,60 +1206,90 @@ function compactGhError(error: unknown): string {
   return text ? text.slice(0, 240) : "unknown GitHub CLI error";
 }
 
-function resolveMaintainerCommandAuthorization(command: LooseRecord) {
-  const login = String(command.author ?? "").trim();
-  const repositoryPermission = login ? fetchCollaboratorPermission(login) : null;
-  const authorizationInput = {
-    authorAssociation: command.author_association,
-    repositoryPermission,
-    allowedAssociations,
-    allowedRepositoryPermissions: [...allowedRepositoryPermissions],
-  };
-  const allowed = isMaintainerCommandAllowed(authorizationInput);
-  if (allowed) return { allowed: true, repositoryPermission };
-  const association = command.author_association || "unknown";
-  const permission = repositoryPermission || "unknown";
+function requireCurrentCommandAccess(command: LooseRecord) {
+  if (command.trusted_bot) return;
+  const selfReview = isAuthorReadOnlyCommandAllowed({ command, target: command.target });
+  const authorization = resolveMaintainerCommandAuthorization(command, true, selfReview);
+  command.author_repository_permission = authorization.repositoryPermission;
+  // Historical name: this grants ordinary WRITE commands, not maintainer powers.
+  command.maintainer_authorized = authorization.allowed;
+  command.author_readonly_authorized = selfReview && !authorization.allowed;
+  if (!authorization.allowed && !command.author_readonly_authorized)
+    throw new CommandAuthorityDenied();
+}
+
+function resolveMaintainerCommandAuthorization(
+  command: LooseRecord,
+  fresh = false,
+  selfReview = false,
+) {
+  const login = String(command.author ?? "");
+  let authorization: ReturnType<typeof reviewCommandAccess> | undefined;
+  try {
+    authorization = login ? fetchCollaboratorPermission(login, fresh) : undefined;
+  } catch (error) {
+    // A permission outage grants no command capability, but cannot revoke an
+    // independently verified author's ordinary re-review request.
+    if (!selfReview) throw error;
+  }
   return {
-    allowed: false,
-    repositoryPermission,
-    reason: `author association ${association} and repository permission ${permission} are not allowed`,
+    allowed: authorization?.allowed ?? false,
+    repositoryPermission: authorization?.repositoryPermission ?? null,
+    reason: `requester repository permission ${authorization?.repositoryPermission || "unknown"} is not allowed`,
   };
 }
 
-function fetchCollaboratorPermission(login: JsonValue) {
-  const key = login.toLowerCase();
-  if (collaboratorPermissionCache.has(key)) return collaboratorPermissionCache.get(key);
-  let permission = null;
-  try {
-    const result = ghJson([
-      "api",
-      `repos/${targetRepo}/collaborators/${encodeURIComponent(login)}/permission`,
-    ]);
-    permission = result?.permission ? String(result.permission).toLowerCase() : null;
-  } catch (error) {
-    if (error instanceof GitHubRateLimitError) throw error;
-    permission = null;
-  }
-  collaboratorPermissionCache.set(key, permission);
-  return permission;
+function permissionSnapshot(login: string, value: unknown) {
+  const now = Date.now();
+  // This is the acquisition-time projection, not a fresh check on cache reads.
+  // Every effect bypasses this classification snapshot and acquires again.
+  return reviewCommandAccess({
+    repository: targetRepo,
+    actor: login,
+    now,
+    maxAgeMs: 0,
+    repositoryPermission: {
+      repository: targetRepo,
+      actor: login,
+      value,
+      observedAt: new Date(now).toISOString(),
+    },
+    allowedRepositoryPermissions,
+  });
 }
 
-async function fetchCollaboratorPermissionAsync(login: JsonValue) {
+function fetchCollaboratorPermission(login: string, fresh = false) {
   const key = login.toLowerCase();
-  if (collaboratorPermissionCache.has(key)) return collaboratorPermissionCache.get(key);
-  let permission = null;
+  if (!fresh && collaboratorPermissionCache.has(key)) return collaboratorPermissionCache.get(key);
+  let value: unknown = null;
   try {
-    const result = await ghJsonAsync<LooseRecord>([
+    value = ghJson([
       "api",
       `repos/${targetRepo}/collaborators/${encodeURIComponent(login)}/permission`,
     ]);
-    permission = result?.permission ? String(result.permission).toLowerCase() : null;
   } catch (error) {
     if (error instanceof GitHubRateLimitError) throw error;
-    permission = null;
   }
-  collaboratorPermissionCache.set(key, permission);
-  return permission;
+  const observation = permissionSnapshot(login, value);
+  collaboratorPermissionCache.set(key, observation);
+  return observation;
+}
+
+async function fetchCollaboratorPermissionAsync(login: string) {
+  const key = login.toLowerCase();
+  if (collaboratorPermissionCache.has(key)) return collaboratorPermissionCache.get(key);
+  let value: unknown = null;
+  try {
+    value = await ghJsonAsync([
+      "api",
+      `repos/${targetRepo}/collaborators/${encodeURIComponent(login)}/permission`,
+    ]);
+  } catch (error) {
+    if (error instanceof GitHubRateLimitError) throw error;
+  }
+  const observation = permissionSnapshot(login, value);
+  collaboratorPermissionCache.set(key, observation);
+  return observation;
 }
 
 function hasExistingResponse(

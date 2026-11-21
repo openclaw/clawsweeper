@@ -1523,6 +1523,13 @@ test("hosted pull request verification preserves ingress through a transient fai
     if (url.pathname === "/app/installations/123/access_tokens") {
       return jsonResponse({ token: "target-token" });
     }
+    if (url.pathname === "/repos/openclaw/fs-safe/collaborators/steipete/permission") {
+      return jsonResponse({
+        permission: "write",
+        role_name: "maintain",
+        user: { login: "steipete" },
+      });
+    }
     throw new Error(`unexpected fetch ${url}`);
   };
 
@@ -3110,6 +3117,13 @@ test("hosted pull request receipts dedupe across opened and ready_for_review", a
     if (url.pathname === "/app/installations/123/access_tokens") {
       return jsonResponse({ token: "target-token" });
     }
+    if (url.pathname === "/repos/openclaw/fs-safe/collaborators/steipete/permission") {
+      return jsonResponse({
+        permission: "write",
+        role_name: "maintain",
+        user: { login: "steipete" },
+      });
+    }
     const pullMatch = /^\/repos\/openclaw\/fs-safe\/pulls\/(\d+)$/.exec(url.pathname);
     if (pullMatch) {
       return jsonResponse({
@@ -3296,6 +3310,13 @@ test("hosted webhook reuses existing fast ack comments on redelivery", async () 
     if (url.pathname === "/app/installations/123/access_tokens") {
       return jsonResponse({ token: "target-token" });
     }
+    if (url.pathname === "/repos/openclaw/fs-safe/collaborators/steipete/permission") {
+      return jsonResponse({
+        permission: "write",
+        role_name: "maintain",
+        user: { login: "steipete" },
+      });
+    }
     if (url.pathname === "/repos/openclaw/fs-safe/issues/597/comments" && init?.method === "GET") {
       assert.equal(authorization, "Bearer target-token");
       assert.equal(url.searchParams.get("per_page"), "100");
@@ -3418,6 +3439,13 @@ test("hosted webhook coalesces concurrent duplicate fast ack comments", async ()
     }
     if (url.pathname === "/app/installations/123/access_tokens") {
       return jsonResponse({ token: "target-token" });
+    }
+    if (url.pathname === "/repos/openclaw/fs-safe/collaborators/steipete/permission") {
+      return jsonResponse({
+        permission: "write",
+        role_name: "maintain",
+        user: { login: "steipete" },
+      });
     }
     if (url.pathname === "/repos/openclaw/fs-safe/issues/597/comments" && init?.method === "GET") {
       assert.equal(authorization, "Bearer target-token");
@@ -3545,6 +3573,13 @@ test("hosted webhook removes duplicate fast ack comments after concurrent redeli
     if (url.pathname === "/app/installations/123/access_tokens") {
       return jsonResponse({ token: "target-token" });
     }
+    if (url.pathname === "/repos/openclaw/fs-safe/collaborators/steipete/permission") {
+      return jsonResponse({
+        permission: "write",
+        role_name: "maintain",
+        user: { login: "steipete" },
+      });
+    }
     if (url.pathname === "/repos/openclaw/fs-safe/issues/597/comments" && init?.method === "GET") {
       commentLookups += 1;
       if (commentLookups === 1) return jsonResponse([]);
@@ -3663,6 +3698,13 @@ test("hosted webhook schedules post-dispatch fast ack cleanup", async () => {
     }
     if (url.pathname === "/app/installations/123/access_tokens") {
       return jsonResponse({ token: "target-token" });
+    }
+    if (url.pathname === "/repos/openclaw/fs-safe/collaborators/steipete/permission") {
+      return jsonResponse({
+        permission: "write",
+        role_name: "maintain",
+        user: { login: "steipete" },
+      });
     }
     if (url.pathname === "/repos/openclaw/fs-safe/issues/597/comments" && init?.method === "GET") {
       commentLookups += 1;
