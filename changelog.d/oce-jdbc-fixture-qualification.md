@@ -1,1 +1,0 @@
-- Recognize the exact password-free OCE JDBC configuration fixture without exempting other JDBC findings or source material from review-input scanning.

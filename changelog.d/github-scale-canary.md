@@ -1,1 +1,0 @@
-- Add an hourly GitHub scale canary that alerts Discord when reviews start failing in source preparation or a target repository nears a GitHub limit a reader is bounded by.

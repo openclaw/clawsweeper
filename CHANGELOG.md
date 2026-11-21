@@ -5,7 +5,102 @@ All notable ClawSweeper changes are tracked here.
 This file was reconstructed from first-parent git history. Generated dashboard,
 checkpoint, and status-only commits are intentionally omitted.
 
-## 0.3.4 - Unreleased
+## 0.3.5 - Unreleased
+
+## 0.3.4 - 2026-11-21
+
+- Exclude challenger-crab and diamond-lobster issue ratings from the openclaw/openclaw bulk-filer count only; retain completed-only counting elsewhere and burst protection for unrated and lower-rated reports (https://github.com/openclaw/clawsweeper/issues/1770). Thanks @holgergruenhagen.
+- The apply continuation and review backstops in `sweep.yml` no longer queue runs when the active-run list cannot be read; scheduled runs continue the lanes instead of a possible duplicate.
+- Apply now posts its own mutation lease comment only right before its first write to an item, instead of on every visit. Deleting the lease moved the item's `updated_at`, and the next apply read it as source drift and requeued a full review. So close proposals kept open for a maintainer decision (openclaw/openclaw#196836, #197741, #191008, #187774, #189332) were re-reviewed about every hour. A kept-open visit now makes no GitHub writes. This reverts the post-release receipt from https://github.com/openclaw/clawsweeper/pull/2212: GitHub returns the pre-delete `updated_at` on most reads made right after a delete, so a read-back receipt could not work.
+- Stop PR reviews from demanding proof for speculative races and in-flight revocation: authority-chain review now triggers only on changed authorization decisions, revocation applies to the next request, P3 findings are advisory, and unrequested race machinery or single-use helpers become findings instead.
+- Admit the exact synthetic loopback CDP fixture in existing-session profile tests without weakening other input-scanner checks.
+- Keep bounded coverage census sweeps progressing through finite payload churn by atomically reclaiming obsolete prior-pass staging rows under byte pressure without raising storage limits or discarding accepted current-pass progress.
+- Keep fresh Coverage census queries from failing cross-host timestamp fences by negotiating bounded, server-issued observation windows while retaining legacy, stale-source, capacity, and checkpoint guards.
+- Keep bounded coverage producers draining removable retired-generation payloads within the existing control budget so large static repositories do not wait many scheduled runs for refresh to resume.
+- The coverage census now releases its control lease when a run finishes or fails, so the next scheduled run starts at once. Before, it failed with `census_failed phase=start category=lease` for up to five minutes, which was 2 of the last 12 census failures. A failed GitHub census read now also logs a fixed `read_fault` label (`timeout`, `rate_limited`, `http_5xx`, `http_4xx`, `graphql` or `unknown`) without the raw, possibly private error text.
+- Normalize dashboard strict file paths to POSIX slashes so baseline checks match on Windows.
+- Restore the measured four-core allocation for repair containment smoke jobs after the Blacksmith runner capacity change.
+- Avoid repeating the dashboard typecheck in CI test shards and coverage replay while retaining the required dashboard check.
+- Let ClawSweeper review ClawRouter's synthetic bootstrap origin-rejection fixture while retaining exact value, detector, decoder and verification checks.
+- Batch main CodeQL analysis every six hours while preserving pull request and manual scans.
+- Read every page of a commit's check runs and statuses; openclaw PR heads usually carry over 100 check runs, which left review caching disabled and close guards reading partial CI activity.
+- Add privacy-bounded Coverage ACCEPT operation and fault diagnostics while preserving original exceptions, checkpoint fences, and retry behavior; this improves diagnosis and does not itself recover failed censuses.
+- Explain all five Coverage backlog statuses with matching info tips available on hover, keyboard focus, and tap. Thanks @brokemac79.
+- Add privacy-safe phase, failure category, and bounded progress diagnostics for Coverage census failures while preserving control-error compatibility, failed-closed reporting, and the original read failure when its checkpoint is rejected.
+- Resume bounded coverage censuses through existing publisher modes, preserve qualified as-of evidence during unchanged refreshes, and show completeness without partial fleet percentages.
+- Add a manual-only, guarded read-only Coverage credential comparison with bounded requests and redacted aggregate diagnostics that distinguish rate limits, authentication, and ambiguous denials; no production collector behavior changes.
+- Invalidate pending coverage verification and promotion witnesses when count metadata drifts, retaining Unknown until fresh matching sweeps qualify.
+- Fix coverage refresh failing before publication when GitHub count responses omit an unrequested repository identity; verify query-faithful CLI publication and pinned-predecessor stored-state compatibility.
+- Keep coverage Unknown after count drift during cleanup until fresh verification, and retain bounded failure reports when repository discovery fails.
+- Keep bounded coverage summaries available when count or census publication fails, while preserving the original failing exit and sanitized diagnostics.
+- Restore truthful aggregate-only weekly coverage Markdown after coverage publication, with bounded public reads and explicit Unknown results for unavailable or mismatched review windows.
+- Show repository-specific dashboard matches before applying list limits, and distinguish missing selection data from genuinely empty stored-corpus results. Thanks @brokemac79.
+- Separate recorded-open, source-changed, unknown and historical dashboard assessment flags, with explicit review age and current-source limits. Thanks @brokemac79.
+- Qualify the exact synthetic custom-endpoint credential-rejection regression for review input scanning without exempting other URI credentials or source lines.
+- Count every page of a PR head's check runs in the dashboard's live CI status; openclaw PRs with failures past the first 100 runs were shown green.
+- Qualify the reformatted check-link line and existing github-detail credential fixtures so reviews touching detail-checks.test.ts or detail.test.ts are not refused by the input scanner.
+- Stop guarded dead-letter cleanups that the queue keeps refusing from spending the whole closed-target recheck budget, so later closed targets get cleaned up.
+- Report dead letters whose target still has another queued publication as `target_item_active` instead of eligible, matching the fence guarded cleanup and fresh recovery enforce.
+- Keep the newest buckets when the public GitHub egress view is truncated, so recent incident traffic is not the part dropped.
+- `--force-unchanged` parked recovery now resets only spent budgets (retry attempts and the source-drift loop counter); unchanged policy holds such as maintainer-request-required no longer consume the per-run recovery cap.
+- Read bounded public Gitcrawl cluster context from an explicitly selected service during review, preserving unknown freshness and holding apply and review-start publication until their guards support the service.
+- Add an hourly GitHub scale canary that alerts Discord when reviews start failing in source preparation or a target repository nears a GitHub limit a reader is bounded by.
+- Close-guard head activity reads only force-push events over GraphQL instead of downloading the full PR timeline (3.8 MB and about 12 s on the largest openclaw PR).
+- Show an advisory source comparison in completed keep-open PR review details without treating local preflight summaries as review proof.
+- Hot intake now also skips an already-reviewed issue whose only new activity is ClawSweeper's own write when its review predates the current review policy. The claim-time no-op ignores policy, so every hot offer for such an issue was a no-op and the policy re-review never happened (esp-openclaw-node#92, clawscan#69). Backfill still offers these issues and re-reviews them for real.
+- Stop ClawSweeper from re-reviewing issues because of its own review writes. The claim-time ownership check now uses the review writer's own source-revision function. Its separate copy lowercased commenter logins, so on any issue with a capitalized commenter it never recognized ClawSweeper's own edit, and the issue got a full review every hour (for example esp-openclaw-node#67 and clawhub#3439). Hot intake also no longer offers an already-reviewed issue whose only new activity is ClawSweeper's own write. Before, an issue due on its normal cadence was offered on every hot pass as a no-op that recorded nothing, which is how esp-openclaw-node#92 reached queue revision 364.
+- Reviews reuse exact approved synthetic credential values across surrounding file edits, while arbitrary credentials and normalized Postgres findings remain blocked by the input scanner.
+- Report the real read-only checkout inspection failure reason instead of OpenClaw plugin warnings printed to stderr.
+- Intake no longer classifies an item that already has a published ClawSweeper review. Each re-review re-added the preliminary `clawsweeper:intake:*` label, and the publisher removed it minutes later. That removal arrived as an organic `unlabeled` event, which reset the source-drift loop breaker, so openclaw/openclaw#196836 was reviewed about every hour (48 label cycles, queue revision 168) and kept `review_runaway` red. The skip also saves the paid intake inference on every re-review.
+- Correct the local review package guide to identify the published v0.3.3 release and distinguish it from development qualification artifacts.
+- Allow both local committed-range review commands to review unlisted and private repositories using their own instructions, without hosted registration or close authority.
+- Link local review scanner prerequisites and classification guidance to the canonical TruffleHog bootstrap pin.
+- Use the frozen patched Wrangler toolchain for maintained local Worker proofs instead of downloading older runtimes.
+- Read daily maintainer notifications from the verified published-report API instead of checking out report files, retaining public links and explicit partial coverage.
+- Qualify the exact synthetic MCP Apps sandbox-origin negative-URL fixture across observed native decoder variants without relaxing other secret-scanning checks.
+- Keep item titles, assessment metadata and review freshness readable in narrow dashboard cards, with reachable mobile sections and repository search. Thanks @brokemac79.
+- Qualify the existing password-free JDBC test fixture in the exact source revisions used by [OCE PR 5398](https://github.com/openclaw/openclaw-enterprise/pull/5398).
+- Recognize the newly observed native decoder variants of two already reviewed OCE sign-in fixtures without widening its source or credential checks.
+- Recognize the exact historical OCE harness-origin rejection fixture in its retained source and patch.
+- Recognize the exact password-free OCE JDBC configuration fixture without exempting other JDBC findings or source material from review-input scanning.
+- Qualify the exact OpenClaw Enterprise sign-in URL-rejection fixtures while keeping changed source, other findings, and unobserved decoders blocked.
+- Keep OpenClaw's own credentials, such as OPENCLAW_GATEWAY_TOKEN and OPENCLAW_GATEWAY_PASSWORD, out of the OpenClaw-runner review agent: its environment still receives OPENCLAW_* operational controls, but no longer any OPENCLAW_* name ending in _TOKEN, _PASSWORD, _SECRET, _API_KEY or _PRIVATE_KEY.
+- Let OpenClaw-runner reviews pass the checkout inspection on OpenClaw releases that keep session transcripts in their database: a small read-receipt plugin, loaded only into the inspection agent, records each transcript message through the before_message_write hook, and the inspection gets up to 120 seconds instead of 30 to cover a cold start in a fresh state directory.
+- Run OpenClaw-runner reviews without memory plugins: each job uses a fresh, discarded state directory, so memory only synced the workspace and session through an embeddings API, and that pending work could fail the CLI after the review turn had already finished.
+- Stop re-offering an issue for review when its only activity since the last review is ClawSweeper's own review write; normal review cadence still applies.
+- Qualify the exact synthetic push-relay URL rejection fixture while retaining scanner verification and unrecognized-finding refusals.
+- Qualify the exact synthetic Chrome MCP endpoint-rejection fixture so browser snapshot reviews can pass source admission without weakening scanner checks.
+- Keep exact-review leases usable when a GitHub repository's casing differs from its stored queue key.
+- Keep background re-review start statuses in existing durable comments with lossless bytes, size-limit fallback, and fenced leases that survive apply publication, avoiding repeated subscriber notifications while preserving review history and recovery.
+- The structural relation probe treats an incomplete GitHub issue search with no match as unknown, so a review is not reused from cache on a possibly missing related issue.
+- Update local dashboard and proof tooling to official Workerd releases that reject the compromised certificate keys.
+- Prepare separate author review cohorts and requester maintainer checks without changing active admission.
+- Add an explicit private operator command for fresh review-authority observations with actionable, redacted configuration diagnostics, without changing review admission.
+- Add an explicit private observer mode that binds a positive outside-collaborator ID and login without treating membership lookup failures as non-membership.
+- Resolve review blob sizes with a targeted GraphQL lookup instead of a recursive tree listing, which GitHub truncates for openclaw/openclaw and which failed reviews with review_blob_metadata_unavailable.
+- Report a PR whose only open item is a maintainer decision as ready and awaiting that decision: the decision renders once under Decision needed instead of as a Before-merge checkbox, the review-state marker stays `blocked` for released readers but adds `hold=maintainer_decision`.
+- Update Markdown parsing and dashboard dependencies to fix denial-of-service, TLS, redirect, integrity, and development-server vulnerabilities, and refresh compatible validation tools.
+- Normalize test runner target file paths to POSIX slashes so test targets and child arguments match across platforms.
+- Link terminal input-scan failures to their existing diagnostic artifact and document a bounded, exact-run inspector without exposing scan details in public summaries.
+- Explain managed scanner setup failures with safe phase and HTTP status diagnostics while preserving fail-closed review admission.
+- Release items held by the input scanner before the exact-value approvals in #2201 so they are reviewed again on their next scheduled pass.
+- Fix the scheduler monitoring command to list sweep workflow runs regardless of their task-specific names.
+- Prepare pinned service-backed relationship context before applying review decisions while retaining fresh GitHub source, lease, and mutation guards.
+- Allow service-selected review runs to import completed review artifacts and work plans without requiring a cluster read; GitHub apply remains held.
+- Allow review-start reservations with the Gitcrawl service selected by checking live issue comments or the PR head without hydrating related context; apply remains held.
+- Dashboard status warnings retain bounded GitHub failure causes through projection and caching, distinguishing HTTP rejection, timeout, transport failure and incomplete census without exposing upstream text.
+- Stop the dashboard status refresh from timing out on an unfiltered workflow-run listing; status-filtered censuses already cover every run state.
+- Identify unavailable dashboard telemetry sections and retain worker-health failure signals when reusing cached samples.
+- Stop dashboard status refreshes from stalling on a GitHub App token mint started by another request; in-flight mints are now shared only within one status refresh.
+- Keep rerun workers and health samples tied to their selected workflow attempt instead of reusing jobs from another attempt.
+- Keep dashboard workflow counts, activity, and health sampling consistent when GitHub feeds return different states of the same run.
+- Stuck queued-run remediation now records a run as a permanent zombie on any HTTP 409 cancel response for a run it has just confirmed as queued. This includes GitHub's "is not in progress" variant, so the oldest ghost no longer takes a cancellation slot on every pass.
+- Stuck queued-run remediation now reads only the newest page of each workflow's history, so a pass finishes in about 20 seconds instead of spending its whole 2-minute budget on history and cancelling nothing. Runs that GitHub refuses to cancel because they "have not been queued yet" are recorded as permanent zombies, so they stop using up the 10 cancellation slots each pass.
+- Join Coverage to source-timestamped live-open identities, show uncertain censuses as unknown, and separate stored review history from live review evidence. Keep anonymous coverage aggregate-only and verify current repository visibility before publishing identifying build data.
+- Qualify the existing synthetic credential URL in OpenClaw's update failure report redaction test, so reviews of PRs touching `update-failure-report-config.test.ts` are no longer refused.
+- Add bounded public evidence drilldowns for queue warnings and per-target repeated-claim counts/history, with explicit missing-data and privacy limits.
+- Stop refusing reviews of the exact existing OpenClaw website password-only URL rejection fixture while retaining strict source attribution.
+- Qualify the exact synthetic workspace-picker URI rejection fixture with pinned native scanner identities and complete source witnesses, while continuing to refuse altered inputs.
 
 ## 0.3.3 - 2026-10-29
 

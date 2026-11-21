@@ -1,1 +1,0 @@
-- Keep bounded coverage census sweeps progressing through finite payload churn by atomically reclaiming obsolete prior-pass staging rows under byte pressure without raising storage limits or discarding accepted current-pass progress.

@@ -1,1 +1,0 @@
-- Stop the dashboard status refresh from timing out on an unfiltered workflow-run listing; status-filtered censuses already cover every run state.

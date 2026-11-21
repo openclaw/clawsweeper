@@ -1,1 +1,0 @@
-- Allow both local committed-range review commands to review unlisted and private repositories using their own instructions, without hosted registration or close authority.

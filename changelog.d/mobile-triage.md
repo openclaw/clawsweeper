@@ -1,1 +1,0 @@
-- Keep item titles, assessment metadata and review freshness readable in narrow dashboard cards, with reachable mobile sections and repository search. Thanks @brokemac79.

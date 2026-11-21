@@ -1,1 +1,0 @@
-- Fix coverage refresh failing before publication when GitHub count responses omit an unrequested repository identity; verify query-faithful CLI publication and pinned-predecessor stored-state compatibility.

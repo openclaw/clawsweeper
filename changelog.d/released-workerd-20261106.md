@@ -1,1 +1,0 @@
-- Update local dashboard and proof tooling to official Workerd releases that reject the compromised certificate keys.

@@ -1,1 +1,0 @@
-- Allow review-start reservations with the Gitcrawl service selected by checking live issue comments or the PR head without hydrating related context; apply remains held.

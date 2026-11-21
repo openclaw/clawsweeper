@@ -1,1 +1,0 @@
-- Report dead letters whose target still has another queued publication as `target_item_active` instead of eligible, matching the fence guarded cleanup and fresh recovery enforce.

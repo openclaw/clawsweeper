@@ -1,1 +1,0 @@
-- Link terminal input-scan failures to their existing diagnostic artifact and document a bounded, exact-run inspector without exposing scan details in public summaries.

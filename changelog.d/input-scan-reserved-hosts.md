@@ -1,1 +1,0 @@
-- Reviews reuse exact approved synthetic credential values across surrounding file edits, while arbitrary credentials and normalized Postgres findings remain blocked by the input scanner.
