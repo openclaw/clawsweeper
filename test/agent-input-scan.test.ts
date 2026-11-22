@@ -516,7 +516,11 @@ test("a submodule pointer bump is scanned through its patch; a populated submodu
   f.git("update-index", "--cacheinfo", `160000,${bumped},vendor/lib`);
   f.git("commit", "-qm", "bump submodule");
   const headSha = f.git("rev-parse", "HEAD");
-  mkdirSync(join(f.cwd, "vendor", "lib"), { recursive: true });
+  // Absent parent, absent leaf and an empty directory all hold no submodule bytes.
+  assert.equal(f.run({ kind: "committed", baseSha, headSha }).status, 0);
+  mkdirSync(join(f.cwd, "vendor"));
+  assert.equal(f.run({ kind: "committed", baseSha, headSha }).status, 0);
+  mkdirSync(join(f.cwd, "vendor", "lib"));
   assert.equal(f.run({ kind: "committed", baseSha, headSha }).status, 0);
   assert.ok(
     JSON.parse(readFileSync(receipt, "utf8")).some((input: string) =>

@@ -449,8 +449,9 @@ export function scanAgentInput(options: {
               try {
                 stat = lstatSync(parent);
               } catch (error) {
+                // A deleted entry or an uninitialized submodule may have no directory at all.
                 if (
-                  entry.mode === "000000" &&
+                  (entry.mode === "000000" || entry.mode === GITLINK_MODE) &&
                   ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")
                 )
                   continue file;
@@ -466,7 +467,10 @@ export function scanAgentInput(options: {
             try {
               stat = lstatSync(file);
             } catch (error) {
-              if (entry.mode === "000000" && (error as NodeJS.ErrnoException).code === "ENOENT")
+              if (
+                (entry.mode === "000000" || entry.mode === GITLINK_MODE) &&
+                (error as NodeJS.ErrnoException).code === "ENOENT"
+              )
                 continue;
               throw new AgentInputScanError("source_drift");
             }
