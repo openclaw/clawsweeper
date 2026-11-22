@@ -14,6 +14,7 @@ import {
   rmSync,
   statSync,
   writeFileSync,
+  readdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -77,6 +78,7 @@ export const MAX_SCAN_BYTES = 256 * 1024 * 1024;
 const MAX_BATCH_OBJECTS = 160;
 const MAX_BATCH_BYTES = 8 * 1024 * 1024;
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+const GITLINK_MODE = "160000";
 const hostRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REVIEW_TOOL_BOOTSTRAP_ENV = [
   "SystemRoot",
@@ -472,6 +474,13 @@ export function scanAgentInput(options: {
               if (!stat.isDirectory()) throw new AgentInputScanError("source_drift");
               continue;
             }
+            // A gitlink names a commit in another repository. Reviews never initialize
+            // submodules, so its path must stay an empty directory: nothing unscanned on disk.
+            if (entry.mode === GITLINK_MODE) {
+              if (!stat.isDirectory() || stat.isSymbolicLink() || readdirSync(file).length)
+                throw new AgentInputScanError("unsupported_content");
+              continue;
+            }
             const symlinkFile =
               entry.mode === "120000" &&
               stat.isFile() &&
@@ -573,9 +582,12 @@ export function scanAgentInput(options: {
           ];
           for (const [mode, oid, revision, role] of changedReferences) {
             if (mode === "000000") continue;
-            if (!["100644", "100755", "120000"].includes(mode!))
+            if (![GITLINK_MODE, "100644", "100755", "120000"].includes(mode!))
               throw new AgentInputScanError("unsupported_content");
             if (!OBJECT_ID.test(oid!)) throw new AgentInputScanError("incomplete_source");
+            // A submodule pointer has no blob here; the raw diff and patch staged for
+            // this endpoint carry its commit ID and are scanned.
+            if (mode === GITLINK_MODE) continue;
             // An OID identifies bytes, not each scanned endpoint's path/mode eligibility.
             const references = blobs.get(oid!) ?? [];
             if (

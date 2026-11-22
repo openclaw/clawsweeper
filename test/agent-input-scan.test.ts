@@ -471,7 +471,7 @@ test("scan rejects a source changed while the scanner is running", (t) => {
   assert.equal(existsSync(f.calls), false);
 });
 
-test("symlink target bytes are regular scan files and changed gitlinks/LFS refuse", (t) => {
+test("symlink target bytes are regular scan files and changed LFS pointers refuse", (t) => {
   const f = fixture(t);
   const receipt = join(f.root, "links");
   useFakeScanner(
@@ -485,11 +485,6 @@ test("symlink target bytes are regular scan files and changed gitlinks/LFS refus
   assert.equal(f.run({ kind: "committed", baseSha, headSha }).status, 0);
   assert.ok(JSON.parse(readFileSync(receipt, "utf8")).includes("/outside/private/never-follow"));
   rmSync(f.calls);
-  f.git("update-index", "--add", "--cacheinfo", `160000,${baseSha},submodule`);
-  f.git("commit", "-qm", "gitlink");
-  headSha = f.git("rev-parse", "HEAD");
-  assert.throws(() => f.run({ kind: "committed", baseSha, headSha }), /unsupported_content/);
-  f.git("update-index", "--force-remove", "submodule");
   writeFileSync(
     join(f.cwd, "large.lfs"),
     "version https://git-lfs.github.com/spec/v1\noid sha256:" + "0".repeat(64) + "\nsize 100\n",
@@ -497,6 +492,39 @@ test("symlink target bytes are regular scan files and changed gitlinks/LFS refus
   headSha = f.commit();
   assert.throws(() => f.run({ kind: "committed", baseSha, headSha }), /unsupported_content/);
   assert.equal(existsSync(f.calls), false);
+});
+
+// Production: openclaw/Peekaboo#1185 and openclaw/crabpot#886 bump submodule pointers
+// and were refused as unsupported_content, so they could never be reviewed.
+test("a submodule pointer bump is scanned through its patch; a populated submodule refuses", (t) => {
+  const f = fixture(t);
+  const receipt = join(f.root, "inputs");
+  useFakeScanner(
+    t,
+    `fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify(inputs.map(({bytes}) => bytes.toString())));`,
+  );
+  writeFileSync(join(f.cwd, "a.txt"), "base\n");
+  const first = f.commit();
+  f.git("update-index", "--add", "--cacheinfo", `160000,${first},vendor/lib`);
+  f.git("commit", "-qm", "add submodule");
+  const baseSha = f.git("rev-parse", "HEAD");
+  // The fixture commit helper stages with `add -A`, which would drop the unpopulated gitlink.
+  writeFileSync(join(f.cwd, "a.txt"), "head\n");
+  f.git("add", "a.txt");
+  f.git("commit", "-qm", "unrelated change");
+  const bumped = f.git("rev-parse", "HEAD");
+  f.git("update-index", "--cacheinfo", `160000,${bumped},vendor/lib`);
+  f.git("commit", "-qm", "bump submodule");
+  const headSha = f.git("rev-parse", "HEAD");
+  mkdirSync(join(f.cwd, "vendor", "lib"), { recursive: true });
+  assert.equal(f.run({ kind: "committed", baseSha, headSha }).status, 0);
+  assert.ok(
+    JSON.parse(readFileSync(receipt, "utf8")).some((input: string) =>
+      input.includes(`Subproject commit ${bumped}`),
+    ),
+  );
+  writeFileSync(join(f.cwd, "vendor", "lib", "unscanned.txt"), "submodule content\n");
+  assert.throws(() => f.run({ kind: "committed", baseSha, headSha }), /unsupported_content/);
 });
 
 test("OpenClaw inspection cannot launch a provider on scan refusal", (t) => {
