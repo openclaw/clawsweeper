@@ -250,7 +250,11 @@ const server = http.createServer(async (request, response) => {
   if (
     url.pathname === "/repos/openclaw/router-throttle-proof/collaborators/maintainer/permission"
   ) {
-    return json(response, 200, { permission: "admin" });
+    return json(response, 200, {
+      permission: "admin",
+      role_name: "admin",
+      user: { login: "maintainer" },
+    });
   }
   if (url.pathname === "/repos/openclaw/router-throttle-proof/issues/1") {
     return json(response, 200, {

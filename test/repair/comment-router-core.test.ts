@@ -17,6 +17,7 @@ import {
   freshExactHeadReviewStartLease,
   isAuthorReadOnlyCommandAllowed,
   isMaintainerCommandAllowed,
+  reviewCommandAccess,
   isTrustedStatusCommentAuthor,
   latestTrustedExactHeadReview,
   parseCommand,
@@ -956,45 +957,69 @@ test("renderResponse avoids self-linking current item numbers in explain replies
   assert.doesNotMatch(issueBody, /- Issue: #74579/);
 });
 
-test("maintainer command authorization requires maintainer repository permission", () => {
-  const allowedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+test("command WRITE capability and canonical maintainer authority remain separate", () => {
+  const now = Date.parse("2026-11-20T00:00:00Z");
+  const access = (value: unknown, observedAt = now) =>
+    reviewCommandAccess({
+      repository: "openclaw/example",
+      actor: "requester",
+      now,
+      maxAgeMs: 0,
+      repositoryPermission: {
+        repository: "openclaw/example",
+        actor: "requester",
+        value,
+        observedAt: new Date(observedAt).toISOString(),
+      },
+    });
+  for (const [role, permission, allowed, authority] of [
+    ["admin", "admin", true, "maintainer"],
+    ["maintain", "write", true, "maintainer"],
+    ["write", "write", true, "ordinary"],
+    ["triage", "read", false, "ordinary"],
+    ["custom-role", "write", true, "unknown"],
+    ["admin", "read", false, "unknown"],
+  ] as const) {
+    const result = access({ permission, role_name: role, user: { login: "requester" } });
+    assert.equal(result.allowed, allowed, role);
+    assert.equal(result.authority.role, authority, role);
+  }
+  for (const value of [
+    null,
+    { permission: "write" },
+    { permission: "write", role_name: "maintain", user: { login: "other" } },
+    {
+      permission: "write",
+      role_name: "maintain",
+      user: { login: "requester", permissions: { admin: false } },
+    },
+  ])
+    assert.equal(access(value).allowed, false, JSON.stringify(value));
   assert.equal(
-    isMaintainerCommandAllowed({
-      authorAssociation: "MEMBER",
-      repositoryPermission: null,
-      allowedAssociations,
-    }),
+    access({ permission: "write", role_name: "maintain", user: { login: "requester" } }, now - 1)
+      .allowed,
     false,
   );
   assert.equal(
-    isMaintainerCommandAllowed({
-      authorAssociation: "MEMBER",
-      repositoryPermission: "write",
-      allowedAssociations,
-    }),
-    true,
-  );
-  assert.equal(
-    isMaintainerCommandAllowed({
-      authorAssociation: "CONTRIBUTOR",
-      repositoryPermission: "admin",
-      allowedAssociations,
-    }),
-    true,
-  );
-  assert.equal(
-    isMaintainerCommandAllowed({
-      authorAssociation: "CONTRIBUTOR",
-      repositoryPermission: "read",
-      allowedAssociations,
-    }),
+    isMaintainerCommandAllowed({ authorAssociation: "OWNER", repositoryPermission: null }),
     false,
   );
+});
+
+test("self-review requires matching actual login strings", () => {
+  for (const author of [null, {}, [], 42, " author", "author "]) {
+    assert.equal(
+      isAuthorReadOnlyCommandAllowed({
+        command: { intent: "re_review", author },
+        target: { author },
+      }),
+      false,
+    );
+  }
   assert.equal(
-    isMaintainerCommandAllowed({
-      authorAssociation: "OWNER",
-      repositoryPermission: null,
-      allowedAssociations,
+    isAuthorReadOnlyCommandAllowed({
+      command: { intent: "re_review", author: "Author" },
+      target: { author: "author" },
     }),
     true,
   );

@@ -1,19 +1,24 @@
 # Review authority contract
 
-- Status: accepted role projections; explicit operator; proposed admission integration
+- Status: current requester command contract; proposed author-cohort integration
 - Owner: ClawSweeper permission and review-policy maintainers
 - Source: [`src/review-authority.ts`](../src/review-authority.ts),
   [`src/review-authority-acquisition.ts`](../src/review-authority-acquisition.ts),
   [`src/maintainer-review-policy.ts`](../src/maintainer-review-policy.ts),
+  [`src/repair/comment-router/admission.ts`](../src/repair/comment-router/admission.ts),
+  [`dashboard/worker.ts`](../dashboard/worker.ts),
+  [`dashboard/exact-review-queue.ts`](../dashboard/exact-review-queue.ts),
   and their authority and maintainer-policy fixtures
-- Baseline reviewed: `511462151487bd544a2778ef4868451b07f08683`
+- Role/acquisition baseline reviewed: `511462151487bd544a2778ef4868451b07f08683`
+- Requester runtime verified: `a6a084b091e081e61e52cf82ad77b900606af20a`
 - Update when: GitHub role semantics, authority acquisition, freshness, or
   review-policy integration changes
 
 `resolveReviewAuthority` classifies trusted API observations as `maintainer`,
 `ordinary`, or `unknown`. It does not fetch GitHub data, cache results, change
-admission, or authorize a command. Existing review and mutation gates remain
-unchanged. Integration and activation require a separate policy change.
+admission, or authorize a command. The requester paths below consume its result
+at existing command boundaries. Broader author-cohort and organization-policy
+changes remain separate work.
 
 `acquireReviewAuthority` supplies the missing observation binding. Its required
 repository-permission reader and optional organization-membership reader are
@@ -91,11 +96,12 @@ requester. A verified maintainer requester does not promote the PR author.
 Independent self-author and verified-write read-only review rights remain with
 their existing command owner; they are not maintainer authority.
 
-These are unused, role-only projections of caller-bound canonical evidence.
-They do not validate freshness, admit a review, authorize a mutation, catch
-transport errors, or change current production behavior. Selected acquisition
-errors still propagate without a partial result; the transport owner must keep
-failure handling separate from a canonical unknown result.
+Both named projections remain unused by production callers. The requester
+paths below instead consume `reviewCommandAccess`, which uses the canonical
+classifier and separates maintainer authority from validated WRITE capability.
+The projections do not validate freshness, admit reviews, authorize mutations,
+or catch transport errors. Selected acquisition errors still propagate without
+a partial result; transport failure is separate from a canonical unknown result.
 
 ## Caller migration map
 
@@ -157,22 +163,63 @@ production activation is added by this operator capability.
 
 ### Admission callers
 
-These paths retain their current behavior. None imports the acquisition adapter.
+Author cohort paths retain their current behavior. Requester command paths use
+existing transports and the classifier directly; no caller imports a second HTTP adapter.
 
 | Owner | Current observation and cache | Separate integration work |
 | --- | --- | --- |
 | `src/clawsweeper-context-hydration.ts`, `bulkFilerRepositoryPermission` | Author role string, preferring `role_name`, with a command-scoped author map | Preserve full response and acquisition time; bind target repository and resolve author independently |
-| `src/repair/comment-router.ts` permission readers | Requester's legacy permission, cached by login within routing; rate-limit errors propagate | Preserve native retry/control behavior and requester identity; review the command-specific write-access policy separately |
+| `src/repair/comment-router.ts` permission readers | Requester access projection at response completion; fresh checks for every label mutation attempt and review enqueue | Deployed per-route permission-loss behavior remains untested |
 | `src/repair/exact-review-admission.ts` author promotion | Contributor lookup before the later older-item hold; legacy permission and existing author-association fallback | Prove author cohort behavior without treating a maintainer request as author evidence |
 | `dashboard/maintainer-author.ts` | Older contributor items only; legacy permission cached for one hour by repository/login; lookup failures keep existing behavior | Preserve the current cache owner until cache provenance, freshness and revocation are explicitly integrated |
 
-Requester migration must cover both `src/repair/comment-router/admission.ts` and
-the direct hosted re-review path in `dashboard/worker.ts`. The router currently
-retains its configured OWNER-association fallback when permission is unavailable.
-Direct hosted intake derives `maintainerAuthorized` from comment association and
-can reach `/command-intake` without CLI router revalidation. Neither path consumes
-the new requester projection. Changing only the CLI path cannot activate this
-policy consistently.
+### Requester command paths
+
+`reviewCommandAccess` consumes one bound repository-permission response for two
+separate decisions: canonical maintainer role and existing WRITE command access.
+Only effective maintain/admin roles establish maintainer authority. Ordinary
+WRITE remains allowed for existing commands; an ambiguous custom/absent role can
+retain WRITE access only when the full response validates that capability.
+Malformed, stale, mismatched or contradictory evidence grants neither. OWNER
+association never substitutes for a permission read.
+
+The router retains its initial per-invocation classification cache, then bypasses
+it inside every label operation, including one-shot label creation and later
+command attempts. Existing label writes remain single-attempt.
+A denied attempt is recorded as a known non-mutation. Both signed App and OIDC
+intake use the same hosted handler. Standalone webhook intake uses the same
+projection; failed permission transport stays retryable.
+
+The durable review queue re-reads the source comment/version, live item author
+and permission at every resumed enqueue. When the request remains authorized,
+it rebuilds prompt context from that comment and current capability, discarding
+producer or persisted privilege. A denied recheck forwards no saved context.
+An already accepted enqueue is not re-authorized during acknowledgement repair:
+`effects_pending` neither cancels nor repeats the accepted review.
+
+A live, matching item author retains ordinary self-review even when permission
+acquisition fails. A failed read grants no extra context or maintainer powers.
+Existing review aliases share this behavior. No role is added to serialized
+intake, no schema changes, and no organization-member or outside-list lookup is
+added to command handling.
+
+A controlled comparison ran the real local Worker and SQLite store across four
+boots: an initial boot and same-store restart for each of
+`309e56f23bd389b7ee40bc5654870ad14344876e` and
+`a6a084b091e081e61e52cf82ad77b900606af20a`. A signed synthetic non-author
+re-review reached persisted `enqueue_pending` with zero admissions while local
+repository metadata returned 503. No webhook was resubmitted on restart. With
+metadata restored, the baseline reused its association-derived saved grant
+without a permission read and admitted one review. The requester implementation
+consumed synthetic maintain/READ responses, reread permission on restart,
+rejected `requester_not_authorized`, and admitted none. No saved privileged context was
+forwarded. See [the proof and trace](https://github.com/openclaw/clawsweeper/pull/2220).
+
+GitHub responses were synthetic and loopback-only. Both fixture-only metadata
+cache windows were zero; this does not prove default-cache behavior, live
+per-route App access, or natural revocation. Author cohort/cadence, limits,
+sponsorship, cache policy, producer expansion and organization policy remain
+unchanged.
 
 The Worker author reader also restricts permission lookup to older CONTRIBUTOR
 items and a narrower login grammar. Current MEMBER-author paths can skip the
@@ -194,19 +241,19 @@ accepted ordinary author cohort is an availability decision, not a privileged
 grant. Existing October 15 first-review cadence and independent protections stay
 unchanged until their owning callers are deliberately migrated.
 
-The classifier and acquisition binding remain unconsumed by production admission callers.
-Integration fixtures cover full-role payload parity, target and actor binding,
-completion-time freshness, selected errors and repeated fresh reads after a
-simulated revocation. These do not activate an admission rule. Future caller
-integration must prove author/requester separation,
-permission loss, all admission paths, and visible unknown handling before
-changing current behavior. No new GitHub App permission is requested here.
+The role-only projections and acquisition adapter remain unused by production
+admission callers. Requester command paths use `reviewCommandAccess` with their
+existing transports. Integration fixtures cover full-role payload parity, target
+and actor binding, completion-time freshness, selected errors and repeated
+fresh reads after simulated permission loss. The controlled restart comparison
+above exercises persisted requester admission; it does not change author cohort,
+review cadence, limits, sponsorship or cache policy.
 
-Active caller migration remains held for actual per-route permission and live
-revocation proof, observe-only old/new decision comparisons, and resolved pilot
-admission and transport evidence. Installation permission metadata alone does
-not establish runtime capability. This source preparation does not deploy an
-observe-only consumer, activate organization policy, or expand review producers.
+Broader author-cohort integration, observe-only pilots, organization policy and
+producer expansion remain separate, held work. Their owners must establish the
+required admission and transport evidence before activation. Installation
+permission metadata alone does not establish runtime capability. No new GitHub
+App permission or observe-only production consumer is added here.
 
 The live contract check covered admin, `permission: write` with
 `role_name: maintain`, and an active organization-owner response. Custom-role,

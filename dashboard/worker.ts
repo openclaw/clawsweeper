@@ -37,6 +37,7 @@ import {
 import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts";
 import { commandAckMarker } from "../src/repair/markers.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
+import { reviewCommandAccess } from "../src/repair/comment-router/admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
 import { sha256Hex } from "./exact-review-direct-publication.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
@@ -393,7 +394,6 @@ const APPLY_OBSERVABILITY_LEGACY_LIMIT = 5_000;
 const CLAWSWEEPER_REVIEW_REPO = "openclaw/clawsweeper";
 const CLAWSWEEPER_STATE_REPO = "openclaw/clawsweeper-state";
 const CLAWSWEEPER_STATE_REF = "state";
-const CLAWSWEEPER_ALLOWED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const CLAWSWEEPER_ISSUE_ITEM_ACTIONS = new Set([
   "opened",
   "reopened",
@@ -4027,6 +4027,31 @@ async function handleGithubCommentCommand(
       pull_requests: "write",
     },
   });
+  const requester = commentDecision.commentAuthor;
+  const permission = await githubTokenJson({
+    env,
+    token: targetToken,
+    path: `/repos/${commentDecision.targetRepo}/collaborators/${encodeURIComponent(requester)}/permission`,
+    method: "GET",
+    body: undefined,
+    errorLabel: "command requester repository permission",
+  });
+  const now = Date.now();
+  const access = reviewCommandAccess({
+    repository: commentDecision.targetRepo,
+    actor: requester,
+    now,
+    maxAgeMs: 0,
+    repositoryPermission: {
+      repository: commentDecision.targetRepo,
+      actor: requester,
+      value: permission,
+      observedAt: new Date(now).toISOString(),
+    },
+  });
+  if (!access.allowed)
+    return json({ ok: true, accepted: false, reason: "requester_not_authorized" }, 202);
+  commentDecision = { ...commentDecision, maintainerAuthorized: access.allowed };
   const statusCommentId = commentDecision.maintainerAuthorized
     ? await createFastAckCommentOnce({
         env,
@@ -4251,20 +4276,8 @@ function classifyGithubIssueCommentWebhook({
   if (!Number.isInteger(commentId) || commentId <= 0) {
     return { accepted: false, reason: "missing comment id" };
   }
-  const association = String(comment.author_association || "").toUpperCase();
   const commandText = commandTextForClawSweeperFastAck(String(comment.body || ""));
   if (action === "deleted" || !commandText) {
-    return {
-      accepted: true,
-      type: "activity",
-      sourceEvent: "issue_comment",
-      sourceAction: action,
-    };
-  }
-  if (
-    !CLAWSWEEPER_ALLOWED_ASSOCIATIONS.has(association) &&
-    !isAuthorReadOnlyGithubWebhookCommand({ comment, issue, commandText })
-  ) {
     return {
       accepted: true,
       type: "activity",
@@ -4292,7 +4305,7 @@ function classifyGithubIssueCommentWebhook({
     sourceAction: action,
     commentAuthor: String(objectValue(comment.user).login || ""),
     commentUrl: String(comment.html_url || ""),
-    maintainerAuthorized: CLAWSWEEPER_ALLOWED_ASSOCIATIONS.has(association),
+    maintainerAuthorized: false,
     ...(commentUpdatedAt
       ? {
           commentUpdatedAt,
@@ -4571,13 +4584,6 @@ function targetDefaultBranch(repo) {
 function isClawsweeperGithubWebhookSender(sender) {
   const login = normalizedLogin(sender.login);
   return CLAWSWEEPER_BOT_LOGINS.has(login);
-}
-
-function isAuthorReadOnlyGithubWebhookCommand({ comment, issue, commandText }) {
-  if (!isClawSweeperReReviewCommandText(commandText)) return false;
-  const commentAuthor = normalizedLogin(objectValue(comment.user).login);
-  const issueAuthor = normalizedLogin(objectValue(issue.user).login);
-  return Boolean(commentAuthor && issueAuthor && commentAuthor === issueAuthor);
 }
 
 function exactReviewQueueNamespace(env): DurableObjectNamespace | null {

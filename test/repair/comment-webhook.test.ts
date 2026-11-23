@@ -45,8 +45,70 @@ test("comment webhook accepts maintainer ClawSweeper commands", () => {
     commentBody: "@clawsweeper automerge",
     commentAuthor: "",
     commentUrl: "",
-    maintainerAuthorized: true,
+    maintainerAuthorized: false,
   });
+});
+
+test("standalone routing requires live WRITE permission even for OWNER association", async () => {
+  const restore = installWebhookAppCredentials();
+  const previousFetch = globalThis.fetch;
+  const previousDelays = process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS;
+  process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0";
+  try {
+    for (const [permissionStatus, permission, expectedStatus, accepted] of [
+      [200, { permission: "read", role_name: "read", user: { login: "requester" } }, 202, false],
+      [403, { message: "permission unavailable" }, 503, false],
+      [200, { permission: "write", role_name: "write", user: { login: "requester" } }, 202, true],
+    ] as const) {
+      let permissionReads = 0;
+      let mutations = 0;
+      globalThis.fetch = async (input, init) => {
+        const path = new URL(String(input)).pathname;
+        if (path === "/repos/openclaw/clawsweeper/installation") return jsonResponse({ id: 999 });
+        if (path.endsWith("/access_tokens")) return jsonResponse({ token: "synthetic-token" });
+        if (path === "/repos/openclaw/openclaw")
+          return jsonResponse({
+            full_name: "openclaw/openclaw",
+            private: false,
+            visibility: "public",
+          });
+        if (path.endsWith("/collaborators/requester/permission")) {
+          permissionReads += 1;
+          return new Response(JSON.stringify(permission), { status: permissionStatus });
+        }
+        if (init?.method === "GET" && path.endsWith("/comments")) return jsonResponse([]);
+        mutations += 1;
+        return jsonResponse({ id: 1234 });
+      };
+      const result = await handleGitHubWebhook({
+        event: "issue_comment",
+        payload: {
+          action: "created",
+          repository: { full_name: "openclaw/openclaw", private: false },
+          issue: { number: 42, state: "open" },
+          installation: { id: 123 },
+          comment: {
+            id: 456,
+            body: "@clawsweeper stop",
+            author_association: "OWNER",
+            user: { login: "requester" },
+          },
+        },
+      });
+      assert.equal(result.statusCode, expectedStatus);
+      assert.equal(permissionReads, 1);
+      assert.equal(
+        mutations > 0,
+        accepted,
+        "no acknowledgement, reaction or dispatch before authorization",
+      );
+    }
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousDelays === undefined) delete process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS;
+    else process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = previousDelays;
+    restore();
+  }
 });
 
 test("comment webhook ignores ClawSweeper proof-nudge comments", () => {
@@ -348,7 +410,7 @@ test("comment webhook accepts ClawSweeper mention commands on their own line", (
   assert.equal(result.accepted, true);
 });
 
-test("comment webhook rejects contributor commands before visible ack", () => {
+test("comment webhook classification does not authorize contributor commands", () => {
   const result = classifyIssueCommentWebhook({
     event: "issue_comment",
     payload: {
@@ -364,8 +426,8 @@ test("comment webhook rejects contributor commands before visible ack", () => {
     },
   });
 
-  assert.equal(result.accepted, false);
-  assert.match(result.reason, /not allowed/);
+  assert.equal(result.accepted, true);
+  if (result.accepted) assert.equal(result.maintainerAuthorized, false);
 });
 
 test("comment webhook accepts author read-only re-review commands", () => {
@@ -471,7 +533,7 @@ test("comment webhook still accepts post-close re-review commands for router res
     commentBody: "@clawsweeper re-review",
     commentAuthor: "user",
     commentUrl: "",
-    maintainerAuthorized: true,
+    maintainerAuthorized: false,
     commentUpdatedAt: "2026-05-19T05:03:00Z",
     commentBodySha256: crypto.createHash("sha256").update("@clawsweeper re-review").digest("hex"),
   });
@@ -540,7 +602,7 @@ test("comment webhook accepts an explicitly configured external-owner repository
   }
 });
 
-test("comment webhook rejects non-author read-only re-review commands", () => {
+test("comment webhook defers non-author re-review authority to live verification", () => {
   const result = classifyIssueCommentWebhook({
     event: "issue_comment",
     payload: {
@@ -557,8 +619,8 @@ test("comment webhook rejects non-author read-only re-review commands", () => {
     },
   });
 
-  assert.equal(result.accepted, false);
-  assert.match(result.reason, /not allowed/);
+  assert.equal(result.accepted, true);
+  if (result.accepted) assert.equal(result.maintainerAuthorized, false);
 });
 
 test("automatic maintainer item webhooks require a review request regardless of automation labels", () => {
@@ -1196,6 +1258,16 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
     if (path === "/app/installations/123/access_tokens" && method === "POST") {
       return jsonResponse({ token: "target-token" });
     }
+    if (
+      path.startsWith("/repos/openclaw/openclaw/collaborators/") &&
+      path.endsWith("/permission")
+    ) {
+      return jsonResponse({
+        permission: "write",
+        role_name: "maintain",
+        user: { login: decodeURIComponent(path.split("/").at(-2)!) },
+      });
+    }
     if (path.startsWith("/repos/openclaw/openclaw/issues/71898/comments?") && method === "GET") {
       return jsonResponse([...comments]);
     }
@@ -1330,6 +1402,16 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
     }
     if (path === "/app/installations/123/access_tokens" && method === "POST") {
       return jsonResponse({ token: "target-token" });
+    }
+    if (
+      path.startsWith("/repos/openclaw/openclaw/collaborators/") &&
+      path.endsWith("/permission")
+    ) {
+      return jsonResponse({
+        permission: "write",
+        role_name: "maintain",
+        user: { login: decodeURIComponent(path.split("/").at(-2)!) },
+      });
     }
     if (path.startsWith("/repos/openclaw/openclaw/issues/71898/comments?") && method === "GET") {
       commentLookups += 1;

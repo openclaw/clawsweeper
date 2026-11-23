@@ -58,20 +58,26 @@ process.stdout.write(JSON.stringify(args.includes("--slurp") ? [result] : result
   );
   return {
     close: () => fs.rmSync(root, { recursive: true, force: true }),
-    async run(payload: Record<string, unknown>) {
+    async run(
+      payload: Record<string, unknown>,
+      options: {
+        execute?: boolean;
+        commentIds?: number[];
+      } = {},
+    ) {
       const args = [
         path.join(root, "scripts/comment-router-runner.mjs"),
         "--",
         "--write-report",
-        "--execute",
+        ...(options.execute === false ? [] : ["--execute"]),
         "--repo",
         String(payload.target_repo),
         "--comment-ids",
-        String(payload.comment_id),
+        options.commentIds?.join(",") ?? String(payload.comment_id),
         "--item-numbers",
         String(payload.item_number),
         "--max-comments",
-        "1",
+        String(options.commentIds?.length ?? 1),
         "--dispatch-actor",
         "openclaw-clawsweeper[bot]",
       ];

@@ -57,7 +57,7 @@
     {
       "path": "review-authority.md",
       "lifecycle": "proposed",
-      "banner": "The role classifier is inert. This integration contract does not change current admission or command authority."
+      "banner": "Requester command paths use bound permission evidence. Broader author-cohort and organization-policy integration remains proposed."
     },
     {
       "path": "portable-review-receipt.md",

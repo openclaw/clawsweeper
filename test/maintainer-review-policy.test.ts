@@ -127,7 +127,7 @@ test("inert role projections leave legacy command rights and maintainer holds se
     }),
     true,
   );
-  // The existing fallback is deliberately not migrated by this inert preparation.
+  // Canonical unknown never gains command rights from OWNER association.
   assert.equal(requesterHasMaintainerReviewAuthority(unknown), false);
   assert.equal(
     isMaintainerCommandAllowed({
@@ -135,7 +135,7 @@ test("inert role projections leave legacy command rights and maintainer holds se
       repositoryPermission: null,
       allowedAssociations: ["OWNER"],
     }),
-    true,
+    false,
   );
   const protectedItem = { author_association: "MEMBER", labels: ["maintainer"] };
   assert.equal(authorReviewCohort(unknown), "ordinary");
