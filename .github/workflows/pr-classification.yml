@@ -61,7 +61,8 @@ jobs:
           const [owner, name] = repo.split("/");
           appendFileSync(process.env.GITHUB_OUTPUT, "owner=" + owner + "\nname=" + name + "\n");
           NODE
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - name: Create target label token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: token
         with:
           client-id: Iv23liOECG0slfuhz093
