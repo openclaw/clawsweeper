@@ -106,7 +106,7 @@ authoritative and can replace the preliminary classification. This lane never
 reviews source, posts a verdict/comment, marks proof/readiness, completes a review
 request, or populates a review cache.
 
-It makes at most one native OpenAI Responses request using `gpt-5.4-nano` by
+It makes at most one native OpenAI Responses request using `gpt-6-luna` by
 default, independent of the review and intake models. Set repository variable
 `CLAWSWEEPER_CLASSIFICATION_MODEL` to override it or `off` to disable it.
 The existing `OPENAI_API_KEY` secret is required. Only repository, PR number,

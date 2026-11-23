@@ -5,7 +5,7 @@ import { intakeUsage } from "./intake-triage-api.js";
 import type { IntakeUsage } from "./intake-triage-contract.js";
 import { isRecord } from "./value-coerce.js";
 
-export const PR_CLASSIFICATION_MODEL = "gpt-5.4-nano";
+export const PR_CLASSIFICATION_MODEL = "gpt-6-luna";
 export const PR_CLASSIFICATION_POLICY = "pr-classification-v1";
 export const PR_CLASSIFICATION_TIMEOUT_MS = 20_000;
 export type PrClassification = {
