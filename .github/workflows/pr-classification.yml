@@ -1,0 +1,111 @@
+name: PR classification
+run-name: "Classify ${{ inputs.target_repo }} #${{ inputs.item_number }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: Public hosted repository
+        required: true
+        type: string
+      item_number:
+        description: Pull request number
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+# Serialize duplicate webhook deliveries. Never cancel a writer during publication.
+concurrency:
+  group: pr-classification-${{ inputs.target_repo }}-${{ inputs.item_number }}
+  cancel-in-progress: false
+
+jobs:
+  admission:
+    uses: ./.github/workflows/hosted-target-admission.yml
+    with:
+      target_repo: ${{ inputs.target_repo }}
+    secrets:
+      CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
+  classify:
+    needs: admission
+    if: ${{ needs.admission.outputs.outcome == 'public' && vars.CLAWSWEEPER_CLASSIFICATION_MODEL != 'off' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Trusted default-branch ClawSweeper only; never fetch or execute PR code.
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/setup-action-ledger
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:node
+      - uses: ./.github/actions/setup-review-tools
+      - name: Resolve target scope
+        id: target
+        env:
+          TARGET_REPO: ${{ inputs.target_repo }}
+          ITEM_NUMBER: ${{ inputs.item_number }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from "node:fs";
+          const repo = process.env.TARGET_REPO || "";
+          if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^[1-9][0-9]*$/.test(process.env.ITEM_NUMBER || ""))
+            throw new Error("Invalid PR classification target");
+          const [owner, name] = repo.split("/");
+          appendFileSync(process.env.GITHUB_OUTPUT, "owner=" + owner + "\nname=" + name + "\n");
+          NODE
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: token
+        with:
+          client-id: Iv23liOECG0slfuhz093
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
+          permission-issues: write
+          permission-pull-requests: write
+      - name: Classify missing priority and impact
+        id: classification
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          ITEM_NUMBER: ${{ inputs.item_number }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CLAWSWEEPER_CLASSIFICATION_MODEL: ${{ vars.CLAWSWEEPER_CLASSIFICATION_MODEL }}
+        run: node dist/pr-classification-workflow.js
+      - name: Finalize classification receipts
+        if: always()
+        env:
+          OUTCOME: ${{ steps.classification.outcome }}
+        run: |
+          args=()
+          if [ "$OUTCOME" != success ]; then args=(--interrupt-open-attempts --reason workflow_failed); fi
+          pnpm run --silent finalize-action-events -- "${args[@]}"
+      - name: Publish classification receipts
+        if: always()
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: |
+          set -euo pipefail
+          source_root="$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT"
+          if [ ! -d "$source_root/ledger" ]; then exit 0; fi
+          mkdir -p .artifacts
+          pnpm run --silent publish-action-events -- --source-root "$source_root" --state-root . --expected-producer-job "$GITHUB_JOB" |
+            jq -r '.paths[]?' | sort -u > .artifacts/classification-ledger-paths.txt
+          if [ -s .artifacts/classification-ledger-paths.txt ]; then
+            node dist/clawsweeper.js publish-action-event-paths --paths-file .artifacts/classification-ledger-paths.txt
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr-classification-receipts
+          path: ${{ env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT }}
+          if-no-files-found: ignore
+          retention-days: 7

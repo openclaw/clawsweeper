@@ -3754,6 +3754,47 @@ async function githubWebhook(request, env, ctx) {
     return hostedTargetProbeResponse(admission);
   }
 
+  // Metadata classification must not inherit maintainer opt-in or full-review admission.
+  // Only source-text lifecycle events are relevant; our own label writes cannot loop.
+  if (
+    event === "pull_request" &&
+    decision.type === "item" &&
+    ["opened", "reopened", "edited", "ready_for_review"].includes(decision.sourceAction)
+  ) {
+    const source = objectValue(payload.pull_request);
+    const labels = Array.isArray(source.labels) ? source.labels : [];
+    if (
+      source.state === "open" &&
+      source.locked !== true &&
+      !labels.some((label) => /^p[0-3]$/i.test(String(objectValue(label).name || "")))
+    ) {
+      try {
+        const token = await githubAuthToken(env, {
+          repos: [CLAWSWEEPER_REVIEW_REPO],
+          permissions: { actions: "write" },
+        });
+        if (!token) throw new Error("PR classification dispatch credential unavailable");
+        await githubTokenJson({
+          env,
+          token,
+          method: "POST",
+          path:
+            "/repos/" +
+            CLAWSWEEPER_REVIEW_REPO +
+            "/actions/workflows/pr-classification.yml/dispatches",
+          body: {
+            ref: "main",
+            inputs: { target_repo: targetRepo, item_number: String(decision.itemNumber) },
+          },
+          errorLabel: "PR classification dispatch",
+        });
+      } catch {
+        // Classification is advisory; its failure must not change review admission.
+        console.warn("PR classification dispatch unavailable; review admission is unchanged");
+      }
+    }
+  }
+
   const acknowledgement = lifecycleCommandAcknowledgementFromGithubWebhook({
     event,
     payload,
