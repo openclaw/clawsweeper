@@ -56,20 +56,6 @@ in the diff or optional <details>; include technical detail only when it explain
 behavior or a material tradeoff. Do not hide risks or required actions in <details>.
 -->
 
-## Documentation Impact
-
-<!--
-For every code, configuration, workflow, API, UI, package, policy, or integration
-change, name the canonical documentation reviewed and summarize any required
-updates. If no documentation changes are needed, explain why the existing
-contract remains accurate.
-
-For new or changed documentation, also classify it as active, proposed,
-compatibility-only, or historical. Active runbooks and volatile references must
-name their role owner, source of truth, verified scope/revision, and update
-triggers. See CONTRIBUTING.md.
--->
-
 ## Evidence
 
 <!--
