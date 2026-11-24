@@ -727,13 +727,47 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["file", "reason"],
+            "required": ["file", "reason", "survivor"],
             "properties": {
               "file": {
                 "type": "string"
               },
               "reason": {
                 "type": "string"
+              },
+              "survivor": {
+                "description": "Required evidence for every cut in this entry.",
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["check", "regression"],
+                    "properties": {
+                      "check": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Identify the surviving assertion or test by path and line or exact case name."
+                      },
+                      "regression": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Describe the same concrete regression that would fail both the cut and the surviving check, and why the survivor fails."
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["notWorthTesting"],
+                    "properties": {
+                      "notWorthTesting": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Explain why losing detection of the specific behavior covered by the cut is acceptable."
+                      }
+                    }
+                  }
+                ]
               }
             }
           }

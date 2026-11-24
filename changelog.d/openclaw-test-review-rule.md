@@ -1,1 +1,1 @@
-- Give OpenClaw PR reviews more specific guidance on removing redundant and low-value test code.
+- Give OpenClaw PR reviews more specific guidance on removing low-value test code and record which surviving check catches the same regression or why the behavior can go untested.

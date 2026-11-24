@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseDecision, reviewAutomationMarkersFromReport } from "../dist/clawsweeper.js";
 import { reportReviewDecision } from "../dist/report-review-decision.js";
+import { updateReviewRecordDecision } from "../dist/review-record.js";
 import type {
+  LowValueTest,
   PrRating,
   ProductReview,
   ProvenanceEntry,
@@ -44,9 +46,10 @@ const overridesIntent: ProvenanceEntry = {
   originalReason: "Reload drops drafts so stale drafts cannot overwrite server state.",
   verdict: "overrides_without_reason",
 };
-const lowValueTest = (index: number) => ({
+const lowValueTest = (index: number): LowValueTest => ({
   file: `test/reload-${index}.test.ts`,
-  reason: "Asserts mock call counts instead of behavior.",
+  reason: "Remove the cache-helper call count.",
+  survivor: { notWorthTesting: "The draft reload contract allows either path to the cache." },
 });
 
 function tiers(rating: PrRating) {
@@ -85,6 +88,16 @@ test("decision parsing rejects invalid product, provenance, and testing values",
       { testingReview: { ...shippedTesting, lowValueTests: [{ file: "a.test.ts" }] } },
       /lowValueTests\[0\]\.reason/,
     ],
+    ...[
+      undefined,
+      { check: "test/reload.test.ts:42" },
+      { check: "test/reload.test.ts:42", regression: " " },
+      { notWorthTesting: " " },
+      { ...lowValueTest(1).survivor, check: "test/reload.test.ts:42" },
+    ].map((survivor): [Record<string, unknown>, RegExp] => [
+      { testingReview: { ...shippedTesting, lowValueTests: [{ ...lowValueTest(1), survivor }] } },
+      /lowValueTests\[0\]\.survivor/,
+    ]),
     [{ testingReview: undefined }, /testingReview must be an object/],
   ];
   for (const [overrides, error] of cases) {
@@ -95,7 +108,17 @@ test("decision parsing rejects invalid product, provenance, and testing values",
 test("report round trip preserves product, provenance, and testing reviews", () => {
   const testingReview = {
     proofPath: "in_process_harness",
-    lowValueTests: [1, 2].map(lowValueTest),
+    lowValueTests: [
+      lowValueTest(1),
+      {
+        file: "test/reload-2.test.ts",
+        reason: "Remove the duplicate draft-value assertion.",
+        survivor: {
+          check: "test/reload.test.ts:42",
+          regression: "Dropping the draft on reload fails the draft-value assertion in both cases.",
+        },
+      },
+    ],
     missingE2e: "Reload the real web UI with an unsaved draft.",
   } satisfies TestingReview;
   const provenance = [
@@ -127,6 +150,14 @@ test("report round trip preserves product, provenance, and testing reviews", () 
   });
   assert.deepEqual(decision.provenance, provenance);
   assert.deepEqual(decision.testingReview, testingReview);
+  const legacyCut = {
+    file: "test/reload-3.test.ts",
+    reason: "Remove the cache-helper call count.",
+  };
+  const legacyReport = updateReviewRecordDecision(report, () => ({
+    testingReview: { ...testingReview, lowValueTests: [legacyCut] },
+  }));
+  assert.deepEqual(reportReviewDecision(legacyReport).testingReview.lowValueTests, [legacyCut]);
   for (const line of [
     "product_kind: preference",
     "product_worth: no",
