@@ -879,6 +879,7 @@ export function createDecisionParser({
       record.nextStep === undefined
         ? undefined
         : parseNextStep(record.nextStep, "decision.nextStep");
+    const isPrModel = source === "model" && item?.kind === "pull_request";
     const decision: Decision = {
       decision: requireEnum(record.decision, DECISIONS, "decision.decision"),
       closeReason: requireEnum(record.closeReason, ALL_REASONS, "decision.closeReason"),
@@ -909,17 +910,20 @@ export function createDecisionParser({
           reason: neutralizeOwnedSectionSpoofing(maintainerDecision.likelyOwner.reason),
         },
       },
-      triagePriority: requireEnum(
-        record.triagePriority,
-        TRIAGE_PRIORITIES,
-        "decision.triagePriority",
-      ),
-      impactLabels: requireImpactLabels(record.impactLabels),
+      triagePriority: isPrModel
+        ? "none"
+        : requireEnum(record.triagePriority, TRIAGE_PRIORITIES, "decision.triagePriority"),
+      impactLabels: isPrModel ? [] : requireImpactLabels(record.impactLabels),
       mergeRiskLabels: requireMergeRiskLabels(record.mergeRiskLabels),
       maturityLabels: requireMaturityLabels(record.maturityLabels),
       mergeRiskOptions: requireMergeRiskOptions(record.mergeRiskOptions),
       reviewMetrics: requireReviewMetrics(record.reviewMetrics),
-      labelJustifications: requireLabelJustifications(record.labelJustifications),
+      labelJustifications: requireLabelJustifications(record.labelJustifications).filter(
+        (entry) =>
+          !isPrModel ||
+          (!TRIAGE_PRIORITIES.has(entry.label as Decision["triagePriority"]) &&
+            !IMPACT_LABEL_VALUES.has(entry.label as ImpactLabelName)),
+      ),
       itemCategory: requireEnum(record.itemCategory, ITEM_CATEGORIES, "decision.itemCategory"),
       reproductionStatus: requireEnum(
         record.reproductionStatus,

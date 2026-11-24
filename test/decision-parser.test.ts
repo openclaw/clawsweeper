@@ -9,6 +9,39 @@ import { createDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 import { changelogReviewDecision, closeDecision, item, reviewFinding } from "./helpers.ts";
 import { neutralizeOwnedSectionSpoofing } from "../dist/clawsweeper-report-helpers.js";
 
+test("PR model output has no classification ownership; issue and stored fields remain compatible", () => {
+  const parser = createDecisionParser({
+    neutralizeOwnedSectionSpoofing: (value) => value,
+    sanitizeArchitectureDiagram: (value) => value,
+  });
+  const raw = closeDecision({
+    decision: "keep_open",
+    closeReason: "none",
+    triagePriority: "P2",
+    impactLabels: ["impact:message-loss"],
+    labelJustifications: [
+      { label: "P2", reason: "Normal delivery bug." },
+      { label: "impact:message-loss", reason: "Messages are dropped." },
+    ],
+    reviewFindings: [reviewFinding({ priority: 1 })],
+  });
+  const pr = parser.parseDecision(raw, item({ kind: "pull_request" }));
+  assert.equal(pr.triagePriority, "none");
+  assert.deepEqual(pr.impactLabels, []);
+  assert.deepEqual(pr.labelJustifications, []);
+  assert.equal(pr.reviewFindings[0]?.priority, 1);
+  const { triagePriority: _priority, impactLabels: _impact, ...withoutClassification } = raw;
+  assert.equal(
+    parser.parseDecision(withoutClassification, item({ kind: "pull_request" })).triagePriority,
+    "none",
+  );
+  assert.equal(parser.parseDecision(raw, item({ kind: "issue" })).triagePriority, "P2");
+  assert.equal(
+    parser.parseStoredDecisionFields(raw, item({ kind: "pull_request" })).triagePriority,
+    "P2",
+  );
+});
+
 test("model close decisions validate subject kind while stored reports remain readable", () => {
   const parser = createDecisionParser({
     neutralizeOwnedSectionSpoofing: (value) => value,

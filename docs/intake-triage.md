@@ -108,8 +108,12 @@ Both lanes still share GitHub API limits and hosted Actions account capacity.
 The workflow checks current PR metadata again and fills a missing P0–P3 priority
 and supported `impact:*` labels from the existing taxonomy. Existing priorities
 are never replaced; if any impact classification exists, it is preserved without
-adding competing impacts. Other labels are untouched. A later full review remains
-authoritative and can replace the preliminary classification. This lane inspects the diff and limited source context for classification, but never
+adding competing impacts. Other labels are untouched. This lane owns PR priority
+and impact classification: full PR review neither requests these fields nor
+publishes or removes these labels, including when replaying an older review report.
+Issue review retains its existing classification rubric. Finding severity,
+merge-risk, proof and readiness remain full-review responsibilities.
+This lane inspects the diff and limited source context for classification, but never
 posts a review verdict/comment, marks proof/readiness, completes a review
 request, or populates a review cache.
 

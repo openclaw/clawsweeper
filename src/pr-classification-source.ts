@@ -1,4 +1,5 @@
-import { ghJson } from "./repair/github-cli.js";
+import { ghJson, githubLimitedPagePath } from "./repair/github-cli.js";
+import { requirePositiveInteger, requireRecord } from "./value-coerce.js";
 
 export interface PrClassificationSource {
   headSha: string;
@@ -8,12 +9,7 @@ export interface PrClassificationSource {
   readTool: (name: string, args: unknown) => string;
 }
 
-function record(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Expected a JSON object");
-  }
-  return value as Record<string, unknown>;
-}
+const record = (value: unknown) => requireRecord(value, "PR source");
 
 function repositoryName(value: unknown): string {
   if (
@@ -48,12 +44,8 @@ function sha(value: unknown): string {
   return value;
 }
 
-function positiveInteger(value: unknown): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
-    throw new Error("Expected a positive integer line number");
-  }
-  return value;
-}
+const positiveInteger = (value: unknown) =>
+  requirePositiveInteger(value, "Source line or PR number");
 
 export function readPrClassificationSource(
   repository: string,
@@ -97,7 +89,7 @@ export function readPrClassificationSource(
   const basePaths = new Set<string>();
   const files: Record<string, unknown>[] = [];
   for (let page = 1; page <= 2; page++) {
-    const entries = get(`${endpoint}/files?per_page=100&page=${page}`);
+    const entries = get(githubLimitedPagePath(`${endpoint}/files`, 100, page));
     if (!Array.isArray(entries) || entries.length > 100 || files.length + entries.length > 100) {
       throw new Error("PR files exceed supported limit or page is invalid");
     }

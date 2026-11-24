@@ -6,6 +6,7 @@ import {
   rmSync,
   statSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import {
@@ -262,9 +263,21 @@ export function createReviewCoreRuntime({
     return prCloseCoverageProofPromptTemplateCache;
   }
 
-  function reviewDecisionSchemaText(): string {
+  function reviewDecisionSchemaText(kind?: Item["kind"]): string {
     reviewDecisionSchemaCache ??= readFileSync(CLAWSWEEPER_DECISION_SCHEMA_PATH, "utf8");
-    return reviewDecisionSchemaCache;
+    if (kind !== "pull_request") return reviewDecisionSchemaCache;
+    const schema = JSON.parse(reviewDecisionSchemaCache);
+    delete schema.properties.triagePriority;
+    delete schema.properties.impactLabels;
+    schema.required = schema.required.filter(
+      (key: string) => key !== "triagePriority" && key !== "impactLabels",
+    );
+    const justifications = schema.properties.labelJustifications;
+    justifications.items.properties.label.enum = justifications.items.properties.label.enum.filter(
+      (label: string) => !/^P[0-3]$/.test(label) && !label.startsWith("impact:"),
+    );
+    justifications.description = "One per selected maturity and merge-risk label.";
+    return JSON.stringify(schema, null, 2);
   }
 
   function contextJsonForPrompt(
@@ -290,7 +303,14 @@ export function createReviewCoreRuntime({
     const sections = reviewPromptSections(item, context, runtimeHints);
     const prompt = fillPromptSlot(
       fillPromptSlot(
-        fillPromptSlot(templates.core, "{{classification_rubric}}", CLASSIFICATION_RUBRIC),
+        fillPromptSlot(
+          templates.core,
+          "{{classification_rubric}}",
+          item.kind === "issue"
+            ? `${CLASSIFICATION_RUBRIC} For ` +
+                "`impact:ux-release-blocker`, `bestSolution`/`workReason` recommend a Doctor or Fix button, setup wizard, inline recovery, or visible command launcher."
+            : "PR priority and impact labels belong to the independent classifier, not this review (https://github.com/openclaw/clawsweeper/pull/2227). Assess finding severity normally.",
+        ),
         "{{item_kind_review}}",
         renderReviewSections(templates[item.kind], sections).trim(),
       ),
@@ -321,7 +341,7 @@ export function createReviewCoreRuntime({
           runtimeHints.provenanceEvidence ?? PROVENANCE_NOT_RUN,
         )}\n\`\`\`\n`
       : "";
-    const schema = reviewDecisionSchemaText();
+    const schema = reviewDecisionSchemaText(item.kind);
     const proofScratchDir = runtimeHints.proofScratchDir?.trim();
     const mediaProofPrompt = sections.media
       ? mediaProofRuntimePrompt(runtimeHints.mediaProofSummary, runtimeHints.mediaProofManifestPath)
@@ -764,6 +784,7 @@ ${extra}
   }
 
   function runReviewCheckoutInspection(options: {
+    schemaPath?: string;
     itemNumber: number;
     openclawDir: string;
     preserveCodexAuth?: boolean;
@@ -784,7 +805,7 @@ ${extra}
       };
     }
     return runAgentCheckoutInspection({
-      schemaPath: CLAWSWEEPER_DECISION_SCHEMA_PATH,
+      schemaPath: options.schemaPath ?? CLAWSWEEPER_DECISION_SCHEMA_PATH,
       scanSource: options.scanSource,
       initialPrompt: options.initialPrompt,
       cwd: options.openclawDir,
@@ -843,6 +864,8 @@ ${extra}
       ...(options.reviewTreeRoot === undefined ? {} : { reviewTreeRoot: options.reviewTreeRoot }),
     });
     ensureDir(options.workDir);
+    const schemaPath = join(options.workDir, `${options.item.number}.schema.json`);
+    writeFileSync(schemaPath, reviewDecisionSchemaText(options.item.kind));
     const promptPath = join(options.workDir, `${options.item.number}.prompt.md`);
     rmSync(promptPath, { force: true });
     const proofScratchDir =
@@ -882,6 +905,7 @@ ${extra}
           }
         : { kind: "prompt" };
     const checkoutInspection = runReviewCheckoutInspection({
+      schemaPath,
       scanSource,
       initialPrompt: prompt,
       itemNumber: options.item.number,
@@ -944,7 +968,7 @@ ${extra}
         "-C",
         options.openclawDir,
         "--output-schema",
-        CLAWSWEEPER_DECISION_SCHEMA_PATH,
+        schemaPath,
         "--output-last-message",
         outputPath,
         "--json",

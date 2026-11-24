@@ -239,7 +239,7 @@ export const PR_STATUS_LABELS = [
   description: string;
 }[];
 export const PR_STATUS_LABEL_NAMES = new Set<string>(PR_STATUS_LABELS.map((label) => label.name));
-// Shared by full review and the independent classifier; keep label judgments identical.
+// Shared by issue review and the independent PR classifier.
 // Calibration incident: https://github.com/openclaw/openclaw/pull/203895
 // A CI package-inspection timeout was incorrectly labeled as end-user UX friction.
 export const CLASSIFICATION_RUBRIC =

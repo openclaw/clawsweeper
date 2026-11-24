@@ -175,8 +175,6 @@ export async function classifyPullRequest(
   };
   const started = Date.now();
   let usage: IntakeUsage = null;
-  const totals = { inputTokens: 0, outputTokens: 0 };
-  let toolsUsed = 0;
   const input = payload.input;
   for (let round = 0; round < 4; round++) {
     const encoded = JSON.stringify({
@@ -235,14 +233,14 @@ export async function classifyPullRequest(
       if (!isRecord(body)) return abstain("invalid", usage);
       const currentUsage = intakeUsage(body.usage);
       if (!currentUsage) return abstain("invalid", usage);
-      totals.inputTokens += currentUsage.inputTokens;
-      totals.outputTokens += currentUsage.outputTokens;
-      usage = { ...totals };
+      usage ??= { inputTokens: 0, outputTokens: 0 };
+      usage.inputTokens += currentUsage.inputTokens;
+      usage.outputTokens += currentUsage.outputTokens;
       if (body.status !== "completed" || !Array.isArray(body.output))
         return abstain("invalid", usage);
       const calls = body.output.filter((item) => isRecord(item) && item.type === "function_call");
       if (calls.length) {
-        if (calls.length !== 1 || round === 3 || ++toolsUsed > 3) return abstain("invalid", usage);
+        if (calls.length !== 1 || round === 3) return abstain("invalid", usage);
         const call = calls[0];
         if (
           !isRecord(call) ||
@@ -262,7 +260,7 @@ export async function classifyPullRequest(
         input.push(...body.output, { type: "function_call_output", call_id: call.call_id, output });
         continue;
       }
-      if (!toolsUsed) return abstain("invalid", usage);
+      if (round === 0) return abstain("invalid", usage);
       const contents = body.output.flatMap((item) =>
         isRecord(item) && Array.isArray(item.content) ? item.content : [],
       );
