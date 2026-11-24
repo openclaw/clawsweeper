@@ -57,7 +57,16 @@ function fixture(t: TestContext) {
     apiKey: "synthetic",
     root,
     readSnapshot: () => structuredClone(live),
-    infer: async ({ recordAttempt }) => {
+    readSource: () => ({
+      headSha: live.headSha,
+      baseSha: "a".repeat(40),
+      diff: "private-patch",
+      readTool: () => "context",
+      assertCurrent() {},
+    }),
+    infer: async ({ recordAttempt, packet, readTool }) => {
+      assert.equal(packet.diff, "private-patch");
+      assert.equal(readTool("read_file", {}), "context");
       recordAttempt();
       calls++;
       return {
@@ -168,5 +177,21 @@ test("unclear or unavailable results do not publish labels", async (t) => {
     };
   };
   assert.equal((await runPrClassificationWorkflow(f.options)).outcome, "unclear");
+  assert.deepEqual(f.writes, []);
+});
+
+test("source/base drift blocks paid intent and writes", async (t) => {
+  const f = fixture(t);
+  f.options.readSource = () => ({
+    headSha: f.live.headSha,
+    baseSha: "a".repeat(40),
+    diff: "private-patch",
+    readTool: () => "context",
+    assertCurrent() {
+      throw Error("source changed");
+    },
+  });
+  await assert.rejects(runPrClassificationWorkflow(f.options), /changed/);
+  assert.equal(f.calls(), 0);
   assert.deepEqual(f.writes, []);
 });

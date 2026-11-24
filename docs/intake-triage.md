@@ -109,28 +109,36 @@ The workflow checks current PR metadata again and fills a missing P0–P3 priori
 and supported `impact:*` labels from the existing taxonomy. Existing priorities
 are never replaced; if any impact classification exists, it is preserved without
 adding competing impacts. Other labels are untouched. A later full review remains
-authoritative and can replace the preliminary classification. This lane never
-reviews source, posts a verdict/comment, marks proof/readiness, completes a review
+authoritative and can replace the preliminary classification. This lane inspects the diff and limited source context for classification, but never
+posts a review verdict/comment, marks proof/readiness, completes a review
 request, or populates a review cache.
 
-It makes at most one native OpenAI Responses request using `gpt-6-luna` by
-default, independent of the review and intake models. Set repository variable
-`CLAWSWEEPER_CLASSIFICATION_MODEL` to override it or `off` to disable it.
-The existing `OPENAI_API_KEY` secret is required. Only repository, PR number,
-title and body are sent, after trusted secret scanning: 12 KB input, 256 maximum
-output tokens, a 20-second scan/request budget, strict finite JSON output, no tools,
-no stored responses, and no application retry or model fallback. Oversized,
-unclear, refused, malformed or unavailable results publish no labels. This is
-submission-based prioritization, not verification of the author's claims or
-code correctness. No calibrated classification accuracy or production latency is
-claimed; Actions startup and scanner setup add wall-clock overhead beyond the
-model call.
+It uses `gpt-6-luna` by default, independent of the review and intake models.
+Set repository variable `CLAWSWEEPER_CLASSIFICATION_MODEL` to override it or
+`off` to disable it. The existing `OPENAI_API_KEY` secret is required.
+The initial packet contains title/body, pinned head/base SHAs, and changed-file
+patches (at most 100 files / 160 KB diff; 180 KB total packet). Missing binary
+patches are explicit; oversized source is rejected rather than silently truncated.
+The model must inspect source through at least one read-only tool before returning
+a classification. `read_file` reads 120 lines and `search_file` finds literal text
+in a changed file, at the pinned head or base revision. No PR code executes;
+there is no shell, arbitrary network tool, or unpinned file access.
+
+At most three sequential tool calls and four Responses requests share a 120-second
+scan/request budget; each request allows 1,536 output tokens. File and tool-result
+byte limits bound context. Trusted secret scanning covers every outbound payload,
+including tool results. Requests use strict finite JSON, no stored responses,
+no application retry, and no model fallback. Missing context, unclear, refused,
+malformed or unavailable results publish no labels. This is diff-aware preliminary
+prioritization, not a full code review or correctness/accuracy guarantee. Actions
+startup and scanner setup add overhead beyond inference. Aggregate usage includes
+all model turns; the earlier metadata-only benchmark does not price this lane.
 
 Runs serialize per PR and reread metadata before paid inference and each label
-write. Source/head/label/timestamp drift aborts publication. This uses the existing
+write. Base/head/label/timestamp drift aborts publication. This uses the existing
 freshness guards, not a cross-writer transaction; concurrent human edits or full
 reviews can still invalidate a run. Distinct action-ledger inference intent,
-usage and mutation receipts exclude title/body/prompt/output text. An uncertain
+usage and mutation receipts exclude title/body/diff/tool/prompt/output text. An uncertain
 mutation is not blindly retried. Deployment requires the workflow on main, the
 Worker dispatch change, and the existing App's Actions-write permission on
 `openclaw/clawsweeper` and label-write permissions on the target.

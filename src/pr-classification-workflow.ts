@@ -26,6 +26,10 @@ import {
   type PrClassificationApiOptions,
   type PrClassificationResult,
 } from "./pr-classification.js";
+import {
+  readPrClassificationSource,
+  type PrClassificationSource,
+} from "./pr-classification-source.js";
 import { ghJson } from "./repair/github-cli.js";
 import { repoRoot } from "./repair/paths.js";
 
@@ -36,6 +40,7 @@ export interface PrClassificationWorkflowOptions {
   model?: string;
   root?: string;
   readSnapshot?: () => IntakeSnapshot;
+  readSource?: () => PrClassificationSource;
   gh?: LabelGh;
   infer?: (options: PrClassificationApiOptions) => Promise<PrClassificationResult>;
 }
@@ -65,9 +70,19 @@ export async function runPrClassificationWorkflow(
       )
     )
       return { outcome: "already_classified", labels: [] };
-    const request = prClassificationRequest(snapshot);
+    const source =
+      options.readSource?.() ??
+      readPrClassificationSource(options.repository, options.number, snapshot.headSha);
+    const packet = {
+      ...snapshot,
+      headSha: source.headSha,
+      baseSha: source.baseSha,
+      diff: source.diff,
+    };
+    const request = prClassificationRequest(packet);
     const identity = JSON.stringify({ ...snapshot, labels: [...snapshot.labels].sort() });
     const assertCurrent = () => {
+      source.assertCurrent();
       const live = read();
       if (JSON.stringify({ ...live, labels: [...live.labels].sort() }) !== identity)
         throw new Error("PR changed during classification; no labels published");
@@ -89,7 +104,7 @@ export async function runPrClassificationWorkflow(
       privacy: {
         classification: "internal" as const,
         redactionVersion: PR_CLASSIFICATION_POLICY,
-        fieldsDropped: ["title", "body", "prompt", "response"],
+        fieldsDropped: ["title", "body", "diff", "tool_output", "prompt", "response"],
       },
     };
     let sequence = 0;
@@ -112,7 +127,8 @@ export async function runPrClassificationWorkflow(
         throw new Error("PR classification requires durable action receipts");
     };
     const result = await (options.infer ?? classifyPullRequest)({
-      packet: snapshot,
+      packet,
+      readTool: source.readTool,
       cwd: root,
       apiKey: options.apiKey,
       model,

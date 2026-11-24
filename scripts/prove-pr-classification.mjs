@@ -27,7 +27,9 @@ const source = () => ({
   locked: false,
   updated_at: "2026-11-23T00:00:00Z",
   labels: [{ name: "maintainer" }, { name: "human-label" }],
-  head: { sha: "a".repeat(40) },
+  head: { sha: "a".repeat(40), repo: { full_name: "openclaw/openclaw" } },
+  base: { sha: "c".repeat(40), repo: { full_name: "openclaw/openclaw" } },
+  changed_files: 1,
   writes: [],
 });
 const readState = () => JSON.parse(readFileSync(statePath, "utf8"));
@@ -37,8 +39,11 @@ writeFileSync(
   'const fs = require("node:fs"); const assert = require("node:assert/strict");\n' +
     "const path = " +
     JSON.stringify(statePath) +
-    '; const state = JSON.parse(fs.readFileSync(path, "utf8")); const raw = process.argv.slice(2); const scope = raw.indexOf("--repo"); if (scope >= 0) assert.equal(raw[scope + 1], "openclaw/openclaw"); const args = raw.filter((_, i) => scope < 0 || (i !== scope && i !== scope + 1));\n' +
+    '; const state = JSON.parse(fs.readFileSync(path, "utf8")); const raw = process.argv.slice(2).filter((arg, index, args) => arg !== "--method" && args[index - 1] !== "--method"); const scope = raw.indexOf("--repo"); if (scope >= 0) assert.equal(raw[scope + 1], "openclaw/openclaw"); const args = raw.filter((_, i) => scope < 0 || (i !== scope && i !== scope + 1));\n' +
     'if (args[0] === "api" && args[1] === "repos/openclaw/openclaw/pulls/42") console.log(JSON.stringify(state));\n' +
+    'else if (args[0] === "api" && args[1].startsWith("repos/openclaw/openclaw/pulls/42/files?")) console.log(JSON.stringify([{filename:"src/start.ts",status:"modified",additions:1,deletions:1,patch:"@@ -1 +1 @@\\n-crash();\\n+start();"}]));\n' +
+    'else if (args[0] === "api" && args[1].includes("/git/trees/")) console.log(JSON.stringify({truncated:false,tree:[{path:"src",type:"tree",mode:"040000",sha:"d".repeat(40)},{path:"start.ts",type:"blob",mode:"100644",sha:"e".repeat(40)}]}));\n' +
+    'else if (args[0] === "api" && args[1].startsWith("repos/openclaw/openclaw/contents/src/start.ts?")) console.log(JSON.stringify({type:"file",encoding:"base64",size:9,content:Buffer.from("start();\\n").toString("base64")}));\n' +
     'else if (args[0] === "api" && args[1].startsWith("repos/openclaw/openclaw/labels?")) console.log("[[]]");\n' +
     'else { assert.ok(scope >= 0); state.writes.push(args); if (args[0] === "issue" && args[1] === "edit") { for (let i=0;i<args.length;i++) if (args[i] === "--add-label") for (const name of args[++i].split(",")) state.labels.push({ name }); state.updated_at = "2026-11-23T00:00:01Z"; } else assert.equal(args[0], "label"); fs.writeFileSync(path, JSON.stringify(state)); }\n',
 );
@@ -53,14 +58,35 @@ const server = createServer((request, response) => {
       assert.equal(request.url, "/v1/responses");
       const payload = JSON.parse(body);
       assert.equal(payload.store, false);
-      assert.equal(payload.tools, undefined);
-      assert.equal(payload.max_output_tokens, 256);
-      assert.deepEqual(Object.keys(JSON.parse(payload.input)).sort(), [
-        "body",
-        "number",
-        "repository",
-        "title",
-      ]);
+      assert.equal(payload.tools.length, 2);
+      assert.equal(payload.max_output_tokens, 1536);
+      const packet = JSON.parse(payload.input[0].content);
+      assert.ok(packet.diff.includes("crash();"));
+      assert.equal(packet.headSha, "a".repeat(40));
+      if (payload.tool_choice === "required") {
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({
+            status: "completed",
+            output: [
+              {
+                type: "function_call",
+                call_id: "context_1",
+                name: "read_file",
+                arguments: JSON.stringify({
+                  path: "src/start.ts",
+                  revision: "head",
+                  start_line: 1,
+                }),
+              },
+            ],
+            usage: { input_tokens: 250, output_tokens: 30 },
+          }),
+        );
+        return;
+      }
+      assert.equal(payload.input.at(-1).type, "function_call_output");
+      assert.ok(payload.input.at(-1).output.includes("start();"));
       if (mode === "drift") {
         const state = readState();
         state.head.sha = "b".repeat(40);
@@ -113,7 +139,7 @@ async function run(name) {
     OPENAI_API_KEY: "synthetic-proof-key",
     TARGET_REPO: "openclaw/openclaw",
     ITEM_NUMBER: "42",
-    CLAWSWEEPER_CLASSIFICATION_MODEL: "gpt-5.4-nano",
+    CLAWSWEEPER_CLASSIFICATION_MODEL: "gpt-6-luna",
     CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
     CLAWSWEEPER_ACTION_LEDGER_DISABLED: "0",
     CLAWSWEEPER_ACTION_LEDGER_INVOCATION:

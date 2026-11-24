@@ -1,1 +1,1 @@
-- Restore missing PR priority and impact labels through a bounded, low-cost metadata classifier independent of full review admission, including review-skipped maintainer PRs.
+- Restore missing PR priority and impact labels through a bounded, low-cost diff-aware classifier with bounded read-only source tools independent of full review admission, including review-skipped maintainer PRs.
