@@ -403,6 +403,55 @@ test("worker job pagination marks a capped census incomplete across cache reuse"
   assert.equal(restarted.complete, false);
 });
 
+test("worker job pagination follows short pages until the declared total", async () => {
+  for (const scenario of ["complete", "missing", "empty", "duplicate", "wrong-attempt", "drift"]) {
+    const store = new MemoryKv();
+    const pages: number[] = [];
+    const first = Array.from({ length: 99 }, (_, index) => ({ id: index + 1, run_id: 41 }));
+    const second = Array.from({ length: scenario === "missing" ? 19 : 20 }, (_, index) => ({
+      id: index + 100,
+      run_id: 41,
+      ...(scenario === "wrong-attempt" && index === 0 ? { run_attempt: 2 } : {}),
+    }));
+    if (scenario === "duplicate") second[0].id = 1;
+    const result = await workflowJobsForRunSnapshot(
+      { STATUS_STORE: store },
+      "generated-owner/generated-repo",
+      { id: 41, run_attempt: 1 },
+      async (path) => {
+        const page = Number(new URL(path, "https://api.github.com").searchParams.get("page"));
+        pages.push(page);
+        return {
+          total_count: scenario === "drift" && page === 2 ? 120 : 119,
+          jobs: page === 1 ? first : page === 2 && scenario !== "empty" ? second : [],
+        };
+      },
+    );
+    assert.equal(result.complete, scenario === "complete", scenario);
+    assert.deepEqual(pages, scenario === "missing" ? [1, 2, 3] : [1, 2], scenario);
+    assert.equal(
+      result.jobs.length,
+      {
+        complete: 119,
+        missing: 118,
+        empty: 99,
+        duplicate: 118,
+        "wrong-attempt": 118,
+        drift: 99,
+      }[scenario],
+    );
+    const cached = await workflowJobsForRunSnapshot(
+      { STATUS_STORE: store },
+      "generated-owner/generated-repo",
+      { id: 41, run_attempt: 1 },
+      async () => {
+        throw new Error("the versioned census must survive cache reuse");
+      },
+    );
+    assert.deepEqual(cached, result, scenario);
+  }
+});
+
 test("worker job cache cannot claim a complete malformed or cross-run census", async () => {
   const statusStore = new MemoryKv();
   await statusStore.put(
@@ -2878,6 +2927,17 @@ test("dashboard bounds active-run pagination without hiding incomplete telemetry
   try {
     for (const scenario of [
       { total: 100, pages: [1], observed: 100, complete: true },
+      { total: 119, pages: [1, 2], observed: 119, complete: true, shortFirst: true },
+      {
+        total: 119,
+        pages: [1, 2, 3, 1, 2, 3],
+        observed: 118,
+        complete: false,
+        shortFirst: true,
+        missing: true,
+      },
+      { total: 119, pages: [1, 1], observed: 0, complete: false, emptyFirst: true },
+      { total: 119, pages: [1, 2], observed: 119, complete: true, unknownTotal: true },
       { total: 167, pages: [1, 2], observed: 167, complete: true },
       { total: 300, pages: [1, 2, 3], observed: 300, complete: true },
       { total: 301, pages: [1, 2, 3], observed: 300, complete: false },
@@ -2895,12 +2955,26 @@ test("dashboard bounds active-run pagination without hiding incomplete telemetry
           const page = Number(url.searchParams.get("page") || 1);
           requestedPages.push(page);
           if (page === scenario.failPage) return new Response("unavailable", { status: 503 });
+          const offset =
+            page === 1 ? 0 : scenario.shortFirst ? 99 + (page - 2) * 100 : (page - 1) * 100;
           const count =
-            scenario.short && page === 2 ? 0 : Math.min(100, scenario.total - (page - 1) * 100);
+            scenario.emptyFirst || (scenario.short && page === 2)
+              ? 0
+              : Math.max(
+                  0,
+                  Math.min(
+                    page === 1 && scenario.shortFirst ? 99 : 100,
+                    scenario.total - (scenario.missing ? 1 : 0) - offset,
+                  ),
+                );
           return jsonResponse({
-            total_count: scenario.drift && page === 2 ? scenario.total + 1 : scenario.total,
+            ...(scenario.unknownTotal
+              ? {}
+              : {
+                  total_count: scenario.drift && page === 2 ? scenario.total + 1 : scenario.total,
+                }),
             workflow_runs: Array.from({ length: count }, (_, index) => ({
-              id: (scenario.duplicate ? 0 : (page - 1) * 100) + index + 1,
+              id: (scenario.duplicate ? 0 : offset) + index + 1,
               name: "ClawSweeper Commit Review",
               status: "queued",
               created_at: isoAgo(7 * 24 * 60 * 60_000),
@@ -2960,7 +3034,15 @@ test("dashboard rebuilds inconsistent active censuses without replaying memoized
           if (status !== "queued") return jsonResponse({ total_count: 0, workflow_runs: [] });
           if (page === 1) attempt += 1;
           const total = singlePage ? 13 : attempt === 1 && page === 1 ? 166 : 167;
-          const count = singlePage ? (attempt === 1 ? 12 : 13) : page === 1 ? 100 : 67;
+          const count = singlePage
+            ? page > 1
+              ? 0
+              : attempt === 1
+                ? 12
+                : 13
+            : page === 1
+              ? 100
+              : 67;
           return jsonResponse({
             total_count: total,
             workflow_runs: Array.from({ length: count }, (_, index) => ({
@@ -2984,7 +3066,7 @@ test("dashboard rebuilds inconsistent active censuses without replaying memoized
       assert.equal(status.operational_health.telemetry_complete, true);
       assert.equal(status.operational_health.zombie_queued_runs, singlePage ? 13 : 167);
       assert.equal(status.diagnostics.error_count, 0);
-      assert.deepEqual(requests.get("queued"), singlePage ? [1, 1] : [1, 2, 1, 2]);
+      assert.deepEqual(requests.get("queued"), singlePage ? [1, 2, 1] : [1, 2, 1, 2]);
       assert.deepEqual(requests.get("in_progress"), [1], "consistent statuses are not rebuilt");
     }
   } finally {

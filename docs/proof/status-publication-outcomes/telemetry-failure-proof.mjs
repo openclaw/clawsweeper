@@ -12,6 +12,7 @@ export async function startGithubFixture() {
   let workflowReads = 0;
   let responseOrder = [];
   let jobReads = [];
+  let pageReads = [];
   const pending = new Map();
   const now = new Date().toISOString();
   const run = (id, status) => ({
@@ -80,6 +81,11 @@ export async function startGithubFixture() {
               ? [active]
               : [];
       body = { total_count: runs.length, workflow_runs: runs };
+      if (workflowCase?.shortCensus?.kind === "runs" && status === "queued") {
+        const page = Number(url.searchParams.get("page") || 1);
+        pageReads.push(page);
+        body = { total_count: 119, workflow_runs: workflowCase.shortCensus.pages[page - 1] || [] };
+      }
       if (workflowCase) {
         workflowReads += 1;
         const source = status || "overview";
@@ -104,6 +110,18 @@ export async function startGithubFixture() {
       const [, runId, attempt] = url.pathname.match(/\/runs\/(\d+)\/(?:attempts\/(\d+)\/)?jobs$/);
       const id = Number(runId);
       jobReads.push(attempt ? Number(attempt) : "latest");
+      if (workflowCase?.shortCensus?.kind === "jobs") {
+        const page = Number(url.searchParams.get("page") || 1);
+        pageReads.push(page);
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            total_count: 119,
+            jobs: workflowCase.shortCensus.pages[page - 1] || [],
+          }),
+        );
+        return;
+      }
       if (workflowCase?.jobs) {
         const job = workflowCase.jobs[attempt || workflowCase.latest];
         assert.ok(job, "fixture must define the requested attempt");
@@ -170,6 +188,7 @@ export async function startGithubFixture() {
       workflowReads = 0;
       responseOrder = [];
       jobReads = [];
+      pageReads = [];
       pending.clear();
     },
     recover() {
@@ -192,6 +211,7 @@ export async function startGithubFixture() {
       workflow_reads: workflowReads,
       response_order: [...responseOrder],
       job_reads: [...jobReads],
+      page_reads: [...pageReads],
     }),
     close: () =>
       new Promise((resolve) => {
@@ -591,6 +611,95 @@ export async function proveGithubFailureCauses(preview, label, fixture, restart)
       sqlite_restart: Boolean(fault.restart),
       recovered_errors: recovered.body.diagnostics.errors,
       failure_reads: reads,
+    });
+  }
+  return results;
+}
+
+export async function proveShortCensusPages(preview, label, fixture, restart) {
+  const results = [];
+  let current = preview;
+  for (const [index, scenario] of [
+    { kind: "runs", missing: false },
+    { kind: "runs", missing: true },
+    { kind: "jobs", missing: false },
+    { kind: "jobs", missing: true },
+  ].entries()) {
+    fixture.reset();
+    const row = {
+      run_id: 202,
+      run_attempt: 1,
+      name: "Review shard",
+      status: "in_progress",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    const pages = [99, scenario.missing ? 19 : 20].map((count, page) =>
+      Array.from({ length: count }, (_, offset) => ({
+        ...row,
+        id: (page === 0 ? 0 : 99) + offset + 1,
+        ...(scenario.kind === "runs" ? { status: "queued" } : {}),
+      })),
+    );
+    fixture.workflows({
+      completed: [],
+      sources: [],
+      shortCensus: { ...scenario, pages },
+      // A live worker keeps the snapshot usable even when the census is incomplete.
+      active: [{ ...row, id: 202 }],
+    });
+    const configure = async () => {
+      const response = await fetch(current.origin + "/__proof/telemetry", {
+        method: "POST",
+        body: JSON.stringify({ origin: fixture.origin, scenario: 70 + index, ttl: 10 }),
+      });
+      assert.equal(response.status, 200);
+    };
+    const read = async () => {
+      const response = await fetch(current.origin + "/api/status");
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      const count =
+        scenario.kind === "runs"
+          ? body.operational_health.zombie_queued_runs
+          : body.fleet.active_codex_jobs;
+      assert.equal(count, label === "base" ? 99 : scenario.missing ? 118 : 119);
+      if (scenario.kind === "runs") {
+        assert.equal(
+          body.operational_health.telemetry_complete,
+          label !== "base" && !scenario.missing,
+        );
+      }
+      return count;
+    };
+    await configure();
+    const count = await read();
+    const expectedPages =
+      label === "base"
+        ? scenario.kind === "runs"
+          ? [1, 1]
+          : [1]
+        : scenario.missing
+          ? scenario.kind === "runs"
+            ? [1, 2, 3, 1, 2, 3]
+            : [1, 2, 3]
+          : [1, 2];
+    assert.deepEqual(fixture.observations().page_reads, expectedPages);
+    await read();
+    if (index === 0) {
+      current = await restart();
+      await configure();
+      await read();
+    }
+    assert.deepEqual(fixture.observations().page_reads, expectedPages);
+    assert.equal(fixture.observations().unexpected_routes, 0);
+    results.push({
+      revision: label,
+      ...scenario,
+      observed: count,
+      page_reads: expectedPages,
+      warm_reused: true,
+      sqlite_restart: index === 0,
     });
   }
   return results;

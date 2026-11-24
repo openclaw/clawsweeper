@@ -8320,7 +8320,8 @@ export async function workflowJobsForRunSnapshot(
       complete = true;
       break;
     }
-    if (jobs.length > expectedTotalCount || pageJobs.length < 100) break;
+    // A short page can precede more jobs; only an empty page stops progress.
+    if (jobs.length > expectedTotalCount || pageJobs.length === 0) break;
   }
   const census = boundedWorkflowJobCensus(jobs, run, complete);
   const hasActiveWorker = census.jobs.some(
@@ -8530,7 +8531,11 @@ async function activeWorkflowRunCandidates(
             changedDuringRead = !complete;
             break;
           }
-          if (runs.workflow_runs.length < 100) {
+          // GitHub can return a short page before the declared total is reached.
+          if (
+            runs.workflow_runs.length < 100 &&
+            (expectedTotalCount === null || runs.workflow_runs.length === 0)
+          ) {
             complete = expectedTotalCount === null;
             changedDuringRead = !complete;
             break;
