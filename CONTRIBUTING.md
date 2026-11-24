@@ -92,6 +92,10 @@ main-body sections current:
   observations, redacted logs, or artifact links that make the validation easy
   to inspect.
 
+For code, configuration, workflow, API, UI, package, policy, or integration
+changes, name the canonical documentation reviewed in the PR body. Summarize
+the updates or explain why the existing contract remains accurate.
+
 For code-bearing changes, keep an executed `## Real Behavior Proof` package in
 the main PR body. State the claim, exercised surface, scenario or fixture,
 command and environment, observed result, artifact or trace, and limits. Tests,
