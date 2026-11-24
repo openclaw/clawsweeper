@@ -121,8 +121,14 @@ It uses `gpt-6-luna` by default, independent of the review and intake models.
 Set repository variable `CLAWSWEEPER_CLASSIFICATION_MODEL` to override it or
 `off` to disable it. The existing `OPENAI_API_KEY` secret is required.
 The initial packet contains title/body, pinned head/base SHAs, and changed-file
-patches (at most 100 files / 160 KB diff; 180 KB total packet). Missing binary
-patches are explicit; oversized source is rejected rather than silently truncated.
+patches. There is no file-count cap: the diff is capped by bytes instead (160 KB,
+less any space a long title/body needs within the 180 KB packet). A larger diff is
+truncated rather than failing the job: listing stops at the budget, the boundary
+patch keeps its longest fitting prefix (`patch_truncated`), and the diff records
+`changed_files`, `included_files`, `truncated` and a note telling the model not to
+assume omitted changes are harmless. Source tools read only the listed files.
+Missing binary patches are explicit. Only a title/body that leaves under 1 KB for
+the diff is a hard source limit.
 The model must inspect source through at least one read-only tool before returning
 a classification. `read_file` reads 120 lines and `search_file` finds literal text
 in a changed file, at the pinned head or base revision. No PR code executes;

@@ -22,6 +22,7 @@ import { readIntakeSnapshot, type IntakeSnapshot } from "./intake-triage-workflo
 import {
   classifyPullRequest,
   parsePrClassification,
+  PR_CLASSIFICATION_INPUT_BYTES,
   prClassificationRequest,
   PR_CLASSIFICATION_MODEL,
   PR_CLASSIFICATION_POLICY,
@@ -42,7 +43,7 @@ export interface PrClassificationWorkflowOptions {
   model?: string;
   root?: string;
   readSnapshot?: () => IntakeSnapshot;
-  readSource?: () => PrClassificationSource;
+  readSource?: (maxDiffBytes: number) => PrClassificationSource;
   gh?: LabelGh;
   infer?: (options: PrClassificationApiOptions) => Promise<PrClassificationResult>;
   waitBeforeRetry?: () => Promise<void>;
@@ -138,9 +139,31 @@ async function runPrClassificationAttempt(
         record("skipped", "already-classified");
         return { outcome: "already_classified", labels: [] };
       }
+      // Truncate the diff, not the job: the diff gets whatever the packet budget leaves.
+      const maxDiffBytes = Math.min(
+        160_000,
+        PR_CLASSIFICATION_INPUT_BYTES -
+          Buffer.byteLength(
+            JSON.stringify({
+              repository: snapshot.repository,
+              number: snapshot.number,
+              title: snapshot.title,
+              body: snapshot.body,
+              headSha: snapshot.headSha,
+              baseSha: snapshot.headSha,
+              diff: "",
+            }),
+          ),
+      );
       const source =
-        options.readSource?.() ??
-        readPrClassificationSource(options.repository, options.number, snapshot.headSha);
+        options.readSource?.(maxDiffBytes) ??
+        readPrClassificationSource(
+          options.repository,
+          options.number,
+          snapshot.headSha,
+          undefined,
+          maxDiffBytes,
+        );
       const packet = {
         ...snapshot,
         headSha: source.headSha,
