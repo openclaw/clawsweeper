@@ -9,6 +9,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { CLASSIFICATION_RUBRIC } from "../dist/clawsweeper-policy.js";
 
 const root = realpathSync(process.cwd());
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "classification-proof-")));
@@ -58,6 +59,7 @@ const server = createServer((request, response) => {
       assert.equal(request.url, "/v1/responses");
       const payload = JSON.parse(body);
       assert.equal(payload.store, false);
+      assert.ok(payload.instructions.includes(CLASSIFICATION_RUBRIC));
       assert.equal(payload.tools.length, 2);
       assert.equal(payload.max_output_tokens, 1536);
       const packet = JSON.parse(payload.input[0].content);
@@ -104,7 +106,14 @@ const server = createServer((request, response) => {
                   : [
                       {
                         type: "output_text",
-                        text: JSON.stringify({ priority: "P1", impact: ["impact:crash-loop"] }),
+                        text: JSON.stringify({
+                          priority: "P1",
+                          impact: [
+                            mode === "contradictory-labels"
+                              ? "impact:ux-release-blocker"
+                              : "impact:crash-loop",
+                          ],
+                        }),
                       },
                     ],
             },
@@ -197,7 +206,7 @@ try {
   assert.equal(readState().writes.filter((args) => args[0] === "issue").length, 1);
   assert.equal((await run("repeat-no-spend")).code, 0);
   assert.equal(traces.at(-1).modelCalls, 0);
-  for (const scenario of ["refusal", "drift", "locked", "closed"]) {
+  for (const scenario of ["refusal", "contradictory-labels", "drift", "locked", "closed"]) {
     mode = scenario;
     const state = source();
     if (scenario === "locked") state.locked = true;

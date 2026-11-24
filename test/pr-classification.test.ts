@@ -6,6 +6,7 @@ import {
   prClassificationRequest,
   PR_CLASSIFICATION_MODEL,
 } from "../dist/pr-classification.js";
+import { CLASSIFICATION_RUBRIC } from "../dist/clawsweeper-policy.js";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 const packet = {
   repository: "openclaw/openclaw",
@@ -48,9 +49,12 @@ test("classification accepts only finite priority and impact labels", () => {
     { ...classification, impact: ["maintainer"] },
     { ...classification, impact: ["impact:other", "impact:other"] },
     { ...classification, review: "approved" },
+    { priority: "P1", impact: ["impact:ux-release-blocker"] },
+    { priority: "unclear", impact: ["impact:ux-friction"] },
   ])
     assert.equal(parsePrClassification(value), null);
   assert.ok(parsePrClassification({ priority: "unclear", impact: [] }));
+  assert.ok(parsePrClassification({ priority: "P0", impact: ["impact:ux-release-blocker"] }));
 });
 test("packet requires pinned source and includes diff in digest with finite byte budget", () => {
   const request = prClassificationRequest({ ...packet, secret: "not sent" } as typeof packet);
@@ -88,6 +92,14 @@ test("diff plus mandatory context tool, no storage, bounded output and aggregate
       assert.equal(url, "https://api.openai.com/v1/responses");
       const body = JSON.parse(String(init?.body));
       assert.equal(body.model, PR_CLASSIFICATION_MODEL);
+      assert.ok(body.instructions.includes(CLASSIFICATION_RUBRIC));
+      assert.equal(body.instructions.split(CLASSIFICATION_RUBRIC).length, 2);
+      assert.match(
+        body.instructions,
+        /failing, pending, or flaky CI raises it only for user-facing automation failures/,
+      );
+      assert.match(body.instructions, /cosmetic or fully recoverable in-product confusion/);
+      assert.doesNotMatch(body.instructions, /bestSolution|workReason|queue_fix_pr/);
       assert.equal(body.store, false);
       assert.equal(body.max_output_tokens, 1536);
       assert.equal(body.parallel_tool_calls, false);
@@ -170,6 +182,7 @@ test("tool errors fail closed and retain spend", async (t) => {
     fetch: async () => response([tool]),
   });
   assert.equal(result.outcome, "unavailable");
+  assert.equal(result.diagnostic, "source-tool");
   assert.deepEqual(result.usage, { inputTokens: 100, outputTokens: 20 });
 });
 test("oversized tool output is not sent", async (t) => {
@@ -238,6 +251,31 @@ test("missing key never spends and provider errors do not retry", async (t) => {
   );
   assert.equal(calls, 1);
 });
+test("failure diagnostics distinguish configuration, provider and transport without raw error text", async (t) => {
+  useFakeScanner(t);
+  assert.equal(
+    (await classifyPullRequest({ ...defaults(), apiKey: "" })).diagnostic,
+    "missing-key",
+  );
+  assert.equal(
+    (
+      await classifyPullRequest({
+        ...defaults(),
+        fetch: async () => new Response(null, { status: 401 }),
+      })
+    ).diagnostic,
+    "provider-http",
+  );
+  const result = await classifyPullRequest({
+    ...defaults(),
+    fetch: async () => {
+      throw Error("private-transport-detail");
+    },
+  });
+  assert.equal(result.diagnostic, "transport");
+  assert.ok(!JSON.stringify(result).includes("private-transport-detail"));
+});
+
 test("scanner refusal never dispatches", async (t) => {
   useFakeScanner(t, "process.exit(1);");
   let attempts = 0;

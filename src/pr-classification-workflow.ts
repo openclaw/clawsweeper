@@ -139,6 +139,7 @@ export async function runPrClassificationWorkflow(
     });
     record(result.outcome === "classified" ? "classified" : "skipped", "inference-result", {
       completion_reason: result.outcome,
+      ...(result.diagnostic ? { classification_diagnostic: result.diagnostic } : {}),
       ...(result.usage
         ? { input_tokens: result.usage.inputTokens, output_tokens: result.usage.outputTokens }
         : {}),

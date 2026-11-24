@@ -23,6 +23,7 @@ import {
   filterReviewContextComments,
 } from "../dist/clawsweeper-context-hydration.js";
 import { parseArgs as parseClawsweeperArgs } from "../dist/clawsweeper-args.js";
+import { CLASSIFICATION_RUBRIC } from "../dist/clawsweeper-policy.js";
 import { REPOSITORY_PROFILES, repositoryProfileFor } from "../dist/repository-profiles.js";
 import { renderReviewSections, reviewPromptSections } from "../dist/review-prompt-sections.js";
 import {
@@ -364,6 +365,16 @@ test("review prompt assets match tracked files", () => {
     JSON.parse(reviewDecisionSchemaText()),
     JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8")),
   );
+});
+
+test("review and independent classification share the complete label rubric", () => {
+  for (const kind of ["issue", "pull_request"] as const) {
+    const prompt = reviewPromptForTest(item({ kind }), {}, git);
+    assert.equal(prompt.split(CLASSIFICATION_RUBRIC).length, 2);
+    assert.doesNotMatch(prompt, /\{\{classification_rubric\}\}/);
+    assert.match(prompt, /justify each selected label once/i);
+    assert.match(prompt, /Doctor or Fix button/);
+  }
 });
 
 test("assembled review prompt carries no retired live-proof or Mantis guidance", () => {

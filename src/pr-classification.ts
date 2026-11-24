@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { scanAgentInput } from "./agent-input-scan.js";
-import { IMPACT_LABELS, PRIORITY_LABELS } from "./clawsweeper-policy.js";
+import { CLASSIFICATION_RUBRIC, IMPACT_LABELS, PRIORITY_LABELS } from "./clawsweeper-policy.js";
 import type { PrClassificationSource } from "./pr-classification-source.js";
 import { intakeUsage } from "./intake-triage-api.js";
 import type { IntakeUsage } from "./intake-triage-contract.js";
 import { isRecord } from "./value-coerce.js";
 
 export const PR_CLASSIFICATION_MODEL = "gpt-6-luna";
-export const PR_CLASSIFICATION_POLICY = "pr-classification-v2-diff";
+export const PR_CLASSIFICATION_POLICY = "pr-classification-v3-shared-rubric";
 export const PR_CLASSIFICATION_TIMEOUT_MS = 120_000;
 export type PrClassification = {
   priority: (typeof PRIORITY_LABELS)[number]["name"] | "unclear";
@@ -61,7 +61,9 @@ export function parsePrClassification(value: unknown): PrClassification | null {
     !(value.priority === "unclear" || PRIORITY_LABELS.some((p) => p.name === value.priority)) ||
     !Array.isArray(value.impact) ||
     value.impact.some((name) => !IMPACT_LABELS.some((label) => label.name === name)) ||
-    new Set(value.impact).size !== value.impact.length
+    new Set(value.impact).size !== value.impact.length ||
+    (value.priority === "unclear" && value.impact.length > 0) ||
+    (value.impact.includes("impact:ux-release-blocker") && value.priority !== "P0")
   )
     return null;
   return value as PrClassification;
@@ -70,6 +72,7 @@ export type PrClassificationResult = {
   outcome: "classified" | "unavailable" | "invalid" | "refused" | "timeout";
   classification: PrClassification | null;
   usage: IntakeUsage;
+  diagnostic?: "missing-key" | "provider-http" | "source-tool" | "transport";
 };
 export interface PrClassificationApiOptions {
   packet: PrClassificationPacket;
@@ -122,8 +125,14 @@ export async function classifyPullRequest(
   const abstain = (
     outcome: PrClassificationResult["outcome"],
     usage: IntakeUsage = null,
-  ): PrClassificationResult => ({ outcome, classification: null, usage });
-  if (!options.apiKey.trim()) return abstain("unavailable");
+    diagnostic?: PrClassificationResult["diagnostic"],
+  ): PrClassificationResult => ({
+    outcome,
+    classification: null,
+    usage,
+    ...(diagnostic ? { diagnostic } : {}),
+  });
+  if (!options.apiKey.trim()) return abstain("unavailable", null, "missing-key");
   const request = prClassificationRequest(options.packet);
   const payload = {
     model: options.model?.trim() || PR_CLASSIFICATION_MODEL,
@@ -139,10 +148,9 @@ export async function classifyPullRequest(
       "Tools only read pinned source. Never execute PR code, mutate anything, perform a full review, rate proof, or decide readiness. " +
       "You have at most three tool calls; inspect the most relevant code. If evidence is missing or insufficient use unclear and no impact labels. " +
       PRIORITY_LABELS.map((label) => label.name + ": " + label.description).join("\n") +
-      "\nUX override: a non-technical first-time/community user blocked in install, update, setup, onboarding, auth, first useful run or in-product recovery, " +
-      "with no in-product way forward and recovery requiring terminal commands, config/file edits, logs or support, is P0 plus impact:ux-release-blocker. " +
-      "Recoverable docs/support/guessing paths are P1/P2 plus impact:ux-friction. Do not promote advanced terminal/config workflows. " +
-      "Select only supported impact labels, preferring specific labels over other and ux-release-blocker over ux-friction for the same impact.\n" +
+      "\n" +
+      CLASSIFICATION_RUBRIC +
+      "\n" +
       IMPACT_LABELS.map((label) => label.name + ": " + label.description).join("\n"),
     input: [{ role: "user", content: request.input }] as unknown[],
     text: {
@@ -202,7 +210,7 @@ export async function classifyPullRequest(
       });
       if (!response.ok) {
         await response.body?.cancel();
-        return abstain("unavailable", usage);
+        return abstain("unavailable", usage, "provider-http");
       }
       const reader = response.body?.getReader();
       if (!reader) return abstain("invalid", usage);
@@ -247,7 +255,7 @@ export async function classifyPullRequest(
         try {
           output = options.readTool(String(call.name), JSON.parse(call.arguments));
         } catch {
-          return abstain("unavailable", usage);
+          return abstain("unavailable", usage, "source-tool");
         }
         if (typeof output !== "string" || Buffer.byteLength(output) > 16_000)
           return abstain("invalid", usage);
@@ -274,7 +282,7 @@ export async function classifyPullRequest(
         ? { outcome: "classified", classification, usage }
         : abstain("invalid", usage);
     } catch {
-      return abstain(signal.aborted ? "timeout" : "unavailable", usage);
+      return abstain(signal.aborted ? "timeout" : "unavailable", usage, "transport");
     }
   }
   return abstain("invalid", usage);

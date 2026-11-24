@@ -17,6 +17,7 @@ import {
 import { AgentInputScanError, type AgentScanSource } from "./agent-input-scan.js";
 import { serializeReviewContext } from "./agent-input-scan-classifier.js";
 import { stringArg, type Args } from "./clawsweeper-args.js";
+import { CLASSIFICATION_RUBRIC } from "./clawsweeper-policy.js";
 
 import {
   mediaProofRuntimeHints,
@@ -289,7 +290,7 @@ export function createReviewCoreRuntime({
     const sections = reviewPromptSections(item, context, runtimeHints);
     const prompt = fillPromptSlot(
       fillPromptSlot(
-        templates.core,
+        fillPromptSlot(templates.core, "{{classification_rubric}}", CLASSIFICATION_RUBRIC),
         "{{item_kind_review}}",
         renderReviewSections(templates[item.kind], sections).trim(),
       ),
