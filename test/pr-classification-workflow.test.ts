@@ -9,6 +9,8 @@ import {
 } from "../dist/pr-classification-workflow.js";
 import { getMutationReceiptRunner } from "../dist/clawsweeper-github-execution.js";
 import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
+import { classifyPullRequest } from "../dist/pr-classification.js";
+import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import type { IntakeSnapshot } from "../dist/intake-triage-workflow.js";
 
 function fixture(t: TestContext) {
@@ -195,3 +197,72 @@ test("source/base drift blocks paid intent and writes", async (t) => {
   assert.equal(f.calls(), 0);
   assert.deepEqual(f.writes, []);
 });
+
+for (const failure of [
+  "provider-http",
+  "transport",
+  "source-tool",
+  "input-scan",
+  "attempt-guard",
+] as const) {
+  test(failure + " retains paid usage in durable results without label writes", async (t) => {
+    useFakeScanner(
+      t,
+      failure === "input-scan"
+        ? "if(inputs.some(x=>x.bytes.toString('utf8').includes('tool-secret-marker')))process.exit(1);"
+        : "",
+    );
+    const f = fixture(t);
+    let requests = 0;
+    const source = f.options.readSource!();
+    f.options.readSource = () => ({
+      ...source,
+      readTool() {
+        if (failure === "source-tool") throw Error("private-source-error");
+        return failure === "input-scan" ? "tool-secret-marker" : "source-context";
+      },
+    });
+    f.options.infer = (options) =>
+      classifyPullRequest({
+        ...options,
+        cwd: process.cwd(),
+        fetch: async () => {
+          requests++;
+          if (requests > 1) {
+            if (failure === "transport") throw Error("private-transport-error");
+            return new Response(null, { status: 429 });
+          }
+          if (failure === "attempt-guard") f.live.headSha = "c".repeat(40);
+          return Response.json({
+            status: "completed",
+            usage: { input_tokens: 100, output_tokens: 20 },
+            output: [
+              {
+                type: "function_call",
+                name: "read_file",
+                call_id: "call_1",
+                arguments: JSON.stringify({
+                  path: "src/start.ts",
+                  revision: "head",
+                  start_line: 1,
+                }),
+              },
+            ],
+          });
+        },
+      });
+    const result = await runPrClassificationWorkflow(f.options);
+    assert.equal(result.outcome, failure === "input-scan" ? "refused" : "unavailable");
+    assert.equal(requests, ["provider-http", "transport"].includes(failure) ? 2 : 1);
+    assert.deepEqual(f.writes, []);
+    const events = readAllSpooledActionEvents(f.root);
+    const receipt = events.filter((event) => event.attributes?.status_kind === failure);
+    assert.equal(receipt.length, 1);
+    assert.equal(receipt[0].attributes.input_tokens, 100);
+    assert.equal(receipt[0].attributes.output_tokens, 20);
+    assert.doesNotMatch(
+      JSON.stringify(events),
+      /private-source-error|private-transport-error|tool-secret-marker|source-context/,
+    );
+  });
+}

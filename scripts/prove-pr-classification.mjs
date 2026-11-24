@@ -9,6 +9,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
 import { CLASSIFICATION_RUBRIC } from "../dist/clawsweeper-policy.js";
 
 const root = realpathSync(process.cwd());
@@ -66,6 +67,11 @@ const server = createServer((request, response) => {
       assert.ok(packet.diff.includes("crash();"));
       assert.equal(packet.headSha, "a".repeat(40));
       if (payload.tool_choice === "required") {
+        if (mode === "attempt-guard") {
+          const state = readState();
+          state.head.sha = "b".repeat(40);
+          saveState(state);
+        }
         response.setHeader("content-type", "application/json");
         response.end(
           JSON.stringify({
@@ -85,6 +91,11 @@ const server = createServer((request, response) => {
             usage: { input_tokens: 250, output_tokens: 30 },
           }),
         );
+        return;
+      }
+      if (mode === "provider-http") {
+        response.writeHead(429);
+        response.end();
         return;
       }
       assert.equal(payload.input.at(-1).type, "function_call_output");
@@ -163,6 +174,9 @@ async function run(name) {
     GITHUB_SHA: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
   });
   const before = calls;
+  const previousEvents = new Set(
+    readAllSpooledActionEvents(root).map((event) => JSON.stringify(event)),
+  );
   const started = Date.now();
   const result = await new Promise((resolve, reject) => {
     const child = spawn(
@@ -187,12 +201,24 @@ async function run(name) {
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout, stderr }));
   });
+  const receipts = readAllSpooledActionEvents(root).filter(
+    (event) => !previousEvents.has(JSON.stringify(event)),
+  );
+  if (["provider-http", "attempt-guard"].includes(name)) {
+    const receipt = receipts.filter((event) => event.attributes?.status_kind === name);
+    assert.equal(receipt.length, 1);
+    assert.equal(receipt[0].attributes.input_tokens, 250);
+    assert.equal(receipt[0].attributes.output_tokens, 30);
+  }
   traces.push({
     scenario: name,
     exit: result.code,
     modelCalls: calls - before,
     durationMs: Date.now() - started,
     result: result.stdout.trim(),
+    accounting: receipts
+      .filter((event) => event.attributes?.input_tokens)
+      .map((event) => event.attributes),
     writes: readState().writes,
   });
   return result;
@@ -206,7 +232,15 @@ try {
   assert.equal(readState().writes.filter((args) => args[0] === "issue").length, 1);
   assert.equal((await run("repeat-no-spend")).code, 0);
   assert.equal(traces.at(-1).modelCalls, 0);
-  for (const scenario of ["refusal", "contradictory-labels", "drift", "locked", "closed"]) {
+  for (const scenario of [
+    "refusal",
+    "contradictory-labels",
+    "drift",
+    "locked",
+    "closed",
+    "provider-http",
+    "attempt-guard",
+  ]) {
     mode = scenario;
     const state = source();
     if (scenario === "locked") state.locked = true;

@@ -274,18 +274,18 @@ test("failure diagnostics distinguish configuration, provider and transport with
 test("scanner refusal never dispatches", async (t) => {
   useFakeScanner(t, "process.exit(1);");
   let attempts = 0;
-  await assert.rejects(
-    classifyPullRequest({
-      ...defaults(),
-      recordAttempt() {
-        attempts++;
-      },
-      fetch: async () => {
-        throw Error("must not dispatch");
-      },
-    }),
-    /scan refused/,
-  );
+  const result = await classifyPullRequest({
+    ...defaults(),
+    recordAttempt() {
+      attempts++;
+    },
+    fetch: async () => {
+      throw Error("must not dispatch");
+    },
+  });
+  assert.equal(result.outcome, "refused");
+  assert.equal(result.diagnostic, "input-scan");
+  assert.equal(result.usage, null);
   assert.equal(attempts, 0);
 });
 test("scanner scans tool content before follow-up spend", async (t) => {
@@ -294,19 +294,19 @@ test("scanner scans tool content before follow-up spend", async (t) => {
     "if(inputs.some(x=>x.bytes.toString('utf8').includes('tool-secret-marker')))process.exit(1);",
   );
   let calls = 0;
-  await assert.rejects(
-    classifyPullRequest({
-      ...defaults(),
-      readTool() {
-        return "tool-secret-marker";
-      },
-      fetch: async () => {
-        calls++;
-        return response([tool]);
-      },
-    }),
-    /scan refused/,
-  );
+  const result = await classifyPullRequest({
+    ...defaults(),
+    readTool() {
+      return "tool-secret-marker";
+    },
+    fetch: async () => {
+      calls++;
+      return response([tool]);
+    },
+  });
+  assert.equal(result.outcome, "refused");
+  assert.equal(result.diagnostic, "input-scan");
+  assert.deepEqual(result.usage, { inputTokens: 100, outputTokens: 20 });
   assert.equal(calls, 1);
 });
 test("oversized response abstains without retry", async (t) => {

@@ -72,7 +72,13 @@ export type PrClassificationResult = {
   outcome: "classified" | "unavailable" | "invalid" | "refused" | "timeout";
   classification: PrClassification | null;
   usage: IntakeUsage;
-  diagnostic?: "missing-key" | "provider-http" | "source-tool" | "transport";
+  diagnostic?:
+    | "missing-key"
+    | "provider-http"
+    | "source-tool"
+    | "transport"
+    | "input-scan"
+    | "attempt-guard";
 };
 export interface PrClassificationApiOptions {
   packet: PrClassificationPacket;
@@ -182,19 +188,27 @@ export async function classifyPullRequest(
       input,
       tool_choice: round === 0 ? "required" : round === 3 ? "none" : "auto",
     });
-    scanAgentInput({
-      cwd: options.cwd,
-      prompt: encoded,
-      source: { kind: "prompt" },
-      additionalBytes: [
-        Buffer.from(options.packet.title),
-        Buffer.from(options.packet.body),
-        Buffer.from(options.packet.diff),
-      ],
-      timeoutMs: Math.max(1, PR_CLASSIFICATION_TIMEOUT_MS - (Date.now() - started)),
-    });
+    try {
+      scanAgentInput({
+        cwd: options.cwd,
+        prompt: encoded,
+        source: { kind: "prompt" },
+        additionalBytes: [
+          Buffer.from(options.packet.title),
+          Buffer.from(options.packet.body),
+          Buffer.from(options.packet.diff),
+        ],
+        timeoutMs: Math.max(1, PR_CLASSIFICATION_TIMEOUT_MS - (Date.now() - started)),
+      });
+    } catch {
+      return abstain("refused", usage, "input-scan");
+    }
     if (Date.now() - started >= PR_CLASSIFICATION_TIMEOUT_MS) return abstain("timeout", usage);
-    options.recordAttempt();
+    try {
+      options.recordAttempt();
+    } catch {
+      return abstain("unavailable", usage, "attempt-guard");
+    }
     const remaining = PR_CLASSIFICATION_TIMEOUT_MS - (Date.now() - started);
     if (remaining <= 0) return abstain("timeout", usage);
     const signal = AbortSignal.timeout(remaining);
