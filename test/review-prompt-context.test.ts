@@ -23,6 +23,7 @@ import {
   filterReviewContextComments,
 } from "../dist/clawsweeper-context-hydration.js";
 import { parseArgs as parseClawsweeperArgs } from "../dist/clawsweeper-args.js";
+import { CLASSIFICATION_RUBRIC } from "../dist/clawsweeper-policy.js";
 import { REPOSITORY_PROFILES, repositoryProfileFor } from "../dist/repository-profiles.js";
 import { renderReviewSections, reviewPromptSections } from "../dist/review-prompt-sections.js";
 import {
@@ -363,6 +364,25 @@ test("review prompt assets match tracked files", () => {
   assert.deepEqual(
     JSON.parse(reviewDecisionSchemaText()),
     JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8")),
+  );
+});
+
+test("only issue review retains classification; PR review keeps finding severity", () => {
+  const issuePrompt = reviewPromptForTest(item({ kind: "issue" }), {}, git);
+  assert.equal(issuePrompt.split(CLASSIFICATION_RUBRIC).length, 2);
+  assert.match(issuePrompt, /Doctor or Fix button/);
+  const prPrompt = reviewPromptForTest(item({ kind: "pull_request" }), {}, git);
+  assert.ok(!prPrompt.includes(CLASSIFICATION_RUBRIC));
+  const schema = JSON.parse(reviewDecisionSchemaText("pull_request"));
+  for (const field of ["triagePriority", "impactLabels"]) {
+    assert.equal(schema.properties[field], undefined);
+    assert.ok(!schema.required.includes(field));
+  }
+  assert.ok(schema.properties.reviewFindings);
+  assert.ok(
+    schema.properties.labelJustifications.items.properties.label.enum.every(
+      (label: string) => !/^P[0-3]$/.test(label) && !label.startsWith("impact:"),
+    ),
   );
 });
 

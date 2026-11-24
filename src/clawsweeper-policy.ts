@@ -239,6 +239,12 @@ export const PR_STATUS_LABELS = [
   description: string;
 }[];
 export const PR_STATUS_LABEL_NAMES = new Set<string>(PR_STATUS_LABELS.map((label) => label.name));
+// Shared by issue review and the independent PR classifier.
+// Calibration incident: https://github.com/openclaw/openclaw/pull/203895
+// A CI package-inspection timeout was incorrectly labeled as end-user UX friction.
+export const CLASSIFICATION_RUBRIC =
+  "Labels, UX override first: a non-technical first-time or community user blocked in website/download/install/update/setup/onboarding/auth/provider setup/first useful run/in-product recovery with no in-product way forward (recovery needs terminal commands, config or file edits, log inspection, internal knowledge, or maintainer/support help) is `P0` plus `impact:ux-release-blocker`. Recoverable docs/support/guessing paths are `P1`/`P2` plus `impact:ux-friction`; cosmetic or fully recoverable in-product confusion is `P2`/`P3`; advanced or power-user terminal/config workflows are not promoted. Otherwise choose `triagePriority` from user impact, severity, confidence, and urgency for the whole item, separately from finding priorities and repairability; failing, pending, or flaky CI raises it only for user-facing automation failures or diff-caused urgent regressions. Developer/maintainer CI, test, or release-workflow inconvenience is not end-user UX friction or a UX release blocker by itself: require a concrete affected product-user path, not merely a slower check, maintainer workaround, or delayed pipeline. A workflow may still cause real user impact when the evidence establishes broken delivered artifacts or a user-facing automation failure; classify that demonstrated impact rather than inferring it from CI alone. Prefer `impact:ux-release-blocker` over `impact:ux-friction` when the same evidence supports both and a specific label over `other`, claim no more certainty than the evidence.";
+
 export const PRIORITY_LABELS = [
   {
     priority: 0,

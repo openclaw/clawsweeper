@@ -105,8 +105,12 @@ function desiredClawSweeperLabelsFromPublicReport(
 ): string[] {
   const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
   const reviewFailed = frontMatterValue(markdown, "review_status") === "failed";
-  let labels = nextPriorityLabels(currentLabels, decision.triagePriority);
-  labels = nextImpactLabels(labels, isPullRequest ? [] : decision.impactLabels);
+  let labels = isPullRequest
+    ? [...currentLabels]
+    : nextImpactLabels(
+        nextPriorityLabels(currentLabels, decision.triagePriority),
+        decision.impactLabels,
+      );
   labels = nextMaturityLabels(labels, isPullRequest ? [] : decision.maturityLabels);
   if (isPullRequest) {
     const realBehaviorProof = decision.realBehaviorProof;
@@ -242,6 +246,10 @@ export function labelTransitionJustificationsFromPublicReport(
   finalJustifications: readonly LabelJustification[],
   options: ReviewCommentRenderOptions = {},
 ): LabelTransitionJustification[] {
+  const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
+  const ownsLabel = (label: string): boolean =>
+    isClawSweeperOwnedLabel(label) &&
+    (!isPullRequest || (!PRIORITY_LABEL_NAMES.has(label) && !IMPACT_LABEL_NAMES.has(label)));
   const currentLabels = options.previousLabels ?? frontMatterStringArray(markdown, "labels");
   const desiredLabels =
     options.publishedLabels ??
@@ -251,7 +259,7 @@ export function labelTransitionJustificationsFromPublicReport(
   const finalByLabel = new Map(finalJustifications.map((entry) => [entry.label, entry.reason]));
   const transitions: LabelTransitionJustification[] = [];
   for (const label of desiredLabels) {
-    if (!isClawSweeperOwnedLabel(label) || currentKeys.has(label.toLowerCase())) continue;
+    if (!ownsLabel(label) || currentKeys.has(label.toLowerCase())) continue;
     transitions.push({
       action: "add",
       label,
@@ -259,7 +267,7 @@ export function labelTransitionJustificationsFromPublicReport(
     });
   }
   for (const label of currentLabels) {
-    if (!isClawSweeperOwnedLabel(label) || desiredKeys.has(label.toLowerCase())) continue;
+    if (!ownsLabel(label) || desiredKeys.has(label.toLowerCase())) continue;
     transitions.push({
       action: "remove",
       label,
@@ -274,12 +282,20 @@ export function labelJustificationsFromPublicReport(
   decision: ReportReviewDecision,
   options: ReviewCommentRenderOptions = {},
 ): LabelJustification[] {
-  const byLabel = new Map(decision.labelJustifications.map((entry) => [entry.label, entry]));
+  const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
+  const byLabel = new Map(
+    decision.labelJustifications
+      .filter(
+        (entry) =>
+          !isPullRequest ||
+          (!PRIORITY_LABEL_NAMES.has(entry.label) && !IMPACT_LABEL_NAMES.has(entry.label)),
+      )
+      .map((entry) => [entry.label, entry]),
+  );
   const add = (label: string | null | undefined, reason: string): void => {
     if (!label || byLabel.has(label)) return;
     byLabel.set(label, { label, reason });
   };
-  const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
   const realBehaviorProof = decision.realBehaviorProof;
   if (isPullRequest && frontMatterValue(markdown, "review_status") !== "failed") {
     const proofPolicy = reportRealBehaviorProofPolicy(markdown);

@@ -170,24 +170,26 @@ export function syncApplyReportLabels(
       applyResult(
         syncIntakeLabels({ number, labels: item.labels, wanted: [], dryRun, onMutation }),
       );
-      applyResult(
-        syncPriorityLabel({
-          number,
-          labels: item.labels,
-          triagePriority: decision.triagePriority,
-          dryRun,
-          onMutation,
-        }),
-      );
-      applyResult(
-        syncImpactLabels({
-          number,
-          labels: item.labels,
-          impactLabels: item.kind === "pull_request" ? [] : decision.impactLabels,
-          dryRun,
-          onMutation,
-        }),
-      );
+      if (item.kind === "issue") {
+        applyResult(
+          syncPriorityLabel({
+            number,
+            labels: item.labels,
+            triagePriority: decision.triagePriority,
+            dryRun,
+            onMutation,
+          }),
+        );
+        applyResult(
+          syncImpactLabels({
+            number,
+            labels: item.labels,
+            impactLabels: decision.impactLabels,
+            dryRun,
+            onMutation,
+          }),
+        );
+      }
       applyResult(
         syncMaturityLabels({
           number,

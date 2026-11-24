@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createLabelMutationOperations } from "../dist/clawsweeper-label-mutations.js";
+import { createLabelSyncOperations } from "../dist/clawsweeper-label-operations.js";
 import { syncApplyReportLabels } from "../dist/clawsweeper-apply-report-labels.js";
 import type { Item, ItemContext } from "../dist/clawsweeper-types.js";
 import { reportFrontMatter, withReviewRecord } from "./helpers.ts";
@@ -17,6 +18,7 @@ for (const kind of ["issue", "pull_request"] as const) {
           return "";
         },
       });
+      const sync = createLabelSyncOperations(labels);
       const item: Item = {
         repo: "openclaw/openclaw",
         number: 42,
@@ -28,7 +30,13 @@ for (const kind of ["issue", "pull_request"] as const) {
         author: "contributor",
         authorAssociation: "CONTRIBUTOR",
         locked: false,
-        labels: ["human-label", "clawsweeper:intake:bug", "clawsweeper:intake:custom-human-label"],
+        labels: [
+          "human-label",
+          "clawsweeper:intake:bug",
+          "clawsweeper:intake:custom-human-label",
+          "P1",
+          "impact:crash-loop",
+        ],
       };
       const unchanged = (options: { labels: readonly string[] }) => ({
         labels: [...options.labels],
@@ -40,11 +48,11 @@ for (const kind of ["issue", "pull_request"] as const) {
         isBulkFilerExemptAuthorAssociation: () => false,
         openClosingPullRequestApplyReason: () => null,
         syncBulkFilerLabel: unchanged,
-        syncImpactLabels: unchanged,
+        syncImpactLabels: sync.syncImpactLabels,
         syncIssueAdvisoryLabels: unchanged,
         syncMaturityLabels: unchanged,
         syncMergeRiskLabels: unchanged,
-        syncPriorityLabel: unchanged,
+        syncPriorityLabel: sync.syncPriorityLabel,
         syncIntakeLabels: labels.syncIntakeLabels,
       };
       let markdown = withReviewRecord(
@@ -54,7 +62,12 @@ for (const kind of ["issue", "pull_request"] as const) {
           number: "42",
           labels: JSON.stringify(item.labels),
         }),
-        { decision: "keep_open", closeReason: "none" },
+        {
+          decision: "keep_open",
+          closeReason: "none",
+          triagePriority: "P2",
+          impactLabels: ["impact:message-loss"],
+        },
       );
       let receipt = false;
       labels.beginIssueLabelMutationBatch(42);
@@ -88,11 +101,23 @@ for (const kind of ["issue", "pull_request"] as const) {
       if (result.skipCurrentItem) labels.discardIssueLabelMutationBatch(42);
       else labels.flushIssueLabelMutationBatch(42);
       if (scenario === "complete") {
-        assert.deepEqual(item.labels, ["human-label", "clawsweeper:intake:custom-human-label"]);
+        assert.deepEqual(item.labels, [
+          "human-label",
+          "clawsweeper:intake:custom-human-label",
+          ...(kind === "pull_request"
+            ? ["P1", "impact:crash-loop"]
+            : ["P2", "impact:message-loss"]),
+        ]);
         assert.equal(receipt, true);
-        assert.equal(writes.length, 1);
-        assert.ok(writes[0]?.includes("clawsweeper:intake:bug"));
-        assert.ok(!writes[0]?.includes("clawsweeper:intake:custom-human-label"));
+        const edit = writes
+          .find((args) => args[0] === "issue" && args[1] === "edit")
+          ?.flatMap((arg) => arg.split(","));
+        assert.ok(edit?.includes("clawsweeper:intake:bug"));
+        assert.ok(!edit?.includes("clawsweeper:intake:custom-human-label"));
+        if (kind === "pull_request") {
+          assert.equal(writes.length, 1);
+          assert.ok(!edit?.some((arg) => /^P[0-3]$/.test(arg) || arg.startsWith("impact:")));
+        }
         assert.ok(!markdown.includes('"clawsweeper:intake:bug"'));
       } else {
         assert.ok(item.labels.includes("clawsweeper:intake:bug"));

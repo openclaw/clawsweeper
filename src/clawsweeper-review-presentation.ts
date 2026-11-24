@@ -12,7 +12,6 @@ import type {
   ReviewFinding,
   SecurityConcern,
   SecurityReview,
-  TriagePriority,
 } from "./clawsweeper-types.js";
 import { frontMatterStringArray } from "./report-front-matter.js";
 import {
@@ -415,7 +414,6 @@ export function publicReviewScoresBlock(
 
 export function publicMergeReadinessBlock(
   reviewState: PullRequestReviewState,
-  priority: TriagePriority,
   bottomLine: string,
   remainingItemCount: number,
   decisionNeeded: boolean,
@@ -440,13 +438,7 @@ export function publicMergeReadinessBlock(
     remainingItemCount > 0
       ? ` - ${remainingItemCount} ${remainingItemCount === 1 ? "item remains" : "items remain"}`
       : "";
-  const lines = [
-    `${icon} **${result}${remaining}**`,
-    "",
-    sentence(bottomLine),
-    "",
-    `**Priority:** ${priority === "none" ? "None" : priority}`,
-  ];
+  const lines = [`${icon} **${result}${remaining}**`, "", sentence(bottomLine), ""];
   if (reviewedHeadSha) lines.push(`**Reviewed head:** \`${reviewedHeadSha}\``);
   if (decisionNeeded) {
     lines.push("**Owner decision:** Required. See [Decision needed](#decision-needed).");

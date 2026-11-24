@@ -295,7 +295,6 @@ function renderKeepOpenCommentFromReport(
   const reviewDetails: string[] = [];
   const labelDetails: string[] = [];
   const evidenceDetails: string[] = [];
-  const { triagePriority } = reviewDecision;
   const verdictLine = reviewFailed
     ? "ClawSweeper review: did not complete due to Codex infrastructure failure."
     : reviewReadiness?.state === "blocked"
@@ -452,7 +451,6 @@ function renderKeepOpenCommentFromReport(
         ? publicFailedReviewReadinessBlock(markdown)
         : publicMergeReadinessBlock(
             reviewReadiness.state,
-            triagePriority,
             summaryLine,
             beforeMergeItems.length,
             Boolean(decisionPacketBlock),

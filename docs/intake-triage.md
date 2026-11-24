@@ -2,8 +2,8 @@
 
 - Status: active by default with native OpenAI authentication
 - Owner: ClawSweeper maintainers
-- Source of truth: `src/intake-triage-contract.ts`, `src/intake-triage-api.ts`, `src/intake-triage-decisions.ts`, `src/intake-triage-workflow.ts`, `.github/workflows/sweep.yml`
-- Last verified: 2026-10-16; configuration, admission, and workflow ordering covered by the focused intake and sweep-workflow tests
+- Source of truth: `src/intake-triage-contract.ts`, `src/intake-triage-api.ts`, `src/intake-triage-decisions.ts`, `src/intake-triage-workflow.ts`, `.github/workflows/sweep.yml`; independent PR classification: `src/pr-classification.ts`, `src/pr-classification-workflow.ts`, `.github/workflows/pr-classification.yml`, `dashboard/worker.ts`
+- Last verified: 2026-11-23; intake configuration and ordering covered by intake/sweep tests; independent classification covered by focused API, workflow and webhook tests plus its controlled runtime proof
 - Update when: credentials, model defaults, questions, input limits, backends, provisional labels, or workflow ordering change
 
 Intake classifies the author's submission before source review. It answers three
@@ -85,3 +85,74 @@ uncertain write or process failure, so source review hydrates current labels
 and timestamps. Only a current complete review removes preliminary labels,
 through the existing guarded label batch. Failed, stale and incomplete reviews
 leave them explicitly preliminary. There is no automatic cross-backend retry.
+
+## Independent PR priority classification
+
+Priority/impact classification is a separate lane, not the intake phase above.
+The authenticated GitHub App webhook dispatches
+`.github/workflows/pr-classification.yml` for public hosted PRs on opened,
+reopened, edited and ready-for-review events, before maintainer opt-in and full
+review admission. Drafts and review-skipped maintainer PRs are eligible. Existing
+priority labels, closed/locked PRs, and label/push events do not dispatch it.
+The target OIDC review dispatcher does not start this lane. There is no backlog
+sweep or automatic retry of failed dispatches; the workflow can be dispatched
+manually for an eligible PR. Review admission itself is unchanged.
+
+Dispatch runs as a Worker `waitUntil` task: neither classification token acquisition
+nor the dispatch response is awaited by review admission or webhook acknowledgement.
+Dispatch failures are advisory and caught independently. The standalone workflow
+has its own `pr-classification-*` concurrency group, not a review queue lease or
+sweep concurrency slot, so a classification run does not gate or cancel a review.
+Both lanes still share GitHub API limits and hosted Actions account capacity.
+
+The workflow checks current PR metadata again and fills a missing P0–P3 priority
+and supported `impact:*` labels from the existing taxonomy. Existing priorities
+are never replaced; if any impact classification exists, it is preserved without
+adding competing impacts. Other labels are untouched. This lane owns PR priority
+and impact classification: full PR review neither requests these fields nor
+publishes or removes these labels, including when replaying an older review report.
+Issue review retains its existing classification rubric. Finding severity,
+merge-risk, proof and readiness remain full-review responsibilities.
+This lane inspects the diff and limited source context for classification, but never
+posts a review verdict/comment, marks proof/readiness, completes a review
+request, or populates a review cache.
+
+It uses `gpt-6-luna` by default, independent of the review and intake models.
+Set repository variable `CLAWSWEEPER_CLASSIFICATION_MODEL` to override it or
+`off` to disable it. The existing `OPENAI_API_KEY` secret is required.
+The initial packet contains title/body, pinned head/base SHAs, and changed-file
+patches (at most 100 files / 160 KB diff; 180 KB total packet). Missing binary
+patches are explicit; oversized source is rejected rather than silently truncated.
+The model must inspect source through at least one read-only tool before returning
+a classification. `read_file` reads 120 lines and `search_file` finds literal text
+in a changed file, at the pinned head or base revision. No PR code executes;
+there is no shell, arbitrary network tool, or unpinned file access.
+
+At most three sequential tool calls and four Responses requests share a 120-second
+scan/request budget; each request allows 1,536 output tokens. File and tool-result
+byte limits bound context. Trusted secret scanning covers every outbound payload,
+including tool results. Requests use strict finite JSON, no stored responses,
+no application retry, and no model fallback. Missing context, unclear, refused,
+malformed or unavailable results publish no labels. This is diff-aware preliminary
+prioritization, not a full code review or correctness/accuracy guarantee. Actions
+startup and scanner setup add overhead beyond inference. Aggregate usage includes
+all model turns; the earlier metadata-only benchmark does not price this lane.
+
+Runs serialize per PR and reread metadata before paid inference and each label
+write. Base/head/label/timestamp drift aborts publication. This uses the existing
+freshness guards, not a cross-writer transaction; concurrent human edits or full
+reviews can still invalidate a run. Distinct action-ledger inference intent,
+usage and mutation receipts exclude title/body/diff/tool/prompt/output text. An uncertain
+mutation is not blindly retried. Deployment requires the workflow on main, the
+Worker dispatch change, and the existing App's Actions-write permission on
+`openclaw/clawsweeper` and label-write permissions on the target.
+
+To reproduce the controlled runtime proof after building and installing the
+trusted scanner, run `node scripts/prove-pr-classification.mjs`. It executes the
+compiled workflow main in child processes against a loopback Responses service
+and an executable GitHub fixture, with the real scanner, metadata reader,
+label publisher and durable receipt path. The JSON trace defaults to
+`.artifacts/pr-classification-proof.json` and covers missing-priority maintainer
+classification, a no-spend repeat, refusal, source drift, locked and closed PRs.
+It does not spend on a real model or change GitHub; model accuracy, actual costs,
+hosted Actions startup and production deployment are outside this proof.
