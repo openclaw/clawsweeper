@@ -1,0 +1,1 @@
+- Avoid unnecessary re-reviews when GitHub delays updating a pull request after a ClawSweeper closeout comment.

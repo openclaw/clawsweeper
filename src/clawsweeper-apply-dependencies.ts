@@ -42,6 +42,7 @@ import type {
 import { type PrCloseCoverageProofRuntime } from "./pr-close-coverage-proof.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
 import type { LiveReadGeneration, LiveReadOptions } from "./live-read-generation.js";
+import type { CloseAppliedCommentResult } from "./clawsweeper-review-comment-publication.js";
 
 export interface CreateApplyDecisionWorkflowDependencies {
   abandonedPrApplyBlockReasonSafe: (
@@ -173,7 +174,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
     markdown: string;
     itemUrl: string;
     dryRun: boolean;
-  }) => string;
+  }) => CloseAppliedCommentResult;
   ensureDir: (path: string) => void;
   ensureIdeaArchiveLabel: (onMutation?: () => void) => void;
   ensureRuntimeDelayFits: (waitMs: number, phase: string) => void;

@@ -457,29 +457,33 @@ function closeAppliedCoverageProofLine(markdown: string): string | null {
     .trim();
 }
 
+export interface CloseAppliedCommentResult {
+  reason: string;
+  ownedWriteUpdatedAt?: string;
+}
+
 export function ensureCloseAppliedComment(options: {
   number: number;
   closeReason: CloseReason;
   markdown: string;
   itemUrl: string;
   dryRun: boolean;
-}): string {
+}): CloseAppliedCommentResult {
   const marker = closeAppliedCommentMarker(options.number);
   const body = renderCloseAppliedComment(options);
   const existing = issueCommentWithMarker(options.number, marker, body);
   if (existing?.body === body) {
-    return "matching ClawSweeper close-applied comment already exists";
+    return { reason: "matching ClawSweeper close-applied comment already exists" };
   }
-  if (options.dryRun) return "dry-run: would post close-applied comment";
+  if (options.dryRun) return { reason: "dry-run: would post close-applied comment" };
   const payload = writeCommentPayload(options.number, body);
   const existingId = commentId(existing);
-  const updateExisting = existingId !== null && canPatchReviewComment(existing);
-  ghObservedMutationCommand({
-    identity: `close_applied_comment:${options.number}:${sha256(body)}`,
-    args: updateExisting
+  const patchTargetId = existingId !== null && canPatchReviewComment(existing) ? existingId : null;
+  const args =
+    patchTargetId !== null
       ? [
           "api",
-          `repos/${targetRepo()}/issues/comments/${existingId}`,
+          `repos/${targetRepo()}/issues/comments/${patchTargetId}`,
           "--method",
           "PATCH",
           "--input",
@@ -492,9 +496,25 @@ export function ensureCloseAppliedComment(options: {
           "POST",
           "--input",
           payload,
-        ],
+        ];
+  const response = ghObservedMutationCommand({
+    identity: `close_applied_comment:${options.number}:${sha256(body)}`,
+    args,
     knownNoMutation: (error) =>
       isGitHubRequiresAuthenticationError(error) || isLockedConversationCommentError(error),
   });
-  return updateExisting ? "updated close-applied comment" : "posted close-applied comment";
+  const written = reviewCommentFromMutationResponse(response, args);
+  // The item can reflect this write later than the comment response. Keep only
+  // a verified owned write so the final freshness gate can recognize that lag.
+  const ownedWriteUpdatedAt =
+    isReviewPublicationReceipt(written, body, patchTargetId ?? undefined) &&
+    typeof written.updated_at === "string" &&
+    parseIsoMs(written.updated_at) !== null
+      ? written.updated_at
+      : undefined;
+  return {
+    reason:
+      patchTargetId !== null ? "updated close-applied comment" : "posted close-applied comment",
+    ...(ownedWriteUpdatedAt ? { ownedWriteUpdatedAt } : {}),
+  };
 }

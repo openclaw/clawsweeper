@@ -38,6 +38,7 @@ import {
 import { stableJson } from "./stable-json.js";
 import { asRecord } from "./value-coerce.js";
 import { reviewStartLeaseCommentMarker } from "./review-comment-markers.js";
+import type { CloseAppliedCommentResult } from "./clawsweeper-review-comment-publication.js";
 import {
   frontMatterValue,
   replaceFrontMatterValue,
@@ -170,6 +171,7 @@ interface ApplyCloseExecutionOptions {
   recordApplySkipped: (action: ActionTaken, reason: string) => boolean;
   recordMutation: (parentEventId?: string | null) => void;
   rememberSelfMutationUpdatedAt: (options?: {
+    ownedWriteUpdatedAt?: string | undefined;
     postReviewActivityStartedAtMs?: number;
     requiresReviewedPrActivityCursor?: boolean;
   }) => boolean;
@@ -622,7 +624,7 @@ export function executeApplyClose(
     }
   }
   logProgress(`closing #${number}`);
-  let closeAppliedCommentReason: string | null = null;
+  let closeAppliedComment: CloseAppliedCommentResult | null = null;
   if (dryRun) {
     const finalImplementationProvenanceBlock = implementedOnMainPullRequestProvenanceApplyBlock(
       getMarkdown(),
@@ -632,7 +634,7 @@ export function executeApplyClose(
     if (finalImplementationProvenanceBlock) {
       return skip("kept_open", finalImplementationProvenanceBlock);
     }
-    closeAppliedCommentReason =
+    closeAppliedComment =
       item.kind === "pull_request" && closeReason !== "oversized_pull_request"
         ? ensureCloseAppliedComment({
             number,
@@ -648,7 +650,7 @@ export function executeApplyClose(
         action: "closed",
         reason: [
           `dry-run: would close as ${closeReasonText(closeReason)}`,
-          closeAppliedCommentReason,
+          closeAppliedComment?.reason,
         ]
           .filter(Boolean)
           .join("; "),
@@ -679,7 +681,7 @@ export function executeApplyClose(
       closePolicyHoldVerified: preNoteBlock.closePolicyHoldVerified === true,
     });
   try {
-    closeAppliedCommentReason =
+    closeAppliedComment =
       item.kind === "pull_request" && closeReason !== "oversized_pull_request"
         ? ensureCloseAppliedComment({
             number,
@@ -706,7 +708,7 @@ export function executeApplyClose(
     throw error;
   }
   if (
-    /^(?:posted|updated) close-applied comment$/.test(closeAppliedCommentReason ?? "") ||
+    /^(?:posted|updated) close-applied comment$/.test(closeAppliedComment?.reason ?? "") ||
     implementationBasedPrClose
   ) {
     // Bind the final close to an immediate structural receipt. This admits
@@ -714,6 +716,7 @@ export function executeApplyClose(
     // activity drift, including when a matching closeout marker preexisted.
     if (
       !rememberSelfMutationUpdatedAt({
+        ownedWriteUpdatedAt: closeAppliedComment?.ownedWriteUpdatedAt,
         postReviewActivityStartedAtMs: closeoutActivityBaselineMs,
         requiresReviewedPrActivityCursor: implementationBasedPrClose,
       })
@@ -804,14 +807,16 @@ export function executeApplyClose(
     }
     let issueCommentReason: string;
     try {
-      issueCommentReason = withPairedIssueMutationLease(currentLinkedIssue.item.number, () =>
-        ensureCloseAppliedComment({
-          number: currentLinkedIssue.item.number,
-          closeReason: linkedIssueCloseReason,
-          markdown: getMarkdown(),
-          itemUrl: currentLinkedIssue.item.url,
-          dryRun,
-        }),
+      issueCommentReason = withPairedIssueMutationLease(
+        currentLinkedIssue.item.number,
+        () =>
+          ensureCloseAppliedComment({
+            number: currentLinkedIssue.item.number,
+            closeReason: linkedIssueCloseReason,
+            markdown: getMarkdown(),
+            itemUrl: currentLinkedIssue.item.url,
+            dryRun,
+          }).reason,
       );
     } catch (error) {
       if (isGitHubRequiresAuthenticationError(error)) {
@@ -1046,7 +1051,7 @@ export function executeApplyClose(
           {
             number,
             action: "closed",
-            reason: [closeReasonText(closeReason), closeAppliedCommentReason]
+            reason: [closeReasonText(closeReason), closeAppliedComment?.reason]
               .filter(Boolean)
               .join("; "),
             ...(emitEventApplyProof ? { terminalStateVerified: true } : {}),
