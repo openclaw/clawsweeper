@@ -7,7 +7,7 @@ import type { IntakeUsage } from "./intake-triage-contract.js";
 import { isRecord } from "./value-coerce.js";
 
 export const PR_CLASSIFICATION_MODEL = "gpt-6-luna";
-export const PR_CLASSIFICATION_POLICY = "pr-classification-v3-shared-rubric";
+export const PR_CLASSIFICATION_POLICY = "pr-classification-v4-product-impact";
 export const PR_CLASSIFICATION_TIMEOUT_MS = 120_000;
 export type PrClassification = {
   priority: (typeof PRIORITY_LABELS)[number]["name"] | "unclear";
