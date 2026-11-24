@@ -142,6 +142,23 @@ for (const kind of ["priority", "closed", "locked", "disabled"] as const) {
   });
 }
 
+test("a long description shrinks the diff budget so the packet still fits", async (t) => {
+  const budgets: number[] = [];
+  for (const body of ["short", '"'.repeat(30_000)]) {
+    const f = fixture(t);
+    f.live.body = body;
+    const readSource = f.options.readSource!;
+    f.options.readSource = (maxDiffBytes) => {
+      budgets.push(maxDiffBytes);
+      return readSource(maxDiffBytes);
+    };
+    assert.equal((await runPrClassificationWorkflow(f.options)).outcome, "published");
+  }
+  assert.equal(budgets[0], 160_000);
+  // Each quote costs two bytes in the packet.
+  assert.ok(budgets[1]! < 180_000 - 60_000 && budgets[1]! > 180_000 - 61_000, String(budgets[1]));
+});
+
 test("existing impact labels are preserved, not supplemented or removed", async (t) => {
   const f = fixture(t);
   f.live.labels.push("impact:security");
