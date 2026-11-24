@@ -132,14 +132,20 @@ At most three sequential tool calls and four Responses requests share a 120-seco
 scan/request budget; each request allows 1,536 output tokens. File and tool-result
 byte limits bound context. Trusted secret scanning covers every outbound payload,
 including tool results. Requests use strict finite JSON, no stored responses,
-no application retry, and no model fallback. Missing context, unclear, refused,
+no per-request retry, and no model fallback. The workflow permits one fresh
+classification attempt after a two-second delay for pre-publication snapshot/source
+drift or provider rate-limit/server/transport/timeout failures (at most two attempts,
+each with the bounds above). It rereads PR metadata and source and skips inference
+if priority has since appeared. Hard source limits, scanner refusal, malformed output,
+unknown errors, and any attempted mutation are not retried. Early failures emit
+sanitized diagnostic receipts before inference; source-limit failures remain unclassified. Missing context, unclear, refused,
 malformed or unavailable results publish no labels. This is diff-aware preliminary
 prioritization, not a full code review or correctness/accuracy guarantee. Actions
 startup and scanner setup add overhead beyond inference. Aggregate usage includes
 all model turns; the earlier metadata-only benchmark does not price this lane.
 
 Runs serialize per PR and reread metadata before paid inference and each label
-write. Base/head/label/timestamp drift aborts publication. This uses the existing
+write. Base/head/label/timestamp drift aborts that attempt’s publication. This uses the existing
 freshness guards, not a cross-writer transaction; concurrent human edits or full
 reviews can still invalidate a run. Distinct action-ledger inference intent,
 usage and mutation receipts exclude title/body/diff/tool/prompt/output text. An uncertain

@@ -169,7 +169,7 @@ test("explicit files pagination proves exactly 100 files and rejects additional 
   f.pages[1] = [{ ...f.file, filename: "extra" }];
   assert.throws(f.source, /limit/);
   f.metadata.changed_files = 101;
-  assert.throws(f.source, /changed_files/);
+  assert.throws(f.source, /source-limit/);
 });
 
 test("rejects count mismatches, duplicate files, invalid paths and oversized UTF-8 diff", () => {

@@ -1,3 +1,4 @@
+import { PrClassificationError } from "./pr-classification-error.js";
 import { ghJson, githubLimitedPagePath } from "./repair/github-cli.js";
 import { requirePositiveInteger, requireRecord } from "./value-coerce.js";
 
@@ -67,7 +68,7 @@ export function readPrClassificationSource(
     if (baseRepository.toLowerCase() !== repository.toLowerCase()) {
       throw new Error("PR base repository scope mismatch");
     }
-    if (sha(head.sha) !== headSha) throw new Error("PR head drift");
+    if (sha(head.sha) !== headSha) throw new PrClassificationError("source-drift", true);
     const changedFiles = pull.changed_files;
     if (
       typeof changedFiles !== "number" ||
@@ -75,7 +76,7 @@ export function readPrClassificationSource(
       changedFiles < 0 ||
       changedFiles > 100
     ) {
-      throw new Error("PR changed_files exceeds supported limit or is invalid");
+      throw new PrClassificationError("source-limit");
     }
     return {
       headRepository,
@@ -91,7 +92,7 @@ export function readPrClassificationSource(
   for (let page = 1; page <= 2; page++) {
     const entries = get(githubLimitedPagePath(`${endpoint}/files`, 100, page));
     if (!Array.isArray(entries) || entries.length > 100 || files.length + entries.length > 100) {
-      throw new Error("PR files exceed supported limit or page is invalid");
+      throw new PrClassificationError("source-limit");
     }
     for (const entry of entries) {
       const file = record(entry);
@@ -127,7 +128,7 @@ export function readPrClassificationSource(
   }
   if (files.length !== initial.changedFiles) throw new Error("PR files count mismatch");
   const diff = JSON.stringify(files);
-  if (Buffer.byteLength(diff, "utf8") > 160_000) throw new Error("PR diff exceeds 160000 bytes");
+  if (Buffer.byteLength(diff, "utf8") > 160_000) throw new PrClassificationError("source-limit");
   const assertCurrent = () => {
     const final = metadata();
     if (
@@ -136,7 +137,7 @@ export function readPrClassificationSource(
       final.headRepository !== initial.headRepository ||
       final.changedFiles !== initial.changedFiles
     ) {
-      throw new Error("PR source drift while reading diff");
+      throw new PrClassificationError("source-drift", true);
     }
   };
   assertCurrent();

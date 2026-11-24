@@ -1,0 +1,1 @@
+- Retry transient PR classification failures once from fresh source before publication, retaining usage and sanitized diagnostics for early failures without replaying uncertain label writes.

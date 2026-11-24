@@ -1,3 +1,4 @@
+import { PrClassificationError } from "./pr-classification-error.js";
 import { createHash } from "node:crypto";
 import { scanAgentInput } from "./agent-input-scan.js";
 import { CLASSIFICATION_RUBRIC, IMPACT_LABELS, PRIORITY_LABELS } from "./clawsweeper-policy.js";
@@ -44,7 +45,7 @@ export function prClassificationRequest(packet: PrClassificationPacket) {
     baseSha: packet.baseSha,
     diff: packet.diff,
   });
-  if (Buffer.byteLength(input) > 180_000) throw new Error("PR classification exceeds byte budget");
+  if (Buffer.byteLength(input) > 180_000) throw new PrClassificationError("source-limit");
   return {
     input,
     digest: createHash("sha256")
@@ -72,6 +73,7 @@ export type PrClassificationResult = {
   outcome: "classified" | "unavailable" | "invalid" | "refused" | "timeout";
   classification: PrClassification | null;
   usage: IntakeUsage;
+  retryable?: boolean;
   diagnostic?:
     | "missing-key"
     | "provider-http"
@@ -132,11 +134,13 @@ export async function classifyPullRequest(
     outcome: PrClassificationResult["outcome"],
     usage: IntakeUsage = null,
     diagnostic?: PrClassificationResult["diagnostic"],
+    retryable = outcome === "timeout",
   ): PrClassificationResult => ({
     outcome,
     classification: null,
     usage,
     ...(diagnostic ? { diagnostic } : {}),
+    ...(retryable ? { retryable: true } : {}),
   });
   if (!options.apiKey.trim()) return abstain("unavailable", null, "missing-key");
   const request = prClassificationRequest(options.packet);
@@ -222,7 +226,12 @@ export async function classifyPullRequest(
       });
       if (!response.ok) {
         await response.body?.cancel();
-        return abstain("unavailable", usage, "provider-http");
+        return abstain(
+          "unavailable",
+          usage,
+          "provider-http",
+          response.status === 429 || response.status >= 500,
+        );
       }
       const reader = response.body?.getReader();
       if (!reader) return abstain("invalid", usage);
@@ -294,7 +303,7 @@ export async function classifyPullRequest(
         ? { outcome: "classified", classification, usage }
         : abstain("invalid", usage);
     } catch {
-      return abstain(signal.aborted ? "timeout" : "unavailable", usage, "transport");
+      return abstain(signal.aborted ? "timeout" : "unavailable", usage, "transport", true);
     }
   }
   return abstain("invalid", usage);
