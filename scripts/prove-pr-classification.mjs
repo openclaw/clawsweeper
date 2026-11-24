@@ -221,7 +221,7 @@ async function run(name) {
     modelCalls: calls - before,
     durationMs: Date.now() - started,
     result: result.stdout.trim(),
-    attempts: [...new Set(receipts.map((e) => e.attributes.attempt).filter(Boolean))],
+    attempts: [...new Set(receipts.map((e) => e.attributes.attempt).filter(Boolean))].sort(),
     diagnostics: receipts.filter((e) => e.attributes.status_kind).map((e) => e.attributes),
     accounting: receipts
       .filter((event) => event.attributes?.input_tokens)

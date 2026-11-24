@@ -138,7 +138,8 @@ drift or provider rate-limit/server/transport/timeout failures (at most two atte
 each with the bounds above). It rereads PR metadata and source and skips inference
 if priority has since appeared. Hard source limits, scanner refusal, malformed output,
 unknown errors, and any attempted mutation are not retried. Early failures emit
-sanitized diagnostic receipts before inference; source-limit failures remain unclassified. Missing context, unclear, refused,
+sanitized diagnostic receipts before inference; source-limit failures remain
+unclassified. Missing context, unclear, refused,
 malformed or unavailable results publish no labels. This is diff-aware preliminary
 prioritization, not a full code review or correctness/accuracy guarantee. Actions
 startup and scanner setup add overhead beyond inference. Aggregate usage includes
