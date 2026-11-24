@@ -187,15 +187,15 @@ if (args.includes("--input")) {
     withTargetProfile(repositoryProfileFor("openclaw/clawsweeper"), () =>
       withGitHubRun(() =>
         withMockGh(root, script, () => {
-          assert.equal(ensureCloseAppliedComment(options), "posted close-applied comment");
+          assert.equal(ensureCloseAppliedComment(options).reason, "posted close-applied comment");
           const [seed] = JSON.parse(readFileSync(statePath, "utf8"));
           writeFileSync(
             statePath,
             JSON.stringify([{ ...seed, id: 1, user: { login: "contributor" } }]),
           );
-          assert.equal(ensureCloseAppliedComment(options), "posted close-applied comment");
+          assert.equal(ensureCloseAppliedComment(options).reason, "posted close-applied comment");
           assert.equal(
-            ensureCloseAppliedComment(options),
+            ensureCloseAppliedComment(options).reason,
             "matching ClawSweeper close-applied comment already exists",
           );
         }),

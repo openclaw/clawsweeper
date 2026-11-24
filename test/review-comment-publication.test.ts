@@ -9,6 +9,7 @@ import { createApplyLeaseGuards } from "../dist/clawsweeper-apply-lease-guards.j
 import { shouldSyncReviewComment } from "../dist/clawsweeper-record-metadata.js";
 import * as publication from "../dist/clawsweeper-review-comment-publication.js";
 import * as state from "../dist/clawsweeper-review-comment-state.js";
+import { closeAppliedCommentMarker } from "../dist/clawsweeper-review-comment-identity.js";
 import {
   freshDedicatedReviewStartLeases,
   postReviewStartStatusComment,
@@ -706,6 +707,69 @@ test("close-applied evidence uses typed fixing PR metadata and rejects legacy re
     () => publishedBody(typed.replace(/^review_record: \{/m, "review_record: {broken")),
     ReviewRecordFormatError,
   );
+});
+
+test("closeout comments retain only verified write timestamps", () => {
+  const options = {
+    number: itemNumber,
+    closeReason: "duplicate_or_superseded" as const,
+    markdown: withReviewRecord(
+      reviewReportFrontMatter({ type: "pull_request", number: String(itemNumber) }),
+      { decision: "close", closeReason: "duplicate_or_superseded" },
+    ),
+    itemUrl: `https://github.com/openclaw/openclaw/pull/${itemNumber}`,
+    dryRun: false,
+  };
+  const previous = {
+    id: 20,
+    user: { login: "clawsweeper[bot]" },
+    body: `Old closeout evidence.\n${closeAppliedCommentMarker(itemNumber)}`,
+  };
+  let body = "";
+  for (const method of ["POST", "PATCH"]) {
+    withPublicationFixture(method === "PATCH" ? [previous] : [], (fixture) => {
+      assert.deepEqual(publication.ensureCloseAppliedComment(options), {
+        reason:
+          method === "PATCH" ? "updated close-applied comment" : "posted close-applied comment",
+        ownedWriteUpdatedAt: "2026-08-08T00:01:00Z",
+      });
+      const call = fixture.read().calls[0]!;
+      assert.equal(call[call.indexOf("--method") + 1], method);
+      body = String(fixture.read().comments[0]!.body);
+      assert.deepEqual(publication.ensureCloseAppliedComment(options), {
+        reason: "matching ClawSweeper close-applied comment already exists",
+      });
+      assert.equal(fixture.read().calls.length, 1);
+    });
+  }
+  withPublicationFixture([], (fixture) => {
+    assert.deepEqual(publication.ensureCloseAppliedComment({ ...options, dryRun: true }), {
+      reason: "dry-run: would post close-applied comment",
+    });
+    assert.equal(fixture.read().calls.length, 0);
+  });
+  const receipt = {
+    id: previous.id,
+    user: previous.user,
+    body,
+    updated_at: "2026-08-08T00:01:00Z",
+  };
+  for (const response of [
+    "empty" as const,
+    { ...receipt, id: 21 },
+    { ...receipt, user: { login: "contributor" } },
+    { ...receipt, body: "Different evidence." },
+    { ...receipt, updated_at: undefined, created_at: "2026-08-07T00:01:00Z" },
+    { ...receipt, updated_at: "not-a-time", created_at: "2026-08-07T00:01:00Z" },
+  ]) {
+    withPublicationFixture([previous], (fixture) => {
+      fixture.update({ response });
+      assert.deepEqual(publication.ensureCloseAppliedComment(options), {
+        reason: "updated close-applied comment",
+      });
+      assert.equal(fixture.read().calls.length, 1);
+    });
+  }
 });
 
 test("an unchanged exact-head re-review refreshes its durable comment once", () => {

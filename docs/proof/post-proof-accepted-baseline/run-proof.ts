@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { closeAppliedCommentMarker } from "../../../dist/clawsweeper-review-comment-identity.js";
 import {
   canonicalPullRequestClusterForTest,
   emptyReviewedPrActivityCursor,
@@ -16,9 +17,13 @@ import {
 const output = resolve(process.argv[2]);
 const revision = process.argv[3];
 const ownedWriteLag = process.argv[4] === "owned-write-lag";
+const closeoutWriteLag = process.argv[4] === "closeout-write-lag";
+const writeLag = ownedWriteLag || closeoutWriteLag;
 mkdirSync(output, { recursive: true });
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const number = ownedWriteLag ? 142693 : 158915;
+const number = writeLag ? 142693 : 158915;
+const durableCommentId = 9000 + number;
+const closeoutCommentId = durableCommentId + 1;
 const title = "Provider route fallback";
 const t0 = "2026-05-01T00:00:00Z";
 const t1 = "2026-05-01T01:00:00Z";
@@ -26,14 +31,18 @@ const t2 = "2026-05-01T02:00:00Z";
 // Keep managed labels in sync so no apply-owned write can mask the pre-apply ack.
 const labels = ["rating: 🌊 off-meta tidepool"];
 const results = [];
-const scenarios = ownedWriteLag
-  ? ["owned-write-lag", "owned-write-lag-human-comment"]
-  : ["acknowledgement-only", "same-second-title", "human-comment-after-proof"];
+const scenarios = closeoutWriteLag
+  ? ["closeout-write-lag", "closeout-write-lag-human-comment"]
+  : ownedWriteLag
+    ? ["owned-write-lag", "owned-write-lag-human-comment"]
+    : ["acknowledgement-only", "same-second-title", "human-comment-after-proof"];
 for (const scenario of scenarios) {
   const root = join(output, scenario);
   const items = join(root, "items");
   mkdirSync(items, { recursive: true });
   mkdirSync(join(root, "plans"));
+  // The CLI mocks use CommonJS even when the proof output is inside this ESM repository.
+  writeFileSync(join(root, "package.json"), JSON.stringify({ type: "commonjs" }));
   const proofLog = join(root, "proof.log");
   const commandLog = join(root, "requests.raw.jsonl");
   const reportPath = join(root, "apply-report.json");
@@ -66,7 +75,7 @@ for (const scenario of scenarios) {
   writeFileSync(join(root, "review-snapshot.md"), synced.report);
   const comments = [
     {
-      id: 9000 + number,
+      id: durableCommentId,
       created_at: t0,
       updated_at: t0,
       user: { login: "clawsweeper[bot]" },
@@ -79,6 +88,17 @@ for (const scenario of scenarios) {
       user: { login: "clawsweeper[bot]" },
       body: `<!-- clawsweeper-pr-ack:opened item=${number} -->\nClawSweeper picked this up.\n<!-- clawsweeper-review-progress:start -->\n### ClawSweeper review complete\n<!-- clawsweeper-review-progress:end -->`,
     },
+    ...(closeoutWriteLag
+      ? [
+          {
+            id: closeoutCommentId,
+            created_at: t0,
+            updated_at: t0,
+            user: { login: "clawsweeper[bot]" },
+            body: `Previous closeout evidence.\n${closeAppliedCommentMarker(number)}`,
+          },
+        ]
+      : []),
   ];
   let mock = promotionGhMock({
     number,
@@ -139,12 +159,33 @@ for (const scenario of scenarios) {
       const issueCommentCount = `,
     );
   }
-  if (scenario === "owned-write-lag-human-comment") {
+  if (closeoutWriteLag) {
+    mock = mock.replace("const liveUpdatedAt =", "let liveUpdatedAt =");
+    mock = mock.replace(
+      "const issueCommentCount = ",
+      `
+      if (existsSync(commentStatePath) && JSON.parse(readFileSync(commentStatePath, "utf8")).id === ${closeoutCommentId}) {
+        liveUpdatedAt = ${JSON.stringify(t2)};
+        if (path === "repos/openclaw/openclaw/issues/" + number) {
+          const lagPath = join(__dirname, "..", "closeout-post-write-item-reads");
+          const reads = existsSync(lagPath) ? Number(readFileSync(lagPath, "utf8")) : 0;
+          writeFileSync(lagPath, String(reads + 1));
+          if (reads === 0) liveUpdatedAt = ${JSON.stringify(t1)};
+        }
+      }
+      const issueCommentCount = `,
+    );
+  }
+  if (
+    scenario === "owned-write-lag-human-comment" ||
+    scenario === "closeout-write-lag-human-comment"
+  ) {
+    const lagFile = closeoutWriteLag ? "closeout-post-write-item-reads" : "post-write-item-reads";
     mock = mock.replace(
       "const liveComments = () => {",
       `
       const liveComments = () => {
-        const lagPath = join(__dirname, "..", "post-write-item-reads");
+        const lagPath = join(__dirname, "..", ${JSON.stringify(lagFile)});
         if (existsSync(lagPath) && Number(readFileSync(lagPath, "utf8")) >= 2) {
           comments.push({id: 999999, user: {login: "contributor"}, body: "Please keep this PR open.",
             created_at: new Date(Date.now() + 1000).toISOString(),
@@ -196,7 +237,7 @@ for (const scenario of scenarios) {
             "--limit",
             "1",
             "--processed-limit",
-            ownedWriteLag ? "3" : "1",
+            writeLag ? "3" : "1",
             "--close-delay-ms",
             "0",
             "--apply-kind",
@@ -214,7 +255,22 @@ for (const scenario of scenarios) {
     text.replaceAll(root, `<fixture>/${scenario}`).replaceAll(process.cwd(), "<checkout>");
   writeFileSync(join(root, "stdout.log"), sanitize(execution!.stdout));
   writeFileSync(join(root, "stderr.log"), sanitize(execution!.stderr));
+  if (execution!.status !== 0) {
+    console.error(
+      JSON.stringify({
+        stage: "apply-cli",
+        exit_code: execution!.status,
+        stdout_tail: sanitize(execution!.stdout).slice(-4096),
+        stderr_tail: sanitize(execution!.stderr).slice(-4096),
+      }),
+    );
+  }
+  assert.equal(execution!.status, 0, "apply CLI failed; see captured stdout/stderr");
   writeFileSync(responseLog, sanitize(readFileSync(responseLog, "utf8")));
+  const responses = readFileSync(responseLog, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
   writeFileSync(reportPath, sanitize(readFileSync(reportPath, "utf8")));
   const requests = readFileSync(commandLog, "utf8")
     .trim()
@@ -252,31 +308,51 @@ for (const scenario of scenarios) {
     close_writes: closeWrites,
     durable_writes: durableWrites,
     coverage_proof_ran: existsSync(proofLog),
-    trace: `docs/proof/post-proof-accepted-baseline/${ownedWriteLag ? "owned-write-lag/" : ""}artifacts/${revision}/${scenario}/requests.json`,
+    ...(closeoutWriteLag
+      ? {
+          human_comment_observed: responses.some((entry) =>
+            entry.response.includes("Please keep this PR open."),
+          ),
+        }
+      : {}),
+    trace: `docs/proof/post-proof-accepted-baseline/${closeoutWriteLag ? "closeout-write-lag/" : ownedWriteLag ? "owned-write-lag/" : ""}artifacts/${revision}/${scenario}/requests.json`,
   };
   results.push(result);
   console.log(JSON.stringify(result));
-  assert.equal(execution!.status, 0);
   assert.equal(result.coverage_proof_ran, true);
   assert.equal(
     requests.filter((request) => request.path?.startsWith("issue edit ")).length,
     0,
     "managed labels must not create a separate apply-owned receipt",
   );
-  if (ownedWriteLag) {
-    assert.ok(
-      requests.some(
-        (request) =>
-          request.method === "PATCH" &&
-          request.path === `repos/openclaw/openclaw/issues/comments/${9000 + number}`,
-      ),
-      "the shipped path must patch the existing durable review",
+  if (writeLag) {
+    const writeCommentId = closeoutWriteLag ? closeoutCommentId : durableCommentId;
+    const writeRequestIndex = requests.findIndex(
+      (request) =>
+        request.method === "PATCH" &&
+        request.path === `repos/openclaw/openclaw/issues/comments/${writeCommentId}`,
     );
-    const responses = readFileSync(responseLog, "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    const writeIndex = responses.findIndex((entry) => entry.request.includes("PATCH"));
+    assert.ok(writeRequestIndex >= 0, "the shipped path must patch the selected owned comment");
+    if (closeoutWriteLag) {
+      assert.equal(
+        requests
+          .slice(0, writeRequestIndex)
+          .filter(
+            (request) =>
+              request.method === "PATCH" &&
+              request.path === `repos/openclaw/openclaw/issues/comments/${durableCommentId}`,
+          ).length,
+        0,
+        "the durable review must already be synchronized before the closeout write",
+      );
+    }
+    const writeIndex = responses.findIndex(
+      (entry) =>
+        entry.request.includes("PATCH") &&
+        entry.request.includes(`repos/openclaw/openclaw/issues/comments/${writeCommentId}`),
+    );
+    assert.ok(writeIndex >= 0);
+    assert.equal(JSON.parse(responses[writeIndex].response).updated_at, t2);
     const itemReads = responses
       .slice(writeIndex + 1)
       .filter((entry) => entry.request.includes(`repos/openclaw/openclaw/issues/${number}`))
@@ -286,23 +362,32 @@ for (const scenario of scenarios) {
       itemReads.slice(1).some((item) => item.updated_at === t2),
       "later item reads must reflect the write",
     );
+    if (scenario === "closeout-write-lag-human-comment" && revision === "candidate") {
+      assert.equal(result.human_comment_observed, true);
+    }
   }
   if (
-    (scenario === "acknowledgement-only" || scenario === "owned-write-lag") &&
+    (scenario === "acknowledgement-only" ||
+      scenario === "owned-write-lag" ||
+      scenario === "closeout-write-lag") &&
     revision === "candidate"
   ) {
     assert.equal(result.action_taken, "closed");
     assert.equal(result.drift_log, false);
     assert.ok(closeWrites > 0);
+    if (closeoutWriteLag) assert.equal(closeWrites, 1);
     assert.ok(durableWrites > 0);
   } else {
     assert.equal(result.action_taken, "skipped_changed_since_review");
-    if (scenario !== "owned-write-lag-human-comment") {
+    if (
+      scenario !== "owned-write-lag-human-comment" &&
+      scenario !== "closeout-write-lag-human-comment"
+    ) {
       assert.equal(result.reason, "updated_at changed");
       assert.equal(result.drift_log, true);
     }
     assert.equal(closeWrites, 0);
-    if (ownedWriteLag) assert.ok(durableWrites >= 1);
+    if (writeLag) assert.ok(durableWrites >= 1);
     else assert.equal(durableWrites, 0);
   }
 }
