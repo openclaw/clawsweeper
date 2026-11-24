@@ -86,11 +86,26 @@ test("PR review comment label details come from the review record", () => {
   const report = pullRequestReport();
   assert.throws(() => renderReviewCommentFromReport(report, "none"), ReviewRecordFormatError);
 
-  const typed = withReviewRecord(report, recordedPullRequestDecision);
+  const typed = withReviewRecord(report, {
+    ...recordedPullRequestDecision,
+    mergeRiskLabels: ["merge-risk: 🚨 compatibility"],
+    labelJustifications: [
+      ...recordedPullRequestDecision.labelJustifications,
+      { label: "merge-risk: 🚨 compatibility", reason: "The review record selects compatibility." },
+    ],
+  });
   const labelDetails = detailsBody(renderReviewCommentFromReport(typed, "none"), "Label changes");
-  assert.match(labelDetails, /- add `P2`: The review record selects P2\./);
-  assert.match(labelDetails, /- `P2`: The review record selects P2\./);
-  assert.doesNotMatch(labelDetails, /`P1`|impact:message-loss/);
+  assert.ok(
+    labelDetails.includes(
+      "- add `merge-risk: 🚨 compatibility`: The review record selects compatibility.",
+    ),
+  );
+  assert.ok(
+    labelDetails.includes(
+      "- `merge-risk: 🚨 compatibility`: The review record selects compatibility.",
+    ),
+  );
+  assert.doesNotMatch(labelDetails, /`P1`|`P2`|impact:message-loss/);
 });
 
 test("a review record that does not read stops the review comment", () => {
