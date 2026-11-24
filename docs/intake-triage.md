@@ -98,6 +98,13 @@ The target OIDC review dispatcher does not start this lane. There is no backlog
 sweep or automatic retry of failed dispatches; the workflow can be dispatched
 manually for an eligible PR. Review admission itself is unchanged.
 
+Dispatch runs as a Worker `waitUntil` task: neither classification token acquisition
+nor the dispatch response is awaited by review admission or webhook acknowledgement.
+Dispatch failures are advisory and caught independently. The standalone workflow
+has its own `pr-classification-*` concurrency group, not a review queue lease or
+sweep concurrency slot, so a classification run does not gate or cancel a review.
+Both lanes still share GitHub API limits and hosted Actions account capacity.
+
 The workflow checks current PR metadata again and fills a missing P0–P3 priority
 and supported `impact:*` labels from the existing taxonomy. Existing priorities
 are never replaced; if any impact classification exists, it is preserved without

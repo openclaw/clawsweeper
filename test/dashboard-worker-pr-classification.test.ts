@@ -99,3 +99,115 @@ for (const [action, labels, state, locked, expected] of [
     },
   );
 }
+
+for (const maintainer of [false, true]) {
+  for (const failDispatch of [false, true]) {
+    test(
+      "classification dispatch does not block review: maintainer=" +
+        maintainer +
+        " failure=" +
+        failDispatch,
+      async (t) => {
+        const pending: Promise<unknown>[] = [];
+        const trace: string[] = [];
+        let settle!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          settle = resolve;
+        });
+        const pull = {
+          number: 42,
+          title: "Fix startup",
+          body: "Startup crashes",
+          state: "open",
+          locked: false,
+          labels: [],
+          draft: false,
+          author_association: maintainer ? "MEMBER" : "CONTRIBUTOR",
+          created_at: "2026-10-01T00:00:00Z",
+          updated_at: "2026-10-01T00:01:00Z",
+          user: { login: maintainer ? "maintainer" : "contributor" },
+          head: { sha: "a".repeat(40) },
+        };
+        t.mock.method(globalThis, "fetch", async (input) => {
+          const url = new URL(String(input));
+          if (url.pathname.endsWith("/actions/workflows/pr-classification.yml/dispatches")) {
+            trace.push("classification-started");
+            await gate;
+            trace.push("classification-settled");
+            if (failDispatch) throw new Error("controlled dispatch outage");
+            return new Response(null, { status: 204 });
+          }
+          if (url.pathname.endsWith("/permission"))
+            return jsonResponse({ permission: maintainer ? "admin" : "read" });
+          if (url.pathname.endsWith("/pulls/42")) return jsonResponse(pull);
+          throw new Error("Unexpected request " + url.pathname);
+        });
+        const responsePromise = worker.fetch(
+          signedGithubWebhookRequest({
+            event: "pull_request",
+            secret: "fixture",
+            payload: {
+              action: "edited",
+              installation: { id: 123 },
+              repository: {
+                full_name: "openclaw/fs-safe",
+                private: false,
+                archived: false,
+                fork: false,
+                has_issues: true,
+                default_branch: "main",
+              },
+              sender: { login: "contributor" },
+              pull_request: pull,
+            },
+          }),
+          {
+            CLAWSWEEPER_WEBHOOK_SECRET: "fixture",
+            GITHUB_TOKEN: "synthetic",
+            hostedPublicTargetProbe: async () => "public" as const,
+            EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+              async fetch(request: Request) {
+                const endpoint = new URL(request.url).pathname;
+                if (endpoint === "/source-authority")
+                  return jsonResponse({ source_authority_seq: 1 });
+                if (endpoint === "/enqueue") {
+                  trace.push("review-enqueued");
+                  return jsonResponse({ ok: true, queued: true });
+                }
+                return jsonResponse({ ok: true });
+              },
+            }),
+          },
+          { waitUntil: (promise) => pending.push(promise) },
+        );
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const response = await Promise.race([
+            responsePromise,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error("Webhook blocked on classification")),
+                2000,
+              );
+            }),
+          ]);
+          assert.equal(response.status, 202);
+          const body = await response.json();
+          assert.equal(trace.includes("classification-started"), true);
+          assert.equal(trace.includes("classification-settled"), false);
+          assert.equal(trace.includes("review-enqueued"), !maintainer);
+          if (maintainer)
+            assert.equal(body.reason, "maintainer review requires an explicit request");
+          else assert.equal(body.queued, true);
+          assert.ok(pending.length > 0, "Worker lifetime owns classification dispatch");
+        } finally {
+          clearTimeout(timer);
+          settle();
+          await Promise.all(pending);
+          await responsePromise;
+        }
+        assert.equal(trace.at(-1), "classification-settled");
+      },
+    );
+  }
+}

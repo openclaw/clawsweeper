@@ -3768,30 +3768,34 @@ async function githubWebhook(request, env, ctx) {
       source.locked !== true &&
       !labels.some((label) => /^p[0-3]$/i.test(String(objectValue(label).name || "")))
     ) {
-      try {
-        const token = await githubAuthToken(env, {
-          repos: [CLAWSWEEPER_REVIEW_REPO],
-          permissions: { actions: "write" },
-        });
-        if (!token) throw new Error("PR classification dispatch credential unavailable");
-        await githubTokenJson({
-          env,
-          token,
-          method: "POST",
-          path:
-            "/repos/" +
-            CLAWSWEEPER_REVIEW_REPO +
-            "/actions/workflows/pr-classification.yml/dispatches",
-          body: {
-            ref: "main",
-            inputs: { target_repo: targetRepo, item_number: String(decision.itemNumber) },
-          },
-          errorLabel: "PR classification dispatch",
-        });
-      } catch {
-        // Classification is advisory; its failure must not change review admission.
-        console.warn("PR classification dispatch unavailable; review admission is unchanged");
-      }
+      // Keep token acquisition and dispatch off the review/webhook critical path.
+      const classificationDispatch = (async () => {
+        try {
+          const token = await githubAuthToken(env, {
+            repos: [CLAWSWEEPER_REVIEW_REPO],
+            permissions: { actions: "write" },
+          });
+          if (!token) throw new Error("PR classification dispatch credential unavailable");
+          await githubTokenJson({
+            env,
+            token,
+            method: "POST",
+            path:
+              "/repos/" +
+              CLAWSWEEPER_REVIEW_REPO +
+              "/actions/workflows/pr-classification.yml/dispatches",
+            body: {
+              ref: "main",
+              inputs: { target_repo: targetRepo, item_number: String(decision.itemNumber) },
+            },
+            errorLabel: "PR classification dispatch",
+          });
+        } catch {
+          // Classification is advisory; its failure must not change review admission.
+          console.warn("PR classification dispatch unavailable; review admission is unchanged");
+        }
+      })();
+      ctx?.waitUntil?.(classificationDispatch);
     }
   }
 
