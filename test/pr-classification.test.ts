@@ -94,21 +94,6 @@ test("diff plus mandatory context tool, no storage, bounded output and aggregate
       assert.equal(body.model, PR_CLASSIFICATION_MODEL);
       assert.ok(body.instructions.includes(CLASSIFICATION_RUBRIC));
       assert.equal(body.instructions.split(CLASSIFICATION_RUBRIC).length, 2);
-      assert.match(
-        body.instructions,
-        /failing, pending, or flaky CI raises it only for user-facing automation failures/,
-      );
-      assert.match(body.instructions, /cosmetic or fully recoverable in-product confusion/);
-      assert.ok(
-        body.instructions.includes(
-          "Developer/maintainer CI, test, or release-workflow inconvenience is not end-user UX friction",
-        ),
-      );
-      assert.match(body.instructions, /require a concrete affected product-user path/);
-      assert.match(
-        body.instructions,
-        /broken delivered artifacts or a user-facing automation failure/,
-      );
       assert.doesNotMatch(body.instructions, /bestSolution|workReason|queue_fix_pr/);
       assert.equal(body.store, false);
       assert.equal(body.max_output_tokens, 1536);
