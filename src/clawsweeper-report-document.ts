@@ -251,9 +251,22 @@ function renderTestingReviewReportSection(decision: Decision): string {
     "",
     testing.lowValueTests.length
       ? testing.lowValueTests
-          .map((test) =>
-            [`- File: ${test.file}`.trimEnd(), `  - Reason: ${test.reason}`.trimEnd()].join("\n"),
-          )
+          .map((test) => {
+            const lines = [
+              `- File: ${test.file}`.trimEnd(),
+              `  - Reason: ${test.reason}`.trimEnd(),
+            ];
+            const { survivor } = test;
+            if (survivor && "check" in survivor) {
+              lines.push(
+                `  - Surviving check: ${survivor.check}`,
+                `  - Same regression: ${survivor.regression}`,
+              );
+            } else if (survivor) {
+              lines.push(`  - Why this can go untested: ${survivor.notWorthTesting}`);
+            }
+            return lines.join("\n");
+          })
           .join("\n")
       : "- none",
   ].join("\n");

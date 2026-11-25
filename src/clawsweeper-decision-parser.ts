@@ -561,7 +561,11 @@ export function createDecisionParser({
     });
   }
 
-  function parseTestingReview(value: unknown, path: string): TestingReview {
+  function parseTestingReview(
+    value: unknown,
+    path: string,
+    source: "model" | "stored",
+  ): TestingReview {
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, TESTING_REVIEW_SCHEMA_KEYS, path);
     if (!Array.isArray(record.lowValueTests)) {
@@ -573,10 +577,29 @@ export function createDecisionParser({
         const entryPath = `${path}.lowValueTests[${index}]`;
         const test = requireRecord(entry, entryPath);
         rejectUnexpectedKeys(test, LOW_VALUE_TEST_SCHEMA_KEYS, entryPath);
-        return {
+        const cut = {
           file: requireReportLine(test.file, `${entryPath}.file`),
           reason: requireReportLine(test.reason, `${entryPath}.reason`),
         };
+        if (source === "stored" && test.survivor === undefined) return cut;
+        const survivorPath = `${entryPath}.survivor`;
+        const survivor = requireRecord(test.survivor, survivorPath);
+        if ("notWorthTesting" in survivor) {
+          rejectUnexpectedKeys(survivor, new Set(["notWorthTesting"]), survivorPath);
+          const notWorthTesting = requireReportLine(
+            survivor.notWorthTesting,
+            `${survivorPath}.notWorthTesting`,
+          );
+          if (!notWorthTesting)
+            throw new Error(`${survivorPath}.notWorthTesting must not be empty`);
+          return { ...cut, survivor: { notWorthTesting } };
+        }
+        rejectUnexpectedKeys(survivor, new Set(["check", "regression"]), survivorPath);
+        const check = requireReportLine(survivor.check, `${survivorPath}.check`);
+        const regression = requireReportLine(survivor.regression, `${survivorPath}.regression`);
+        if (!check || !regression)
+          throw new Error(`${survivorPath} check and regression must not be empty`);
+        return { ...cut, survivor: { check, regression } };
       }),
       missingE2e: requireReportLine(record.missingE2e, `${path}.missingE2e`),
     };
@@ -874,7 +897,11 @@ export function createDecisionParser({
     );
     const productReview = parseProductReview(record.productReview, "decision.productReview");
     const provenance = parseProvenance(record.provenance, "decision.provenance");
-    const testingReview = parseTestingReview(record.testingReview, "decision.testingReview");
+    const testingReview = parseTestingReview(
+      record.testingReview,
+      "decision.testingReview",
+      source,
+    );
     const nextStep =
       record.nextStep === undefined
         ? undefined

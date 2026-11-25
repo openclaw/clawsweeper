@@ -188,12 +188,15 @@ function publicFindingsBlock(
     .map(publicProvenanceLine);
   if (provenanceLines.length) blocks.push("### Provenance", provenanceLines.join("\n"));
   const testLines = [
-    ...testingReview.lowValueTests.map(
-      (test) =>
-        `- Low-value test ${publicInlineCode(test.file)}: ${
-          publicInlineText(test.reason) || "reason not recorded."
-        }`,
-    ),
+    ...testingReview.lowValueTests.map(({ file, reason, survivor }) => {
+      const line = `- Low-value test ${publicInlineCode(file)}: ${publicInlineText(reason) || "reason not recorded."}`;
+      if (!survivor) return line;
+      const evidence =
+        "check" in survivor
+          ? `Surviving check: ${publicInlineText(survivor.check)}\n  Same regression: ${publicInlineText(survivor.regression)}`
+          : `Why this can go untested: ${publicInlineText(survivor.notWorthTesting)}`;
+      return `${line}\n  ${evidence}`;
+    }),
     ...(testingReview.missingE2e.trim()
       ? [`- Missing end-to-end proof: ${publicInlineText(testingReview.missingE2e)}`]
       : []),

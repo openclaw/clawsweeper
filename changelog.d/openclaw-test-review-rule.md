@@ -1,0 +1,1 @@
+- Give OpenClaw PR reviews more specific guidance on removing low-value test code and record which surviving check catches the same regression or why the behavior can go untested.

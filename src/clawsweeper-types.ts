@@ -436,6 +436,7 @@ export interface ProvenanceEntry {
 export interface LowValueTest {
   file: string;
   reason: string;
+  survivor?: { check: string; regression: string } | { notWorthTesting: string };
 }
 
 export interface TestingReview {
