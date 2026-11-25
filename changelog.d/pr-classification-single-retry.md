@@ -1,0 +1,1 @@
+- Retry transient PR classification failures once from fresh source before publication, and truncate oversized diffs to a byte budget instead of failing large PRs, retaining usage and sanitized diagnostics without replaying uncertain label writes.

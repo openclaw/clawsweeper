@@ -136,13 +136,13 @@ Full review comments:
     }
     assert.equal(labels.includes("No label changes."), fixture.noOp, fixture.name);
     if (fixture.name === "different") {
-      assert.match(labels, /- add `P2`:/);
-      assert.match(labels, /- remove `P1`:/);
+      assert.doesNotMatch(labels, /- (add|remove) `P[0-3]`:/);
+      assert.match(labels, /- add `proof: sufficient`:/);
     } else {
       assert.doesNotMatch(labels, /- (add|remove) `/, fixture.name);
     }
     if (fixture.name === "failed with retained justification") {
-      assert.match(labels, /`P2`: A bounded presentation fix\./);
+      assert.doesNotMatch(labels, /`P2`:/);
     }
     assert.ok(comment.includes(reviewAutomationMarkersFromReport(fixture.markdown)), fixture.name);
   }
@@ -888,23 +888,13 @@ Full review comments:
   assert.ok(comment.indexOf("### Rating scale") < comment.indexOf("### Workflow"));
   const labelDetails = detailsBody(comment, "Label changes");
   assert.match(labelDetails, /Label changes:/);
-  assert.match(
-    labelDetails,
-    /- add `P1`: The PR changes an active channel workflow affecting real users\./,
-  );
+  assert.doesNotMatch(labelDetails, /`P1`|`impact:message-loss`/);
+  assert.doesNotMatch(comment, /\*\*Priority:\*\*/);
   assert.match(
     labelDetails,
     /- add `merge-risk: 🚨 compatibility`: Merging changes the default upgrade behavior for existing configs\./,
   );
   assert.match(labelDetails, /Label justifications:/);
-  assert.match(
-    labelDetails,
-    /- `P1`: The PR changes an active channel workflow affecting real users\./,
-  );
-  assert.match(
-    labelDetails,
-    /- `impact:message-loss`: The diff touches message retry and delivery ordering\./,
-  );
 });
 
 test("public PR review details justify model rating label changes", () => {
@@ -1058,11 +1048,7 @@ Full review comments:
   });
 
   assert.match(comment, /Label changes:/);
-  assert.match(comment, /- remove `P1`: Current review triage priority is none\./);
-  assert.match(
-    comment,
-    /- remove `impact:message-loss`: Current review selected no impact labels\./,
-  );
+  assert.doesNotMatch(comment, /- (add|remove) `(?:P1|impact:message-loss)`:/);
   assert.match(
     comment,
     /- remove `merge-risk: 🚨 compatibility`: Current PR review selected no merge-risk labels\./,

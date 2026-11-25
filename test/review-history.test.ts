@@ -532,9 +532,12 @@ test("durable review identity changes with every verdict-bearing section", () =>
     [
       "label rationale",
       variant({
-        triagePriority: "P1",
+        mergeRiskLabels: ["merge-risk: 🚨 compatibility"],
         labelJustifications: [
-          { label: "P1", reason: "Stale verdicts can suppress merge blockers." },
+          {
+            label: "merge-risk: 🚨 compatibility",
+            reason: "Stale verdicts can suppress merge blockers.",
+          },
         ],
       }),
     ],

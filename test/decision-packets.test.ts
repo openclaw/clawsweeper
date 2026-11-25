@@ -104,7 +104,8 @@ test("packet readers use the typed decision instead of stale report metadata", (
     line,
   );
   const packet = buildDecisionPacketFromReport(report);
-  assert.equal(packet?.priority, "P2");
+  // Full PR review no longer classifies; stale report priority must not restore it.
+  assert.equal(packet?.priority, "none");
   assert.deepEqual(packet?.options, productDecision.options);
   assert.deepEqual(maintainerDecisionFromReport(report), productDecision);
   const corrupt = report.replace(line, "review_record: {broken");

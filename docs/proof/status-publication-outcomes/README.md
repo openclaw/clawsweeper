@@ -82,6 +82,19 @@ is not changed or certified by this composition repair.
 
 ## Status telemetry failure retention
 
+### Short census pages
+
+```sh
+node docs/proof/status-publication-outcomes/run-proof.mjs a76b6b0021ccf27fc844ea20fc8dea87b3a56f39 --short-census-pages --worker-only
+```
+
+This mode checks short first pages for both runs and jobs over real Worker HTTP
+and SQLite. It verifies continued pagination, missing-row counts, incomplete run
+telemetry, warm-cache reuse and a SQLite restart. The receipt is
+`short-census-pages-summary.json`. It does not prove a complete live GitHub census
+or resolution of a production incident. The dashboard status owner updates this
+recipe when pagination or the fixture changes; receipts record exact revisions.
+
 ### Workflow observation reconciliation
 
 The dashboard collector selects a single observation per workflow run before

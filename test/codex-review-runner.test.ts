@@ -1055,7 +1055,7 @@ ${fakeManagedDecision}
       "-C",
       openclawDir,
       "--output-schema",
-      join(process.cwd(), "schema", "clawsweeper-decision.schema.json"),
+      join(workDir, "83395.schema.json"),
       "--sandbox",
       "read-only",
       "--add-dir",

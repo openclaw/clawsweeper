@@ -30,7 +30,9 @@ const cachePaths = process.argv.includes("--cache-paths");
 const githubFailures = process.argv.includes("--github-failures");
 const workflowObservations = process.argv.includes("--workflow-observations");
 const workflowAttempts = process.argv.includes("--workflow-attempts");
+const shortCensusPages = process.argv.includes("--short-census-pages");
 const telemetryFailures =
+  shortCensusPages ||
   workflowAttempts ||
   workflowObservations ||
   githubFailures ||
@@ -190,6 +192,7 @@ try {
     if (telemetryFailures) {
       const {
         proveTelemetryFailures,
+        proveShortCensusPages,
         proveGithubFailureCauses,
         proveWorkflowObservations,
         proveWorkflowAttempts,
@@ -200,7 +203,9 @@ try {
         current = await startWorker(label, source);
         return current;
       };
-      if (workflowAttempts)
+      if (shortCensusPages)
+        results.push(...(await proveShortCensusPages(preview, label, githubFixture, restart)));
+      else if (workflowAttempts)
         results.push(...(await proveWorkflowAttempts(preview, label, githubFixture, restart)));
       else if (workflowObservations)
         results.push(...(await proveWorkflowObservations(preview, label, githubFixture, restart)));
@@ -309,21 +314,23 @@ try {
   }
   if (capsule) await verifyFiles(root, capsule.candidate_files);
   const summary = {
-    schema: workflowAttempts
-      ? "status-workflow-attempts-proof/v1"
-      : workflowObservations
-        ? "status-workflow-observations-proof/v1"
-        : githubFailures
-          ? "status-github-failures-proof/v1"
-          : telemetryFailures
-            ? "status-telemetry-failures-proof/v1"
-            : publicationReasons
-              ? "publication-reasons-proof/v1"
-              : publicationOrder
-                ? "status-publication-order-proof/v1"
-                : lifetime
-                  ? "status-refresh-lifetime-proof/v1"
-                  : "status-publication-outcomes-proof/v1",
+    schema: shortCensusPages
+      ? "status-short-census-pages-proof/v1"
+      : workflowAttempts
+        ? "status-workflow-attempts-proof/v1"
+        : workflowObservations
+          ? "status-workflow-observations-proof/v1"
+          : githubFailures
+            ? "status-github-failures-proof/v1"
+            : telemetryFailures
+              ? "status-telemetry-failures-proof/v1"
+              : publicationReasons
+                ? "publication-reasons-proof/v1"
+                : publicationOrder
+                  ? "status-publication-order-proof/v1"
+                  : lifetime
+                    ? "status-refresh-lifetime-proof/v1"
+                    : "status-publication-outcomes-proof/v1",
     base,
     candidate_head: head,
     candidate_dirty: dirty,
@@ -359,60 +366,67 @@ try {
       ? "loopback GitHub fixture only"
       : "denied by fixture",
     browser_proof: browserResults,
-    limits: workflowAttempts
+    limits: shortCensusPages
       ? [
-          "Synthetic GitHub attempt transitions over real loopback HTTP, native Workerd and SQLite; no production mutations or credentials.",
-          "Proves attempt-bound jobs and health-cache reuse/restart, not production timeout recovery or healthy queue/Bay composition.",
+          "Real Worker HTTP routes and SQLite with synthetic GitHub pages; no production writes or credentials.",
+          "Proves short-page continuation and missing-row rejection, not complete live GitHub census or incident resolution.",
         ]
-      : workflowObservations
+      : workflowAttempts
         ? [
-            "Synthetic GitHub observations over real loopback HTTP, native Workerd and SQLite; no production mutations or credentials.",
-            "Proves workflow observation reconciliation and cache persistence, not the production timeout or a healthy queue/Bay composition.",
+            "Synthetic GitHub attempt transitions over real loopback HTTP, native Workerd and SQLite; no production mutations or credentials.",
+            "Proves attempt-bound jobs and health-cache reuse/restart, not production timeout recovery or healthy queue/Bay composition.",
           ]
-        : telemetryFailures
+        : workflowObservations
           ? [
-              "Real status collection, loopback HTTP and SQLite cache reuse/restart with synthetic GitHub responses; no credentials or production mutations.",
-              "Proves failure attribution and retention, not the cause or resolution of the production collection stall.",
+              "Synthetic GitHub observations over real loopback HTTP, native Workerd and SQLite; no production mutations or credentials.",
+              "Proves workflow observation reconciliation and cache persistence, not the production timeout or a healthy queue/Bay composition.",
             ]
-          : publicationReasons
+          : telemetryFailures
             ? [
-                "Real queue completion, Workerd SQLite and public aggregate route with synthetic leases; no production state or GitHub writes.",
-                "Dedicated API and restart persistence only; no browser, composed-cache or production incident-cause claim.",
+                "Real status collection, loopback HTTP and SQLite cache reuse/restart with synthetic GitHub responses; no credentials or production mutations.",
+                "Proves failure attribution and retention, not the cause or resolution of the production collection stall.",
               ]
-            : publicationOrder
+            : publicationReasons
               ? [
-                  "Synthetic delayed binding writes and edge bodies; real SQLite owner and HTTP status route.",
-                  "Does not attribute production staleness, order overlapping HTTP responses, or cover regional clock skew.",
+                  "Real queue completion, Workerd SQLite and public aggregate route with synthetic leases; no production state or GitHub writes.",
+                  "Dedicated API and restart persistence only; no browser, composed-cache or production incident-cause claim.",
                 ]
-              : lifetime
+              : publicationOrder
                 ? [
-                    "Synthetic held binding and body; the production stalled dependency remains unknown.",
-                    "Both served clients use the real Worker route and their ordinary timers.",
+                    "Synthetic delayed binding writes and edge bodies; real SQLite owner and HTTP status route.",
+                    "Does not attribute production staleness, order overlapping HTTP responses, or cover regional clock skew.",
                   ]
-                : [
-                    "Synthetic inputs; no production state or timing claim.",
-                    "Corrected-input browser cases isolate browser ingestion using a fixture status route.",
-                    "Worker-route browser cases fetch the real Worker status route; cached reload uses a controlled HTTP 503.",
-                  ],
+                : lifetime
+                  ? [
+                      "Synthetic held binding and body; the production stalled dependency remains unknown.",
+                      "Both served clients use the real Worker route and their ordinary timers.",
+                    ]
+                  : [
+                      "Synthetic inputs; no production state or timing claim.",
+                      "Corrected-input browser cases isolate browser ingestion using a fixture status route.",
+                      "Worker-route browser cases fetch the real Worker status route; cached reload uses a controlled HTTP 503.",
+                    ],
   };
   await writeFile(
     path.join(
       artifacts,
-      workflowAttempts
-        ? "workflow-attempts-summary.json"
-        : workflowObservations
-          ? "workflow-observations-summary.json"
-          : githubFailures
-            ? "github-failures-summary.json"
-            : telemetryFailures
-              ? "telemetry-failures-summary.json"
-              : publicationReasons
-                ? "publication-reasons-summary.json"
-                : publicationOrder
-                  ? "publication-order-summary.json"
-                  : lifetime
-                    ? "lifetime-summary.json"
-                    : "worker-summary.json",
+      shortCensusPages
+        ? "short-census-pages-summary.json"
+        : workflowAttempts
+          ? "workflow-attempts-summary.json"
+          : workflowObservations
+            ? "workflow-observations-summary.json"
+            : githubFailures
+              ? "github-failures-summary.json"
+              : telemetryFailures
+                ? "telemetry-failures-summary.json"
+                : publicationReasons
+                  ? "publication-reasons-summary.json"
+                  : publicationOrder
+                    ? "publication-order-summary.json"
+                    : lifetime
+                      ? "lifetime-summary.json"
+                      : "worker-summary.json",
     ),
     JSON.stringify(summary, null, 2) + "\n",
   );
