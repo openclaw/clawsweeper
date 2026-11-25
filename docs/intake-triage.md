@@ -121,8 +121,14 @@ It uses `gpt-6-luna` by default, independent of the review and intake models.
 Set repository variable `CLAWSWEEPER_CLASSIFICATION_MODEL` to override it or
 `off` to disable it. The existing `OPENAI_API_KEY` secret is required.
 The initial packet contains title/body, pinned head/base SHAs, and changed-file
-patches (at most 100 files / 160 KB diff; 180 KB total packet). Missing binary
-patches are explicit; oversized source is rejected rather than silently truncated.
+patches. There is no file-count cap: the diff is capped by bytes instead (160 KB,
+less any space a long title/body needs within the 180 KB packet). A larger diff is
+truncated rather than failing the job: listing stops at the budget, the boundary
+patch keeps its longest fitting prefix (`patch_truncated`), and the diff records
+`changed_files`, `included_files`, `truncated` and a note telling the model not to
+assume omitted changes are harmless. Source tools read only the listed files.
+Missing binary patches are explicit. Only a title/body that leaves under 1 KB for
+the diff is a hard source limit.
 The model must inspect source through at least one read-only tool before returning
 a classification. `read_file` reads 120 lines and `search_file` finds literal text
 in a changed file, at the pinned head or base revision. No PR code executes;
@@ -132,14 +138,21 @@ At most three sequential tool calls and four Responses requests share a 120-seco
 scan/request budget; each request allows 1,536 output tokens. File and tool-result
 byte limits bound context. Trusted secret scanning covers every outbound payload,
 including tool results. Requests use strict finite JSON, no stored responses,
-no application retry, and no model fallback. Missing context, unclear, refused,
+no per-request retry, and no model fallback. The workflow permits one fresh
+classification attempt after a two-second delay for pre-publication snapshot/source
+drift or provider rate-limit/server/transport/timeout failures (at most two attempts,
+each with the bounds above). It rereads PR metadata and source and skips inference
+if priority has since appeared. Hard source limits, scanner refusal, malformed output,
+unknown errors, and any attempted mutation are not retried. Early failures emit
+sanitized diagnostic receipts before inference; source-limit failures remain
+unclassified. Missing context, unclear, refused,
 malformed or unavailable results publish no labels. This is diff-aware preliminary
 prioritization, not a full code review or correctness/accuracy guarantee. Actions
 startup and scanner setup add overhead beyond inference. Aggregate usage includes
 all model turns; the earlier metadata-only benchmark does not price this lane.
 
 Runs serialize per PR and reread metadata before paid inference and each label
-write. Base/head/label/timestamp drift aborts publication. This uses the existing
+write. Base/head/label/timestamp drift aborts that attempt’s publication. This uses the existing
 freshness guards, not a cross-writer transaction; concurrent human edits or full
 reviews can still invalidate a run. Distinct action-ledger inference intent,
 usage and mutation receipts exclude title/body/diff/tool/prompt/output text. An uncertain

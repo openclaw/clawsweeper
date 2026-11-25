@@ -1,3 +1,4 @@
+import { PrClassificationError } from "./pr-classification-error.js";
 import { ghJson, githubLimitedPagePath } from "./repair/github-cli.js";
 import { requirePositiveInteger, requireRecord } from "./value-coerce.js";
 
@@ -47,11 +48,17 @@ function sha(value: unknown): string {
 const positiveInteger = (value: unknown) =>
   requirePositiveInteger(value, "Source line or PR number");
 
+// Bytes of the diff once embedded as a JSON string in the model packet.
+const encodedBytes = (value: string) => Buffer.byteLength(JSON.stringify(value), "utf8") - 2;
+const TRUNCATION_NOTE =
+  "Diff truncated to fit the classification byte budget: files after included_files and any patch marked patch_truncated are not shown. Source tools can read only the listed files. Classify from the visible evidence; do not assume omitted changes are harmless.";
+
 export function readPrClassificationSource(
   repository: string,
   number: number,
   headSha: string,
   readJson: (args: string[]) => unknown = (args) => ghJson(args, { timeoutMs: 10_000 }),
+  maxDiffBytes = 160_000,
 ): PrClassificationSource {
   repositoryName(repository);
   positiveInteger(number);
@@ -67,15 +74,14 @@ export function readPrClassificationSource(
     if (baseRepository.toLowerCase() !== repository.toLowerCase()) {
       throw new Error("PR base repository scope mismatch");
     }
-    if (sha(head.sha) !== headSha) throw new Error("PR head drift");
+    if (sha(head.sha) !== headSha) throw new PrClassificationError("source-drift", true);
     const changedFiles = pull.changed_files;
     if (
       typeof changedFiles !== "number" ||
       !Number.isSafeInteger(changedFiles) ||
-      changedFiles < 0 ||
-      changedFiles > 100
+      changedFiles < 0
     ) {
-      throw new Error("PR changed_files exceeds supported limit or is invalid");
+      throw new Error("Invalid PR changed file count");
     }
     return {
       headRepository,
@@ -87,11 +93,29 @@ export function readPrClassificationSource(
   const initial = metadata();
   const headPaths = new Set<string>();
   const basePaths = new Set<string>();
-  const files: Record<string, unknown>[] = [];
-  for (let page = 1; page <= 2; page++) {
+  const files: string[] = [];
+  // Reserve the envelope at its largest so the final diff always fits the budget.
+  const envelope = (included: number, truncated: boolean) =>
+    JSON.stringify({
+      changed_files: initial.changedFiles,
+      included_files: included,
+      truncated,
+      ...(truncated ? { note: TRUNCATION_NOTE } : {}),
+      files: [],
+    });
+  let remaining = maxDiffBytes - encodedBytes(envelope(initial.changedFiles, true));
+  if (remaining < 1_000) throw new PrClassificationError("source-limit");
+  let truncated = false;
+  // GitHub lists at most 3,000 files (30 pages); the byte budget normally stops earlier.
+  let page = 1;
+  for (; page <= 30 && !truncated; page++) {
     const entries = get(githubLimitedPagePath(`${endpoint}/files`, 100, page));
-    if (!Array.isArray(entries) || entries.length > 100 || files.length + entries.length > 100) {
-      throw new Error("PR files exceed supported limit or page is invalid");
+    if (
+      !Array.isArray(entries) ||
+      entries.length > 100 ||
+      files.length + entries.length > initial.changedFiles
+    ) {
+      throw new Error("Invalid PR files page");
     }
     for (const entry of entries) {
       const file = record(entry);
@@ -106,28 +130,63 @@ export function readPrClassificationSource(
       if (file.patch !== undefined && typeof file.patch !== "string") {
         throw new Error("Invalid file patch");
       }
-      headPaths.add(filename);
-      basePaths.add(filename);
       const previousFilename =
         file.previous_filename === undefined ? undefined : sourcePath(file.previous_filename);
-      if (previousFilename !== undefined) basePaths.add(previousFilename);
-      files.push({
+      const summary = {
         filename,
         status: file.status,
         additions: file.additions,
         deletions: file.deletions,
         ...(previousFilename === undefined ? {} : { previous_filename: previousFilename }),
-        patch: file.patch ?? null,
-        ...(file.patch === undefined
-          ? { patch_note: "Patch unavailable (binary or omitted by GitHub); use source tools." }
-          : {}),
-      });
+      };
+      const serialize = (patch: string | undefined, partial = false) =>
+        JSON.stringify({
+          ...summary,
+          patch: patch ?? null,
+          ...(patch === undefined
+            ? { patch_note: "Patch unavailable (binary or omitted by GitHub); use source tools." }
+            : {}),
+          ...(partial ? { patch_truncated: true } : {}),
+        });
+      const comma = files.length ? 1 : 0;
+      let serialized = serialize(file.patch);
+      if (encodedBytes(serialized) + comma > remaining) {
+        truncated = true;
+        // Keep the longest patch prefix that fits, so the boundary file stays useful.
+        const patch = typeof file.patch === "string" ? file.patch : "";
+        let low = -1;
+        let high = patch.length;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          if (
+            encodedBytes(serialize(patch.slice(0, Math.max(middle, 0)), true)) + comma <=
+            remaining
+          )
+            low = middle;
+          else high = middle - 1;
+        }
+        if (low < 0) break;
+        let prefix = patch.slice(0, low);
+        if (/[\uD800-\uDBFF]$/.test(prefix)) prefix = prefix.slice(0, -1);
+        serialized = serialize(prefix, true);
+      }
+      headPaths.add(filename);
+      basePaths.add(filename);
+      if (previousFilename !== undefined) basePaths.add(previousFilename);
+      files.push(serialized);
+      remaining -= encodedBytes(serialized) + comma;
+      if (truncated) break;
     }
     if (entries.length < 100) break;
   }
-  if (files.length !== initial.changedFiles) throw new Error("PR files count mismatch");
-  const diff = JSON.stringify(files);
-  if (Buffer.byteLength(diff, "utf8") > 160_000) throw new Error("PR diff exceeds 160000 bytes");
+  if (!truncated && files.length !== initial.changedFiles) {
+    // Only GitHub's 3,000-file listing ceiling may leave files unlisted.
+    if (page <= 30 || files.length !== 3_000) throw new Error("PR files count mismatch");
+    truncated = true;
+  }
+  const head = envelope(files.length, truncated);
+  const diff = `${head.slice(0, -3)}[${files.join(",")}]}`;
+  if (encodedBytes(diff) > maxDiffBytes) throw new Error("PR classification diff exceeds budget");
   const assertCurrent = () => {
     const final = metadata();
     if (
@@ -136,7 +195,7 @@ export function readPrClassificationSource(
       final.headRepository !== initial.headRepository ||
       final.changedFiles !== initial.changedFiles
     ) {
-      throw new Error("PR source drift while reading diff");
+      throw new PrClassificationError("source-drift", true);
     }
   };
   assertCurrent();

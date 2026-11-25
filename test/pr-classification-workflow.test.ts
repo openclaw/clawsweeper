@@ -1,3 +1,4 @@
+import { PrClassificationError } from "../dist/pr-classification-error.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -57,6 +58,7 @@ function fixture(t: TestContext) {
     repository: live.repository,
     number: live.number,
     apiKey: "synthetic",
+    waitBeforeRetry: async () => {},
     root,
     readSnapshot: () => structuredClone(live),
     readSource: () => ({
@@ -140,6 +142,23 @@ for (const kind of ["priority", "closed", "locked", "disabled"] as const) {
   });
 }
 
+test("a long description shrinks the diff budget so the packet still fits", async (t) => {
+  const budgets: number[] = [];
+  for (const body of ["short", '"'.repeat(30_000)]) {
+    const f = fixture(t);
+    f.live.body = body;
+    const readSource = f.options.readSource!;
+    f.options.readSource = (maxDiffBytes) => {
+      budgets.push(maxDiffBytes);
+      return readSource(maxDiffBytes);
+    };
+    assert.equal((await runPrClassificationWorkflow(f.options)).outcome, "published");
+  }
+  assert.equal(budgets[0], 160_000);
+  // Each quote costs two bytes in the packet.
+  assert.ok(budgets[1]! < 180_000 - 60_000 && budgets[1]! > 180_000 - 61_000, String(budgets[1]));
+});
+
 test("existing impact labels are preserved, not supplemented or removed", async (t) => {
   const f = fixture(t);
   f.live.labels.push("impact:security");
@@ -154,7 +173,7 @@ test("drift before paid intent prevents inference", async (t) => {
     if (++reads > 1) f.live.body += " edited";
     return structuredClone(f.live);
   };
-  await assert.rejects(runPrClassificationWorkflow(f.options), /changed/);
+  await assert.rejects(runPrClassificationWorkflow(f.options), /snapshot-drift|source changed/);
   assert.equal(f.calls(), 0);
   assert.deepEqual(f.writes, []);
 });
@@ -164,7 +183,7 @@ test("drift after label definitions prevents item mutation", async (t) => {
   f.afterDefinition(() => {
     f.live.headSha = "c".repeat(40);
   });
-  await assert.rejects(runPrClassificationWorkflow(f.options), /changed/);
+  await assert.rejects(runPrClassificationWorkflow(f.options), /snapshot-drift|source changed/);
   assert.ok(!f.writes.some((write) => write.startsWith("issue edit")));
 });
 
@@ -193,7 +212,7 @@ test("source/base drift blocks paid intent and writes", async (t) => {
       throw Error("source changed");
     },
   });
-  await assert.rejects(runPrClassificationWorkflow(f.options), /changed/);
+  await assert.rejects(runPrClassificationWorkflow(f.options), /snapshot-drift|source changed/);
   assert.equal(f.calls(), 0);
   assert.deepEqual(f.writes, []);
 });
@@ -253,16 +272,135 @@ for (const failure of [
       });
     const result = await runPrClassificationWorkflow(f.options);
     assert.equal(result.outcome, failure === "input-scan" ? "refused" : "unavailable");
-    assert.equal(requests, ["provider-http", "transport"].includes(failure) ? 2 : 1);
+    assert.equal(
+      requests,
+      ["provider-http", "transport"].includes(failure) ? 3 : failure === "attempt-guard" ? 2 : 1,
+    );
     assert.deepEqual(f.writes, []);
     const events = readAllSpooledActionEvents(f.root);
     const receipt = events.filter((event) => event.attributes?.status_kind === failure);
-    assert.equal(receipt.length, 1);
-    assert.equal(receipt[0].attributes.input_tokens, 100);
-    assert.equal(receipt[0].attributes.output_tokens, 20);
+    assert.equal(receipt.length, ["provider-http", "transport"].includes(failure) ? 2 : 1);
+    const paid = receipt.find((event) => event.attributes.input_tokens === 100);
+    assert.ok(paid);
+    assert.equal(paid.attributes.output_tokens, 20);
     assert.doesNotMatch(
       JSON.stringify(events),
       /private-source-error|private-transport-error|tool-secret-marker|source-context/,
     );
+  });
+}
+
+test("description edit after inference retries once from fresh source and retains both usages", async (t) => {
+  const f = fixture(t);
+  const infer = f.options.infer!;
+  let calls = 0;
+  const bodies: string[] = [];
+  f.options.infer = async (options) => {
+    bodies.push(options.packet.body);
+    const result = await infer(options);
+    if (++calls === 1) f.live.body += " edited";
+    return result;
+  };
+  assert.equal((await runPrClassificationWorkflow(f.options)).outcome, "published");
+  assert.deepEqual(bodies, ["Private fixture prose", "Private fixture prose edited"]);
+  const events = readAllSpooledActionEvents(f.root);
+  assert.equal(events.filter((e) => e.attributes.input_tokens === 100).length, 2);
+  assert.equal(events.filter((e) => e.attributes.status_kind === "snapshot-drift").length, 1);
+  assert.equal(f.writes.filter((s) => s.startsWith("issue edit")).length, 1);
+});
+
+test("repeated drift stops after exactly two attempts", async (t) => {
+  const f = fixture(t);
+  const infer = f.options.infer!;
+  f.options.infer = async (options) => {
+    const result = await infer(options);
+    f.live.body += " edited";
+    return result;
+  };
+  await assert.rejects(runPrClassificationWorkflow(f.options), /snapshot-drift/);
+  assert.equal(f.calls(), 2);
+  assert.deepEqual(f.writes, []);
+});
+
+test("priority arriving before retry avoids second inference", async (t) => {
+  const f = fixture(t);
+  const infer = f.options.infer!;
+  f.options.infer = async (options) => {
+    const result = await infer(options);
+    f.live.body += " edited";
+    return result;
+  };
+  f.options.waitBeforeRetry = async () => {
+    f.live.labels.push("P2");
+  };
+  assert.equal((await runPrClassificationWorkflow(f.options)).outcome, "already_classified");
+  assert.equal(f.calls(), 1);
+  assert.deepEqual(f.writes, []);
+});
+
+for (const failure of ["source-limit", "receipt-unavailable"] as const) {
+  test(failure + " is recorded before inference and never retried", async (t) => {
+    const f = fixture(t);
+    let reads = 0;
+    f.options.readSource = () => {
+      reads++;
+      throw new PrClassificationError(failure);
+    };
+    await assert.rejects(runPrClassificationWorkflow(f.options), new RegExp(failure));
+    assert.equal(reads, 1);
+    assert.equal(f.calls(), 0);
+    const receipts = readAllSpooledActionEvents(f.root);
+    assert.equal(receipts.filter((e) => e.attributes.status_kind === failure).length, 1);
+  });
+}
+
+test("uncertain mutation is never replayed", async (t) => {
+  const f = fixture(t);
+  let writes = 0;
+  f.options.gh!.ghObservedMutationCommand = (mutation) =>
+    getMutationReceiptRunner()!({
+      identity: mutation.identity,
+      idempotencyIdentity: mutation.identity,
+      operation() {
+        writes++;
+        throw new PrClassificationError("source-drift", true);
+      },
+    });
+  await assert.rejects(runPrClassificationWorkflow(f.options), /source-drift/);
+  assert.equal(writes, 1);
+  assert.equal(f.calls(), 1);
+});
+
+for (const status of [401, 403, 429, 500, 503]) {
+  test("provider HTTP " + status + " retries only rate-limit/server failures once", async (t) => {
+    useFakeScanner(t);
+    const f = fixture(t);
+    let calls = 0;
+    f.options.infer = (options) =>
+      classifyPullRequest({
+        ...options,
+        cwd: process.cwd(),
+        fetch: async () => {
+          calls++;
+          return new Response(null, { status });
+        },
+      });
+    assert.equal((await runPrClassificationWorkflow(f.options)).outcome, "unavailable");
+    assert.equal(calls, status === 429 || status >= 500 ? 2 : 1);
+    assert.deepEqual(f.writes, []);
+  });
+}
+
+for (const outcome of ["refused", "invalid"] as const) {
+  test(outcome + " is never retried", async (t) => {
+    const f = fixture(t);
+    let calls = 0;
+    f.options.infer = async () => {
+      calls++;
+      return { outcome, classification: null, usage: null };
+    };
+    assert.equal((await runPrClassificationWorkflow(f.options)).outcome, outcome);
+    assert.equal(calls, 1);
+    assert.deepEqual(f.writes, []);
   });
 }

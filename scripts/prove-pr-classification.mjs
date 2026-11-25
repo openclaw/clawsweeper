@@ -20,6 +20,8 @@ const preloadPath = join(scratch, "preload.mjs");
 const output = resolve(process.argv[2] || ".artifacts/pr-classification-proof.json");
 let calls = 0;
 let mode = "classified";
+let largeDiff;
+let scenarioStart = 0;
 const traces = [];
 const source = () => ({
   number: 42,
@@ -43,11 +45,11 @@ writeFileSync(
     JSON.stringify(statePath) +
     '; const state = JSON.parse(fs.readFileSync(path, "utf8")); const raw = process.argv.slice(2).filter((arg, index, args) => arg !== "--method" && args[index - 1] !== "--method"); const scope = raw.indexOf("--repo"); if (scope >= 0) assert.equal(raw[scope + 1], "openclaw/openclaw"); const args = raw.filter((_, i) => scope < 0 || (i !== scope && i !== scope + 1));\n' +
     'if (args[0] === "api" && args[1] === "repos/openclaw/openclaw/pulls/42") console.log(JSON.stringify(state));\n' +
-    'else if (args[0] === "api" && args[1].startsWith("repos/openclaw/openclaw/pulls/42/files?")) console.log(JSON.stringify([{filename:"src/start.ts",status:"modified",additions:1,deletions:1,patch:"@@ -1 +1 @@\\n-crash();\\n+start();"}]));\n' +
+    'else if (args[0] === "api" && args[1].startsWith("repos/openclaw/openclaw/pulls/42/files?")) { const page = Number(args[1].match(/page=(\\d+)$/)[1]); state.filePages = [...(state.filePages ?? []), page]; fs.writeFileSync(path, JSON.stringify(state)); const first = {filename:"src/start.ts",status:"modified",additions:1,deletions:1,patch:"@@ -1 +1 @@\\n-crash();\\n+start();"}; const all = [first, ...Array.from({ length: state.changed_files - 1 }, (_, i) => ({ filename: "src/generated/file" + i + ".ts", status: "modified", additions: 60, deletions: 0, patch: "@@ -0,0 +1,60 @@\\n" + "+export const value = \\"generated\\";\\n".repeat(60) }))]; console.log(JSON.stringify(all.slice((page - 1) * 100, page * 100))); }\n' +
     'else if (args[0] === "api" && args[1].includes("/git/trees/")) console.log(JSON.stringify({truncated:false,tree:[{path:"src",type:"tree",mode:"040000",sha:"d".repeat(40)},{path:"start.ts",type:"blob",mode:"100644",sha:"e".repeat(40)}]}));\n' +
     'else if (args[0] === "api" && args[1].startsWith("repos/openclaw/openclaw/contents/src/start.ts?")) console.log(JSON.stringify({type:"file",encoding:"base64",size:9,content:Buffer.from("start();\\n").toString("base64")}));\n' +
     'else if (args[0] === "api" && args[1].startsWith("repos/openclaw/openclaw/labels?")) console.log("[[]]");\n' +
-    'else { assert.ok(scope >= 0); state.writes.push(args); if (args[0] === "issue" && args[1] === "edit") { for (let i=0;i<args.length;i++) if (args[i] === "--add-label") for (const name of args[++i].split(",")) state.labels.push({ name }); state.updated_at = "2026-11-23T00:00:01Z"; } else assert.equal(args[0], "label"); fs.writeFileSync(path, JSON.stringify(state)); }\n',
+    'else { assert.ok(scope >= 0); state.writes.push(args); if (state.failMutation) { fs.writeFileSync(path, JSON.stringify(state)); process.stderr.write("private-mutation-detail"); process.exit(1); } if (args[0] === "issue" && args[1] === "edit") { for (let i=0;i<args.length;i++) if (args[i] === "--add-label") for (const name of args[++i].split(",")) state.labels.push({ name }); state.updated_at = "2026-11-23T00:00:01Z"; } else assert.equal(args[0], "label"); fs.writeFileSync(path, JSON.stringify(state)); }\n',
 );
 const server = createServer((request, response) => {
   let body = "";
@@ -65,7 +67,19 @@ const server = createServer((request, response) => {
       assert.equal(payload.max_output_tokens, 1536);
       const packet = JSON.parse(payload.input[0].content);
       assert.ok(packet.diff.includes("crash();"));
-      assert.equal(packet.headSha, "a".repeat(40));
+      assert.ok(Buffer.byteLength(payload.input[0].content) <= 180_000);
+      if (mode === "large-diff") {
+        const diff = JSON.parse(packet.diff);
+        assert.equal(diff.truncated, true);
+        assert.equal(diff.changed_files, 123);
+        assert.ok(diff.included_files < 123 && diff.files.at(-1).patch_truncated);
+        largeDiff = {
+          changed: diff.changed_files,
+          included: diff.included_files,
+          packetBytes: Buffer.byteLength(payload.input[0].content),
+        };
+      }
+      assert.equal(packet.headSha, readState().head.sha);
       if (payload.tool_choice === "required") {
         if (mode === "attempt-guard") {
           const state = readState();
@@ -93,16 +107,21 @@ const server = createServer((request, response) => {
         );
         return;
       }
-      if (mode === "provider-http") {
+      if (mode === "provider-http" || (mode === "provider-once" && calls - scenarioStart === 2)) {
         response.writeHead(429);
         response.end();
         return;
       }
       assert.equal(payload.input.at(-1).type, "function_call_output");
       assert.ok(payload.input.at(-1).output.includes("start();"));
-      if (mode === "drift") {
+      if (
+        mode === "drift" ||
+        (["edit-once", "priority-before-retry"].includes(mode) &&
+          !readState().body.endsWith(" edited"))
+      ) {
         const state = readState();
-        state.head.sha = "b".repeat(40);
+        state.body += " edited";
+        if (mode === "priority-before-retry") state.labels.push({ name: "P2" });
         saveState(state);
       }
       response.setHeader("content-type", "application/json");
@@ -174,6 +193,7 @@ async function run(name) {
     GITHUB_SHA: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
   });
   const before = calls;
+  scenarioStart = calls;
   const previousEvents = new Set(
     readAllSpooledActionEvents(root).map((event) => JSON.stringify(event)),
   );
@@ -181,13 +201,7 @@ async function run(name) {
   const result = await new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      [
-        "--import",
-        pathToFileURL(preloadPath).href,
-        "--input-type=module",
-        "--eval",
-        'import { prClassificationWorkflowMain } from "./dist/pr-classification-workflow.js"; await prClassificationWorkflowMain();',
-      ],
+      ["--import", pathToFileURL(preloadPath).href, "dist/pr-classification-workflow.js"],
       { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] },
     );
     let stdout = "",
@@ -205,10 +219,14 @@ async function run(name) {
     (event) => !previousEvents.has(JSON.stringify(event)),
   );
   if (["provider-http", "attempt-guard"].includes(name)) {
-    const receipt = receipts.filter((event) => event.attributes?.status_kind === name);
-    assert.equal(receipt.length, 1);
-    assert.equal(receipt[0].attributes.input_tokens, 250);
-    assert.equal(receipt[0].attributes.output_tokens, 30);
+    const paid = receipts.filter((event) => event.attributes?.input_tokens === 250);
+    assert.equal(paid.length, name === "provider-http" ? 2 : 1);
+    assert.ok(paid.every((event) => event.attributes.output_tokens === 30));
+  }
+  if (name === "large-diff") {
+    assert.ok(calls - before >= 2);
+    assert.ok(!receipts.some((e) => e.attributes.status_kind === "source-limit"));
+    assert.deepEqual(readState().filePages, [1]);
   }
   traces.push({
     scenario: name,
@@ -216,10 +234,19 @@ async function run(name) {
     modelCalls: calls - before,
     durationMs: Date.now() - started,
     result: result.stdout.trim(),
+    attempts: [
+      ...new Set(
+        receipts
+          .filter((e) => e.attributes.work_kind === "pr-classification")
+          .map((e) => e.attributes.attempt),
+      ),
+    ].sort(),
+    diagnostics: receipts.filter((e) => e.attributes.status_kind).map((e) => e.attributes),
     accounting: receipts
       .filter((event) => event.attributes?.input_tokens)
       .map((event) => event.attributes),
     writes: readState().writes,
+    ...(name === "large-diff" ? { largeDiff, filePages: readState().filePages } : {}),
   });
   return result;
 }
@@ -240,15 +267,43 @@ try {
     "closed",
     "provider-http",
     "attempt-guard",
+    "edit-once",
+    "provider-once",
+    "priority-before-retry",
+    "large-diff",
+    "uncertain-mutation",
   ]) {
     mode = scenario;
     const state = source();
     if (scenario === "locked") state.locked = true;
     if (scenario === "closed") state.state = "closed";
+    if (scenario === "large-diff") state.changed_files = 123;
+    if (scenario === "uncertain-mutation") state.failMutation = true;
     saveState(state);
     const result = await run(scenario);
-    assert.equal(result.code, scenario === "drift" ? 1 : 0, result.stderr);
-    assert.equal(readState().writes.length, 0);
+    assert.equal(
+      result.code,
+      ["drift", "provider-http", "uncertain-mutation"].includes(scenario) ? 1 : 0,
+      result.stderr,
+    );
+    if (["edit-once", "provider-once", "attempt-guard"].includes(scenario)) {
+      assert.equal(readState().writes.filter((args) => args[0] === "issue").length, 1);
+      assert.deepEqual(traces.at(-1).attempts, [1, 2]);
+    } else if (scenario === "large-diff") {
+      assert.equal(readState().writes.filter((args) => args[0] === "issue").length, 1);
+      assert.ok(readState().labels.some((label) => label.name === "P1"));
+      assert.deepEqual(traces.at(-1).attempts, [1]);
+    } else if (scenario === "uncertain-mutation") {
+      assert.equal(readState().writes.length, 1);
+      assert.equal(traces.at(-1).modelCalls, 2);
+      assert.deepEqual(traces.at(-1).attempts, [1]);
+      assert.doesNotMatch(result.stderr, /private-mutation-detail/);
+    } else assert.equal(readState().writes.length, 0);
+    if (scenario === "drift") {
+      assert.equal(traces.at(-1).modelCalls, 4);
+      assert.deepEqual(traces.at(-1).attempts, [1, 2]);
+    }
+    if (scenario === "priority-before-retry") assert.equal(traces.at(-1).modelCalls, 2);
     if (["closed", "locked"].includes(scenario)) assert.equal(traces.at(-1).modelCalls, 0);
   }
   mkdirSync(resolve(output, ".."), { recursive: true });

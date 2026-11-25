@@ -47,7 +47,7 @@ function fixture() {
     }
     if (path.includes("/contents/")) return structuredClone(content);
     if (path.includes("/files?")) {
-      assert.match(path, /per_page=100&page=[12]$/);
+      assert.match(path, /per_page=100&page=\d+$/);
       const page = Number(path.match(/page=(\d+)$/)![1]);
       return structuredClone(pages[page - 1]);
     }
@@ -78,7 +78,12 @@ test("source includes complete changed-file diff and pinned read-only tools", ()
   const source = f.source();
   assert.equal(source.headSha, headSha);
   assert.equal(source.baseSha, baseSha);
-  assert.deepEqual(JSON.parse(source.diff), [f.file]);
+  assert.deepEqual(JSON.parse(source.diff), {
+    changed_files: 1,
+    included_files: 1,
+    truncated: false,
+    files: [f.file],
+  });
   assert.equal(f.calls.length, 3);
   const head = JSON.parse(
     source.readTool("read_file", { path: f.file.filename, revision: "head", start_line: 2 }),
@@ -155,30 +160,93 @@ test("read and literal search enforce line and JSON byte limits with explicit no
 test("missing patches are explicit, never silently dropped", () => {
   const f = fixture();
   Reflect.deleteProperty(f.file, "patch");
-  const diff = JSON.parse(f.source().diff);
+  const diff = JSON.parse(f.source().diff).files;
   assert.equal(diff[0].patch, null);
   assert.match(diff[0].patch_note, /binary or omitted/);
 });
 
-test("explicit files pagination proves exactly 100 files and rejects additional pages", () => {
-  const f = fixture();
-  f.metadata.changed_files = 100;
-  f.pages[0] = Array.from({ length: 100 }, (_, i) => ({ ...f.file, filename: `file${i}` }));
-  assert.equal(JSON.parse(f.source().diff).length, 100);
-  assert.ok(f.calls.some((call) => call[3]?.endsWith("per_page=100&page=2")));
-  f.pages[1] = [{ ...f.file, filename: "extra" }];
-  assert.throws(f.source, /limit/);
-  f.metadata.changed_files = 101;
-  assert.throws(f.source, /changed_files/);
+const fileNamed = (f: ReturnType<typeof fixture>, i: number, patch = f.file.patch) => ({
+  ...f.file,
+  filename: `file${i}`,
+  patch,
 });
 
-test("rejects count mismatches, duplicate files, invalid paths and oversized UTF-8 diff", () => {
+test("files beyond 100 are paginated without a file-count cap", () => {
+  const f = fixture();
+  f.metadata.changed_files = 123;
+  f.pages[0] = Array.from({ length: 100 }, (_, i) => fileNamed(f, i));
+  f.pages[1] = Array.from({ length: 23 }, (_, i) => fileNamed(f, 100 + i));
+  const diff = JSON.parse(f.source().diff);
+  assert.equal(diff.files.length, 123);
+  assert.equal(diff.truncated, false);
+  f.pages[1] = [...(f.pages[1] as unknown[]), fileNamed(f, 999)];
+  assert.throws(f.source, /files page/);
+});
+
+test("oversized diff is truncated to the byte budget instead of failing", () => {
+  const f = fixture();
+  f.metadata.changed_files = 123;
+  // Quotes and newlines expand when embedded in the packet; budget counts encoded bytes.
+  const patch = '@@ -1 +1 @@\n-"old"\n+"new"\n'.repeat(120);
+  f.pages[0] = Array.from({ length: 100 }, (_, i) => fileNamed(f, i, patch));
+  f.pages[1] = Array.from({ length: 23 }, (_, i) => fileNamed(f, 100 + i, patch));
+  const source = f.source();
+  const encoded = Buffer.byteLength(JSON.stringify(source.diff)) - 2;
+  assert.ok(encoded <= 160_000 && encoded > 159_000, String(encoded));
+  const diff = JSON.parse(source.diff);
+  assert.equal(diff.truncated, true);
+  assert.equal(diff.changed_files, 123);
+  assert.equal(diff.included_files, diff.files.length);
+  assert.ok(diff.files.length > 10 && diff.files.length < 100);
+  assert.match(diff.note, /truncated/);
+  const last = diff.files.at(-1);
+  assert.equal(last.patch_truncated, true);
+  assert.ok(patch.startsWith(last.patch) && last.patch.length < patch.length);
+  assert.ok(diff.files.slice(0, -1).every((file: { patch: string }) => file.patch === patch));
+  // Stops listing once the budget is spent, and source tools stay limited to listed files.
+  assert.equal(
+    f.calls.some((call) => call[3]?.endsWith("page=2")),
+    false,
+  );
+  assert.throws(
+    () => source.readTool("read_file", { path: "file99", revision: "head" }),
+    /not a changed file/,
+  );
+  assert.throws(
+    () => source.readTool("read_file", { path: last.filename, revision: "head" }),
+    /absent from pinned tree/,
+  );
+});
+
+test("smaller packet budgets shrink the diff; an unusable budget is a source limit", () => {
+  const f = fixture();
+  f.file.patch = "é".repeat(80_000);
+  const read = (budget: number) =>
+    readPrClassificationSource(
+      "openclaw/clawsweeper",
+      42,
+      headSha,
+      (args) => {
+        const path = args[3]!;
+        if (path.includes("/files?")) return structuredClone(f.pages[0]);
+        return structuredClone(f.metadata);
+      },
+      budget,
+    );
+  const source = read(20_000);
+  assert.ok(Buffer.byteLength(JSON.stringify(source.diff)) - 2 <= 20_000);
+  const [file] = JSON.parse(source.diff).files;
+  assert.equal(file.patch_truncated, true);
+  assert.ok(/^é+$/.test(file.patch));
+  assert.throws(() => read(500), /source-limit/);
+});
+
+test("rejects count mismatches, duplicate files and invalid paths", () => {
   for (const change of [
     (f: ReturnType<typeof fixture>) => (f.metadata.changed_files = 2),
     (f: ReturnType<typeof fixture>) => (f.pages[0] = [f.file, f.file]),
     (f: ReturnType<typeof fixture>) => (f.file.filename = "../escape"),
     (f: ReturnType<typeof fixture>) => (f.file.filename = "a\\b"),
-    (f: ReturnType<typeof fixture>) => (f.file.patch = "é".repeat(80_000)),
   ]) {
     const f = fixture();
     change(f);

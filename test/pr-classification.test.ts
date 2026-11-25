@@ -65,7 +65,7 @@ test("packet requires pinned source and includes diff in digest with finite byte
   );
   assert.throws(
     () => prClassificationRequest({ ...packet, body: "x".repeat(180000) }),
-    /byte budget/,
+    /source-limit/,
   );
   for (const bad of [{ diff: "" }, { headSha: "branch" }, { baseSha: "" }, { number: 0 }])
     assert.throws(() => prClassificationRequest({ ...packet, ...bad }), /Invalid/);
