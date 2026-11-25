@@ -198,10 +198,7 @@ test("the compact v1 fixture matches producer state and identity without snapsho
     ]);
   }
   // Review markers carry typed outcomes without requesting repair actions.
-  assert.match(
-    reviewAutomationMarkersFromReport(reports.ready),
-    /clawsweeper-verdict:needs-human [^>]* hold=not_opted_in findings=0 -->/,
-  );
+  assert.match(reviewAutomationMarkersFromReport(reports.ready), /clawsweeper-verdict:pass /);
   assert.match(
     reviewAutomationMarkersFromReport(reports["awaiting-maintainer"]),
     /clawsweeper-verdict:needs-human [^>]* hold=maintainer_decision findings=0 -->/,

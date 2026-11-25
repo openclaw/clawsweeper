@@ -7,11 +7,10 @@ import type {
   PullRequestReviewReadiness,
 } from "./clawsweeper-types.js";
 import { parseIsoMs } from "./iso-time.js";
-import { frontMatterStringArray, frontMatterValue } from "./report-front-matter.js";
+import { frontMatterValue } from "./report-front-matter.js";
 import { pullHeadShaFromReport } from "./clawsweeper-record-metadata.js";
 import { pullRequestReviewReadinessFromReport } from "./clawsweeper-report-comment-helpers.js";
 import { realBehaviorProofBlocksMerge } from "./clawsweeper-orchestration-foundation.js";
-import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./repair/exact-review-guard-labels.js";
 
 function canonicalReviewTimestamp(value: string | undefined): string | null {
   const parsed = parseIsoMs(value);
@@ -162,11 +161,7 @@ export function reviewAutomationMarkersFromReport(
   }
   if (decision === "keep_open") {
     if (reviewReadiness.state === "ready") {
-      return withReviewState(
-        repairLoopPassModeFromReport(markdown)
-          ? `<!-- clawsweeper-verdict:pass ${baseAttrs} -->`
-          : needsHumanVerdict("not_opted_in"),
-      );
+      return withReviewState(`<!-- clawsweeper-verdict:pass ${baseAttrs} -->`);
     }
     if (reviewReadiness.state === "needs-changes") {
       return withReviewState(`<!-- clawsweeper-verdict:needs-changes ${baseAttrs} -->`);
@@ -183,16 +178,4 @@ export function reviewAutomationMarkersFromReport(
     );
   }
   return withReviewState(needsHumanVerdict("undecided"));
-}
-
-/** Read historical opt-in labels only to preserve existing report presentation. */
-export function repairLoopPassModeFromReport(markdown: string): "" | "autofix" | "automerge" {
-  const labels = frontMatterStringArray(markdown, "labels");
-  if (
-    (!labels.includes(AUTOMERGE_LABEL) && !labels.includes(AUTOFIX_LABEL)) ||
-    pullRequestReviewReadinessFromReport(markdown).state !== "ready"
-  ) {
-    return "";
-  }
-  return labels.includes(AUTOFIX_LABEL) ? "autofix" : "automerge";
 }
