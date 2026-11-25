@@ -1,4 +1,7 @@
-import { PrClassificationError } from "./pr-classification-error.js";
+import {
+  PrClassificationError,
+  PrClassificationToolInputError,
+} from "./pr-classification-error.js";
 import { ghJson, githubLimitedPagePath } from "./repair/github-cli.js";
 import { requirePositiveInteger, requireRecord } from "./value-coerce.js";
 
@@ -208,6 +211,9 @@ export function readPrClassificationSource(
     assertCurrent,
     readTool(name, args) {
       if (name !== "read_file" && name !== "search_file") throw new Error("Unknown source tool");
+      const refuse: (message: string) => never = (message) => {
+        throw new PrClassificationToolInputError(message);
+      };
       const input = record(args);
       if (
         ![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
@@ -215,32 +221,47 @@ export function readPrClassificationSource(
         !Object.hasOwn(input, "revision") ||
         (name === "search_file" && !Object.hasOwn(input, "query"))
       ) {
-        throw new Error("Source tool requires own JSON arguments");
+        refuse("Source tool requires own JSON arguments");
       }
       const allowed =
         name === "read_file"
           ? ["path", "revision", "start_line", "end_line"]
           : ["path", "revision", "query"];
       if (Reflect.ownKeys(input).some((key) => typeof key !== "string" || !allowed.includes(key))) {
-        throw new Error("Unknown source tool argument");
+        refuse("Unknown source tool argument");
       }
-      const path = sourcePath(input.path);
+      let path = "";
+      try {
+        path = sourcePath(input.path);
+      } catch {
+        refuse("Invalid source path");
+      }
       const revision = input.revision;
-      if (revision !== "base" && revision !== "head") throw new Error("Invalid source revision");
+      if (revision !== "base" && revision !== "head") refuse("Invalid source revision");
       if (!(revision === "base" ? basePaths : headPaths).has(path)) {
-        throw new Error("Source path is not a changed file for this revision");
+        refuse(
+          "Source path is not a changed file for this revision. Only files listed in the diff are readable; added files have no base and deleted files have no head.",
+        );
       }
-      const start = name === "read_file" ? positiveInteger(input.start_line ?? 1) : 1;
-      const end = name === "read_file" ? positiveInteger(input.end_line ?? start + 119) : 1;
+      let start = 1;
+      let end = 1;
+      if (name === "read_file") {
+        try {
+          start = positiveInteger(input.start_line ?? 1);
+          end = positiveInteger(input.end_line ?? start + 119);
+        } catch {
+          refuse("Source line numbers must be positive integers");
+        }
+      }
       if (name === "read_file" && (end < start || end - start + 1 > 120)) {
-        throw new Error("Source read must cover at most 120 lines");
+        refuse("Source read must cover at most 120 lines");
       }
       const query = input.query;
       if (
         name === "search_file" &&
         (typeof query !== "string" || query.length === 0 || query.length > 200)
       ) {
-        throw new Error("Search query must be a nonempty literal of at most 200 characters");
+        refuse("Search query must be a nonempty literal of at most 200 characters");
       }
       const sourceRepository =
         revision === "head" ? initial.headRepository : initial.baseRepository;
@@ -260,14 +281,14 @@ export function readPrClassificationSource(
           trees.set(treePath, entries);
         }
         const entry = entries.find((candidate) => candidate.path === segment);
-        if (!entry) throw new Error("Source path is absent from pinned tree");
+        if (!entry) refuse("Source path is absent from pinned tree");
         const isFile = index === segments.length - 1;
         if (
           isFile
             ? entry.type !== "blob" || !["100644", "100755"].includes(String(entry.mode))
             : entry.type !== "tree" || entry.mode !== "040000"
         ) {
-          throw new Error("Unsupported source tree mode (symlink or non-file)");
+          refuse("Unsupported source tree mode (symlink or non-file)");
         }
         treeSha = sha(entry.sha);
       }
@@ -288,7 +309,7 @@ export function readPrClassificationSource(
         file.size < 0 ||
         file.size > 256 * 1024
       ) {
-        throw new Error("Unsupported source file (non-file, symlink, encoding, or size)");
+        refuse("Unsupported source file (non-file, symlink, encoding, or size)");
       }
       const encoded = file.content.replace(/[\r\n]/g, "");
       if (
@@ -302,8 +323,13 @@ export function readPrClassificationSource(
       if (bytes.toString("base64") !== encoded || bytes.length !== file.size) {
         throw new Error("Invalid source base64 or size mismatch");
       }
-      if (bytes.includes(0)) throw new Error("Binary source file contains NUL");
-      const lines = new TextDecoder("utf-8", { fatal: true }).decode(bytes).split("\n");
+      if (bytes.includes(0)) refuse("Binary source file contains NUL");
+      let lines: string[] = [];
+      try {
+        lines = new TextDecoder("utf-8", { fatal: true }).decode(bytes).split("\n");
+      } catch {
+        refuse("Source file is not valid UTF-8");
+      }
       const selected: string[] = [];
       let truncated = false;
       if (name === "read_file") {

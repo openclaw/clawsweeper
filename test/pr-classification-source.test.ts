@@ -210,7 +210,8 @@ test("oversized diff is truncated to the byte budget instead of failing", () => 
   );
   assert.throws(
     () => source.readTool("read_file", { path: "file99", revision: "head" }),
-    /not a changed file/,
+    (error: Error) =>
+      error.name === "PrClassificationToolInputError" && /not a changed file/.test(error.message),
   );
   assert.throws(
     () => source.readTool("read_file", { path: last.filename, revision: "head" }),

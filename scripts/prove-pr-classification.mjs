@@ -21,6 +21,7 @@ const output = resolve(process.argv[2] || ".artifacts/pr-classification-proof.js
 let calls = 0;
 let mode = "classified";
 let largeDiff;
+let refusedToolOutput;
 let scenarioStart = 0;
 const traces = [];
 const source = () => ({
@@ -86,6 +87,13 @@ const server = createServer((request, response) => {
           state.head.sha = "b".repeat(40);
           saveState(state);
         }
+        if (mode === "label-churn") {
+          // Other bots label and comment a fresh PR while classification runs.
+          const state = readState();
+          state.labels.push({ name: "size: S" }, { name: "clawsweeper:intake:bug" });
+          state.updated_at = "2026-11-23T00:00:09Z";
+          saveState(state);
+        }
         response.setHeader("content-type", "application/json");
         response.end(
           JSON.stringify({
@@ -96,7 +104,7 @@ const server = createServer((request, response) => {
                 call_id: "context_1",
                 name: "read_file",
                 arguments: JSON.stringify({
-                  path: "src/start.ts",
+                  path: mode === "tool-refused" ? "src/caller.ts" : "src/start.ts",
                   revision: "head",
                   start_line: 1,
                 }),
@@ -113,7 +121,11 @@ const server = createServer((request, response) => {
         return;
       }
       assert.equal(payload.input.at(-1).type, "function_call_output");
-      assert.ok(payload.input.at(-1).output.includes("start();"));
+      if (mode === "tool-refused") {
+        const output = JSON.parse(payload.input.at(-1).output);
+        assert.match(output.error, /not a changed file/);
+        refusedToolOutput = output;
+      } else assert.ok(payload.input.at(-1).output.includes("start();"));
       if (
         mode === "drift" ||
         (["edit-once", "priority-before-retry"].includes(mode) &&
@@ -247,6 +259,13 @@ async function run(name) {
       .map((event) => event.attributes),
     writes: readState().writes,
     ...(name === "large-diff" ? { largeDiff, filePages: readState().filePages } : {}),
+    ...(name === "tool-refused" ? { refusedToolOutput } : {}),
+    ...(name === "label-churn"
+      ? {
+          liveLabels: readState().labels.map((label) => label.name),
+          updatedAt: readState().updated_at,
+        }
+      : {}),
   });
   return result;
 }
@@ -272,6 +291,8 @@ try {
     "priority-before-retry",
     "large-diff",
     "uncertain-mutation",
+    "tool-refused",
+    "label-churn",
   ]) {
     mode = scenario;
     const state = source();
@@ -289,6 +310,11 @@ try {
     if (["edit-once", "provider-once", "attempt-guard"].includes(scenario)) {
       assert.equal(readState().writes.filter((args) => args[0] === "issue").length, 1);
       assert.deepEqual(traces.at(-1).attempts, [1, 2]);
+    } else if (["tool-refused", "label-churn"].includes(scenario)) {
+      assert.equal(readState().writes.filter((args) => args[0] === "issue").length, 1);
+      assert.ok(readState().labels.some((label) => label.name === "P1"));
+      assert.equal(traces.at(-1).modelCalls, 2);
+      assert.deepEqual(traces.at(-1).attempts, [1]);
     } else if (scenario === "large-diff") {
       assert.equal(readState().writes.filter((args) => args[0] === "issue").length, 1);
       assert.ok(readState().labels.some((label) => label.name === "P1"));
