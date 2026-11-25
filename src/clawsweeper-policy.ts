@@ -888,7 +888,13 @@ export const PROVENANCE_ENTRY_SCHEMA_KEYS = new Set([
   "verdict",
 ]);
 export const TESTING_REVIEW_SCHEMA_KEYS = new Set(["proofPath", "lowValueTests", "missingE2e"]);
-export const LOW_VALUE_TEST_SCHEMA_KEYS = new Set(["file", "reason", "survivor"]);
+export const LOW_VALUE_TEST_SCHEMA_KEYS = new Set([
+  "file",
+  "reason",
+  "lineStart",
+  "lineEnd",
+  "behaviors",
+]);
 export const FEATURE_SHOWCASE_SCHEMA_KEYS = new Set(["status", "reason"]);
 export const ROOT_CAUSE_CLUSTER_SCHEMA_KEYS = new Set([
   "confidence",

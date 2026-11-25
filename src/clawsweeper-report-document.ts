@@ -256,6 +256,21 @@ function renderTestingReviewReportSection(decision: Decision): string {
               `- File: ${test.file}`.trimEnd(),
               `  - Reason: ${test.reason}`.trimEnd(),
             ];
+            if ("behaviors" in test) {
+              lines[0] = `- File: ${test.file}:${test.lineStart}-${test.lineEnd}`;
+              for (const { behavior, fault, survivor } of test.behaviors) {
+                lines.push(
+                  `  - Behavior: ${behavior}`,
+                  `    - Fault: ${fault}`,
+                  ...survivor.inputs.map(
+                    (input) =>
+                      `    - Surviving input: ${input.file}:${input.lineStart}-${input.lineEnd}`,
+                  ),
+                  `    - Surviving assertion: ${survivor.file}:${survivor.line} — ${survivor.failure}`,
+                );
+              }
+              return lines.join("\n");
+            }
             const { survivor } = test;
             if (survivor && "check" in survivor) {
               lines.push(

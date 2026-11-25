@@ -30,6 +30,7 @@ import { buildPullRequestReviewEvidence } from "./pr-review-evidence.js";
 import { reviewHistoryCapability } from "./pr-review-history.js";
 import { PROVENANCE_NOT_RUN } from "./pr-review-provenance.js";
 import { reviewPromptContext } from "./clawsweeper-prompt-context.js";
+import { verifyTestCutSources } from "./review-test-cuts.js";
 import { verifyLikelyOwnerHistory } from "./clawsweeper-regression-provenance.js";
 import type {
   Decision,
@@ -1045,6 +1046,11 @@ ${extra}
             `[review] ${new Date().toISOString()} decision-repair-turn #${options.item.number} ok`,
           );
         }
+        decision.testingReview.lowValueTests = verifyTestCutSources(
+          decision.testingReview.lowValueTests,
+          options.openclawDir,
+          nonBlankStringOrUndefined(asRecord(pull.head).sha),
+        );
         return {
           ...verifyLikelyOwnerHistory(decision, {
             checkoutDir: options.openclawDir,

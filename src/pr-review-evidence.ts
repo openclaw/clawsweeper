@@ -61,10 +61,28 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
-export { record as reviewRecord };
+export { record as reviewRecord, objectId as reviewObjectId };
 
 function objectId(value: unknown): string | null {
   return typeof value === "string" && OBJECT_ID.test(value) ? value : null;
+}
+
+export function safeReviewPath(value: unknown): string | null {
+  if (typeof value !== "string" || !value || value.length > 4096) return null;
+  if (value.startsWith("/") || /^[A-Za-z]:/.test(value) || value.includes("\\")) {
+    return null;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 32 || code === 127) return null;
+  }
+  const parts = value.split("/");
+  if (
+    parts.some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")
+  ) {
+    return null;
+  }
+  return value;
 }
 
 export interface ReviewGitReadOptions {

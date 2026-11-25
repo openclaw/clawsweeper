@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { devNull } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import { readReviewGit, reviewMergeBase } from "./pr-review-evidence.js";
+import { readReviewGit, reviewMergeBase, safeReviewPath } from "./pr-review-evidence.js";
 import { AgentInputScanError, MAX_SCAN_BYTES } from "./agent-input-scan.js";
 import {
   ReviewSourcePreparationError,
@@ -1330,22 +1330,4 @@ export function githubReviewBlobSizes({
     });
   }
   return sizes;
-}
-
-function safeReviewPath(value: unknown): string | null {
-  if (typeof value !== "string" || !value || value.length > 4096) return null;
-  if (value.startsWith("/") || /^[A-Za-z]:/.test(value) || value.includes("\\")) {
-    return null;
-  }
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code < 32 || code === 127) return null;
-  }
-  const parts = value.split("/");
-  if (
-    parts.some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")
-  ) {
-    return null;
-  }
-  return value;
 }
