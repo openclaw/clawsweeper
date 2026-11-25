@@ -172,12 +172,26 @@ async function runPrClassificationAttempt(
       };
       const request = prClassificationRequest(packet);
       digest = request.digest;
-      const identity = JSON.stringify({ ...snapshot, labels: [...snapshot.labels].sort() });
+      // Only what the packet or the labeling decision used. Size, area, intake and
+      // review labels and their updated_at bumps land within seconds of opening and
+      // caused repeated snapshot-drift failures (https://github.com/openclaw/openclaw/pull/205042).
+      const relevant = (value: IntakeSnapshot) =>
+        JSON.stringify({
+          ...value,
+          updatedAt: undefined,
+          labels: value.labels
+            .map((label) => label.toLowerCase())
+            .filter(
+              (label) =>
+                IMPACT_LABEL_NAMES.has(label) ||
+                PRIORITY_LABELS.some((priority) => priority.name.toLowerCase() === label),
+            )
+            .sort(),
+        });
+      const identity = relevant(snapshot);
       const assertCurrent = () => {
         source.assertCurrent();
-        const live = read();
-        if (JSON.stringify({ ...live, labels: [...live.labels].sort() }) !== identity)
-          throw new PrClassificationError("snapshot-drift", true);
+        if (relevant(read()) !== identity) throw new PrClassificationError("snapshot-drift", true);
       };
       let guardFailure: unknown;
       const result = await (options.infer ?? classifyPullRequest)({

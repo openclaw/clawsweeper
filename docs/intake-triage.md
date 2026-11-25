@@ -131,7 +131,10 @@ Missing binary patches are explicit. Only a title/body that leaves under 1 KB fo
 the diff is a hard source limit.
 The model must inspect source through at least one read-only tool before returning
 a classification. `read_file` reads 120 lines and `search_file` finds literal text
-in a changed file, at the pinned head or base revision. No PR code executes;
+in a changed file, at the pinned head or base revision. A call the source policy
+refuses (an unlisted path, a missing revision, a bad range, or an unsupported
+file) returns its fixed error to the model, which can correct the call or
+classify without it; fetch and integrity failures still abort. No PR code executes;
 there is no shell, arbitrary network tool, or unpinned file access.
 
 At most three sequential tool calls and four Responses requests share a 120-second
@@ -152,7 +155,9 @@ startup and scanner setup add overhead beyond inference. Aggregate usage include
 all model turns; the earlier metadata-only benchmark does not price this lane.
 
 Runs serialize per PR and reread metadata before paid inference and each label
-write. Base/head/label/timestamp drift aborts that attempt’s publication. This uses the existing
+write. Base/head/title/body/state drift, or a priority/impact label change, aborts that
+attempt’s publication. Other labels and `updated_at` bumps from bots labeling or
+commenting on a new PR are ignored. This uses the existing
 freshness guards, not a cross-writer transaction; concurrent human edits or full
 reviews can still invalidate a run. Distinct action-ledger inference intent,
 usage and mutation receipts exclude title/body/diff/tool/prompt/output text. An uncertain

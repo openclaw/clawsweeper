@@ -178,6 +178,33 @@ test("drift before paid intent prevents inference", async (t) => {
   assert.deepEqual(f.writes, []);
 });
 
+test("unrelated labels and updated_at bumps during inference do not drift", async (t) => {
+  const f = fixture(t);
+  const infer = f.options.infer!;
+  f.options.infer = async (options) => {
+    f.live.labels.push("size: S", "clawsweeper:intake:bug");
+    f.live.updatedAt = "2026-11-23T00:00:05Z";
+    return infer(options);
+  };
+  assert.equal((await runPrClassificationWorkflow(f.options)).outcome, "published");
+  assert.equal(f.calls(), 1);
+});
+
+test("an impact label arriving during inference still drifts", async (t) => {
+  const f = fixture(t);
+  const infer = f.options.infer!;
+  let arrived = false;
+  f.options.infer = async (options) => {
+    if (!arrived) f.live.labels.push("impact:security");
+    arrived = true;
+    return infer(options);
+  };
+  const result = await runPrClassificationWorkflow(f.options);
+  // The first attempt stops at its paid-intent guard; the retry keeps the human impact label.
+  assert.deepEqual(result.labels, ["P1"]);
+  assert.equal(f.calls(), 1);
+});
+
 test("drift after label definitions prevents item mutation", async (t) => {
   const f = fixture(t);
   f.afterDefinition(() => {

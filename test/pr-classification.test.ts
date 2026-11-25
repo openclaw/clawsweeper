@@ -6,6 +6,7 @@ import {
   prClassificationRequest,
   PR_CLASSIFICATION_MODEL,
 } from "../dist/pr-classification.js";
+import { PrClassificationToolInputError } from "../dist/pr-classification-error.js";
 import { CLASSIFICATION_RUBRIC } from "../dist/clawsweeper-policy.js";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 const packet = {
@@ -179,6 +180,29 @@ test("tool errors fail closed and retain spend", async (t) => {
   assert.equal(result.outcome, "unavailable");
   assert.equal(result.diagnostic, "source-tool");
   assert.deepEqual(result.usage, { inputTokens: 100, outputTokens: 20 });
+});
+test("a refused tool argument goes back to the model and classification continues", async (t) => {
+  useFakeScanner(t);
+  const sent: unknown[][] = [];
+  const result = await classifyPullRequest({
+    ...defaults(),
+    readTool() {
+      throw new PrClassificationToolInputError(
+        "Source path is not a changed file for this revision",
+      );
+    },
+    fetch: async (_url, init) => {
+      sent.push(JSON.parse(String(init?.body)).input);
+      return response(sent.length === 1 ? [tool] : [answer]);
+    },
+  });
+  assert.equal(result.outcome, "classified");
+  assert.deepEqual(result.usage, { inputTokens: 200, outputTokens: 40 });
+  assert.deepEqual(sent[1]!.at(-1), {
+    type: "function_call_output",
+    call_id: "call_1",
+    output: JSON.stringify({ error: "Source path is not a changed file for this revision" }),
+  });
 });
 test("oversized tool output is not sent", async (t) => {
   useFakeScanner(t);
