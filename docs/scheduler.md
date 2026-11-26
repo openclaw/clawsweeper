@@ -33,6 +33,11 @@ manifest with `failure.stage: agent_input_scan` and `retryable: false`, using
 `scanner_unavailable`, `scanner_failed`, `findings`, `deadline`, `staging_limit`,
 `incomplete_source`, `source_drift`, `unsafe_path`, and `unsupported_content`;
 `source_incompatible` remains a separate terminal source-preparation reason.
+A submodule pointer change is scanned through its raw diff and patch, which
+carry the pointed-to commit ID; there is no blob to read. Reviews never
+initialize submodules, so in a live checkout the submodule path must be absent
+or an empty directory, or the scan refuses with `unsupported_content`. Git LFS
+pointers and filter attributes still refuse.
 Operators can follow the [input-scan diagnostic inspection recipe](input-scan-diagnostics.md)
 from the failed workflow summary without reading raw scanner logs.
 The shared allowlist lives in `src/exact-review-failure-reason.ts`. Exit codes
