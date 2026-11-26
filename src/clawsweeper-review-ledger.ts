@@ -407,6 +407,21 @@ export function createReviewActionLedger({
     return event;
   }
 
+  function recordReviewActionLedgerUsage(
+    ledger: ReviewActionLedger,
+    item: Item,
+    usage: NonNullable<ReviewLedgerItem["usage"]> | null,
+    sourceRevision?: string,
+  ): void {
+    const state = ledger.items.get(actionLedgerItemKey(item));
+    if (state?.started && !state.terminal) {
+      state.usage = usage
+        ? { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens }
+        : null;
+      if (sourceRevision !== undefined) state.sourceRevision = sourceRevision;
+    }
+  }
+
   function finishReviewActionLedgerItem(options: {
     ledger: ReviewActionLedger;
     item: Item;
@@ -447,6 +462,7 @@ export function createReviewActionLedger({
       ? actionLedgerFileEvidence("review_record", options.reportPath)
       : null;
     const phaseSeq = nextReviewPhaseSeq(options.ledger);
+    const sourceRevision = state.sourceRevision ?? options.sourceRevision;
     const terminal = recordWorkflowPhaseEvent(root, {
       phase: ACTION_EVENT_TYPES.reviewItem,
       status: options.status,
@@ -472,7 +488,7 @@ export function createReviewActionLedger({
       },
       component: "review",
       subject: actionLedgerItemSubject(options.item, {
-        ...(options.sourceRevision ? { sourceRevision: options.sourceRevision } : {}),
+        ...(sourceRevision ? { sourceRevision } : {}),
         ...(reportPath ? { recordPath: reportPath } : {}),
       }),
       evidence: [...workflowRunEvidence(), ...(reportEvidence ? [reportEvidence] : [])],
@@ -482,6 +498,11 @@ export function createReviewActionLedger({
         review_mode: "propose",
         ...(options.findingCount === undefined ? {} : { finding_count: options.findingCount }),
         ...(options.completionReason ? { completion_reason: options.completionReason } : {}),
+        // Bind observed model counts to this existing operation/attempt, never a later file lookup.
+        ...(state.usage === undefined ? {} : { work_kind: "full-review" }),
+        ...(state.usage
+          ? { input_tokens: state.usage.input_tokens, output_tokens: state.usage.output_tokens }
+          : {}),
       },
       privacy: actionLedgerPrivacy(),
     });
@@ -627,6 +648,7 @@ export function createReviewActionLedger({
     finishReviewActionLedger,
     finishReviewActionLedgerItem,
     recordReviewLogPublication,
+    recordReviewActionLedgerUsage,
     reviewMutationRunner,
     startReviewActionLedger,
     startReviewActionLedgerItem,

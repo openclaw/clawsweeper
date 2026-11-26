@@ -185,6 +185,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     pullHeadShaFromContext,
     pullRequestHeadSha,
     recordReviewLogPublication,
+    recordReviewActionLedgerUsage,
     removePullRequestReviewTree,
     renderReviewCommentFromReport,
     reportFileName,
@@ -1408,6 +1409,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           context, proofScratchDir, undefined,
           reviewOutputMediaLimits(outputBudget, proofScratchDir), writeOutputMetadata,
         );
+        const usageLedger = reviewLedger;
         const { decision, runtime, codexFailure, codexFailureRetryable, snapshotHash } = runPreparedReviewItem({
           item, context, git, model, sandboxMode, localOnly, localRange: false,
           reviewOpenclawDir, reviewTreesDir, additionalPrompt, proofScratchDir,
@@ -1415,6 +1417,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           humanLocalReview, outputSelection, outputBudget, itemOutputBudget, codexWorkDir,
           forcedLoginMethod, itemCodexProfile, existingPriorReview, contextElapsedMs,
           onPrompt: (prompt) => { diagnosticPrompt = prompt; },
+          onUsage: (usage) => recordReviewActionLedgerUsage(usageLedger, item, usage, context.sourceRevision),
         }, dependencies);
         const codexElapsedMs = runtime.codexElapsedMs;
         const codexFailureDisposition = codexFailure

@@ -75,7 +75,13 @@ interface FailedReviewRetryDependencies {
   livePullHeadSha: (number: number) => string | null;
   repoFromArgs: (args: Args) => RepositoryProfile;
   repoRelativePath: (filePath: string) => string;
-  reviewLedger: ReturnType<typeof createReviewActionLedger>;
+  reviewLedger: Pick<
+    ReturnType<typeof createReviewActionLedger>,
+    | "actionLedgerFailureDisposition"
+    | "actionLedgerFileEvidence"
+    | "actionLedgerPrivacy"
+    | "workflowRunEvidence"
+  >;
   targetRepo: () => string;
   withGitHubRuntimeBudget: <T>(budget: GitHubRuntimeBudget, operation: () => T) => T;
 }

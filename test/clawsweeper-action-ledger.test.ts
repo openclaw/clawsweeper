@@ -613,6 +613,42 @@ function eventSummary(events: readonly ActionEvent[]) {
   ]);
 }
 
+test("review finalization retains usage and its source after post-processing fails", (t) => {
+  const { reviewLedger, events } = ledgerFixture(t);
+  const active = item({ number: 71 }) as Item;
+  const ledger = reviewLedger.startReviewActionLedger({
+    candidates: [active],
+    reviewPolicy: "fixture",
+    shardIndex: 0,
+    shardCount: 1,
+    batchSize: 1,
+  });
+  reviewLedger.startReviewActionLedgerItem(ledger, active);
+  reviewLedger.recordReviewActionLedgerUsage(
+    ledger,
+    active,
+    { input_tokens: 123, output_tokens: 45 },
+    "b".repeat(64),
+  );
+  reviewLedger.finishReviewActionLedger({
+    ledger,
+    activeItem: active,
+    error: new Error("post-processing failed"),
+    completedCount: 0,
+    cacheHits: 0,
+  });
+  const terminal = events().find(
+    (event) => event.event_type === "review.item" && event.action.status === "failed",
+  )!;
+  assert.equal(terminal.attributes?.input_tokens, 123);
+  assert.equal(terminal.attributes?.output_tokens, 45);
+  assert.equal(terminal.subject.source_revision, "b".repeat(64));
+  assert.equal(
+    terminal.attempt_id,
+    events().find((event) => event.event_type === "review.item")!.attempt_id,
+  );
+});
+
 test("apply ledger starts items lazily and chains every receipt in phase order", (t) => {
   const { root, applyLedger, entry, events } = ledgerFixture(t);
   const first = entry(41);

@@ -1467,6 +1467,8 @@ export type ReviewLedgerItem = {
   mutationObserved: boolean;
   uncertainMutationObserved: boolean;
   terminal: boolean;
+  usage?: { input_tokens: number; output_tokens: number } | null;
+  sourceRevision?: string;
 };
 
 export type ReviewActionLedger = {

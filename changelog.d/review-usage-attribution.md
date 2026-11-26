@@ -1,0 +1,1 @@
+- Preserve measured review token counts in existing attempt receipts and add a bounded offline report that distinguishes measured, cached, and unavailable usage.
