@@ -257,6 +257,9 @@ test("HTTP failures never retry, and existing output remains untouched", async (
   mkdirSync(f.source.output);
   const sentinel = join(f.source.output, "keep.txt");
   writeFileSync(sentinel, "keep");
-  await assert.rejects(exportReviewUsage({ ...f.source, fetchImpl: f.fetchImpl }), /incomplete/);
+  await assert.rejects(
+    exportReviewUsage({ ...f.source, fetchImpl: f.fetchImpl }),
+    /output_exists.*choose a new output directory/,
+  );
   assert.equal(readFileSync(sentinel, "utf8"), "keep");
 });

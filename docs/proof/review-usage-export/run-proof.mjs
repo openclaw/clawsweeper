@@ -152,6 +152,7 @@ for (const scenario of [
         }
       }
     } else if (scenario === "existing-output") {
+      assert.match(stderr, /output_exists.*choose a new output directory/);
       assert.equal(requests, 0);
       assert.equal(readFileSync(join(f.source.output, "keep.txt"), "utf8"), "keep");
     } else {

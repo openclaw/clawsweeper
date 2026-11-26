@@ -302,6 +302,14 @@ export async function exportReviewUsage(options: {
     return { selection: { producer: identity, paths }, report };
   } catch (error) {
     controller.abort();
+    if (!created && isRecord(error) && error.code === "EEXIST") {
+      throw new Error(
+        "review usage export incomplete (output_exists): choose a new output directory",
+        {
+          cause: error,
+        },
+      );
+    }
     if (created) rmSync(output, { recursive: true });
     if (error instanceof Error && error.message.startsWith("review usage export incomplete ("))
       throw error;
