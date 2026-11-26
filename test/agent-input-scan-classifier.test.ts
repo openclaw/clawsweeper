@@ -320,7 +320,7 @@ test("normalized Postgres findings never gain a value-only approval", () => {
 
 test("migrated approvals have distinct, complete detector and native value identities", () => {
   const keys = new Set<string>();
-  assert.equal(APPROVED_SYNTHETIC_VALUES.length, 94);
+  assert.equal(APPROVED_SYNTHETIC_VALUES.length, 95);
   for (const [type, name, decoders, raw, rawV2] of APPROVED_SYNTHETIC_VALUES) {
     assert.ok([10, 17, 895, 899, 938].includes(type));
     assert.ok(["JDBC", "URI", "MongoDB", "FTP", "Privacy"].includes(name));

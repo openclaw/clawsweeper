@@ -13,6 +13,8 @@ export type ApprovedSyntheticValue = readonly [
 
 // oxfmt-ignore
 export const APPROVED_SYNTHETIC_VALUES: readonly ApprovedSyntheticValue[] = [
+  // OpenClaw scripts/perf/trajectory-skills-metadata-measure.ts; blob 121ac30b9bfae120aac724ec972a25f42c0a45c8
+  [17,"URI",["BASE64","HTML","PLAIN"],"5b7b741c19e5a9f014553e453f998b9f11df6a24f98ba7f7a2cb57c8f57ef159","111164439f7bd4c84ec94eda2377699da010a59fb8b9c7b7ec12bf98364458bc"],
   // ClawRouter bootstrap origin-rejection fixture: https://github.com/openclaw/clawrouter/pull/1129
   [17,"URI",["PLAIN"],"d415e2827cf7641e765dc23e49f2a658e44ed851ec8534e4e40e161e3e8d0a80","e363221b5469fd4312529363507f3b057f262ba418dae7c37b3774f81e4ecfe4"],
   // tests/integration/configuration-controller.test.mjs
