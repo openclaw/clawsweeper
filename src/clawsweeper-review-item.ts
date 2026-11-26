@@ -13,6 +13,7 @@ import { pullRequestProvenanceEvidence, type CommitPullResolver } from "./pr-rev
 import { produceReviewOutput, type configureReviewOutputItems } from "./review-output-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import type { CodexFailureLogKind } from "./clawsweeper-review-core.js";
+import type { ReviewTokenUsage } from "./review-usage.js";
 import type {
   Decision,
   GitInfo,
@@ -63,6 +64,7 @@ export function runPreparedReviewItem(
     existingPriorReview: { markdown: string } | null;
     contextElapsedMs: number;
     onPrompt?: (prompt: string) => void;
+    onUsage?: (usage: ReviewTokenUsage | null) => void;
   },
   dependencies: PreparedReviewDependencies,
 ) {
@@ -194,6 +196,7 @@ export function runPreparedReviewItem(
           resultFileBytes: itemOutputBudget.resultFileBytes,
           streamFileBytes: itemOutputBudget.streamFileBytes,
           quietLogs: humanLocalReview,
+          ...(options.onUsage ? { onUsage: options.onUsage } : {}),
           ...(localRange ? { extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG] } : {}),
         }),
     );

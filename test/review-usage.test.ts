@@ -207,6 +207,18 @@ test("local usage handoff bounds records/files and swallows filesystem failures"
       },
     }),
   );
+  writeFileSync(join(options.directory, "rollout-one.jsonl"), tokenEvent() + "\n");
+  assert.deepEqual(
+    appendReviewUsage({
+      ...options,
+      record,
+      env: {
+        ...env,
+        CLAWSWEEPER_REVIEW_USAGE_PATH: join(options.codexHome, "missing", "usage.jsonl"),
+      },
+    }),
+    usage,
+  );
 });
 
 test("backward rollout reads reconstruct token events across 64 KiB chunks", (t) => {

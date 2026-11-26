@@ -33,6 +33,7 @@ import type { CodexFailureLogKind } from "./clawsweeper-review-runtime.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
 import type { ReviewStructuralPullState } from "./review-structural-cache.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
+import type { ReviewTokenUsage } from "./review-usage.js";
 
 export interface CreateReviewCommandWorkflowDependencies {
   reviewEnvironment: (sandboxMode: string, preserveCodexAuth?: boolean) => NodeJS.ProcessEnv;
@@ -158,6 +159,12 @@ export interface CreateReviewCommandWorkflowDependencies {
     findingCount?: number;
     completionReason?: string;
   }) => ActionEvent | null;
+  recordReviewActionLedgerUsage: (
+    ledger: ReviewActionLedger,
+    item: Item,
+    usage: ReviewTokenUsage | null,
+    sourceRevision?: string,
+  ) => void;
   freshDedicatedReviewStartLeases: (options: {
     comments: Record<string, unknown>[];
     itemNumber: number;
@@ -319,6 +326,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     streamFileBytes?: number;
     quietLogs?: boolean;
     extraCodexConfig?: string[];
+    onUsage?: (usage: ReviewTokenUsage | null) => void;
   }) => Decision;
   selectCandidates: (options: {
     batchSize: number;

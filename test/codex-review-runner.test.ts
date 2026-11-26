@@ -202,7 +202,7 @@ test("Codex failure logs distinguish provider throttling from content output fai
   );
 });
 
-test("runCodex writes credential-free usage synchronously", () => {
+test("runCodex preserves native counts in the synchronous handoff and in-process observation", () => {
   const root = mkdtempSync(tmpPrefix);
   const openclawDir = join(root, "openclaw");
   const workDir = join(root, "codex-work");
@@ -263,6 +263,7 @@ process.exit(1);
       workReason: "Maintainer review is required.",
     }),
   );
+  let observedUsage: unknown;
   try {
     const decision = runBoundedCodexForTest({
       item: item({ number: 83393 }),
@@ -277,6 +278,9 @@ process.exit(1);
       workDir,
       prompt: "Return a review decision.",
       resultFileBytes: Buffer.byteLength(process.env.CODEX_DECISION_JSON!),
+      onUsage: (observed) => {
+        observedUsage = observed;
+      },
     });
 
     const lines = readFileSync(telemetryEnv.CLAWSWEEPER_REVIEW_USAGE_PATH, "utf8")
@@ -286,6 +290,7 @@ process.exit(1);
     const record: Record<string, unknown> = JSON.parse(lines[0]!);
     assert.equal(record.outcome, "failed");
     assert.deepEqual(record.usage, usage);
+    assert.deepEqual(observedUsage, record.usage);
     assert.ok(!("model" in record));
     assert.equal(decision.decision, "keep_open");
     assert.equal(decision.summary, "Keep open for maintainer follow-up.");

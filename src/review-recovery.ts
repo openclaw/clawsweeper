@@ -46,7 +46,18 @@ function attributesAre(event: ActionEvent, required: string[], optional: string[
   );
 }
 
-function nativeTerminal(event: ActionEvent): boolean {
+export function isNativeReviewTerminal(event: ActionEvent): boolean {
+  const attributes = event.attributes ?? {};
+  const measured = ["input_tokens", "output_tokens"] as const;
+  const usageMatches =
+    attributes.work_kind === undefined
+      ? measured.every((key) => !(key in attributes))
+      : attributes.work_kind === "full-review" &&
+        attributes.cached !== true &&
+        (measured.every((key) => !(key in attributes)) ||
+          measured.every(
+            (key) => Number.isSafeInteger(attributes[key]) && Number(attributes[key]) >= 0,
+          ));
   return (
     event.event_type === "review.item" &&
     ["completed", "cached", "failed", "blocked", "cancelled", "yielded"].includes(
@@ -55,8 +66,9 @@ function nativeTerminal(event: ActionEvent): boolean {
     attributesAre(
       event,
       ["cached", "duration_ms", "review_mode"],
-      ["finding_count", "completion_reason"],
+      ["finding_count", "completion_reason", "work_kind", "input_tokens", "output_tokens"],
     ) &&
+    usageMatches &&
     event.attributes?.cached === (event.action.status === "cached") &&
     typeof event.attributes.duration_ms === "number" &&
     event.attributes.duration_ms >= 0 &&
@@ -112,7 +124,7 @@ function itemDisposition(
         event.attributes.publication_kind !== "local_artifact"
       )
         return held("unrecognized_log_phase");
-    } else if (nativeTerminal(event)) {
+    } else if (isNativeReviewTerminal(event)) {
       if (terminal || pending || logs !== 1 || event.action.mutation !== mutationObserved) {
         return held("ambiguous_item_terminal");
       }

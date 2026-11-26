@@ -64,7 +64,7 @@ import {
 } from "./openclaw-codex-source.js";
 import { repositoryProfileFor, slugForRepo, normalizeRepo } from "./repository-profiles.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
-import { appendReviewUsage } from "./review-usage.js";
+import { appendReviewUsage, type ReviewTokenUsage } from "./review-usage.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import { evidenceEntry } from "./clawsweeper-report-helpers.js";
 import {
@@ -854,6 +854,7 @@ ${extra}
     streamFileBytes?: number;
     quietLogs?: boolean;
     extraCodexConfig?: string[];
+    onUsage?: (usage: ReviewTokenUsage | null) => void;
   }): Decision {
     if (!Number.isSafeInteger(options.resultFileBytes) || options.resultFileBytes <= 0) {
       throw new UserFacingCommandError("Review result output requires a positive byte limit.");
@@ -993,7 +994,7 @@ ${extra}
     });
     const processFinishedAt = Date.now();
     // Complete the best-effort local handoff before failure can terminate the process.
-    appendReviewUsage({
+    const usage = appendReviewUsage({
       record: {
         target_repo: options.item.repo,
         item_number: options.item.number,
@@ -1008,10 +1009,11 @@ ${extra}
               : "failed",
         duration_ms: processFinishedAt - processStartedAt,
       },
-      codexHome: codexEnv.CODEX_HOME,
+      codexHome: agentRunner(codexEnv) === "codex" ? codexEnv.CODEX_HOME : undefined,
       startedAt: processStartedAt,
       finishedAt: processFinishedAt,
     });
+    options.onUsage?.(usage);
     const dirtyAfter = openclawDirtyStatus(options.openclawDir);
     if (dirtyAfter) {
       throw new Error(

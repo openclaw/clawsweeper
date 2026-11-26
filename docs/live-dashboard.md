@@ -421,6 +421,46 @@ or changing files, malformed usage, and files larger than 64 MiB produce null
 usage rather than a partial sum. Receiver compatibility does not change that
 collection behavior or begin sending nullable cache writes.
 
+### Offline per-attempt receipts
+
+Owner: ClawSweeper review maintainers. The owning sources are
+[`review-usage.ts`](../src/review-usage.ts),
+[`clawsweeper-review-ledger.ts`](../src/clawsweeper-review-ledger.ts), and
+[`review-usage-report.ts`](../src/review-usage-report.ts). Update this section
+when capture, terminal attributes, recovery validation, or artifact retention changes.
+
+After an agent process returns, the item terminal receives the same collected
+input/output totals used by the existing local usage handoff. Its existing
+operation ID, attempt ID, producer run/attempt, item identity and source revision
+provide the join; no second identifier or mutable-file lookup is needed.
+`work_kind: full-review` identifies review work; it does not prove a provider
+request started. Missing counters remain
+unavailable, not zero. Cache hits and failures before invocation carry no measured
+model usage. The strict collector and signed submission contract remain unchanged.
+The OpenClaw runner does not consume unrelated Codex rollout files.
+
+To inspect already-retained canonical shards after building the selected revision:
+
+```sh
+node dist/review-usage-report.js /path/to/extracted-artifact \
+  ledger/v1/events/YYYY/MM/DD/REPOSITORY/RUN/JOB.jsonl
+```
+
+Pass every numbered part of each selected producer shard set. The reader reuses
+the bounded canonical shard validator and performs no import, network request or
+write. Rows preserve their producer identities and distinguish measured usage,
+cached results and unavailable usage. Duplicate item terminals for one attempt
+are rejected instead of choosing a later record. The report covers only supplied
+shards; it does not establish artifact retention for every review.
+
+These receipts preserve input/output totals, not cache/reasoning subsets or actual
+billing. A `review.item` start is item processing, not the queue's charged committed
+start. Loaded admission configuration, offer/admission history, actor attribution
+and actual billing remain unavailable in this report. No numeric allowance,
+spending policy or new collection schedule follows from these records.
+
+### Receiver rollout and Analytics layout
+
 Roll out the shared validator, Worker writer, and updated queries before the
 separate producer change starts sending nullable cache writes. Qualify the
 deployed receiver with legacy, nullable, and missing-usage records and verify

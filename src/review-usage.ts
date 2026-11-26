@@ -181,17 +181,19 @@ export function appendReviewUsage(options: {
   startedAt: number;
   finishedAt: number;
   env?: NodeJS.ProcessEnv;
-}): void {
+}): ReviewTokenUsage | null {
+  const env = options.env ?? process.env;
+  const path = env.CLAWSWEEPER_REVIEW_USAGE_PATH;
+  if (!path) return null;
+  // The item ledger consumes the same observation even if the optional file handoff fails.
+  const usage = readReviewRolloutUsage(options);
   try {
-    const env = options.env ?? process.env;
-    const path = env.CLAWSWEEPER_REVIEW_USAGE_PATH;
-    if (!path) return;
     const record: ReviewUsageRecord = {
       ...options.record,
       schema: 1,
       run_id: env.GITHUB_RUN_ID ?? "",
       run_attempt: Number(env.GITHUB_RUN_ATTEMPT ?? "1"),
-      usage: readReviewRolloutUsage(options),
+      usage,
     };
     const line = `${JSON.stringify(record)}\n`;
     const bytes = Buffer.byteLength(line);
@@ -217,4 +219,5 @@ export function appendReviewUsage(options: {
   } catch {
     console.error("[review-usage] best-effort local handoff unavailable");
   }
+  return usage;
 }

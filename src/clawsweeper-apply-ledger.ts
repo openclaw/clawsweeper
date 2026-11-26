@@ -34,7 +34,15 @@ interface ApplyActionLedgerDependencies {
   root: string;
   targetRepo: () => string;
   repoRelativePath: (filePath: string) => string;
-  reviewLedger: ReturnType<typeof createReviewActionLedger>;
+  reviewLedger: Pick<
+    ReturnType<typeof createReviewActionLedger>,
+    | "actionLedgerFailureDisposition"
+    | "actionLedgerFileDigestEvidence"
+    | "actionLedgerFileEvidence"
+    | "actionLedgerItemKey"
+    | "actionLedgerPrivacy"
+    | "workflowRunEvidence"
+  >;
 }
 
 export function createApplyActionLedger({
