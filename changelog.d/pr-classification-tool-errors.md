@@ -1,1 +1,0 @@
-- PR classification returns refused source-tool arguments to the model instead of failing, and ignores unrelated label and `updated_at` churn when checking snapshot freshness.

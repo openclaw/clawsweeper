@@ -1,1 +1,0 @@
-- Follow short GitHub Actions pages when more runs or jobs remain, while preserving incomplete-census safeguards.
