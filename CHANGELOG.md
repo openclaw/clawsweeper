@@ -5,7 +5,19 @@ All notable ClawSweeper changes are tracked here.
 This file was reconstructed from first-parent git history. Generated dashboard,
 checkpoint, and status-only commits are intentionally omitted.
 
-## 0.3.5 - Unreleased
+## 0.3.6 - Unreleased
+
+## 0.3.5 - 2026-11-26
+
+- Avoid unnecessary re-reviews when GitHub delays updating a pull request after a ClawSweeper closeout comment.
+- Prepare requester permission checks that preserve WRITE and self-review rights, reject association-only grants, and refresh authority before label writes and resumed review admission.
+- Follow short GitHub Actions pages when more runs or jobs remain, while preserving incomplete-census safeguards.
+- Move PR priority and impact classification out of full review into a bounded, low-cost parallel diff/source classifier using the existing issue classification rubric, including review-skipped maintainer PRs; full review preserves these labels and retains finding severity, merge risk, proof and readiness.
+- Give OpenClaw PR reviews more specific guidance on removing low-value test code and record which surviving check catches the same regression or why the behavior can go untested.
+- Retry transient PR classification failures once from fresh source before publication, and truncate oversized diffs to a byte budget instead of failing large PRs, retaining usage and sanitized diagnostics without replaying uncertain label writes.
+- PR classification returns refused source-tool arguments to the model instead of failing, and ignores unrelated label and `updated_at` churn when checking snapshot freshness.
+- Preserve measured review token counts in existing attempt receipts and add a bounded offline report that distinguishes measured, cached, and unavailable usage.
+- Require a surviving assertion and a specific fault for every behavior covered by a suggested test cut.
 
 ## 0.3.4 - 2026-11-21
 

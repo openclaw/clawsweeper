@@ -1,1 +1,0 @@
-- Move PR priority and impact classification out of full review into a bounded, low-cost parallel diff/source classifier using the existing issue classification rubric, including review-skipped maintainer PRs; full review preserves these labels and retains finding severity, merge risk, proof and readiness.
