@@ -192,9 +192,8 @@ test("a report without a typed next step fails closed; explicit none is ready", 
   assert.doesNotMatch(after, /Run a fresh ClawSweeper review|1 item remains/);
   assert.equal(publicSection(after, "Review scores"), publicSection(before, "Review scores"));
   assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-review-state:ready/);
-  for (const comment of [before, after]) {
-    assert.doesNotMatch(comment, /clawsweeper-verdict:pass/);
-  }
+  assert.doesNotMatch(before, /clawsweeper-verdict:pass/);
+  assert.match(after, /clawsweeper-verdict:pass/);
 });
 
 test("a required next step is one Before-merge item without a priority, whatever its wording", () => {
@@ -1242,10 +1241,7 @@ Full review comments:
   );
 
   // The verdict leads; the review time closes the visible comment, after the details.
-  assert.match(
-    comment,
-    /^Codex review: needs maintainer review before merge\.\n\n## What this changes\n/,
-  );
+  assert.match(comment, /^Codex review: passed\.\n\n## What this changes\n/);
   assert.doesNotMatch(comment, /^# ClawSweeper review$/m);
   const reviewedAt = comment.indexOf("_Reviewed May 22, 2026, 12:43 AM ET / 04:43 UTC._");
   assert.ok(reviewedAt > comment.lastIndexOf("</details>"), comment);
@@ -1299,7 +1295,7 @@ Full review comments:
   assert.ok(comment.indexOf("### Rating scale") < comment.indexOf("### Workflow"));
   assert.match(
     comment,
-    /<!-- clawsweeper-verdict:needs-human item=74265 sha=abc123def456abc123def456abc123def456abcd/,
+    /<!-- clawsweeper-verdict:pass item=74265 sha=abc123def456abc123def456abc123def456abcd/,
   );
 });
 
@@ -1478,7 +1474,7 @@ Full review comments:
   });
 
   const visible = comment.slice(0, comment.indexOf("\n<details>"));
-  assert.match(visible, /^Codex review: needs maintainer review before merge\./);
+  assert.match(visible, /^Codex review: passed\./);
   assert.deepEqual(
     [...visible.matchAll(/^## (.+)$/gm)].map((match) => match[1]),
     [

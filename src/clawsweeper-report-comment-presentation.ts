@@ -27,7 +27,6 @@ import {
   labelTransitionJustificationsMarkdown,
 } from "./clawsweeper-label-presentation.js";
 import {
-  repairLoopPassModeFromReport,
   reviewAutomationMarkersFromReport,
   reviewVersionMarkerFromReport,
 } from "./clawsweeper-review-comment-automation.js";
@@ -279,7 +278,6 @@ function renderKeepOpenCommentFromReport(
   const validation = reviewDecision.workValidation
     .slice(0, 5)
     .map((step) => `- ${stripListMarker(step)}`);
-  const isRepairLoopPass = isPullRequest && Boolean(repairLoopPassModeFromReport(markdown));
   const hasRealBehaviorProofBlocker =
     isPullRequest && !reviewFailed && proofPolicy.proofBlocksMerge;
   const summaryLine = neutralizeOwnedSectionSpoofing(sentence(summary)) || "_No summary provided._";
@@ -319,7 +317,7 @@ function renderKeepOpenCommentFromReport(
         ? "Codex review: needs changes before merge."
         : reviewReadiness?.state === "awaiting-maintainer"
           ? "Codex review: ready, awaiting a maintainer decision."
-          : isRepairLoopPass
+          : reviewReadiness?.state === "ready" && reviewDecision.decision === "keep_open"
             ? "Codex review: passed."
             : isPullRequest
               ? "Codex review: needs maintainer review before merge."

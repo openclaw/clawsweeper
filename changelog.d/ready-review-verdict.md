@@ -1,0 +1,1 @@
+- Ready PR reviews no longer report a human hold because retired repair labels are absent.

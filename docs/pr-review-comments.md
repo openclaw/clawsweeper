@@ -864,7 +864,7 @@ Neither attribute enrolls a repair or merge workflow.
 
 - `hold` tells why the verdict is human-only: `normalization_failed`,
   `review_identity`, `maintainer_decision`, `review_failed`, `security`,
-  `proof`, `not_opted_in` (a retained historical readiness classification),
+  `proof`, `not_opted_in` (historical comments only),
   `blocked`, or `undecided`. `maintainer_decision` appears only when no
   Before-merge item remains beside the decision, and `proof` only when the proof
   ask is the one Before-merge item; otherwise the hold is `blocked`.
