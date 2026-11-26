@@ -480,7 +480,8 @@ Use the producing workflow's source commit and canonical UTC partition date.
 The reviewed PR head is a different identity. This CLI supports the central
 `sweep.yml` / `event-review-apply` full-review producer. Discovery is confined to
 one publisher/day and selects the first matching `review.*` producer for the
-requested run, attempt and source. Its complete native identity is then pinned
+requested run, attempt and source, excluding derived projection-failure producers.
+Its complete native identity is then pinned
 through reservation, completion, shard and event bindings. This is one producer
 transaction, not a snapshot of all workflow invocations or a reporting window.
 

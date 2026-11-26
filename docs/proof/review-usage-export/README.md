@@ -17,7 +17,8 @@ product argument, signing, response streaming, closure, filesystem and report
 logic runs unchanged. The fixture uses native writer output and native import
 bindings. No production credential or service is used.
 
-Cases cover a complete private export, a missing completion marker, a corrupted
+Cases cover a complete private export, selection alongside native projection
+failures, a missing completion marker, a corrupted
 payload, a refused redirect, preservation of an existing destination, and the
 real 120-second deadline aborting a stalled response body. Unit tests separately
 cover markerless legacy shards, event/reservation bindings, producer mismatch,

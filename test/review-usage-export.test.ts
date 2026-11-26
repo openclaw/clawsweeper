@@ -27,6 +27,21 @@ test("native export publishes one private, strictly closed producer and preserve
   assert.ok(f.calls.every((c) => ["list", "stat", "chunk"].includes(c.operation)));
 });
 
+test("projection failure producers cannot hide the full-review transaction", async (t) => {
+  const f = await reviewUsageExportFixture({ projectionFailure: true });
+  t.after(f.cleanup);
+  const projectionPaths = f.paths.filter((p) => p.includes(".crabfleet_projection/"));
+  assert.ok(projectionPaths.length > 0);
+  assert.ok([...f.objects.keys()][0]!.includes(".crabfleet_projection/"));
+  const { report, selection } = await exportReviewUsage({ ...f.source, fetchImpl: f.fetchImpl });
+  assert.equal(selection.producer.producer, "review.fixture.default");
+  assert.deepEqual(report.rows[0]?.usage, { input_tokens: 100, output_tokens: 10 });
+  for (const path of projectionPaths) {
+    assert.equal(existsSync(join(f.source.output, path)), false);
+    assert.ok(!f.calls.some((c) => c.body.path === path));
+  }
+});
+
 test("batch-only exports still identify the selected producer and paths", async (t) => {
   const f = await reviewUsageExportFixture({ withItem: false });
   t.after(f.cleanup);

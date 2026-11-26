@@ -11,13 +11,17 @@ const output = resolve(process.argv[2] || ".artifacts/review-usage-export/proof.
 const receipts = [];
 for (const scenario of [
   "complete",
+  "projection-failure",
   "missing-completion",
   "corrupt",
   "redirect",
   "existing-output",
   "deadline",
 ]) {
-  const f = await reviewUsageExportFixture();
+  const f = await reviewUsageExportFixture({
+    projectionFailure: scenario === "projection-failure",
+  });
+  const succeeded = scenario === "complete" || scenario === "projection-failure";
   let requests = 0;
   let stalledResponseClosed = false;
   if (scenario === "missing-completion")
@@ -125,15 +129,28 @@ for (const scenario of [
     });
     clearTimeout(guard);
     const elapsed = performance.now() - started;
-    assert.equal(code, scenario === "complete" ? 0 : 1, stderr);
+    assert.equal(code, succeeded ? 0 : 1, stderr);
     assert.ok(!stdout.includes(f.source.webhookSecret) && !stderr.includes(f.source.webhookSecret));
-    if (scenario === "complete") {
+    if (succeeded) {
       const { report, selection } = JSON.parse(stdout);
-      assert.deepEqual(selection.paths, f.paths);
+      assert.deepEqual(
+        selection.paths,
+        f.paths.filter((p) => !p.includes(".crabfleet_projection/")),
+      );
       assert.deepEqual(report.rows[0].usage, { input_tokens: 100, output_tokens: 10 });
       assert.equal(report.coverage.actual_billing, "unavailable");
-      for (const [path, bytes] of f.objects)
-        assert.deepEqual(readFileSync(join(f.source.output, path)), bytes);
+      if (scenario === "complete") {
+        for (const [path, bytes] of f.objects)
+          assert.deepEqual(readFileSync(join(f.source.output, path)), bytes);
+      } else {
+        assert.equal(selection.producer.producer, "review.fixture.default");
+        const projectionPaths = f.paths.filter((p) => p.includes(".crabfleet_projection/"));
+        assert.ok(projectionPaths.length > 0);
+        for (const path of projectionPaths) {
+          assert.equal(existsSync(join(f.source.output, path)), false);
+          assert.ok(!f.calls.some((c) => c.body.path === path));
+        }
+      }
     } else if (scenario === "existing-output") {
       assert.equal(requests, 0);
       assert.equal(readFileSync(join(f.source.output, "keep.txt"), "utf8"), "keep");
@@ -153,8 +170,7 @@ for (const scenario of [
       requests,
       elapsed_ms: Math.round(elapsed),
       report_sha256: stdout ? createHash("sha256").update(stdout).digest("hex") : null,
-      partial_export_visible:
-        scenario === "complete" ? false : existsSync(join(f.source.output, "ledger")),
+      partial_export_visible: succeeded ? false : existsSync(join(f.source.output, "ledger")),
     });
   } finally {
     server.closeAllConnections();

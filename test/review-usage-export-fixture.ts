@@ -16,7 +16,7 @@ import type { Item } from "../dist/clawsweeper-types.js";
 
 /** Canonical native writer output served by both unit and real-CLI transport fixtures. */
 export async function reviewUsageExportFixture(
-  options: { withItem?: boolean; secondProducer?: boolean } = {},
+  options: { withItem?: boolean; secondProducer?: boolean; projectionFailure?: boolean } = {},
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "review-usage-export-")));
   const source = {
@@ -34,6 +34,7 @@ export async function reviewUsageExportFixture(
     CLAWSWEEPER_ACTION_LEDGER_DISABLED: "0",
     CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: source.partitionDate,
     CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "",
+    CLAWSWEEPER_CRABFLEET_SESSION_ID: options.projectionFailure ? "fixture-session" : "",
     GITHUB_REPOSITORY: "openclaw/clawsweeper",
     GITHUB_RUN_ID: source.runId,
     GITHUB_RUN_ATTEMPT: String(source.runAttempt),
@@ -89,7 +90,7 @@ export async function reviewUsageExportFixture(
   } finally {
     process.env = previous;
   }
-  const objects = new Map(paths.map((path) => [path, readFileSync(join(root, path))]));
+  const objects = new Map([...paths].sort().map((path) => [path, readFileSync(join(root, path))]));
   const shards = readImportedActionEventShards(prepareSafeReadRoot(root, "fixture"), paths);
   const bindings = actionEventShardImportBindings(shards);
   for (const binding of bindings) objects.set(binding.relativePath, Buffer.from(binding.content));

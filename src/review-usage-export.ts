@@ -218,9 +218,12 @@ export async function exportReviewUsage(options: {
         if (!isRecord(value) || typeof value.path !== "string" || !value.path.startsWith(prefix))
           incomplete("listing_outside_prefix");
         const parts = value.path.slice(prefix.length).split("/");
+        // Projection failures are separate transactions that can sort before
+        // their review producer; they do not contain full-review usage.
         if (
           parts.length === 2 &&
           parts[0]!.startsWith("review.") &&
+          !parts[0]!.endsWith(".crabfleet_projection") &&
           parts[1]!.startsWith(filename) &&
           parts[1]!.endsWith(".jsonl")
         ) {
