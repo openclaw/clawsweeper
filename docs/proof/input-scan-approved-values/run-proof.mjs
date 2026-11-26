@@ -3,9 +3,17 @@
 // node docs/proof/input-scan-approved-values/run-proof.mjs --out <receipt.json>
 // Optional --module-root points at a different built revision for comparison.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir, platform, arch } from "node:os";
 import { resolve, join, delimiter } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -38,6 +46,37 @@ const git = (cwd, ...options) =>
     env: gitEnv,
     encoding: "utf8",
   }).trim();
+const sourceGitObservation = () => {
+  let markerMissing = false;
+  try {
+    lstatSync(join(moduleRoot, ".git"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw new Error("Cannot inspect source Git marker");
+    markerMissing = true;
+  }
+  const probe = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    cwd: moduleRoot,
+    env: { ...gitEnv, LC_ALL: "C" },
+    encoding: "utf8",
+    timeout: 10_000,
+    maxBuffer: 65_536,
+  });
+  if (
+    markerMissing &&
+    probe.status === 128 &&
+    /^fatal: not a git repository(?: \(|:)/.test(probe.stderr)
+  ) {
+    return { head: null, sourceDirty: null, gitMetadata: "absent" };
+  }
+  if (probe.status !== 0 || realpathSync(probe.stdout.trim()) !== realpathSync(moduleRoot)) {
+    throw new Error("Cannot identify proof source Git repository");
+  }
+  return {
+    head: git(moduleRoot, "rev-parse", "HEAD"),
+    sourceDirty: git(moduleRoot, "status", "--porcelain").length > 0,
+    gitMetadata: "present",
+  };
+};
 const approved = ["https://", "fixture-user:fixture-password@example.invalid"].join("");
 const unreviewed = ["https://", "review_user:CSW_SYNTHETIC_NOT_A_SECRET_2201@"].join("");
 const cases = [
@@ -99,11 +138,106 @@ const cases = [
   ],
   ["nonreserved-host", unreviewed + "db.company.internal/path", false],
 ];
+let trajectoryFixtureBlob;
+if (args.includes("--trajectory-source")) {
+  const fixturePath = args[args.indexOf("--trajectory-source") + 1];
+  assert.ok(fixturePath && !fixturePath.startsWith("--"), "Missing trajectory fixture path");
+  const bytes = readFileSync(resolve(fixturePath));
+  const blob = createHash("sha1")
+    .update(Buffer.from(`blob ${bytes.length}\0`))
+    .update(bytes)
+    .digest("hex");
+  assert.equal(blob, "121ac30b9bfae120aac724ec972a25f42c0a45c8", "Unexpected fixture blob");
+  trajectoryFixtureBlob = blob;
+  const source = bytes.toString("utf8");
+  const literals = [...source.matchAll(/"(?:[^"\\\r\n]|\\.)*"/g)].flatMap((match) => {
+    try {
+      const value = JSON.parse(match[0]);
+      return createHash("sha256").update(value).digest("hex") ===
+        "62947f2f84906400f7b0c6ad013ce889e95256a5c7dcbc82d982450ab6f4d1b1"
+        ? [value]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+  assert.equal(literals.length, 1, "Missing unique reviewed fixture literal");
+  const literal = literals[0];
+  const replaceUri = (update) => {
+    const uri = new URL(literal);
+    update(uri);
+    const changed = source.replace(JSON.stringify(literal), JSON.stringify(uri.href));
+    assert.ok(changed !== source, "Fixture mutation did not change source");
+    return changed;
+  };
+  const unknown = new URL(literal);
+  unknown.username += "-unreviewed";
+  unknown.password += "-unreviewed";
+  cases.unshift(
+    ["trajectory-source", source, true],
+    ["trajectory-surrounding-edit", source + "\n// Unrelated surrounding edit.\n", true],
+    ["trajectory-changed-user", replaceUri((uri) => (uri.username += "-unreviewed")), false],
+    ["trajectory-changed-password", replaceUri((uri) => (uri.password += "-unreviewed")), false],
+    ["trajectory-changed-host", replaceUri((uri) => (uri.hostname = "unreviewed.example.test")), false],
+    [
+      "trajectory-changed-path",
+      replaceUri((uri) => {
+        const pathname = uri.pathname;
+        uri.pathname = pathname.replace(/[A-Za-z]/, (letter) => (letter === "z" ? "y" : "z"));
+        assert.ok(uri.pathname !== pathname, "Fixture pathname did not change");
+      }),
+      false,
+    ],
+    [
+      "trajectory-mixed-unknown",
+      source + `\nconst unreviewedFixture = ${JSON.stringify(unknown.href)};\n`,
+      false,
+    ],
+  );
+}
+const approvedNotice = (message) => {
+  if (typeof message !== "string") return null;
+  let notice;
+  try {
+    notice = JSON.parse(message);
+  } catch {
+    return null;
+  }
+  if (
+    notice?.event !== "agent_input_scan_classified" ||
+    notice.classification !== "approved_value" ||
+    notice.detector !== "URI" ||
+    !Array.isArray(notice.findings) ||
+    !notice.findings.every(
+      (finding) =>
+        typeof finding?.blob === "string" &&
+        /^(?:prompt|[a-f0-9]{40}|[0-9]+)$/.test(finding.blob) &&
+        Number.isSafeInteger(finding.scannerLine) &&
+        finding.scannerLine > 0 &&
+        ["PLAIN", "HTML", "BASE64", "ESCAPED_UNICODE"].includes(finding.decoder) &&
+        Number.isSafeInteger(finding.occurrences) &&
+        finding.occurrences > 0,
+    )
+  ) {
+    return null;
+  }
+  return {
+    event: notice.event,
+    classification: notice.classification,
+    detector: notice.detector,
+    findings: notice.findings.map(({ blob, scannerLine, decoder, occurrences }) => ({
+      blob,
+      scannerLine,
+      decoder,
+      occurrences,
+    })),
+  };
+};
 const results = [];
 try {
   const scanner = execFileSync("trufflehog", ["--version"], { encoding: "utf8" }).trim();
   assert.equal(scanner, `trufflehog ${TRUFFLEHOG_VERSION}`);
-  for (const [name, value, expected] of cases) {
+  scenarios: for (const [name, value, expected] of cases) {
     const cwd = join(root, name);
     mkdirSync(cwd);
     git(cwd, "init", "-q");
@@ -111,13 +245,27 @@ try {
     git(cwd, "add", ".");
     git(cwd, "commit", "-qm", "base");
     const baseSha = git(cwd, "rev-parse", "HEAD");
-    writeFileSync(join(cwd, "fixture.txt"), value + "\n");
+    writeFileSync(join(cwd, "fixture.txt"), name === "trajectory-source" ? value : value + "\n");
     git(cwd, "add", ".");
     git(cwd, "commit", "-qm", "fixture");
     const headSha = git(cwd, "rev-parse", "HEAD");
+    if (name === "trajectory-source") {
+      assert.ok(
+        git(cwd, "rev-parse", `${headSha}:fixture.txt`) === trajectoryFixtureBlob,
+        "Committed fixture blob changed",
+      );
+    }
     for (const surface of ["prompt", "committed"]) {
       let admitted = true,
-        reason;
+        reason,
+        diagnostic;
+      const notices = [];
+      const originalConsoleError = console.error;
+      console.error = (...values) => {
+        originalConsoleError(...values);
+        const notice = values.length === 1 ? approvedNotice(values[0]) : null;
+        if (notice) notices.push(notice);
+      };
       try {
         scanAgentInput({
           cwd,
@@ -129,10 +277,42 @@ try {
       } catch (error) {
         admitted = false;
         reason = error.reason;
+        if (error.scanDiagnostic?.kind === "unclassified_finding") {
+          const { kind, reason, detectorType, decoder, verified } = error.scanDiagnostic;
+          diagnostic = { kind, reason, detectorType, decoder, verified };
+        }
         // Infrastructure failures do not establish that the credential was detected.
         if (reason !== "findings") throw error;
+      } finally {
+        console.error = originalConsoleError;
       }
-      results.push({ name, surface, expected, admitted, ...(reason ? { reason } : {}) });
+      const requiredApprovedNotice =
+        name === "trajectory-source"
+          ? surface === "committed"
+            ? { blob: trajectoryFixtureBlob }
+            : { blob: "prompt" }
+          : undefined;
+      const requiredNoticeMatched =
+        !requiredApprovedNotice ||
+        notices.some((notice) =>
+          notice.findings.some(
+            (finding) =>
+              finding.blob === requiredApprovedNotice.blob &&
+              (!requiredApprovedNotice.decoder ||
+                finding.decoder === requiredApprovedNotice.decoder),
+          ),
+        );
+      results.push({
+        name,
+        surface,
+        expected,
+        admitted,
+        ...(reason ? { reason } : {}),
+        ...(diagnostic ? { diagnostic } : {}),
+        ...(notices.length ? { approvedNotices: notices } : {}),
+        ...(requiredApprovedNotice ? { requiredApprovedNotice, requiredNoticeMatched } : {}),
+      });
+      if (expected !== admitted || !requiredNoticeMatched) break scenarios;
     }
   }
   const scannerFile = process.env.PATH.split(delimiter)
@@ -145,14 +325,14 @@ try {
       }
     });
   const receipt = {
-    head: git(moduleRoot, "rev-parse", "HEAD"),
+    ...sourceGitObservation(),
     platform: `${platform()}-${arch()}`,
     node: process.version,
     scanner,
     scannerSha256: createHash("sha256").update(readFileSync(scannerFile)).digest("hex"),
-    sourceDirty: git(moduleRoot, "status", "--porcelain").length > 0,
+    ...(trajectoryFixtureBlob ? { trajectoryFixtureBlob } : {}),
     results,
-    passed: results.every((r) => r.expected === r.admitted),
+    passed: results.every((r) => r.expected === r.admitted && r.requiredNoticeMatched !== false),
     limits:
       "Synthetic inputs and native admission only; no model call or live database authentication. Verification/error contracts additionally covered by focused tests.",
   };

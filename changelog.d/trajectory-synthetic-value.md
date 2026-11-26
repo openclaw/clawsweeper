@@ -1,0 +1,1 @@
+- Allow the reviewed synthetic URI in OpenClaw trajectory metadata measurements through input scanning while retaining exact value and decoder checks.
