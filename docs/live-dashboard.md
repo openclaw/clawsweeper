@@ -459,6 +459,52 @@ start. Loaded admission configuration, offer/admission history, actor attributio
 and actual billing remain unavailable in this report. No numeric allowance,
 spending policy or new collection schedule follows from these records.
 
+#### Private canonical export
+
+The optional native operator CLI in
+[`review-usage-export.ts`](../src/review-usage-export.ts) retrieves one complete
+full-review producer transaction from the central service. It uses the existing
+signed R2 `list`, `stat`, and `chunk` operations. It needs an approved local
+binding for `CLAWSWEEPER_WEBHOOK_SECRET`; run it in a private operator context,
+with a new output directory whose parent is already canonical and trusted.
+Keep the export and its stdout private.
+
+```sh
+node dist/review-usage-export.js \
+  --run-id PRODUCER_RUN_ID --run-attempt PRODUCER_ATTEMPT \
+  --source-sha PRODUCER_COMMIT --date YYYY-MM-DD \
+  --output /canonical/private/new-export
+```
+
+Use the producing workflow's source commit and canonical UTC partition date.
+The reviewed PR head is a different identity. This CLI supports the central
+`sweep.yml` / `event-review-apply` full-review producer. Discovery is confined to
+one publisher/day and selects the first matching `review.*` producer for the
+requested run, attempt and source. Its complete native identity is then pinned
+through reservation, completion, shard and event bindings. This is one producer
+transaction, not a snapshot of all workflow invocations or a reporting window.
+
+One shared budget covers at most 32 listing pages, 128 physical requests,
+8 MiB of metadata, 16 MiB of downloaded payload/bindings and 120 seconds.
+Canonical per-file, file-count and event limits also apply. Limits include
+error response bodies; there are no automatic retries or redirects. Discovery
+stops once the selected producer's reservation can supply its exact part set.
+
+The CLI requires server-verified object digests and the complete canonical
+import transaction. Markerless legacy shards, missing bindings, corruption,
+producer mismatches and exhausted budgets fail with an incomplete result and
+nonzero exit. An existing destination is preserved. A newly owned private
+stage becomes usable only after strict validation; failed stages are removed.
+On success the directory contains the native ledger transaction. Stdout contains
+`selection` (the native producer identity and shard paths) and `report` (the
+unchanged offline report described above). Selection remains explicit even when
+there are no item rows. Coverage and unavailable billing/configuration fields
+retain the same meaning.
+
+The controlled CLI driver and its limits are documented in
+[`proof/review-usage-export/README.md`](proof/review-usage-export/README.md).
+Credential qualification and any live export remain separate operator actions.
+
 ### Receiver rollout and Analytics layout
 
 Roll out the shared validator, Worker writer, and updated queries before the

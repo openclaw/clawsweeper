@@ -1,0 +1,1 @@
+- Add a bounded native operator export for one closed full-review producer, preserving private output and explicit unknown usage.
