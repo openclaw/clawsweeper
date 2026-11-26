@@ -723,51 +723,118 @@
         "lowValueTests": {
           "type": "array",
           "maxItems": 10,
-          "description": "Added tests that mirror the code, assert mocks or call counts, duplicate coverage, pin incidental wording or defaults, or test a helper.",
+          "description": "Assess each proposed test deletion. Every removed behavior needs its own fault and existing witness. Omit a deletion or use a null survivor when coverage is missing.",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["file", "reason", "survivor"],
+            "required": ["file", "lineStart", "lineEnd", "reason", "behaviors"],
             "properties": {
               "file": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1,
+                "description": "Exact repository-relative path of the proposed removal."
+              },
+              "lineStart": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "First line to remove, inclusive."
+              },
+              "lineEnd": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Last line to remove, inclusive."
               },
               "reason": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1,
+                "description": "Describe exactly which test, row or assertion is being considered."
               },
-              "survivor": {
-                "description": "Required evidence for every cut in this entry.",
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["check", "regression"],
-                    "properties": {
-                      "check": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Identify the surviving assertion or test by path and line or exact case name."
-                      },
-                      "regression": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Describe the same concrete regression that would fail both the cut and the surviving check, and why the survivor fails."
-                      }
-                    }
-                  },
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["notWorthTesting"],
-                    "properties": {
-                      "notWorthTesting": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Explain why losing detection of the specific behavior covered by the cut is acceptable."
-                      }
+              "behaviors": {
+                "type": "array",
+                "minItems": 1,
+                "description": "Inventory every distinct input and observable outcome removed. One uncaught fault withholds the whole deletion.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["behavior", "fault", "survivor"],
+                  "properties": {
+                    "behavior": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Name the input, precondition and observable promise of this check."
+                    },
+                    "fault": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "A narrow implementation fault on this input that violates this promise while adjacent behavior works."
+                    },
+                    "survivor": {
+                      "description": "Use null when the remaining tests can pass, or the source does not establish a witness. A hypothetical replacement cannot count.",
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": ["file", "line", "assertion", "failure", "inputs"],
+                          "properties": {
+                            "file": {
+                              "type": "string",
+                              "minLength": 1,
+                              "description": "Exact repository-relative path at the reviewed head."
+                            },
+                            "line": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "description": "1-based assertion line, outside every proposed cut."
+                            },
+                            "assertion": {
+                              "type": "string",
+                              "minLength": 1,
+                              "description": "Copy the entire trimmed source line that checks this outcome, including punctuation."
+                            },
+                            "failure": {
+                              "type": "string",
+                              "minLength": 1,
+                              "description": "Trace why this assertion fails for this specific fault on this input after every proposed cut."
+                            },
+                            "inputs": {
+                              "type": "array",
+                              "minItems": 1,
+                              "description": "Exact test-side ranges that supply the triggering input and run this assertion, including table rows and calls into helpers. Use the assertion line itself for a self-contained operation. Keep the ranges precise.",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["file", "lineStart", "lineEnd", "sourceLine"],
+                                "properties": {
+                                  "file": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Path of the surviving input or invocation."
+                                  },
+                                  "lineStart": {
+                                    "type": "integer",
+                                    "minimum": 1
+                                  },
+                                  "lineEnd": {
+                                    "type": "integer",
+                                    "minimum": 1
+                                  },
+                                  "sourceLine": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Entire trimmed line at lineStart."
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   }
-                ]
+                }
               }
             }
           }

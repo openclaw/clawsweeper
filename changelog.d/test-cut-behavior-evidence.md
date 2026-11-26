@@ -1,0 +1,1 @@
+- Require a surviving assertion and a specific fault for every behavior covered by a suggested test cut.

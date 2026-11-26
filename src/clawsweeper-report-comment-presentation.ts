@@ -188,7 +188,18 @@ function publicFindingsBlock(
     .map(publicProvenanceLine);
   if (provenanceLines.length) blocks.push("### Provenance", provenanceLines.join("\n"));
   const testLines = [
-    ...testingReview.lowValueTests.map(({ file, reason, survivor }) => {
+    ...testingReview.lowValueTests.map((test) => {
+      const { file, reason } = test;
+      if ("behaviors" in test) {
+        return [
+          `- Suggested test cut ${publicInlineCode(`${file}:${test.lineStart}-${test.lineEnd}`)}: ${publicInlineText(reason)}`,
+          ...test.behaviors.map(
+            ({ behavior, fault, survivor }) =>
+              `  - ${publicInlineText(behavior)} Fault: ${publicInlineText(fault)} ${publicInlineCode(`${survivor.file}:${survivor.line}`)}: ${publicInlineText(survivor.failure)} Input: ${survivor.inputs.map((input) => publicInlineCode(`${input.file}:${input.lineStart}-${input.lineEnd}`)).join(", ")}`,
+          ),
+        ].join("\n");
+      }
+      const { survivor } = test;
       const line = `- Low-value test ${publicInlineCode(file)}: ${publicInlineText(reason) || "reason not recorded."}`;
       if (!survivor) return line;
       const evidence =

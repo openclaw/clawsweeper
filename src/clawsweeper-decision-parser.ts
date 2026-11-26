@@ -83,6 +83,7 @@ import type {
   RootCauseRelationship,
   SecurityConcern,
   SecurityReview,
+  LowValueTest,
   TestingReview,
 } from "./clawsweeper-types.js";
 import { normalizePrRating } from "./clawsweeper-rating.js";
@@ -561,6 +562,13 @@ export function createDecisionParser({
     });
   }
 
+  function testLineRange(record: Record<string, unknown>, path: string) {
+    const lineStart = requireInteger(record.lineStart, `${path}.lineStart`);
+    const lineEnd = requireInteger(record.lineEnd, `${path}.lineEnd`);
+    if (lineStart < 1 || lineEnd < lineStart) throw new Error(`${path} has an invalid line range`);
+    return { lineStart, lineEnd };
+  }
+
   function parseTestingReview(
     value: unknown,
     path: string,
@@ -573,34 +581,93 @@ export function createDecisionParser({
     }
     return {
       proofPath: requireEnum(record.proofPath, TESTING_PROOF_PATHS, `${path}.proofPath`),
-      lowValueTests: record.lowValueTests.slice(0, MAX_LOW_VALUE_TESTS).map((entry, index) => {
-        const entryPath = `${path}.lowValueTests[${index}]`;
-        const test = requireRecord(entry, entryPath);
-        rejectUnexpectedKeys(test, LOW_VALUE_TEST_SCHEMA_KEYS, entryPath);
-        const cut = {
-          file: requireReportLine(test.file, `${entryPath}.file`),
-          reason: requireReportLine(test.reason, `${entryPath}.reason`),
-        };
-        if (source === "stored" && test.survivor === undefined) return cut;
-        const survivorPath = `${entryPath}.survivor`;
-        const survivor = requireRecord(test.survivor, survivorPath);
-        if ("notWorthTesting" in survivor) {
-          rejectUnexpectedKeys(survivor, new Set(["notWorthTesting"]), survivorPath);
-          const notWorthTesting = requireReportLine(
-            survivor.notWorthTesting,
-            `${survivorPath}.notWorthTesting`,
-          );
-          if (!notWorthTesting)
-            throw new Error(`${survivorPath}.notWorthTesting must not be empty`);
-          return { ...cut, survivor: { notWorthTesting } };
-        }
-        rejectUnexpectedKeys(survivor, new Set(["check", "regression"]), survivorPath);
-        const check = requireReportLine(survivor.check, `${survivorPath}.check`);
-        const regression = requireReportLine(survivor.regression, `${survivorPath}.regression`);
-        if (!check || !regression)
-          throw new Error(`${survivorPath} check and regression must not be empty`);
-        return { ...cut, survivor: { check, regression } };
-      }),
+      lowValueTests: record.lowValueTests
+        .slice(0, MAX_LOW_VALUE_TESTS)
+        .flatMap<LowValueTest>((entry, index) => {
+          const entryPath = `${path}.lowValueTests[${index}]`;
+          const test = requireRecord(entry, entryPath);
+          const cut = {
+            file: requireReportLine(test.file, `${entryPath}.file`),
+            reason: requireReportLine(test.reason, `${entryPath}.reason`),
+          };
+          if (source === "stored" && !("behaviors" in test)) {
+            rejectUnexpectedKeys(test, new Set(["file", "reason", "survivor"]), entryPath);
+            if (test.survivor === undefined) return [cut];
+            const survivorPath = `${entryPath}.survivor`;
+            const survivor = requireRecord(test.survivor, survivorPath);
+            if ("notWorthTesting" in survivor) {
+              rejectUnexpectedKeys(survivor, new Set(["notWorthTesting"]), survivorPath);
+              const notWorthTesting = requireReportLine(
+                survivor.notWorthTesting,
+                `${survivorPath}.notWorthTesting`,
+              );
+              if (!notWorthTesting)
+                throw new Error(`${survivorPath}.notWorthTesting must not be empty`);
+              return [{ ...cut, survivor: { notWorthTesting } }];
+            }
+            rejectUnexpectedKeys(survivor, new Set(["check", "regression"]), survivorPath);
+            const check = requireReportLine(survivor.check, `${survivorPath}.check`);
+            const regression = requireReportLine(survivor.regression, `${survivorPath}.regression`);
+            if (!check || !regression)
+              throw new Error(`${survivorPath} check and regression must not be empty`);
+            return [{ ...cut, survivor: { check, regression } }];
+          }
+          rejectUnexpectedKeys(test, LOW_VALUE_TEST_SCHEMA_KEYS, entryPath);
+          if (!cut.file || !cut.reason) throw new Error(`${entryPath} requires a file and reason`);
+          const range = testLineRange(test, entryPath);
+          if (!Array.isArray(test.behaviors) || !test.behaviors.length) {
+            throw new Error(`${entryPath}.behaviors must be a nonempty array`);
+          }
+          const behaviors = test.behaviors.flatMap((value, i) => {
+            const behaviorPath = `${entryPath}.behaviors[${i}]`;
+            const row = requireRecord(value, behaviorPath);
+            rejectUnexpectedKeys(row, new Set(["behavior", "fault", "survivor"]), behaviorPath);
+            const behavior = requireReportLine(row.behavior, `${behaviorPath}.behavior`);
+            const fault = requireReportLine(row.fault, `${behaviorPath}.fault`);
+            if (!behavior || !fault)
+              throw new Error(`${behaviorPath} requires a behavior and fault`);
+            if (row.survivor === null) return [];
+            const witnessPath = `${behaviorPath}.survivor`;
+            const witness = requireRecord(row.survivor, witnessPath);
+            rejectUnexpectedKeys(
+              witness,
+              new Set(["file", "line", "assertion", "failure", "inputs"]),
+              witnessPath,
+            );
+            const file = requireReportLine(witness.file, `${witnessPath}.file`);
+            const line = requireInteger(witness.line, `${witnessPath}.line`);
+            const assertion = requireSingleLineString(
+              witness.assertion,
+              `${witnessPath}.assertion`,
+            ).trim();
+            const failure = requireReportLine(witness.failure, `${witnessPath}.failure`);
+            if (!file || line < 1 || !assertion || !failure)
+              throw new Error(`${witnessPath} requires a source assertion and failure`);
+            if (!Array.isArray(witness.inputs) || !witness.inputs.length)
+              throw new Error(`${witnessPath}.inputs requires at least one surviving input`);
+            const inputs = witness.inputs.map((input, j) => {
+              const inputPath = `${witnessPath}.inputs[${j}]`;
+              const source = requireRecord(input, inputPath);
+              rejectUnexpectedKeys(
+                source,
+                new Set(["file", "lineStart", "lineEnd", "sourceLine"]),
+                inputPath,
+              );
+              const file = requireSingleLineString(source.file, `${inputPath}.file`);
+              const sourceLine = requireSingleLineString(
+                source.sourceLine,
+                `${inputPath}.sourceLine`,
+              ).trim();
+              if (!file || !sourceLine)
+                throw new Error(`${inputPath} requires an input source line`);
+              return { file, ...testLineRange(source, inputPath), sourceLine };
+            });
+            return [{ behavior, fault, survivor: { file, line, assertion, failure, inputs } }];
+          });
+          return behaviors.length === test.behaviors.length
+            ? [{ ...cut, ...range, behaviors }]
+            : [];
+        }),
       missingE2e: requireReportLine(record.missingE2e, `${path}.missingE2e`),
     };
   }

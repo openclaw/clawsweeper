@@ -433,11 +433,33 @@ export interface ProvenanceEntry {
   verdict: ProvenanceVerdict;
 }
 
-export interface LowValueTest {
+export interface TestCutRange {
   file: string;
-  reason: string;
-  survivor?: { check: string; regression: string } | { notWorthTesting: string };
+  lineStart: number;
+  lineEnd: number;
 }
+
+export type LowValueTest = { file: string; reason: string } & (
+  | {
+      lineStart: number;
+      lineEnd: number;
+      behaviors: {
+        behavior: string;
+        fault: string;
+        survivor: {
+          file: string;
+          line: number;
+          assertion: string;
+          failure: string;
+          inputs: (TestCutRange & { sourceLine: string })[];
+        };
+      }[];
+    }
+  | {
+      // Earlier stored reviews used one witness, or just a file and reason.
+      survivor?: { check: string; regression: string } | { notWorthTesting: string };
+    }
+);
 
 export interface TestingReview {
   proofPath: TestingProofPath;

@@ -5,7 +5,6 @@ import { parseDecision, reviewAutomationMarkersFromReport } from "../dist/clawsw
 import { reportReviewDecision } from "../dist/report-review-decision.js";
 import { updateReviewRecordDecision } from "../dist/review-record.js";
 import type {
-  LowValueTest,
   PrRating,
   ProductReview,
   ProvenanceEntry,
@@ -46,10 +45,25 @@ const overridesIntent: ProvenanceEntry = {
   originalReason: "Reload drops drafts so stale drafts cannot overwrite server state.",
   verdict: "overrides_without_reason",
 };
-const lowValueTest = (index: number): LowValueTest => ({
+const behavior = {
+  behavior: "Reload returns the stored draft.",
+  fault: "Return an empty draft for a populated session.",
+  survivor: {
+    file: "test/reload.test.ts",
+    line: 42,
+    assertion: 'expect(result.draft).toBe("saved");',
+    failure: "The original draft must be returned.",
+    inputs: [
+      { file: "test/reload.test.ts", lineStart: 40, lineEnd: 41, sourceLine: 'save("saved");' },
+    ],
+  },
+};
+const lowValueTest = (index: number) => ({
   file: `test/reload-${index}.test.ts`,
-  reason: "Remove the cache-helper call count.",
-  survivor: { notWorthTesting: "The draft reload contract allows either path to the cache." },
+  lineStart: 8,
+  lineEnd: 8,
+  reason: "The second draft-value assertion repeats the reload contract.",
+  behaviors: [behavior],
 });
 
 function tiers(rating: PrRating) {
@@ -88,15 +102,28 @@ test("decision parsing rejects invalid product, provenance, and testing values",
       { testingReview: { ...shippedTesting, lowValueTests: [{ file: "a.test.ts" }] } },
       /lowValueTests\[0\]\.reason/,
     ],
+    ...[[], [{ ...behavior, fault: " " }], [{ ...behavior, survivor: {} }]].map(
+      (behaviors): [Record<string, unknown>, RegExp] => [
+        {
+          testingReview: { ...shippedTesting, lowValueTests: [{ ...lowValueTest(1), behaviors }] },
+        },
+        /lowValueTests\[0\]\.behaviors/,
+      ],
+    ),
     ...[
       undefined,
-      { check: "test/reload.test.ts:42" },
-      { check: "test/reload.test.ts:42", regression: " " },
-      { notWorthTesting: " " },
-      { ...lowValueTest(1).survivor, check: "test/reload.test.ts:42" },
+      { check: "test/reload.test.ts:42", regression: "Both fail." },
+      { notWorthTesting: "Private detail." },
     ].map((survivor): [Record<string, unknown>, RegExp] => [
-      { testingReview: { ...shippedTesting, lowValueTests: [{ ...lowValueTest(1), survivor }] } },
-      /lowValueTests\[0\]\.survivor/,
+      {
+        testingReview: {
+          ...shippedTesting,
+          lowValueTests: [
+            { file: "a.test.ts", reason: "Remove it", ...(survivor ? { survivor } : {}) },
+          ],
+        },
+      },
+      /lowValueTests\[0\]/,
     ]),
     [{ testingReview: undefined }, /testingReview must be an object/],
   ];
@@ -108,17 +135,7 @@ test("decision parsing rejects invalid product, provenance, and testing values",
 test("report round trip preserves product, provenance, and testing reviews", () => {
   const testingReview = {
     proofPath: "in_process_harness",
-    lowValueTests: [
-      lowValueTest(1),
-      {
-        file: "test/reload-2.test.ts",
-        reason: "Remove the duplicate draft-value assertion.",
-        survivor: {
-          check: "test/reload.test.ts:42",
-          regression: "Dropping the draft on reload fails the draft-value assertion in both cases.",
-        },
-      },
-    ],
+    lowValueTests: [lowValueTest(1), lowValueTest(2)],
     missingE2e: "Reload the real web UI with an unsaved draft.",
   } satisfies TestingReview;
   const provenance = [
@@ -154,10 +171,26 @@ test("report round trip preserves product, provenance, and testing reviews", () 
     file: "test/reload-3.test.ts",
     reason: "Remove the cache-helper call count.",
   };
-  const legacyReport = updateReviewRecordDecision(report, () => ({
-    testingReview: { ...testingReview, lowValueTests: [legacyCut] },
-  }));
-  assert.deepEqual(reportReviewDecision(legacyReport).testingReview.lowValueTests, [legacyCut]);
+  for (const cut of [
+    legacyCut,
+    { ...legacyCut, survivor: { check: "test/reload.test.ts:42", regression: "Drops the draft." } },
+    { ...legacyCut, survivor: { notWorthTesting: "Private detail." } },
+  ]) {
+    const legacyReport = updateReviewRecordDecision(report, () => ({
+      testingReview: { ...testingReview, lowValueTests: [cut] },
+    }));
+    assert.deepEqual(reportReviewDecision(legacyReport).testingReview.lowValueTests, [cut]);
+  }
+  const comment = renderReviewCommentFromReport(report, "none");
+  for (const field of [
+    behavior.behavior,
+    behavior.fault,
+    "test/reload.test.ts:42",
+    behavior.survivor.failure,
+  ]) {
+    assert.ok(comment.includes(field));
+    assert.ok(report.includes(field));
+  }
   for (const line of [
     "product_kind: preference",
     "product_worth: no",
@@ -168,6 +201,32 @@ test("report round trip preserves product, provenance, and testing reviews", () 
   ]) {
     assert.ok(report.includes(`\n${line}\n`), line);
   }
+});
+
+test("one uncovered behavior withholds only its own deletion", () => {
+  const cut = lowValueTest(1);
+  const testingReview = {
+    ...shippedTesting,
+    lowValueTests: [
+      {
+        ...cut,
+        behaviors: [
+          behavior,
+          {
+            behavior: "An empty session has no draft.",
+            fault: "Return the last session's draft.",
+            survivor: null,
+          },
+        ],
+      },
+      lowValueTest(2),
+    ],
+  };
+  const report = generatedCompatibilityReport("sufficient", { testingReview });
+  assert.deepEqual(reportReviewDecision(report).testingReview.lowValueTests, [lowValueTest(2)]);
+  const comment = renderReviewCommentFromReport(report, "none");
+  assert.doesNotMatch(comment, /reload-1\.test/);
+  assert.match(comment, /reload-2\.test/);
 });
 
 function readiness(overrides: Record<string, unknown>) {
