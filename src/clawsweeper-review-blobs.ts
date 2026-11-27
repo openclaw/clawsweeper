@@ -413,9 +413,16 @@ function reviewTreeMatchesCommit({ targetDir, sha }: { targetDir: string; sha: s
   return checkedReviewGit(status, "review_git_inspection_failed").trim() === "";
 }
 
-function reviewTreeBudgetError(headSha: string, detail: string): ReviewSourcePreparationError {
+// Runner capacity can change between attempts; a head tree over a fixed limit cannot.
+// openclaw/clawgrit-reports#26 (an 18 GB projected checkout) was retried 32 times in
+// three hours as review_checkout_unavailable before its retries were exhausted.
+function reviewTreeBudgetError(
+  headSha: string,
+  detail: string,
+  reason: "review_checkout_unavailable" | "source_incompatible" = "review_checkout_unavailable",
+): ReviewSourcePreparationError {
   const error = new ReviewSourcePreparationError(
-    "review_checkout_unavailable",
+    reason,
     `Review checkout exceeds its private workspace budget: ${detail}.`,
   );
   error.reviewedHeadSha = headSha;
@@ -556,6 +563,7 @@ function reviewTreeMetadata(
     throw reviewTreeBudgetError(
       headSha,
       `${paths.length} tracked paths exceed the ${REVIEW_TREE_MAX_FILES}-file limit`,
+      "source_incompatible",
     );
   }
 
@@ -986,6 +994,7 @@ export function materializePullRequestReviewTree({
     throw reviewTreeBudgetError(
       headSha,
       `${metadata.paths.length} tracked paths exceed the ${REVIEW_TREE_MAX_FILES}-file limit`,
+      "source_incompatible",
     );
   }
   const projectedBytes = metadata.blobBytes * BigInt(REVIEW_TREE_WORKING_COPY_EXPANSION_FACTOR);
@@ -993,6 +1002,7 @@ export function materializePullRequestReviewTree({
     throw reviewTreeBudgetError(
       headSha,
       `${projectedBytes} conservatively projected bytes exceed the ${REVIEW_TREE_MAX_BYTES}-byte limit`,
+      "source_incompatible",
     );
   }
   const acquisitionBytes = (metadata.missingBlobs ?? []).reduce(
