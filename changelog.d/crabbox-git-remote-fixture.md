@@ -1,0 +1,1 @@
+- Allow reviews that encounter Crabbox's synthetic credential-bearing Git remote in its URL parser tests or their diffs.

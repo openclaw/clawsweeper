@@ -87,6 +87,8 @@ export const APPROVED_SYNTHETIC_VALUES: readonly ApprovedSyntheticValue[] = [
   [17,"URI",["HTML","PLAIN"],"60267342b1ab046bd8c42e2226fdfce2aa081e7f18e17c35c9c013d7b1de5720","60267342b1ab046bd8c42e2226fdfce2aa081e7f18e17c35c9c013d7b1de5720"],
   // internal/cli/repo_test.go
   [17,"URI",["PLAIN"],"609f5f8c987b35e0d48b35e8463574db63b84c087e79d4189ef6fea5979f7609","8074e19d513f3bdb60156065af46081e407232026590b37476c5b7745db3d776"],
+  // Crabbox TestGitRemoteURLHasCredentials: https://github.com/openclaw/crabbox/blob/8ab3b94bc565ad6b7dea660f7b1cec1d47b83a6f/internal/cli/repo_test.go#L1239
+  [17,"URI",["PLAIN"],"9b6169db3630592f5ea93da074d2ddef32e987543a629d807609cde19ad94a3e","a7f2f10ee878d1f9cd4600710f4c1f9eacb711180cbf100f541a974791614529"],
   // test/helpers/openclaw-test-instance.test.ts
   [17,"URI",["HTML","PLAIN"],"630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb","630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb"],
   // skills/autoreview/tests/test_autoreview_hardening.py, .agents/skills/autoreview/tests/test_autoreview_hardening.py

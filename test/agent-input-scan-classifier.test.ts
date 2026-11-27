@@ -141,6 +141,21 @@ test("ClawRouter bootstrap rejection fixture retains its exact native pair", () 
   assert.equal(classify([finding, uriFinding(value + "x", { Raw: raw })]).kind, "refused");
 });
 
+test("Crabbox's Git remote fixture is classified in a deleted patch line", () => {
+  const raw = ["https://", "runner:token@example.test"].join("");
+  // TruffleHog captures the path through /repo in the .git URL.
+  const finding = uriFinding(raw + "/repo", { Raw: raw });
+  const patch: StagedScanInput = {
+    kind: "patch",
+    id: "patch",
+    from: "a".repeat(40),
+    to: "b".repeat(40),
+    bytes: Buffer.from(`-\t\t{remote: "${raw}/repo.git", want: true},\n`),
+  };
+  assert.equal(classify([finding], patch).kind, "classified");
+  assert.equal(classify([{ ...finding, Verified: true }], patch).kind, "refused");
+});
+
 test("reviewed password-only URI findings retain empty usernames", () => {
   for (const [raw, suffix] of [
     [["https://:", "example-password@status.example"].join(""), ""],
@@ -320,7 +335,7 @@ test("normalized Postgres findings never gain a value-only approval", () => {
 
 test("migrated approvals have distinct, complete detector and native value identities", () => {
   const keys = new Set<string>();
-  assert.equal(APPROVED_SYNTHETIC_VALUES.length, 97);
+  assert.equal(APPROVED_SYNTHETIC_VALUES.length, 98);
   for (const [type, name, decoders, raw, rawV2] of APPROVED_SYNTHETIC_VALUES) {
     assert.ok([10, 17, 895, 899, 938].includes(type));
     assert.ok(["JDBC", "URI", "MongoDB", "FTP", "Privacy"].includes(name));
