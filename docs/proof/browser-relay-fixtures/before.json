@@ -1,0 +1,33 @@
+{
+  "policyBase": "fb7b06fad55acdadbf8dc69071da137a7f79b170",
+  "base": "165f1297b8c0e139257f85597dafd9127b983499",
+  "head": "37ddf036b04bf56f2b4eddfdb2569dfc9f9b99bc",
+  "node": "v24.22.3",
+  "platform": "darwin",
+  "arch": "arm64",
+  "result": "refused",
+  "reason": "findings",
+  "diagnostic": {
+    "kind": "unclassified_finding",
+    "reason": "finding_not_reviewed",
+    "findingCount": 11,
+    "findingIndex": 3,
+    "detectorType": 17,
+    "decoder": "PLAIN",
+    "verified": false,
+    "scannerLine": 298,
+    "material": {
+      "kind": "blob",
+      "id": "760ca7da9dc6cd6f97d459784ca74e719e84b76c",
+      "referenceCount": 1,
+      "references": [
+        {
+          "revision": "165f1297b8c0e139257f85597dafd9127b983499",
+          "pathSha256": "5d68bdda700d628eda6acfcad22af97ed5c9fc1a478bd734ffacd8604ef302a9",
+          "mode": "100644",
+          "role": "base"
+        }
+      ]
+    }
+  }
+}

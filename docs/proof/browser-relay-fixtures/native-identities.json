@@ -1,0 +1,47 @@
+{
+  "scanner": "TruffleHog 3.99.4",
+  "exit": 183,
+  "findingCount": 11,
+  "identities": [
+    {
+      "detector": "URI",
+      "rawSha256": "1d71159c56ca84a71d1b34c10e8d645f3ced3c75a5ac818104338ff58bb95993",
+      "rawV2Sha256": "1d71159c56ca84a71d1b34c10e8d645f3ced3c75a5ac818104338ff58bb95993",
+      "verified": false,
+      "decoders": ["HTML", "PLAIN"],
+      "occurrences": 3
+    },
+    {
+      "detector": "URI",
+      "rawSha256": "71376e8b966e1701ab705a5cbe8f5183f132a44a7c7e8f2092e70aadc6147a56",
+      "rawV2Sha256": "71376e8b966e1701ab705a5cbe8f5183f132a44a7c7e8f2092e70aadc6147a56",
+      "verified": false,
+      "decoders": ["HTML", "PLAIN"],
+      "occurrences": 2
+    },
+    {
+      "detector": "URI",
+      "rawSha256": "fe30fb721f4e8b1d50f281ae338da254a0e34dba6804776c231b8666d5856055",
+      "rawV2Sha256": "3d66d0da353b12cda6548577a624bbb7803b9110255d998a07e5e772dfc5781e",
+      "verified": false,
+      "decoders": ["HTML", "PLAIN"],
+      "occurrences": 2
+    },
+    {
+      "detector": "URI",
+      "rawSha256": "f5accb521ff7c6ffce0ecd2fb4cb9c05475a832e44c8ac4d336c3cab8e79cfa2",
+      "rawV2Sha256": "c81f3e0d5d8aae13f7084e4f5cee483b12b08fb7a4e91f2f7d21072c51b7baa8",
+      "verified": false,
+      "decoders": ["PLAIN"],
+      "occurrences": 2
+    },
+    {
+      "detector": "URI",
+      "rawSha256": "e34573089185e607a0cf66ed5635da4375033afb255217b6a0999973c96edf6d",
+      "rawV2Sha256": "714a0731adfb5b5f3c8c54d5432adaef98a11bccd8d78695cd7c51a9df33eb15",
+      "verified": false,
+      "decoders": ["HTML", "PLAIN"],
+      "occurrences": 2
+    }
+  ]
+}
