@@ -1,0 +1,1 @@
+- Run the compiled coverage-failure fixture's entry from a private temp workspace so its create and unlink no longer race concurrent whole-dist copies with a spurious `fs.cpSync` ENOENT.
