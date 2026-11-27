@@ -181,6 +181,41 @@ test("preliminary publication records intent and usage without completing a revi
   assert.ok(!JSON.stringify(events).includes(f.live.body));
 });
 
+test("PR intake does not publish a missing-reproduction label from a body-only classification", async (t) => {
+  // The intake log for openclaw/openclaw#206396 records all three labels despite the Gateway repro.
+  const f = fixture(t);
+  f.live = {
+    ...f.live,
+    kind: "pull_request",
+    headSha: process.env.EXACT_REVIEW_SOURCE_HEAD_SHA!,
+    title: "fix(exec): charge shared pages once in the host memory budget",
+    body: "Run headless Chromium through Gateway exec at a 601 MiB budget. Main kills it in 1.5 s. The PR keeps it alive for the 60 s run.",
+  };
+  const result = await runIntakeWorkflow({
+    ...f.options,
+    kind: "pull_request",
+    backend: "decisions",
+    infer: async (options) => {
+      await options.recordAttempt({ digest: options.request.digest, backend: "decisions" });
+      return {
+        policy: INTAKE_POLICY,
+        digest: options.request.digest,
+        backend: "decisions",
+        outcome: "classified",
+        answers: { category: "bug", reproduction: "missing", environment: "missing" },
+        usage: null,
+        durationMs: 1,
+      };
+    },
+  });
+  assert.deepEqual(result.labels, [
+    "clawsweeper:intake:bug",
+    "clawsweeper:intake:needs-environment",
+  ]);
+  assert.ok(f.writes.some((command) => command.includes("--add-label")));
+  assert.ok(f.writes.every((command) => !command.includes("clawsweeper:intake:needs-repro")));
+});
+
 test("an item with a published review keeps its labels and spends no inference", async (t) => {
   // Production: openclaw/openclaw#196836 already had its durable review, yet every
   // re-review re-added clawsweeper:intake:bug and the publisher removed it minutes later.

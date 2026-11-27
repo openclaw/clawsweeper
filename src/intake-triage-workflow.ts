@@ -254,7 +254,7 @@ export async function runIntakeWorkflow(
       throw new IntakeGuardError();
     if (result.outcome !== "classified") return { outcome: result.outcome, labels: [] };
     if (!parseIntakeAnswers(result.answers)) throw new IntakeGuardError();
-    const wanted = intakeLabels(result);
+    const wanted = intakeLabels(result, snapshot.kind);
     let held = false;
     const assertCurrent = () => {
       if (!fence("status")) throw new IntakeGuardError();
