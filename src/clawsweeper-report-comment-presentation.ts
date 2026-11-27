@@ -176,6 +176,7 @@ function publicFindingsBlock(
   securityReview: SecurityReview,
   provenance: readonly ProvenanceEntry[],
   testingReview: TestingReview,
+  proofBlocksMerge: boolean,
 ): string {
   const findingLines = [
     ...reviewFindings.slice(0, 3).map(reviewFindingSummaryLine),
@@ -207,7 +208,7 @@ function publicFindingsBlock(
           : `Why this can go untested: ${publicInlineText(survivor.notWorthTesting)}`;
       return `${line}\n  ${evidence}`;
     }),
-    ...(testingReview.missingE2e.trim()
+    ...(proofBlocksMerge && testingReview.missingE2e.trim()
       ? [`- Missing end-to-end proof: ${publicInlineText(testingReview.missingE2e)}`]
       : []),
   ];
@@ -479,7 +480,13 @@ function renderKeepOpenCommentFromReport(
       appendHeadingSection(
         lines,
         "Findings",
-        publicFindingsBlock(reviewFindings, securityReview, provenance, testingReview),
+        publicFindingsBlock(
+          reviewFindings,
+          securityReview,
+          provenance,
+          testingReview,
+          proofPolicy.proofBlocksMerge,
+        ),
       );
     }
 
