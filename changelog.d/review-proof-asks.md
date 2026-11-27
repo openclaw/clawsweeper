@@ -1,0 +1,1 @@
+- Keep public review proof requests aligned with the pull request's proof requirement.

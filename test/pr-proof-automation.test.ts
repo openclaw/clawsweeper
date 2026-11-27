@@ -543,7 +543,14 @@ test("maintainer and bot proof exemptions keep readiness, ratings, and security 
   ]) {
     const report = pullRequestProofReport({
       ...scenario,
-      decision: { nextStep: { kind: "none", text: "" } },
+      decision: {
+        nextStep: { kind: "none", text: "" },
+        testingReview: {
+          proofPath: "in_process_harness",
+          lowValueTests: [],
+          missingE2e: "Provide installed-CLI output for the acknowledged-run status timeout.",
+        },
+      },
     });
     const comment = renderReviewCommentFromReport(report, "none", {
       prStatusKind: "ready_for_maintainer_look",
@@ -558,6 +565,7 @@ test("maintainer and bot proof exemptions keep readiness, ratings, and security 
       scenario.author,
     );
     assert.doesNotMatch(comment, /needs real behavior proof before merge/i, scenario.author);
+    assert.doesNotMatch(comment, /Missing end-to-end proof:/, scenario.author);
     assert.doesNotMatch(comment, /status: 📣 needs proof/, scenario.author);
     assert.match(markers, /clawsweeper-verdict:pass/, scenario.author);
     assert.doesNotMatch(markers, /clawsweeper-verdict:needs-human/, scenario.author);
