@@ -115,6 +115,8 @@ everything else requires human comparison with current main.
 - [Agent instructions](../AGENTS.md) — active and binding for coding agents
 - [Changelog fragments](../changelog.d/README.md) — active; one-bullet
   ClawSweeper release-note fragments and the release-time stitch
+- [Independent ordinary reviews](independent-reviews.md) — active opt-in CLI contract;
+  deterministic typed projection, attributed output, and proof limits
 - [PR review comments](pr-review-comments.md) — active; review-thread handling
 - [Related issue discovery](related-issue-discovery.md) — active; duplicate and
   adjacent-report context

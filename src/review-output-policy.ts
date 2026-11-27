@@ -440,9 +440,18 @@ export function createReviewOutputBudget(
 export function configureReviewOutputItems(
   budget: ReviewOutputBudget,
   itemCount: number,
+  reviewsPerItem: 1 | 2 = 1,
 ): ReturnType<typeof reviewOutputItemBudget> {
-  const item = reviewOutputItemBudget(budget.retention, itemCount);
-  const liveItems = budget.retention === "debug" ? itemCount : 1;
+  const ordinary = reviewOutputItemBudget(budget.retention, itemCount);
+  // Independent reviews share the existing model pools; media/report allowances
+  // and aggregate caps stay unchanged. Both outputs must fit before media starts.
+  const item = {
+    ...ordinary,
+    promptFileBytes: Math.floor(ordinary.promptFileBytes / reviewsPerItem),
+    resultFileBytes: Math.floor(ordinary.resultFileBytes / reviewsPerItem),
+    streamFileBytes: Math.floor(ordinary.streamFileBytes / reviewsPerItem),
+  };
+  const liveItems = (budget.retention === "debug" ? itemCount : 1) * reviewsPerItem;
   const modelBytes =
     liveItems * (item.promptFileBytes + item.resultFileBytes + item.streamFileBytes * 2);
   budget.item = item;
@@ -454,7 +463,9 @@ export function configureReviewOutputItems(
     0,
     budget.maxFiles -
       REVIEW_OUTPUT_GLOBAL_MAX_FILES -
-      (budget.retention === "debug" ? itemCount * 6 : 4 + itemCount),
+      (budget.retention === "debug"
+        ? itemCount * (2 + 4 * reviewsPerItem)
+        : 4 * reviewsPerItem + itemCount),
   );
   return item;
 }
@@ -634,32 +645,43 @@ function outputInventoryTotals(inventory: ReadonlyMap<string, number>): {
   };
 }
 
-export function reviewOutputFilePeak(retention: ReviewOutputRetention, itemCount: number): number {
+export function reviewOutputFilePeak(
+  retention: ReviewOutputRetention,
+  itemCount: number,
+  reviewsPerItem: 1 | 2 = 1,
+): number {
   if (!Number.isInteger(itemCount) || itemCount < 1 || itemCount > REVIEW_OUTPUT_MAX_ITEMS) {
     throw new UserFacingCommandError(
       `Review output budgets support 1-${REVIEW_OUTPUT_MAX_ITEMS} items per invocation.`,
     );
   }
   if (retention === "debug") {
-    return REVIEW_OUTPUT_GLOBAL_MAX_FILES + REVIEW_OUTPUT_DEBUG_ITEM_MAX_FILES * itemCount;
+    return (
+      REVIEW_OUTPUT_GLOBAL_MAX_FILES +
+      (REVIEW_OUTPUT_DEBUG_ITEM_MAX_FILES + 4 * (reviewsPerItem - 1)) * itemCount
+    );
   }
   if (retention === "summary") {
     return (
       REVIEW_OUTPUT_GLOBAL_MAX_FILES +
       REVIEW_OUTPUT_SUMMARY_OWNER_FILES +
       REVIEW_OUTPUT_PRIVATE_ITEM_MAX_FILES +
+      4 * (reviewsPerItem - 1) +
       itemCount -
       1
     );
   }
-  return REVIEW_OUTPUT_GLOBAL_MAX_FILES + REVIEW_OUTPUT_PRIVATE_ITEM_MAX_FILES;
+  return (
+    REVIEW_OUTPUT_GLOBAL_MAX_FILES + REVIEW_OUTPUT_PRIVATE_ITEM_MAX_FILES + 4 * (reviewsPerItem - 1)
+  );
 }
 
 export function assertReviewOutputFilePeak(
   retention: ReviewOutputRetention,
   itemCount: number,
+  reviewsPerItem: 1 | 2 = 1,
 ): void {
-  const peak = reviewOutputFilePeak(retention, itemCount);
+  const peak = reviewOutputFilePeak(retention, itemCount, reviewsPerItem);
   const maxFiles =
     retention === "debug" ? DEBUG_REVIEW_OUTPUT_MAX_FILES : TRANSIENT_REVIEW_OUTPUT_MAX_FILES;
   if (peak > maxFiles) {
@@ -682,14 +704,20 @@ export function pruneReviewOutputItem(options: {
   const codexWorkDir = assertOwnedOutputPath(artifactDir, options.codexWorkDir);
   const proofScratchDir = assertOwnedOutputPath(artifactDir, options.proofScratchDir);
   const reportPath = assertOwnedOutputPath(artifactDir, options.reportPath);
-  const itemPrefix = join(codexWorkDir, String(options.itemNumber));
-  for (const path of [
-    `${itemPrefix}.prompt.md`,
-    `${itemPrefix}.json`,
-    `${itemPrefix}.1.codex.stdout.log`,
-    `${itemPrefix}.1.codex.stderr.log`,
+  for (const workDir of [
+    codexWorkDir,
+    join(codexWorkDir, "reviewer-1"),
+    join(codexWorkDir, "reviewer-2"),
   ]) {
-    rmSync(path, { force: true });
+    const itemPrefix = join(workDir, String(options.itemNumber));
+    for (const path of [
+      `${itemPrefix}.prompt.md`,
+      `${itemPrefix}.json`,
+      `${itemPrefix}.1.codex.stdout.log`,
+      `${itemPrefix}.1.codex.stderr.log`,
+    ])
+      rmSync(path, { force: true });
+    if (workDir !== codexWorkDir) removeDirectoryIfEmpty(workDir);
   }
   rmSync(proofScratchDir, { recursive: true, force: true });
   if (options.retention === "none") rmSync(reportPath, { force: true });

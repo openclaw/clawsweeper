@@ -788,6 +788,7 @@ ${extra}
     schemaPath?: string;
     itemNumber: number;
     openclawDir: string;
+    openclawModel?: string;
     preserveCodexAuth?: boolean;
     timeoutMs: number;
     scanSource: AgentScanSource;
@@ -805,15 +806,19 @@ ${extra}
         stderr: "",
       };
     }
+    const env = untrustedCodexEnv({
+      ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
+      preserveCodexAuth: options.preserveCodexAuth,
+    });
     return runAgentCheckoutInspection({
       schemaPath: options.schemaPath ?? CLAWSWEEPER_DECISION_SCHEMA_PATH,
       scanSource: options.scanSource,
       initialPrompt: options.initialPrompt,
       cwd: options.openclawDir,
-      env: untrustedCodexEnv({
-        ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
-        preserveCodexAuth: options.preserveCodexAuth,
-      }),
+      env:
+        options.openclawModel && agentRunner(env) === "openclaw"
+          ? { ...env, CLAWSWEEPER_OPENCLAW_MODEL: options.openclawModel }
+          : env,
       timeoutMs: options.timeoutMs,
     });
   }
@@ -836,6 +841,8 @@ ${extra}
     context: ItemContext;
     git: GitInfo;
     model: string;
+    disableDecisionRepair?: boolean;
+    openclawModel?: string;
     openclawDir: string;
     reviewTreeRoot?: string;
     reasoningEffort: string;
@@ -879,8 +886,12 @@ ${extra}
       : prepareMediaProofArtifacts(options.context, proofScratchDir);
     const outputPath = join(options.workDir, `${options.item.number}.json`);
     if (existsSync(outputPath)) unlinkSync(outputPath);
-    const codexEnv =
+    const reviewEnv =
       options.reviewEnv ?? reviewEnvironment(options.sandboxMode, options.preserveCodexAuth);
+    const codexEnv =
+      options.openclawModel && agentRunner(reviewEnv) === "openclaw"
+        ? { ...reviewEnv, CLAWSWEEPER_OPENCLAW_MODEL: options.openclawModel }
+        : reviewEnv;
     const prompt =
       options.prompt ??
       buildReviewPrompt(options.item, options.context, options.git, options.additionalPrompt, {
@@ -912,6 +923,7 @@ ${extra}
       initialPrompt: prompt,
       itemNumber: options.item.number,
       openclawDir: options.openclawDir,
+      ...(options.openclawModel ? { openclawModel: options.openclawModel } : {}),
       timeoutMs: options.timeoutMs - (Date.now() - startedAt),
       ...(options.preserveCodexAuth === undefined
         ? {}
@@ -988,9 +1000,17 @@ ${extra}
         : { outputFileBytes: options.streamFileBytes }),
       outputLastMessageBytes: options.resultFileBytes,
       timeoutMs: remainingMs,
-      decisionRepair: {
-        item: { repo: options.item.repo, number: options.item.number, kind: options.item.kind },
-      },
+      ...(options.disableDecisionRepair
+        ? {}
+        : {
+            decisionRepair: {
+              item: {
+                repo: options.item.repo,
+                number: options.item.number,
+                kind: options.item.kind,
+              },
+            },
+          }),
     });
     const processFinishedAt = Date.now();
     // Complete the best-effort local handoff before failure can terminate the process.

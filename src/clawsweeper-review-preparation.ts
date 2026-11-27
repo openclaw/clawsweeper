@@ -1,3 +1,5 @@
+import { agentRunner } from "./agent-runner.js";
+import { independentReviewModels } from "./independent-reviews.js";
 import { reviewBodyWithoutPreflight } from "./review-preflight-body.js";
 import { readPrAdmissionInput } from "./clawsweeper-pr-admission-input.js";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
@@ -198,6 +200,7 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
     const batchSize = numberArg(args.batch_size, DEFAULT_PLAN_BATCH_SIZE);
     const maxPages = numberArg(args.max_pages, 250);
     const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
+    const reviewModels = independentReviewModels(args);
     rejectRetiredCodexProfileArgs(
       args,
       "item reviews; author association selects the fixed profile",
@@ -352,7 +355,11 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
       }
       throw error;
     }
-    const reviewPolicy = reviewPolicyHash({ model, sandboxMode });
+    const reviewPolicy = reviewPolicyHash({
+      model,
+      sandboxMode,
+      ...(reviewModels ? { reviewModels, runner: agentRunner() } : {}),
+    });
     const explicitDispatch = isExplicitReviewDispatch(
       args,
       itemNumber !== undefined || itemNumbers !== undefined,
@@ -373,6 +380,7 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
       batchSize,
       maxPages,
       model,
+      reviewModels,
       sandboxMode,
       timeoutMs,
       expectedSourceRevision,
