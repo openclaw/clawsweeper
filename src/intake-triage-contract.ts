@@ -140,13 +140,14 @@ export const INTAKE_LABELS = [
   "clawsweeper:intake:needs-environment",
 ] as const;
 
-export function intakeLabels(result: IntakeResult): string[] {
+export function intakeLabels(result: IntakeResult, kind: IntakePacket["kind"]): string[] {
   const answers = result.outcome === "classified" ? parseIntakeAnswers(result.answers) : null;
   if (!answers) return [];
   const labels: string[] = [];
   if (answers.category !== "unclear") labels.push(`clawsweeper:intake:${answers.category}`);
   if (answers.category === "bug") {
-    if (answers.reproduction === "missing") labels.push("clawsweeper:intake:needs-repro");
+    if (kind === "issue" && answers.reproduction === "missing")
+      labels.push("clawsweeper:intake:needs-repro");
     if (answers.environment === "missing") labels.push("clawsweeper:intake:needs-environment");
   }
   return labels;

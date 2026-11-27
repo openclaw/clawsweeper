@@ -26,8 +26,10 @@ and disables response storage.
 
 Labels in the finite `clawsweeper:intake:*` family are preliminary. They never
 set priority, impact, reproduction proof, good-first-issue eligibility, maturity,
-merge risk, or readiness. They must be removed by the normal completed-review
-publication. Intake must not satisfy review requests or populate review caches.
+merge risk, or readiness. Only issues can receive `clawsweeper:intake:needs-repro`.
+Pull request reproduction evidence can be in the patch, discussion, or linked
+results beyond what intake reads. Normal completed-review publication removes
+preliminary labels. Intake must not satisfy review requests or populate review caches.
 
 Adding a cheap call before a full review adds spend. Cost savings require moving
 an existing metadata task to intake, not counting both calls as a saving.
