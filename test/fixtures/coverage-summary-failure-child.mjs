@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { Console } from "node:console";
 import worker from "../../dashboard/worker.ts";
@@ -12,7 +13,8 @@ import {
 } from "./coverage-summary-failure.ts";
 const root = resolve(import.meta.dirname, "../.."),
   canonical = join(root, "dist/repair/target-fanout.js"),
-  entry = join(dirname(canonical), "coverage-summary-failure-entry-" + process.pid + ".mjs"),
+  workspace = fs.mkdtempSync(join(tmpdir(), "coverage-failure-child-")),
+  entry = join(workspace, "dist/repair/coverage-summary-failure-entry-" + process.pid + ".mjs"),
   trace = process.env.CENSUS_SUMMARY_FAILURE_TRACE,
   stage = process.env.CENSUS_SUMMARY_FAILURE_STAGE ?? "start",
   kind = process.env.CENSUS_SUMMARY_FAILURE_KIND ?? "http503",
@@ -41,6 +43,13 @@ const fault = installCoverageFailure(f, stage, kind, rejection),
   realConsole = new Console(process.stdout, process.stderr),
   bytes = fs.readFileSync(canonical),
   compiledSha256 = sha(bytes);
+// The entry needs its compiled siblings' relative imports, but writing it into
+// the shared dist races concurrent dist copies (enumerate, unlink, open).
+fs.cpSync(join(root, "dist"), join(workspace, "dist"), { recursive: true });
+for (const path of ["node_modules", "config", "prompts", "schema", "records"])
+  if (fs.existsSync(join(root, path)))
+    fs.symlinkSync(join(root, path), join(workspace, path), "dir");
+fs.writeFileSync(join(workspace, "package.json"), '{"type":"module"}\n');
 fs.writeFileSync(entry, bytes);
 if (sha(fs.readFileSync(entry)) !== compiledSha256)
   throw new Error("compiled failure fixture mismatch");
@@ -66,8 +75,8 @@ process.once("beforeExit", () => {
   fault.restore();
   f.close();
   result.fixtureClosed = true;
-  fs.unlinkSync(entry);
+  fs.rmSync(workspace, { recursive: true, force: true });
   if (trace) fs.writeFileSync(trace, JSON.stringify(result, null, 2));
 });
-process.argv = [process.execPath, entry, ...argv];
+process.argv = [process.execPath, fs.realpathSync(entry), ...argv];
 await import(pathToFileURL(entry).href);
