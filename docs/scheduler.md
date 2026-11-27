@@ -32,7 +32,11 @@ manifest with `failure.stage: agent_input_scan` and `retryable: false`, using
 `failure.reason_code` verbatim. The accepted scanner reasons are
 `scanner_unavailable`, `scanner_failed`, `findings`, `deadline`, `staging_limit`,
 `incomplete_source`, `source_drift`, `unsafe_path`, and `unsupported_content`;
-`source_incompatible` remains a separate terminal source-preparation reason.
+`source_incompatible` remains a separate terminal source-preparation reason. A
+pull request head whose tracked files exceed the review checkout's fixed file or
+byte limit reports `source_incompatible`, since the same head always fails the
+same way. Too little runner disk stays `review_checkout_unavailable` and is
+retried.
 Operators can follow the [input-scan diagnostic inspection recipe](input-scan-diagnostics.md)
 from the failed workflow summary without reading raw scanner logs.
 The shared allowlist lives in `src/exact-review-failure-reason.ts`. Exit codes

@@ -1673,7 +1673,7 @@ jobs:
           elif [ "$REVIEW_FAILURE_REASON" = "findings" ]; then
             detail="The input scanner refused the reviewed source. Automatic review is on hold until a fresh explicit re-review or intentional scanner-policy update."
           elif [ "$REVIEW_FAILURE_REASON" = "source_incompatible" ]; then
-            detail="The reviewed source does not contain a valid exact Codex version pin. The durable queue will not retry this unchanged revision; update or rebase it before requesting review again."
+            detail="ClawSweeper cannot prepare this revision for review: it has no valid exact Codex version pin, or its tracked files exceed the review checkout size limit (the linked run names which). The durable queue will not retry this unchanged revision; update or rebase it before requesting review again."
           elif [ -n "$REVIEW_FAILURE_REASON" ]; then
             detail="The input scanner could not safely complete review. Automatic review is on hold until a fresh explicit re-review or intentional scanner-policy update."
           elif [ "$RESERVATION_STATUS" = "superseded" ] || [ "$REVIEW_SUPERSEDED" = "true" ]; then

@@ -82,7 +82,8 @@ const EXPLANATIONS: Record<PublicReviewFailure["reason"], string> = {
   unsupported_content: "Source preparation encountered unsupported content.",
   configuration_missing: "Required review configuration was missing.",
   setup_script_failed: "The review setup script failed.",
-  source_incompatible: "The source was incompatible with review preparation.",
+  source_incompatible:
+    "The source was incompatible with review preparation (missing Codex pin, or tracked files over the checkout limit).",
   review_commits_unavailable: "Required review commits were unavailable.",
   review_history_unavailable: "Required review history was unavailable.",
   review_blob_metadata_unavailable: "Review blob metadata was unavailable.",

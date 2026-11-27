@@ -41,6 +41,7 @@ import * as gitHubRuntime from "../dist/clawsweeper-github-runtime.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
 import { runText } from "../dist/command.js";
 import { readReviewGit, reviewMergeBase } from "../dist/pr-review-evidence.js";
+import { openClawCodexSourcePreparationFailureRetryable } from "../dist/openclaw-codex-source.js";
 import { ReviewSourcePreparationError } from "../dist/review-source-preparation.js";
 import { validationRecoveryRequired } from "../dist/validation-recovery.js";
 import { withMockGh } from "./helpers.ts";
@@ -1500,8 +1501,10 @@ test("restricted review rejects one tracked 2.5 GiB blob before worktree materia
         }),
       (error) =>
         error instanceof ReviewSourcePreparationError &&
-        error.diagnosticReason === "review_checkout_unavailable" &&
-        /conservatively projected bytes/.test(error.message),
+        error.diagnosticReason === "source_incompatible" &&
+        /conservatively projected bytes/.test(error.message) &&
+        // Production: openclaw/clawgrit-reports#26 retried this same head 32 times.
+        !openClawCodexSourcePreparationFailureRetryable(error),
     );
     assert.equal(existsSync(reviewTree), false);
     assert.equal(git(fixture.target, "worktree", "list", "--porcelain"), worktreesBefore);
@@ -1562,7 +1565,9 @@ test("restricted review admits shared and separate filesystem budgets independen
         (error) =>
           error instanceof ReviewSourcePreparationError &&
           error.diagnosticReason === "review_checkout_unavailable" &&
-          scenario.message.test(error.message),
+          scenario.message.test(error.message) &&
+          // Runner disk capacity can change, so these stay retryable.
+          openClawCodexSourcePreparationFailureRetryable(error),
         scenario.name,
       );
       assert.equal(existsSync(worktreeDir), false, scenario.name);
@@ -1596,7 +1601,7 @@ test("restricted review rejects oversized remote blob metadata before fetching o
         }),
       (error) =>
         error instanceof ReviewSourcePreparationError &&
-        error.diagnosticReason === "review_checkout_unavailable" &&
+        error.diagnosticReason === "source_incompatible" &&
         /conservatively projected bytes/.test(error.message),
     );
     assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
