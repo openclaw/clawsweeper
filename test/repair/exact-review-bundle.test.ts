@@ -229,6 +229,40 @@ test("exact review bundle rejects extras and symlinks", () => {
   );
 });
 
+test("a recovered command bundle validates against its normalized publisher decision", (t) => {
+  const value = fixture();
+  t.after(() => fs.rmSync(value.root, { recursive: true, force: true }));
+  const decision = {
+    targetRepo: value.context.targetRepo,
+    itemNumber: value.context.itemNumber,
+    sourceAction: "artifact_retention_recovery",
+    commandStatusMarker: "current-command",
+  };
+  const digest = (input: unknown) => exactReviewDecisionSha256(JSON.stringify(input));
+  const closed = { ...value.context, liveProceeded: false, liveTerminalNoop: true };
+  createExactReviewBundle({
+    bundleDir: value.bundleDir,
+    createdAt: "2026-11-27T19:24:11Z",
+    context: {
+      ...closed,
+      decisionSha256: digest({ ...decision, bayJourneyDeliveryId: "retired-delivery" }),
+    },
+  });
+  assert.equal(
+    validateExactReviewBundle(value.bundleDir, { ...closed, decisionSha256: digest(decision) })
+      .review.artifact_present,
+    false,
+  );
+  assert.throws(
+    () =>
+      validateExactReviewBundle(value.bundleDir, {
+        ...closed,
+        decisionSha256: digest({ ...decision, commandStatusMarker: "other-command" }),
+      }),
+    /does not match/,
+  );
+});
+
 test("exact review decision digest ignores object key ordering", () => {
   assert.equal(
     exactReviewDecisionSha256('{"targetRepo":"openclaw/openclaw","itemNumber":42}'),

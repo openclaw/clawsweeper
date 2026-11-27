@@ -134,8 +134,8 @@ export type ExactReviewTargetItemState =
         | "sourceUpdatedAt"
       >;
     }
-  | { state: "terminal" }
-  | { state: "unavailable" };
+  | { state: "terminal"; disposition: "target_closed" | "target_missing" }
+  | { state: "unavailable"; retryAt?: number | undefined };
 
 export function exactReviewDecisionFrom(value: unknown): ExactReviewDecision | null {
   const base = exactReviewBaseDecisionFrom(value);

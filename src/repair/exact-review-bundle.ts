@@ -98,6 +98,9 @@ export function exactReviewDecisionSha256(decisionJson: string): string {
   } catch {
     throw new Error("exact review decision is not valid JSON");
   }
+  // Persisted producer claims can predate retirement of this telemetry field.
+  // The queue omits it when reconstructing the deferred publisher's decision.
+  if (value && typeof value === "object") Reflect.deleteProperty(value, "bayJourneyDeliveryId");
   return sha256(canonicalJson(value));
 }
 

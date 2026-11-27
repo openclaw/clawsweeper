@@ -2655,6 +2655,202 @@ test("exact-review queue terminalizes every admitted ordinary publication before
   });
 });
 
+function reportlessCommandRequest(runId = "46056397701", revision = 15) {
+  const repo = "openclaw/openclaw";
+  const number = 142456;
+  const { publication } = exactReviewPublicationOverrides(
+    number,
+    runId,
+    "artifact_retention_recovery",
+    revision,
+    repo,
+  );
+  return buildExactReviewQueueRequest(
+    `closed-command-${runId}`,
+    number,
+    "exact_review_artifact_publish",
+    "pull_request",
+    repo,
+    {
+      publication: {
+        ...publication,
+        liveProceeded: false,
+        liveTerminalNoop: true,
+        producerDecision: {
+          ...publication.producerDecision,
+          itemKind: "pull_request",
+          sourceEvent: "pull_request",
+          statusCommentId: 5590514552,
+        },
+      },
+    },
+  );
+}
+
+for (const batching of [true, false]) {
+  for (const liveState of ["closed", "open"] as const) {
+    test(`a reportless recovery command resolves the ${liveState} target with batching ${batching}`, async () => {
+      const harness = createExactReviewAdmissionHarness(
+        () => jsonResponse({ state: liveState, head: { sha: "a".repeat(40) } }),
+        {
+          publicationBatching: batching,
+          publicationBatchSize: "1",
+          captureBatchDispatch: true,
+        },
+      );
+      await withExactReviewAdmissionHarness(harness, async () => {
+        assert.equal((await harness.queue.fetch(reportlessCommandRequest())).status, 202);
+        // Matching producer retries may retain the earlier queue key.
+        assert.equal(
+          (await harness.queue.fetch(reportlessCommandRequest("46056397702"))).status,
+          202,
+        );
+        await harness.queue.alarm();
+        assert.equal(harness.batchDispatches, 0, "there is no artifact to publish");
+        const state = await harness.storage.get("exact-review-queue");
+        const items = Object.values(state.items);
+        assert.equal(items.length, 1);
+        const [next] = items;
+        assert.equal(next.decision.statusCommentId, 5590514552);
+        if (liveState === "closed") {
+          assert.equal(next.terminalFinalization?.disposition, "target_closed");
+          assert.equal(next.terminalFinalization.statusState, "Complete");
+          assert.match(next.terminalFinalization.statusDetail, /item is closed/i);
+        } else {
+          assert.equal(next.key, "openclaw/openclaw#142456");
+          assert.equal(next.decision.sourceAction, "artifact_retention_recovery");
+          assert.equal(next.decision.publication, undefined);
+        }
+      });
+    });
+  }
+}
+
+test("a reportless recovery command preserves the successor admitted during its live read", async () => {
+  let replaceDuringProbe: (() => Promise<void>) | undefined;
+  const harness = createExactReviewAdmissionHarness(
+    async () => {
+      const replace = replaceDuringProbe;
+      replaceDuringProbe = undefined;
+      await replace?.();
+      return jsonResponse({ state: "closed" });
+    },
+    { publicationBatching: true, publicationBatchSize: "1", captureBatchDispatch: true },
+  );
+  const enqueue = (revision: number) =>
+    harness.queue.fetch(reportlessCommandRequest(String(46056397700 + revision), revision));
+  await withExactReviewAdmissionHarness(harness, async () => {
+    assert.equal((await enqueue(1)).status, 202);
+    replaceDuringProbe = async () => {
+      assert.equal((await enqueue(2)).status, 202);
+    };
+    await harness.queue.alarm();
+    assert.equal(replaceDuringProbe, undefined);
+    const state = await harness.storage.get("exact-review-queue");
+    const items = Object.values(state.items);
+    assert.ok(items.some((item) => item.decision.publication?.leaseRevision === 2));
+    assert.ok(items.every((item) => item.terminalFinalization?.disposition !== "target_closed"));
+  });
+});
+
+test("a reportless recovery command survives an unrelated active review on reopen", async () => {
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    publicationBatching: true,
+    publicationBatchSize: "1",
+    captureBatchDispatch: true,
+  });
+  await withExactReviewAdmissionHarness(harness, async () => {
+    const active = leasedExactReviewQueueItem(142456, "701", 1);
+    const decision = { ...active.decision, itemKind: "pull_request", sourceEvent: "pull_request" };
+    await harness.storage.put("exact-review-queue", {
+      deliveries: {},
+      items: { [active.key]: { ...active, decision, leaseDecision: decision } },
+    });
+    assert.equal((await harness.queue.fetch(reportlessCommandRequest())).status, 202);
+    await harness.queue.alarm();
+    const state = await harness.storage.get("exact-review-queue");
+    assert.equal(state.items[active.key].claimedRunId, "701");
+    const pending = state.items["openclaw/openclaw#142456@publish:46056397701:1"];
+    assert.equal(
+      pending?.state,
+      "pending",
+      "the active review cannot acknowledge the unrelated command",
+    );
+    assert.equal(pending.decision.publication.producerDecision.statusCommentId, 5590514552);
+    assert.ok(pending.nextAttemptAt > Date.now());
+    assert.equal(harness.batchDispatches, 0);
+  });
+});
+
+for (const visibility of ["retryable", "terminal"] as const) {
+  test(`a reportless recovery command handles a ${visibility} public target probe without a batch claim`, async () => {
+    let admission: HostedPublicTargetProbe = "public";
+    let liveReads = 0;
+    const harness = createExactReviewAdmissionHarness(
+      () => {
+        liveReads++;
+        return jsonResponse({ state: "closed" });
+      },
+      {
+        publicationBatching: true,
+        publicationBatchSize: "1",
+        captureBatchDispatch: true,
+        hostedPublicTargetProbe: async () => admission,
+      },
+    );
+    await withExactReviewAdmissionHarness(harness, async () => {
+      assert.equal((await harness.queue.fetch(reportlessCommandRequest())).status, 202);
+      const claim = async (id: string) =>
+        (
+          await harness.queue.fetch(
+            new Request("https://queue/publication-batches/claim", {
+              method: "POST",
+              body: JSON.stringify({ claim_id: id, lease_owner: "worker-1", max_items: 1 }),
+            }),
+          )
+        ).json();
+      assert.equal((await claim("before-alarm")).claimed, false);
+      admission = visibility;
+      await harness.queue.alarm();
+      admission = "public";
+      assert.equal((await claim("after-alarm")).claimed, false);
+      assert.equal(harness.batchDispatches, 0);
+      assert.equal(liveReads, 0);
+      const state = await harness.storage.get("exact-review-queue");
+      if (visibility === "terminal") {
+        assert.deepEqual(Object.keys(state.items), []);
+      } else
+        assert.ok(
+          Object.values(state.items).some(
+            (item) => item.state === "pending" && item.nextAttemptAt > Date.now(),
+          ),
+        );
+    });
+  });
+}
+
+for (const batching of [true, false]) {
+  test(`a reportless recovery command respects the item read's retry deadline with batching ${batching}`, async () => {
+    const harness = createExactReviewAdmissionHarness(
+      () => new Response("rate limited", { status: 429, headers: { "retry-after": "120" } }),
+      { publicationBatching: batching, publicationBatchSize: "1", captureBatchDispatch: true },
+    );
+    await withExactReviewAdmissionHarness(harness, async () => {
+      assert.equal((await harness.queue.fetch(reportlessCommandRequest())).status, 202);
+      const beforeRead = Date.now();
+      await harness.queue.alarm();
+      const state = await harness.storage.get("exact-review-queue");
+      const pending = state.items["openclaw/openclaw#142456@publish:46056397701:1"];
+      assert.equal(pending?.state, "pending");
+      assert.ok(
+        pending.nextAttemptAt >= beforeRead + 120_000,
+        "GitHub's retry-after deadline must survive settlement",
+      );
+      assert.equal(harness.dispatched.length + harness.batchDispatches, 0);
+    });
+  });
+}
+
 test("terminal publication cleanup does not block review admission in the same alarm", async () => {
   const publicationNumber = 9220;
   const reviewNumber = 9221;

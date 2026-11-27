@@ -820,10 +820,12 @@ export function publicRootCauseClusterBlock(
 function publicReproducibilityLine(reproductionAssessment: string): string {
   const assessmentLine = sentence(reproductionAssessment);
   if (!assessmentLine) return "";
-  const match = assessmentLine.match(/^(yes|no|unclear|not applicable)\b/i);
+  const match = assessmentLine.match(
+    /^(yes|no|unclear|not applicable)(?:\s*[,.:;]\s*|\s+[-–—]\s+|$)/i,
+  );
   if (!match) return `Reproducibility: ${assessmentLine}`;
   const status = match[1]?.toLowerCase() ?? "";
-  const detail = sentence(assessmentLine.slice(match[0].length).replace(/^[\s,.:;-]+/, ""));
+  const detail = sentence(assessmentLine.slice(match[0].length));
   return `Reproducibility: ${status}.${detail ? ` ${detail}` : ""}`;
 }
 

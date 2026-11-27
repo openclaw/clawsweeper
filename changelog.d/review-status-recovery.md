@@ -1,0 +1,1 @@
+- Clear the stale review-start banner when a publication guard preserves the previous verdict, acknowledge closed review requests without retrying a missing report, and preserve negation in issue reproducibility summaries.
