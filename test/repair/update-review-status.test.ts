@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AGENT_INPUT_SCAN_FAILURE_REASONS } from "../../dist/exact-review-failure-reason.js";
@@ -46,6 +47,12 @@ test("terminal review status renders bounded reason-specific guidance", () => {
 
   assert.match(terminalReviewStatusCopy("incomplete_source").next, /No contributor action/i);
   assert.match(terminalReviewStatusCopy("source_incompatible").next, /Update or rebase/i);
+  // Oversized review checkouts share this terminal reason; the copy must not blame only the Codex pin.
+  assert.match(terminalReviewStatusCopy("source_incompatible").reason, /checkout size limit/);
+  assert.match(
+    readFileSync(new URL("../../.github/workflows/sweep.yml", import.meta.url), "utf8"),
+    /REVIEW_FAILURE_REASON" = "source_incompatible" \]; then\n\s+detail="[^"]*checkout size limit/,
+  );
 });
 
 test("review progress replaces one marker-backed section in place", () => {

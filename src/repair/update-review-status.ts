@@ -40,8 +40,9 @@ export function terminalReviewStatusCopy(reason: TerminalReviewFailureReason) {
       };
     case "source_incompatible":
       return {
-        reason: "This revision does not contain a valid exact Codex version pin.",
-        next: "Update or rebase the revision, then request a fresh review.",
+        reason:
+          "ClawSweeper cannot prepare this revision for review: it has no valid exact Codex version pin, or its tracked files exceed the review checkout size limit.",
+        next: "Fix the pin or shrink the tracked files, then update or rebase the revision and request a fresh review.",
       };
     case "incomplete_source":
       return {
