@@ -45,14 +45,23 @@ const fault = installCoverageFailure(f, stage, kind, rejection),
   compiledSha256 = sha(bytes);
 // The entry needs its compiled siblings' relative imports, but writing it into
 // the shared dist races concurrent dist copies (enumerate, unlink, open).
-fs.cpSync(join(root, "dist"), join(workspace, "dist"), { recursive: true });
-for (const path of ["node_modules", "config", "prompts", "schema", "records"])
-  if (fs.existsSync(join(root, path)))
-    fs.symlinkSync(join(root, path), join(workspace, path), "dir");
-fs.writeFileSync(join(workspace, "package.json"), '{"type":"module"}\n');
-fs.writeFileSync(entry, bytes);
-if (sha(fs.readFileSync(entry)) !== compiledSha256)
-  throw new Error("compiled failure fixture mismatch");
+try {
+  fs.cpSync(join(root, "dist"), join(workspace, "dist"), { recursive: true });
+  for (const path of ["node_modules", "config", "prompts", "schema", "records"])
+    if (fs.existsSync(join(root, path)))
+      fs.symlinkSync(
+        join(root, path),
+        join(workspace, path),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+  fs.writeFileSync(join(workspace, "package.json"), '{"type":"module"}\n');
+  fs.writeFileSync(entry, bytes);
+  if (sha(fs.readFileSync(entry)) !== compiledSha256)
+    throw new Error("compiled failure fixture mismatch");
+} catch (error) {
+  fs.rmSync(workspace, { recursive: true, force: true });
+  throw error;
+}
 console.error = realConsole.error.bind(realConsole);
 process.once("beforeExit", () => {
   const result = {
