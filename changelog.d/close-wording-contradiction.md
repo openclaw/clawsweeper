@@ -1,0 +1,1 @@
+- Explain in public review comments that ClawSweeper closes duplicates and superseded items if the final checks pass.

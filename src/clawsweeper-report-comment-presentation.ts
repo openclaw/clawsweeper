@@ -631,7 +631,9 @@ export function renderReviewCommentFromReport(
     (!requiresMaintainerDecision ||
       reason === "unsponsored_feature_request" ||
       reason === "author_pr_budget_exceeded")
-      ? renderCloseCommentFromReport(markdown, reason, targetProfile())
+      ? renderCloseCommentFromReport(markdown, reason, targetProfile(), {
+          proposeDuplicateClose: true,
+        })
       : renderKeepOpenCommentFromReport(markdown, options, reviewReadiness);
   const markers = options.suppressAutomationMarkers
     ? ""

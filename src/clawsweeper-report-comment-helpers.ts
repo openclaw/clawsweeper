@@ -432,6 +432,7 @@ function closeOutro(
   reason: CloseReason,
   canonicalLinks: readonly string[],
   profile: RepositoryProfile,
+  proposeDuplicateClose: boolean,
 ): string {
   switch (reason) {
     case "implemented_on_main":
@@ -441,6 +442,11 @@ function closeOutro(
     case "clawhub":
       return `So I’m closing this as a scope-fit item for the plugin/community path. Please upload or publish it through ${markdownLink("ClawHub.com", profile.communityUrl ?? "https://clawhub.ai/")} so it can live as an installable ClawHub package instead of a bundled OpenClaw core change.`;
     case "duplicate_or_superseded":
+      if (proposeDuplicateClose) {
+        return canonicalLinks.length
+          ? `The same work is tracked in ${formatCanonicalLinks(canonicalLinks)}. ClawSweeper will close this if the final checks pass. Please continue the discussion there.`
+          : "ClawSweeper will close this as duplicate or superseded if the final checks pass.";
+      }
       return canonicalLinks.length
         ? `So I’m closing this here and keeping the remaining discussion on ${formatCanonicalLinks(canonicalLinks)}.`
         : "So I’m closing this here because the remaining work is already tracked in the canonical issue.";
@@ -587,6 +593,7 @@ function renderCloseComment(
     rootCauseCluster?: RootCauseClusterAssessment;
     reviewLine: string;
     currentItem?: { repo?: string; kind?: ItemKind; number?: number } | undefined;
+    proposeDuplicateClose?: boolean;
   },
   profile: RepositoryProfile,
 ): string {
@@ -651,7 +658,12 @@ function renderCloseComment(
 
   const clawhubHandoff = closeClawHubHandoffBlock(options.reason);
   if (clawhubHandoff) lines.push("", "**ClawHub handoff**", clawhubHandoff);
-  const outro = closeOutro(options.reason, canonicalLinks, profile);
+  const outro = closeOutro(
+    options.reason,
+    canonicalLinks,
+    profile,
+    options.proposeDuplicateClose === true,
+  );
   if (outro) lines.push("", outro);
   if (options.reviewLine) details.push("", options.reviewLine);
   const detailsBlock = collapsedDetailsBlock("Review details", details);
@@ -664,6 +676,7 @@ export function renderCloseCommentFromReport(
   markdown: string,
   reason: CloseReason,
   profile: RepositoryProfile,
+  options: { proposeDuplicateClose?: boolean } = {},
 ): string {
   if (reason === "oversized_pull_request") {
     const size = parseOversizedPullRequestEvidence(
@@ -691,6 +704,7 @@ export function renderCloseCommentFromReport(
         securityReview: decision.securityReview,
         rootCauseCluster: decision.rootCauseCluster,
         reviewLine: closeReviewLineFromReport(markdown, profile),
+        ...options,
         currentItem: {
           repo: markdownRepository(markdown),
           number: Number(frontMatterValue(markdown, "number")),
