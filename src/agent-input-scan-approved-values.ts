@@ -45,6 +45,10 @@ export const APPROVED_SYNTHETIC_VALUES: readonly ApprovedSyntheticValue[] = [
   [17,"URI",["HTML","PLAIN"],"1aa166a254353a56288ad1942fdac6d92342f9ca53ca6690247bae6cc0ac3738","99c6ba8a9fbc40225ed3839f4cadf69924aa66ca191aa2bc647d0a18aaabe731"],
   // src/infra/update-failure-report-config.test.ts
   [17,"URI",["HTML","PLAIN"],"1b950d6c665b182a7aa7a553add23364cedb3ea08771873aea9547b3fd3dcb11","a844b0f4456fddf3bf5e3d3e62391e29458c00c54fadd3ea087242f09889fae9"],
+  // src/infra/update-npm-failure.test.ts
+  [17,"URI",["ESCAPED_UNICODE","HTML","PLAIN"],"ef5498b19a4eb652565caf99d0626aa3450f850ba3f8092f6c9455477856d847","020e2b13b76aade0cc689c06894bfcc3f6b94a4bac9d0a5e14c5c16540f2b339"],
+  // src/infra/update-failure-report-prepare.test.ts
+  [17,"URI",["ESCAPED_UNICODE","HTML","PLAIN"],"257516a05724cb7cdd99566a0d44fe8e7a40951ea09f721b10293029314d9c0f","91a9cd986f3dce959c246d1f35fd5d92731ff1028e659025bb0b47b4df0771ad"],
   // extensions/browser/src/browser/routes/basic.existing-session.test.ts
   [17,"URI",["PLAIN"],"1d71159c56ca84a71d1b34c10e8d645f3ced3c75a5ac818104338ff58bb95993","1d71159c56ca84a71d1b34c10e8d645f3ced3c75a5ac818104338ff58bb95993"],
   // ui/src/pages/custodian/custodian-session-store.test.ts

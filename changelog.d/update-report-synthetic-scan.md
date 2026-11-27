@@ -1,0 +1,1 @@
+- Admit the exact reviewed synthetic URI credentials in OpenClaw's npm-update and prepared failure-report redaction fixtures without broadening scanner policy.
