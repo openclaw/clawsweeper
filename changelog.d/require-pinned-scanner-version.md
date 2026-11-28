@@ -1,0 +1,1 @@
+- Stop scanner installation before publishing the archive or PATH when the executable reports an unexpected version, including under Bash 3.2.
