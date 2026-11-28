@@ -4530,7 +4530,7 @@ importActionEventShards(process.argv[1], process.argv[2]);`;
         { stdio: ["ignore", "pipe", "pipe"] },
       ),
     );
-    await waitForPath(readyPath);
+    await waitForPath(readyPath, 60_000);
     const secondDone = own(
       spawn(
         process.execPath,
