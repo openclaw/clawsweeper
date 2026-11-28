@@ -1,3 +1,4 @@
+import { assertChildExited } from "./helpers/assert-child-exited.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -758,8 +759,9 @@ process.stdout.write(fs.readFileSync(process.env.FIXTURE_DECISION, 'utf8') + '\\
           },
         },
       );
+      assertChildExited(result);
+      assert.equal(result.status, 0, result.stderr + result.stdout);
       const report = readFileSync(join(artifacts, "0.md"), "utf8");
-      assert.equal(result.status, 0, result.stderr + result.stdout + report);
       return { report, comment: renderReviewCommentFromReport(report, "none") };
     };
     const routing = {
