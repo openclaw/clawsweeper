@@ -77,6 +77,21 @@ test("signed admission reports the queue revision independently from the outer W
   }
 });
 
+test("publication admission retains the delivery ID bound by older bundle writers", () => {
+  const { publication } = exactReviewPublicationOverrides(42, "123");
+  const producerDecision = {
+    ...publication.producerDecision,
+    bayJourneyDeliveryId: "old-delivery",
+  };
+  const decision = exactReviewDecisionFrom({
+    ...producerDecision,
+    sourceAction: "exact_review_artifact_publish",
+    publication: { ...publication, producerDecision },
+  });
+  assert.deepEqual(decision?.publication?.producerDecision, producerDecision);
+  assert.ok(decision && !Object.hasOwn(decision, "bayJourneyDeliveryId"));
+});
+
 test("legacy proof fields are ignored by decision and persisted queue parsing", async () => {
   for (const proofAllowedScenarios of [null, "invalid", [], ["retired-scenario"]]) {
     const item = leasedExactReviewQueueItem(70, "700");
@@ -2681,6 +2696,7 @@ function reportlessCommandRequest(runId = "46056397701", revision = 15) {
           itemKind: "pull_request",
           sourceEvent: "pull_request",
           statusCommentId: 5590514552,
+          bayJourneyDeliveryId: "retired-delivery",
         },
       },
     },
@@ -2720,6 +2736,7 @@ for (const batching of [true, false]) {
           assert.equal(next.key, "openclaw/openclaw#142456");
           assert.equal(next.decision.sourceAction, "artifact_retention_recovery");
           assert.equal(next.decision.publication, undefined);
+          assert.equal(Object.hasOwn(next.decision, "bayJourneyDeliveryId"), false);
         }
       });
     });

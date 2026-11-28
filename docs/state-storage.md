@@ -20,6 +20,11 @@ unknown values, duplicate fields, and mismatches fail closed. Coalescing cannot
 widen a manual revision. Background apply skips these reports, and implementation
 discovery rejects them after queue completion.
 
+Some older exact-review bundles include the retired `bayJourneyDeliveryId` in
+their decision digest. The publisher verifies those manifests using the original
+ID from the trusted producer decision. If the queue has already discarded the ID
+and the digest fails, generate a fresh review. The manifest stores only the hash.
+
 Restricted publication also supplies transient authenticated owner metadata:
 the actual queue lease ID and claimed run/attempt, or the active batch ID,
 lease owner, runner run/attempt, and exact member generation. These reuse the

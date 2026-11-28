@@ -73,7 +73,7 @@ export type ExactReviewPublication = {
   liveTerminalNoop: boolean;
   liveTerminalMissing: boolean;
   liveGuardedOpen: boolean;
-  producerDecision: ExactReviewBaseDecision;
+  producerDecision: ExactReviewBaseDecision & { bayJourneyDeliveryId?: string };
   directLifecycle?: {
     plan: DirectPublicationLifecyclePlan;
     receiptOutcome: "accepted" | "deduped" | "superseded";
@@ -649,7 +649,8 @@ export function exactReviewPublicationFrom(value: unknown): ExactReviewPublicati
     publication.leaseRevision === null ? null : Number(publication.leaseRevision);
   const claimGeneration =
     publication.claimGeneration === null ? null : Number(publication.claimGeneration);
-  const producerDecision = exactReviewBaseDecisionFrom(publication.producerDecision);
+  const rawProducer = objectValue(publication.producerDecision);
+  const producerDecision = exactReviewBaseDecisionFrom(rawProducer);
   const liveProceeded = publication.liveProceeded;
   const liveTerminalNoop = publication.liveTerminalNoop;
   const liveTerminalMissing = publication.liveTerminalMissing;
@@ -697,7 +698,13 @@ export function exactReviewPublicationFrom(value: unknown): ExactReviewPublicati
     liveTerminalNoop,
     liveTerminalMissing,
     liveGuardedOpen,
-    producerDecision,
+    // Old bundle writers hashed the original webhook delivery ID. Keep it only
+    // with the publication's producer snapshot for manifest validation.
+    producerDecision:
+      typeof rawProducer.bayJourneyDeliveryId === "string" &&
+      /^[A-Za-z0-9_.:-]{1,200}$/.test(rawProducer.bayJourneyDeliveryId)
+        ? { ...producerDecision, bayJourneyDeliveryId: rawProducer.bayJourneyDeliveryId }
+        : producerDecision,
     ...(directLifecycle ? { directLifecycle } : {}),
   };
 }

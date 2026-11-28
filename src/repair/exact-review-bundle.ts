@@ -30,6 +30,7 @@ export interface ExactReviewBundleContext {
   runAttempt: number;
   producerJob: string;
   decisionSha256: string;
+  legacyDecisionSha256?: string;
   targetRepo: string;
   targetBranch: string;
   itemNumber: number;
@@ -92,16 +93,24 @@ export interface CreateExactReviewBundleOptions {
 }
 
 export function exactReviewDecisionSha256(decisionJson: string): string {
+  return exactReviewDecisionDigests(decisionJson).decisionSha256;
+}
+
+export function exactReviewDecisionDigests(
+  decisionJson: string,
+): Pick<ExactReviewBundleContext, "decisionSha256" | "legacyDecisionSha256"> {
   let value: unknown;
   try {
     value = JSON.parse(decisionJson);
   } catch {
     throw new Error("exact review decision is not valid JSON");
   }
-  // Persisted producer claims can predate retirement of this telemetry field.
-  // The queue omits it when reconstructing the deferred publisher's decision.
-  if (value && typeof value === "object") Reflect.deleteProperty(value, "bayJourneyDeliveryId");
-  return sha256(canonicalJson(value));
+  if (value && typeof value === "object" && Object.hasOwn(value, "bayJourneyDeliveryId")) {
+    const legacyDecisionSha256 = sha256(canonicalJson(value));
+    Reflect.deleteProperty(value, "bayJourneyDeliveryId");
+    return { decisionSha256: sha256(canonicalJson(value)), legacyDecisionSha256 };
+  }
+  return { decisionSha256: sha256(canonicalJson(value)) };
 }
 
 export function createExactReviewBundle(
@@ -236,7 +245,10 @@ function assertExpectedManifest(
     liveTerminalMissing: manifest.review.live_terminal_missing,
     liveGuardedOpen: manifest.review.live_guarded_open,
   } satisfies ExactReviewBundleContext;
-  const { publicationPolicy: _policy, ...boundContext } = expected;
+  const { publicationPolicy: _policy, legacyDecisionSha256, ...boundContext } = expected;
+  if (manifest.review.decision_sha256 === legacyDecisionSha256) {
+    boundContext.decisionSha256 = legacyDecisionSha256;
+  }
   if (JSON.stringify(actual) !== JSON.stringify(boundContext)) {
     throw new Error("exact review bundle does not match the trusted workflow context");
   }

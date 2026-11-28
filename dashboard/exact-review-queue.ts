@@ -11731,15 +11731,10 @@ export class ExactReviewQueue {
       };
     }
     const completedRevision = item.revision;
-    const decision: ExactReviewDecision = {
-      ...publication.producerDecision,
-      sourceAction:
-        publication.producerDecision.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION ||
-        publication.producerDecision.sourceAction === "command_proof_result"
-          ? publication.producerDecision.sourceAction
-          : EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION,
-      supersedesInProgress: true,
-    };
+    const decision = requeuedProducerDecision(
+      publication,
+      EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION,
+    );
     // The successor is the same automatic source-drift generation that /enqueue
     // admits, so the same loop breaker applies. Without it, a review whose own
     // writes keep moving updated_at would requeue itself forever.
@@ -16179,16 +16174,12 @@ function exactReviewFreshRecoveryFromPublicationItem(
 ): { decision: ExactReviewDecision; key: string } | null {
   if (!exactReviewQueueIsPublication(item) || !item.decision.publication) return null;
   if (decisionPublicationPolicy(item.decision)) return null;
-  const decision = exactReviewDecisionFrom({
-    ...item.decision.publication.producerDecision,
-    sourceAction:
-      item.decision.publication.producerDecision.sourceAction ===
-        FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION ||
-      item.decision.publication.producerDecision.sourceAction === "command_proof_result"
-        ? item.decision.publication.producerDecision.sourceAction
-        : EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
-    supersedesInProgress: true,
-  });
+  const decision = exactReviewDecisionFrom(
+    requeuedProducerDecision(
+      item.decision.publication,
+      EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
+    ),
+  );
   return decision ? { decision, key: exactReviewItemKey(decision) } : null;
 }
 
@@ -17321,6 +17312,24 @@ function expireExactReviewPublicationItems(
   return changed;
 }
 
+function requeuedProducerDecision(
+  publication: ExactReviewPublication,
+  sourceAction:
+    | typeof EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION
+    | typeof EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
+): ExactReviewDecision {
+  const { bayJourneyDeliveryId: _retired, ...producer } = publication.producerDecision;
+  return {
+    ...producer,
+    sourceAction:
+      producer.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION ||
+      producer.sourceAction === "command_proof_result"
+        ? producer.sourceAction
+        : sourceAction,
+    supersedesInProgress: true,
+  };
+}
+
 function refreshExactReviewPublicationItem(
   state: ExactReviewQueueState,
   item: ExactReviewQueueItem,
@@ -17333,15 +17342,10 @@ function refreshExactReviewPublicationItem(
   const publication = item.decision.publication;
   if (!publication) throw new Error(`publication metadata missing for ${item.key}`);
   delete state.items[item.key];
-  const decision: ExactReviewDecision = {
-    ...publication.producerDecision,
-    sourceAction:
-      publication.producerDecision.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION ||
-      publication.producerDecision.sourceAction === "command_proof_result"
-        ? publication.producerDecision.sourceAction
-        : EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
-    supersedesInProgress: true,
-  };
+  const decision = requeuedProducerDecision(
+    publication,
+    EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
+  );
   const recoveryKey = exactReviewItemKey(decision);
   const current = state.items[recoveryKey];
   if (current) {
