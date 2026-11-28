@@ -1526,9 +1526,14 @@ test("webhook GitHub requests have a deadline through the response body", async 
 
   let mode = "success";
   let calls = 0;
+  let stalled = Promise.withResolvers<void>();
+  let phaseTimedOut = false;
   const server = http.createServer((request, response) => {
     calls++;
-    if (mode === "headers") return;
+    if (mode === "headers") {
+      stalled.resolve();
+      return;
+    }
     response.writeHead(200, { "content-type": "application/json" });
     if (mode === "body") {
       response.write('{"id":');
@@ -1560,19 +1565,38 @@ test("webhook GitHub requests have a deadline through the response body", async 
   );
   const address = server.address();
   assert.ok(address && typeof address !== "string");
-  t.mock.method(globalThis, "fetch", (input: string | URL | Request, init?: RequestInit) => {
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
     assert.equal(url.origin, "https://api.github.com");
-    return previousFetch(`http://127.0.0.1:${address.port}${url.pathname}`, init);
+    const response = await previousFetch(`http://127.0.0.1:${address.port}${url.pathname}`, init);
+    if (mode === "body") stalled.resolve();
+    return response;
   });
   t.mock.method(AbortSignal, "timeout", (ms: number) => {
     assert.ok(ms === 15_000 || ms === 20_000);
-    return previousTimeout(mode === "success" ? 2_000 : 50);
+    if (mode === "success") return previousTimeout(2_000);
+    // Exercise the real abort while headers or the response body are pending.
+    // DNS/connection setup must not consume the 50ms reserved for that phase.
+    const abort = new AbortController();
+    void stalled.promise.then(() => {
+      const deadline = previousTimeout(50);
+      deadline.addEventListener(
+        "abort",
+        () => {
+          phaseTimedOut = true;
+          abort.abort(deadline.reason);
+        },
+        { once: true },
+      );
+    });
+    return AbortSignal.any([abort.signal, previousTimeout(2_000)]);
   });
 
   for (mode of ["success", "headers", "body"]) {
     await t.test(mode, { timeout: 3_000 }, async () => {
       calls = 0;
+      phaseTimedOut = false;
+      stalled = Promise.withResolvers<void>();
       const result = handleGitHubWebhook({
         event: "pull_request",
         payload: {
@@ -1601,6 +1625,7 @@ test("webhook GitHub requests have a deadline through the response body", async 
           body: { ok: false, error: "target_visibility_unverified", retryable: true },
         });
         assert.equal(calls, 1);
+        assert.equal(phaseTimedOut, true, `the 50ms ${mode} deadline must fire`);
       }
     });
   }
