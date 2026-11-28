@@ -2,10 +2,11 @@
 
 A deferred publisher must match the report it received to the producer decision stored in the queue. Older writers included `bayJourneyDeliveryId` in the manifest’s decision hash. Some queue versions retained that ID and others discarded it.
 
-The replay runs the bundle writer and publication request builder from two revisions, the one immediately before telemetry retirement and the v0.3.5 release. It sends the request to a historical `ExactReviewQueue` in workerd, stops that runtime, and opens the same SQLite storage with the queue from the current commit. The publisher claims and fetches the publication through the batch endpoints. Its bundle validation CLI receives the producer decision and claim identity returned by the upgraded queue.
+The replay runs the bundle writer and publication request builder from the revision immediately before telemetry retirement, the v0.3.5 release and the checkout under test. It sends the request to a historical `ExactReviewQueue` in workerd, stops that runtime, and opens the same SQLite storage with the queue from the current commit. The publisher claims and fetches the publication through the batch endpoints. The rollback case reverses the direction. The checkout under test writes the bundle and queue entry, then main at `3494d3cb` reopens the SQLite store. Each publisher validates the original files against the decision and claim it fetched.
 
 | Stored publication | Expected result after upgrade |
 | --- | --- |
+| Current writer and queue retained the delivery ID, then publication rolled back to main | The main publisher validates the original bundle. |
 | Producer and queue both predate telemetry retirement | The publisher validates the original manifest and report with the delivery ID from the persisted producer decision. |
 | v0.3.5 writer received the delivery ID and the pre-retirement queue retained it | The publisher also validates the released writer’s delivery-bearing manifest. |
 | The released writer received an ordinary decision without the retired field | The publisher validates the ordinary v0.3.5 bundle. |
@@ -15,7 +16,7 @@ For every accepted bundle, substituting a different command marker or claim gene
 
 ## Run the replay
 
-Use Node 24 or later, Git, tar and the repository’s frozen dependencies. The checkout must contain the commits for the queue before telemetry retirement (`ff4b89dd`) and v0.3.5 (`22265ff1`). The script reads those commits and `HEAD` directly from Git.
+Use Node 24 or later, Git, tar and the repository’s frozen dependencies. The checkout must contain the commits for the queue before telemetry retirement (`ff4b89dd`), v0.3.5 (`22265ff1`) and the rollback reader (`3494d3cb`). The script reads those commits and `HEAD` directly from Git.
 
 ```sh
 pnpm install --frozen-lockfile

@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   createExactReviewBundle,
   exactReviewDecisionSha256,
+  exactReviewDecisionDigests,
   validateExactReviewBundle,
   type ExactReviewBundleContext,
 } from "../../dist/repair/exact-review-bundle.js";
@@ -229,7 +230,7 @@ test("exact review bundle rejects extras and symlinks", () => {
   );
 });
 
-test("a recovered command bundle validates against its normalized publisher decision", (t) => {
+test("a stored normalized bundle validates with or without the retired delivery ID", (t) => {
   const value = fixture();
   t.after(() => fs.rmSync(value.root, { recursive: true, force: true }));
   const decision = {
@@ -238,26 +239,26 @@ test("a recovered command bundle validates against its normalized publisher deci
     sourceAction: "artifact_retention_recovery",
     commandStatusMarker: "current-command",
   };
-  const digest = (input: unknown) => exactReviewDecisionSha256(JSON.stringify(input));
+  const digests = (input: unknown) => exactReviewDecisionDigests(JSON.stringify(input));
+  const retained = { ...decision, bayJourneyDeliveryId: "retired-delivery" };
   const closed = { ...value.context, liveProceeded: false, liveTerminalNoop: true };
   createExactReviewBundle({
     bundleDir: value.bundleDir,
     createdAt: "2026-11-27T19:24:11Z",
-    context: {
-      ...closed,
-      decisionSha256: digest({ ...decision, bayJourneyDeliveryId: "retired-delivery" }),
-    },
+    context: { ...closed, ...digests(decision) },
   });
-  assert.equal(
-    validateExactReviewBundle(value.bundleDir, { ...closed, decisionSha256: digest(decision) })
-      .review.artifact_present,
-    false,
-  );
+  for (const saved of [decision, retained]) {
+    assert.equal(
+      validateExactReviewBundle(value.bundleDir, { ...closed, ...digests(saved) }).review
+        .artifact_present,
+      false,
+    );
+  }
   assert.throws(
     () =>
       validateExactReviewBundle(value.bundleDir, {
         ...closed,
-        decisionSha256: digest({ ...decision, commandStatusMarker: "other-command" }),
+        ...digests({ ...retained, commandStatusMarker: "other-command" }),
       }),
     /does not match/,
   );
@@ -283,19 +284,9 @@ test("exact review bundle requires a report after review proceeds", () => {
   );
 });
 
-test("a previous-release bundle validates against its producer identity across runs", (t) => {
+test("a delivery-bearing bundle keeps the released decision digest across runs", (t) => {
   const value = fixture();
   t.after(() => fs.rmSync(value.root, { recursive: true, force: true }));
-  createExactReviewBundle({
-    bundleDir: value.bundleDir,
-    reviewPath: value.report,
-    createdAt: "2026-07-15T12:00:00Z",
-    context: {
-      ...value.context,
-      // Frozen output from the v0.3.5 bundle writer for the decision below.
-      decisionSha256: "359911ead5e9ba971b1eb0167228996b17d6233c1f53b1f924c31e7b021e073b",
-    },
-  });
   const decision = {
     targetRepo: value.context.targetRepo,
     targetBranch: value.context.targetBranch,
@@ -307,6 +298,17 @@ test("a previous-release bundle validates against its producer identity across r
     commandStatusMarker: "<!-- clawsweeper-command-status:42:re_review:command-42 -->",
     bayJourneyDeliveryId: "749a1c61-7a1a-4155-a24f-fd481bcaa51b",
   };
+  const manifest = createExactReviewBundle({
+    bundleDir: value.bundleDir,
+    reviewPath: value.report,
+    createdAt: "2026-07-15T12:00:00Z",
+    context: { ...value.context, ...exactReviewDecisionDigests(JSON.stringify(decision)) },
+  });
+  // v0.3.5 and the rollback reader both expect this digest for the complete decision.
+  assert.equal(
+    manifest.review.decision_sha256,
+    "359911ead5e9ba971b1eb0167228996b17d6233c1f53b1f924c31e7b021e073b",
+  );
   const validate = (trustedDecision: typeof decision) =>
     spawnSync(process.execPath, ["dist/repair/exact-review-bundle-cli.js", "validate"], {
       cwd: process.cwd(),

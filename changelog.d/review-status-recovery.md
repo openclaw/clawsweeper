@@ -1,1 +1,1 @@
-- Clear stale review-start banners after guarded publication, acknowledge closed requests without retrying a missing report, validate older review bundles against their original producer decisions, and preserve negation in issue reproducibility summaries.
+- Clear stale review-start banners after guarded publication, acknowledge closed requests without retrying a missing report, keep review bundles readable across upgrades and rollbacks when the queue retains the original producer decision, and preserve negation in issue reproducibility summaries.

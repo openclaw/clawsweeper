@@ -13,6 +13,7 @@ import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 const repo = fileURLToPath(new URL("../../../", import.meta.url));
 const bayQueue = "ff4b89dd6cdc4f905f714338004f2c30a7e7d194";
 const release = "22265ff14ea73421cfaba18a17cca92a3c13d8e9"; // v0.3.5
+const rollback = "3494d3cbbde1a537c3569b7fcb28d73a521c50ae"; // main before #2247
 const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
 const scratch = mkdtempSync(join(tmpdir(), "exact-review-bundle-upgrade-"));
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -147,7 +148,7 @@ function rejected(result) {
   assert.match(result.stderr, /does not match the trusted workflow context/);
 }
 
-function createHistoricalBundle(source, sourceSha, writer, dir, hasTelemetry) {
+function createStoredBundle(source, sourceSha, writer, dir, hasTelemetry) {
   mkdirSync(dir);
   const producer = {
     targetRepo: "openclaw/openclaw",
@@ -200,29 +201,42 @@ try {
   const beforeRetirement = checkout(bayQueue);
   const previous = checkout(release);
   const current = checkout(head);
+  const rollbackSource = checkout(rollback);
   const bayScript = await queueScript(beforeRetirement);
   const releaseScript = await queueScript(previous);
   const currentScript = await queueScript(current);
   const historicalWriter = await bundleCli(beforeRetirement);
   const writer = await bundleCli(previous);
   const reader = await bundleCli(current);
-  const historical = createHistoricalBundle(
+  const historical = createStoredBundle(
     beforeRetirement,
     bayQueue,
     historicalWriter,
     join(scratch, "historical"),
     true,
   );
-  const legacy = createHistoricalBundle(previous, release, writer, join(scratch, "legacy"), true);
-  const ordinary = createHistoricalBundle(
-    previous,
-    release,
-    writer,
-    join(scratch, "ordinary"),
-    false,
-  );
-  console.log(JSON.stringify({ head, release, bayQueue, node: process.version }));
-  for (const { scenario, oldScript, artifact, retained, expectAccepted } of [
+  const legacy = createStoredBundle(previous, release, writer, join(scratch, "legacy"), true);
+  const ordinary = createStoredBundle(previous, release, writer, join(scratch, "ordinary"), false);
+  const currentBundle = createStoredBundle(current, head, reader, join(scratch, "rollback"), true);
+  console.log(JSON.stringify({ head, release, bayQueue, rollback, node: process.version }));
+  for (const {
+    scenario,
+    oldScript,
+    newScript = currentScript,
+    publisher = reader,
+    artifact,
+    retained,
+    expectAccepted,
+  } of [
+    {
+      scenario: "rollback-to-main",
+      oldScript: currentScript,
+      newScript: await queueScript(rollbackSource),
+      publisher: await bundleCli(rollbackSource),
+      artifact: currentBundle,
+      retained: true,
+      expectAccepted: true,
+    },
     {
       scenario: "pre-retirement-upgrade",
       oldScript: bayScript,
@@ -257,7 +271,7 @@ try {
     await withQueue(oldScript, store, async (post) => {
       assert.equal((await post("/enqueue", request)).queued, true);
     });
-    await withQueue(currentScript, store, async (post) => {
+    await withQueue(newScript, store, async (post) => {
       const leaseOwner = "upgrade-publisher";
       const claim = await post("/publication-batches/claim", {
         claim_id: "upgrade",
@@ -277,8 +291,9 @@ try {
         ...request.decision.publication,
         producerDecision: expectedProducer,
       });
-      const validate = (p) => bundleCommand(reader, "validate", p, dir);
+      const validate = (p) => bundleCommand(publisher, "validate", p, dir);
       const result = validate(saved);
+      assert.equal(result.status === 0, expectAccepted, `${scenario}: ${result.stderr}`);
       if (!expectAccepted) {
         rejected(bundleCommand(writer, "validate", saved, dir));
         rejected(result);
@@ -293,6 +308,17 @@ try {
             },
           }),
         );
+        if (retained) {
+          rejected(
+            validate({
+              ...saved,
+              producerDecision: {
+                ...saved.producerDecision,
+                bayJourneyDeliveryId: "another-delivery",
+              },
+            }),
+          );
+        }
         rejected(validate({ ...saved, claimGeneration: saved.claimGeneration + 1 }));
       }
       assert.deepEqual(readFileSync(manifestPath), originalBytes);
