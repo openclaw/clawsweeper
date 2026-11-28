@@ -1,0 +1,1 @@
+- Reduce SQLite reads when checking census storage limits and projecting coverage for repositories with no tracked records.
