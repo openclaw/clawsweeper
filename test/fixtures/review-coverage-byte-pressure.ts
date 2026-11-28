@@ -71,6 +71,32 @@ export async function runBytePressureScenario(
     rows(
       "SELECT slot,COUNT(*) AS rows,COALESCE(SUM(bytes),0) AS bytes FROM coverage_census_items GROUP BY slot",
     ).map((r) => ({ slot: String(r.slot), rows: Number(r.rows), bytes: Number(r.bytes) }));
+  // Observe every physical row change inside the same SQLite transaction.
+  // REPLACE deletes its old row; recursive_triggers makes that delete visible
+  // to the observer. Rollback restores these totals along with the real rows.
+  new ReviewCoverageCensusStore(a.storage).ensureSchemaSync();
+  a.storage.exec(`
+    PRAGMA recursive_triggers=ON;
+    CREATE TEMP TABLE probe_slot_bytes(slot TEXT PRIMARY KEY, bytes INTEGER NOT NULL);
+    INSERT INTO probe_slot_bytes SELECT slot,SUM(bytes) FROM coverage_census_items GROUP BY slot;
+    CREATE TEMP TRIGGER probe_insert AFTER INSERT ON coverage_census_items BEGIN
+      INSERT INTO probe_slot_bytes VALUES(NEW.slot, NEW.bytes)
+      ON CONFLICT(slot) DO UPDATE SET bytes=bytes+excluded.bytes;
+    END;
+    CREATE TEMP TRIGGER probe_delete AFTER DELETE ON coverage_census_items BEGIN
+      UPDATE probe_slot_bytes SET bytes=bytes-OLD.bytes WHERE slot=OLD.slot;
+    END;
+    CREATE TEMP TRIGGER probe_update AFTER UPDATE OF slot,bytes ON coverage_census_items BEGIN
+      UPDATE probe_slot_bytes SET bytes=bytes-OLD.bytes WHERE slot=OLD.slot;
+      INSERT INTO probe_slot_bytes VALUES(NEW.slot, NEW.bytes)
+      ON CONFLICT(slot) DO UPDATE SET bytes=bytes+excluded.bytes;
+    END;
+  `);
+  const observedBytes = () =>
+    rows("SELECT slot,bytes FROM probe_slot_bytes WHERE bytes<>0 ORDER BY slot").map((r) => ({
+      slot: String(r.slot),
+      bytes: Number(r.bytes),
+    }));
   const metrics = {
     maxStagingBytes: 0,
     maxResidentBytes: 0,
@@ -94,6 +120,10 @@ export async function runBytePressureScenario(
   const measure = () => {
     const s = stats(),
       stage = s.find((r) => r.slot === "staging");
+    assert.deepEqual(
+      observedBytes(),
+      s.filter((r) => r.bytes !== 0).map(({ slot, bytes }) => ({ slot, bytes })),
+    );
     metrics.maxStagingBytes = Math.max(metrics.maxStagingBytes, stage?.bytes ?? 0);
     metrics.maxResidentBytes = Math.max(
       metrics.maxResidentBytes,
@@ -155,7 +185,7 @@ export async function runBytePressureScenario(
         pendingReclaimedRows,
       );
       pendingReclaimedRows = 0;
-      const s = stats();
+      const s = observedBytes();
       metrics.maxTransactionalStagingBytes = Math.max(
         metrics.maxTransactionalStagingBytes,
         s.find((r) => r.slot === "staging")?.bytes ?? 0,
@@ -174,7 +204,7 @@ export async function runBytePressureScenario(
     let before = "",
       body: Record<string, unknown> | undefined;
     if (accept) {
-      before = snapshot();
+      if (armed && !faultInjected) before = snapshot();
       body = JSON.parse(await request.clone().text());
       metrics.maxAcceptWireBytes = Math.max(
         metrics.maxAcceptWireBytes,
