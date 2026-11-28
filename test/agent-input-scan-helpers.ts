@@ -72,6 +72,42 @@ Add-Type -Path $Source -OutputAssembly $Output -OutputType ConsoleApplication
     );
     return;
   }
+  if (!body) {
+    // The empty-result scanner is used twice before a model can produce any
+    // output. Validate the real staging directory without booting four JS VMs.
+    const mode = process.platform === "darwin" ? "stat -f %Lp" : "stat -c %a";
+    writeFileSync(
+      join(bin, "trufflehog"),
+      `#!/bin/sh
+set -eu
+[ -z "\${OPENAI_API_KEY+x}\${GH_TOKEN+x}\${CODEX_HOME+x}\${NODE_OPTIONS+x}\${GIT_CONFIG_COUNT+x}" ]
+if [ "$#" -eq 1 ] && [ "$1" = --version ]; then
+  echo 'trufflehog ${TRUFFLEHOG_VERSION}'
+  exit 0
+fi
+[ "$1" = filesystem ]
+dir=$2
+shift 2
+for expected in --results=verified,unknown --fail --fail-on-scan-errors --no-update --json --no-color; do
+  found=false
+  for arg in "$@"; do
+    if [ "$arg" = "$expected" ]; then found=true; break; fi
+  done
+  "$found"
+done
+[ -d "$dir" ] && [ ! -L "$dir" ] || exit 1
+[ "$(${mode} "$dir")" = 700 ]
+for file in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+  [ -e "$file" ] || [ -L "$file" ] || continue
+  [ -f "$file" ] && [ ! -L "$file" ] || exit 1
+  [ "$(${mode} "$file")" = 600 ]
+  cat "$file" > /dev/null
+done
+`,
+      { mode: 0o755 },
+    );
+    return;
+  }
   writeFileSync(
     join(bin, "trufflehog"),
     `#!${process.execPath}

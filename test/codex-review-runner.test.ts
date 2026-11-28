@@ -1639,9 +1639,14 @@ syncBuiltinESMExports();
           errorCode?: string | null;
           retryable?: boolean;
           diagnostic?: string;
+          stderr?: string;
           retryHint?: string;
         },
       ) => {
+        assert.ok(
+          error.stderr?.includes(denial),
+          "the worker must have captured the quoted model output",
+        );
         assert.equal(error.diagnostic, "");
         assert.equal(error.retryHint, undefined);
         const decision = reportedReviewFailure(error);
