@@ -682,7 +682,7 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   const lifecycleHandoff = source.indexOf("post-effect --route terminal-disposition");
   const postEffectsComplete = source.indexOf(".postEffectsComplete = true");
   assert.ok(lifecycleHandoff >= 0 && lifecycleHandoff < postEffectsComplete);
-  assert.doesNotMatch(source, /TARGET_GH_TOKEN/);
+  assert.match(source, /TARGET_GH_TOKEN: \$\{\{ steps\.target-token\.outputs\.token \}\}/);
   assert.doesNotMatch(source, /lifecycle\/command-ack\/attempt/);
   assert.doesNotMatch(source, /repair:update-command-status/);
   assert.match(source, /post-effect --route enqueue --payload/);

@@ -428,7 +428,7 @@ case "$1" in
     case "$2" in assist-generate|assist-validate|assist-publish|expire-review-lease) exit 0 ;; *) echo "Unexpected CLI invocation: $*" >&2; exit 97 ;; esac ;;
   dist/repair/exact-review-queue-request.js) shift; exec "$REAL_NODE" "$RUNNER_TEMP/exact-review-queue-request.mts" "$@" ;;
   "$RUNNER_TEMP/"*.mts|"$FIXTURE_ROOT/action/validate-pin.mjs"|src/repair/exact-review-queue-response.ts|src/repair/exact-review-queue-context.ts|src/workflow-bot-comments.ts) exec "$REAL_NODE" "$@" ;;
-  "$FIXTURE_ROOT/action/validate-install.mjs"|"$FIXTURE_ROOT/action/configure-api-context.mjs"|dist/intake-triage-workflow.js|dist/pr-classification-workflow.js|dist/github-egress-observer-cli.js|dist/review-placeholder-recovery.js|dist/repair/state-repo-size.js|dist/repair/manual-review-enqueue.js) exit 0 ;;
+  "$FIXTURE_ROOT/action/validate-install.mjs"|"$FIXTURE_ROOT/action/configure-api-context.mjs"|dist/intake-triage-workflow.js|dist/pr-classification-workflow.js|dist/github-egress-observer-cli.js|dist/review-placeholder-recovery.js|dist/repair/release-terminal-review-leases.js|dist/repair/state-repo-size.js|dist/repair/manual-review-enqueue.js) exit 0 ;;
   .github/actions/setup-review-tools/archive-cache.mjs) exec "$REAL_NODE" "$@" ;;
   scripts/build-data.ts|scripts/dashboard-corpus.ts|scripts/prepare-exact-review-batch.mjs|scripts/exact-review-dead-letter-operator.mjs|scripts/stuck-queued-run-remediation.mjs|scripts/queue-storage-census.mjs|scripts/canonical-record-verification.ts|scripts/review-usage-operator.mjs|scripts/publish-apply-observability.mjs|./scripts/prepare-worker-record-cache.ts|--max-old-space-size=12288) exit 0 ;;
   dist/repair/coverage-credential-probe.js)
