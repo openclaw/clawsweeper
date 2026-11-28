@@ -167,7 +167,10 @@ function githubRuntimeRemainingMs(nowMs = Date.now()): number | null {
   const budget = gitHubRunState().budget;
   if (!budget || budget.maxRuntimeMs <= 0) return null;
   return (
-    budget.maxRuntimeMs - (nowMs - budget.startedAtMs) - GITHUB_RUNTIME_REPORT_FLUSH_RESERVE_MS
+    budget.maxRuntimeMs -
+    (nowMs - budget.startedAtMs) -
+    GITHUB_RUNTIME_REPORT_FLUSH_RESERVE_MS -
+    (budget.leaseCleanupReserveMs ?? 0)
   );
 }
 

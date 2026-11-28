@@ -143,6 +143,22 @@ test("GitHub command timeouts and close delays share the elapsed runtime and flu
   assert.doesNotThrow(() => runtime.ensureRuntimeDelayFits(30_000, "before close"));
 });
 
+test("lease cleanup can use the remaining run time after ordinary GitHub work yields", (t) => {
+  const start = 1_000_000;
+  let now = start + 6_000;
+  t.mock.method(Date, "now", () => now);
+  const deadline = { startedAtMs: start, maxRuntimeMs: 10_000 };
+  runtime.withGitHubRuntimeBudget({ ...deadline, leaseCleanupReserveMs: 3_000 }, () => {
+    assert.throws(() => runtime.githubCommandTimeoutMs(), runtime.GitHubRuntimeBudgetError);
+    runtime.withGitHubRuntimeBudget(deadline, () => {
+      assert.equal(runtime.githubCommandTimeoutMs(), 3_000);
+      now += 3_000;
+      assert.throws(() => runtime.githubCommandTimeoutMs(), runtime.GitHubRuntimeBudgetError);
+    });
+    assert.throws(() => runtime.githubCommandTimeoutMs(), runtime.GitHubRuntimeBudgetError);
+  });
+});
+
 test("run state and runtime budgets stay isolated across asynchronous commands", async () => {
   const { promise, resolve } = Promise.withResolvers<void>();
   const now = Date.now();
