@@ -411,7 +411,10 @@ test(
           "server = socket.socket()",
           "server.bind(('127.0.0.1', 0))",
           "server.listen(1)",
-          "pathlib.Path(sys.argv[1]).write_text(str(server.getsockname()[1]))",
+          "port_file = pathlib.Path(sys.argv[1])",
+          "pending = port_file.with_suffix('.pending')",
+          "pending.write_text(str(server.getsockname()[1]))",
+          "pending.replace(port_file)",
           "connection, _address = server.accept()",
           "pathlib.Path(sys.argv[2]).write_text('accepted')",
           "connection.close()",
@@ -427,6 +430,7 @@ test(
       }
       assert.equal(existsSync(portFile), true);
       const port = Number(readFileSync(portFile, "utf8"));
+      assert.ok(port > 0, "expected the host listener's assigned port");
       const output = runContainedCommand(
         process.execPath,
         [
