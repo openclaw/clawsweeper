@@ -33,6 +33,7 @@ test("publish a surviving assertion from the reviewed commit only when it remain
     file,
     lineStart: line,
     lineEnd: line,
+    sourceLines: [line < 3 ? assertion : row],
     reason: "Duplicate draft assertion.",
     behaviors: [
       {
@@ -63,4 +64,17 @@ test("publish a surviving assertion from the reviewed commit only when it remain
   ])
     assert.deepEqual(verifyTestCutSources(cuts, root, sha), []);
   assert.deepEqual(verifyTestCutSources([cut], root, undefined), []);
+
+  // Remove the second assertion. Its old line 2 now holds a row, but still fits in the file.
+  writeFileSync(join(root, file), [assertion, row, row, row, row].join("\n") + "\n");
+  git("-c", "commit.gpgSign=false", "commit", "-qam", "remove duplicate assertion");
+  const head = git("rev-parse", "HEAD");
+  const removed = candidate(2, 1, assertion, file, 5);
+  assert.deepEqual(verifyTestCutSources([removed], root, head), []);
+  const remaining = { ...removed, sourceLines: [row] };
+  assert.deepEqual(verifyTestCutSources([remaining], root, head), [remaining]);
+  const block = { ...remaining, lineEnd: 4, sourceLines: [row, row, row] };
+  assert.deepEqual(verifyTestCutSources([block], root, head), [block]);
+  const staleMiddle = { ...block, sourceLines: [row, assertion, row] };
+  assert.deepEqual(verifyTestCutSources([staleMiddle], root, head), []);
 });

@@ -893,6 +893,7 @@ export const LOW_VALUE_TEST_SCHEMA_KEYS = new Set([
   "reason",
   "lineStart",
   "lineEnd",
+  "sourceLines",
   "behaviors",
 ]);
 export const FEATURE_SHOWCASE_SCHEMA_KEYS = new Set(["status", "reason"]);

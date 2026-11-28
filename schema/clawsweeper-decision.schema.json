@@ -727,7 +727,7 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["file", "lineStart", "lineEnd", "reason", "behaviors"],
+            "required": ["file", "lineStart", "lineEnd", "sourceLines", "reason", "behaviors"],
             "properties": {
               "file": {
                 "type": "string",
@@ -743,6 +743,12 @@
                 "type": "integer",
                 "minimum": 1,
                 "description": "Last line to remove, inclusive."
+              },
+              "sourceLines": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string" },
+                "description": "Copy every full line from lineStart through lineEnd at the reviewed PR head, including indentation and blank lines. Omit line endings. Omit cuts already made by the patch."
               },
               "reason": {
                 "type": "string",

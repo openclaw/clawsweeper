@@ -1,0 +1,1 @@
+- Verify new test-cut suggestions against the reviewed pull request head and preserve suggestions when rendering older reviews.
