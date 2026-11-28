@@ -1,4 +1,4 @@
-import { runCensusScenario } from "./fixtures/isolated-census-scenario.ts";
+import { runCensusScenario } from "./fixtures/isolated-census.ts";
 import test from "node:test";
 
 test(

@@ -14,8 +14,10 @@ import {
   ManualPublicationAuthorityTransportError,
   manualPublicationAuthorityTransportErrorFromStderr,
 } from "../manual-publication-authority.js";
+import { ghErrorText } from "./github-cli.js";
 import { errorFingerprint } from "./error-fingerprint.js";
 import { closeReasonItemKindError } from "../clawsweeper-close-reasons.js";
+import { validReviewLeaseIdentity } from "../review-comment-markers.js";
 import { readReviewRecord } from "../review-record.js";
 import { frontMatterValue } from "../report-front-matter.js";
 import {
@@ -39,7 +41,12 @@ import {
 } from "./event-apply-proof.js";
 import { isJsonObject } from "./json-types.js";
 import { RecordTupleError } from "./record-tuple.js";
-import { GitHubRateLimitError, ghRetryKind } from "../github-retry.js";
+import {
+  GitHubRateLimitError,
+  ghRetryKind,
+  isGitHubNotFoundError,
+  isLockedConversationCommentError,
+} from "../github-retry.js";
 import {
   postDirectPublicationResult,
   prepareDirectPublicationPayload,
@@ -395,6 +402,38 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     throw new Error(
       `Event review for ${options.targetRepo}#${options.itemNumber} was not applied; actions: ${observed}`,
     );
+  }
+  if (
+    options.exactEventPublication &&
+    syncedCount === 0 &&
+    guardedOpenAction !== "skipped_locked_conversation" &&
+    (guardedOpenAction || policyNoopExpected)
+  ) {
+    const owner = frontMatterValue(markdown, "review_lease_owner");
+    const commentId = frontMatterValue(markdown, "review_lease_comment_id");
+    if (owner && commentId && validReviewLeaseIdentity(owner, commentId)) {
+      try {
+        runClawsweeper(options, [
+          "expire-review-lease",
+          "--repo",
+          options.targetRepo,
+          "--item-number",
+          options.itemNumber,
+          "--comment-id",
+          commentId,
+          "--release-owner",
+          owner,
+        ]);
+      } catch (error) {
+        // The lossless comment GET reports only its HTTP status.
+        if (
+          !ghErrorText(error).includes("GitHub API HTTP 404;") &&
+          !isGitHubNotFoundError(error) &&
+          !isLockedConversationCommentError(error)
+        )
+          throw error;
+      }
+    }
   }
   if (policyNoopExpected)
     console.log(

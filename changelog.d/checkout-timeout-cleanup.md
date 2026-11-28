@@ -1,0 +1,1 @@
+- Preserve the target checkout timeout exit code when process-group cleanup fails, and report the signal and operating-system error.

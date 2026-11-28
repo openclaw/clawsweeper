@@ -254,9 +254,9 @@ merge, and why not yet" in this order:
    `Measure | Result | What it means` table. Crab ranks stay visible, and every
    ranked value also shows its six-point score: S is `6/6`, A is `5/6`, B is
    `4/6`, C is `3/6`, D is `2/6`, and F is `1/6`. The `Proof confidence` row
-   shows the rated proof summary. When the contributor proof gate does not
-   apply, the tier stays rated and the row says what proof exists, not "Not
-   applicable"; only an `NA` tier reads "Not applicable". When missing proof
+   pairs the reviewer's tier with their recorded evidence assessment. When host
+   policy waives a proof request, the comment explains the waiver below the
+   scores. The reviewer's grades still supply the rating label. When missing proof
    blocks merge, the row only points to `Before merge`, which owns the proof
    ask. Evidence entries that only repeat the proof statement are dropped, and
    label justifications state only the label meaning. The rating scale and

@@ -13,7 +13,7 @@ import {
   type ActionEventStatus,
   type ActionEventSubject,
 } from "./action-ledger.js";
-import { CLAWSWEEPER_BOT_LOGINS } from "./clawsweeper-bot-identity.js";
+import { CLAWSWEEPER_APP_BOT_LOGINS } from "./clawsweeper-bot-identity.js";
 import { createApplyActionLedger } from "./clawsweeper-apply-ledger.js";
 import { boolArg, numberArg, stringArg, type Args } from "./clawsweeper-args.js";
 import { createFailedReviewRetryWorkflow } from "./clawsweeper-failed-review-retry.js";
@@ -21,9 +21,16 @@ import {
   expireReviewStartStatusLease,
   losslessReviewComment,
 } from "./clawsweeper-review-comment-state.js";
-import { ReviewLeaseSupersededError } from "./clawsweeper-review-comment-leases.js";
+import {
+  deleteOwnedReviewStartPlaceholder,
+  ReviewLeaseSupersededError,
+} from "./clawsweeper-review-comment-leases.js";
 import { backgroundReviewFromEnv } from "./clawsweeper-review-lease.js";
-import { clearInPlaceReviewStartStatus, trailingHtmlComments } from "./review-comment-markers.js";
+import {
+  clearInPlaceReviewStartStatus,
+  reviewStartLeaseCommentMarker,
+  trailingHtmlComments,
+} from "./review-comment-markers.js";
 import type {
   ExactReviewQueueAuthority,
   ExpectedIssueSourceRevisionOptions,
@@ -249,11 +256,18 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     const comment = losslessReviewComment(commentId);
     if (!comment) return;
     const body = typeof comment.body === "string" ? comment.body : "";
-    if (!CLAWSWEEPER_BOT_LOGINS.has(String((comment.user as { login?: string })?.login ?? "")))
+    if (!CLAWSWEEPER_APP_BOT_LOGINS.has(String((comment.user as { login?: string })?.login ?? "")))
       return;
     const releaseOwner = stringArg(args.release_owner, "");
-    const startedMarker = trailingHtmlComments(body).at(-2) ?? "";
+    const markers = trailingHtmlComments(body);
+    const startedMarker = markers.at(-2) ?? "";
     if (releaseOwner && startedMarker.match(/\bowner=([^\s>]+)/)?.[1] !== releaseOwner) return;
+    if (releaseOwner && markers.at(-1) === reviewStartLeaseCommentMarker(itemNumber)) {
+      if (/\sitem=(\d+)(?=\s|-->)/.exec(startedMarker)?.[1] === String(itemNumber)) {
+        deleteOwnedReviewStartPlaceholder(itemNumber, { owner: releaseOwner, commentId }, comment);
+      }
+      return;
+    }
     const expired = releaseOwner
       ? clearInPlaceReviewStartStatus(body, itemNumber)
       : expireReviewStartStatusLease(body, new Date().toISOString(), itemNumber);

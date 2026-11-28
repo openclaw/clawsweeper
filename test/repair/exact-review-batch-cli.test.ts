@@ -1,3 +1,4 @@
+import { assertChildExited } from "../helpers/assert-child-exited.ts";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import {
@@ -1691,6 +1692,7 @@ globalThis.fetch = async (url, init) => {
             },
           },
         );
+        assertChildExited(result);
         assert.equal(result.status, 0, result.stderr);
         assert.equal(
           JSON.parse(readFileSync(manifestPath, "utf8")).leaseExpiresAt,

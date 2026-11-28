@@ -1,0 +1,1 @@
+- Clear the review-start banner and ClawSweeper’s own eyes reaction when a pull request closes during batch review, and finish publication if GitHub denies a cleanup write on a locked conversation.

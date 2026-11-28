@@ -80,7 +80,7 @@ export function syncApplyPullRequestLabels(
   }
 
   const decision = reportReviewDecision(markdown);
-  const proof = decision.realBehaviorProof;
+  const proof = decision.hostProof;
   applyLabels(syncRealBehaviorProofSufficientLabel({ number, labels, proof, dryRun, onMutation }));
 
   applyLabels(syncRealBehaviorProofMediaLabels({ number, labels, proof, dryRun, onMutation }));

@@ -356,6 +356,49 @@ exec "$REAL_GIT" "$@"
 });
 
 test(
+  "checkout preserves the timeout when the final group signal is denied",
+  { skip: process.platform === "win32" },
+  (t) => {
+    const root = mkdtempSync(join(tmpdir(), "checkout-cleanup-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const preload = join(root, "cleanup-error.cjs");
+    writeFileSync(
+      preload,
+      `const cp = require("node:child_process");
+const spawnSync = cp.spawnSync;
+const kill = process.kill;
+// Git exits on TERM, but the final signal still finds a live helper in its group.
+cp.spawnSync = (file, args, options) => file === "/bin/ps"
+  ? {status: 0, stdout: args.at(-1) + " " + process.geteuid() + " S\\n", stderr: ""}
+  : spawnSync(file, args, options);
+require("node:module").syncBuiltinESMExports();
+process.kill = (pid, signal) => {
+  if (signal === "SIGKILL" || signal === 0) throw Object.assign(new Error("cleanup denied"), { code: "EPERM" });
+  return kill(pid, signal);
+};`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--require",
+        preload,
+        "scripts/git-network-deadline.mjs",
+        "-c",
+        "alias.stall=!sleep 2",
+        "stall",
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, CLAWSWEEPER_REVIEW_TARGET_CHECKOUT_TIMEOUT_MS: "200" },
+        timeout: 5000,
+      },
+    );
+    assert.equal(result.status, 124, result.stderr);
+    assert.match(result.stderr, /cleanup failed \(SIGKILL\): EPERM/);
+  },
+);
+
+test(
   "Darwin final cleanup distinguishes reaped groups from live permission failures",
   {
     skip: process.platform !== "darwin",
@@ -397,7 +440,9 @@ require("node:module").syncBuiltinESMExports();
         },
       );
       assert.equal(run.status, state === "S" || foreign === "1" ? 1 : 0, run.stderr);
-      if (state === "S" || foreign === "1") assert.match(run.stderr, /fixture permission denied/);
+      if (state === "S" || foreign === "1") {
+        assert.match(run.stderr, /cleanup failed \(SIGKILL\): EPERM/);
+      }
     }
   },
 );

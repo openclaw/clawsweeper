@@ -13,8 +13,7 @@ export interface RealBehaviorProofPolicy {
 }
 
 export function reportRealBehaviorProofPolicy(markdown: string): RealBehaviorProofPolicy {
-  const { realBehaviorProof: assessment, authorityChainProofRequired } =
-    reportReviewDecision(markdown);
+  const { hostProof: assessment, authorityChainProofRequired } = reportReviewDecision(markdown);
   const required =
     frontMatterValue(markdown, "review_status") !== "failed" &&
     !frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL) &&

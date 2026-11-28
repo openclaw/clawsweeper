@@ -1,3 +1,4 @@
+import { assertChildExited } from "./helpers/assert-child-exited.ts";
 import { renderReviewCommentFromReport } from "../dist/clawsweeper-report-comment-presentation.js";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -73,10 +74,12 @@ function spawnReview(
       env: options.env,
     },
   );
-  return spawnSync(invocation.command, invocation.args, {
+  const result = spawnSync(invocation.command, invocation.args, {
     ...options,
     windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
+  assertChildExited(result);
+  return result;
 }
 
 function git(cwd: string, ...args: string[]): string {

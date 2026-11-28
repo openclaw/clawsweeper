@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
 import { MAX_MEDIA_PROOF_TIMEOUT_MS } from "../../src/media-proof-budget.ts";
+import { mockCommandBinEnv } from "../../test/mock-command-bin-env.ts";
 
 const output = resolve(process.argv[2] || ".artifacts/review-reservation");
 mkdirSync(output, { recursive: true });
@@ -41,6 +42,7 @@ const sources = [
   "src/clawsweeper-review-lease.ts",
   ".github/workflows/sweep.yml",
   "scripts/e2e/review-reservation.mjs",
+  "test/mock-command-bin-env.ts",
 ];
 const sourceHashes = Object.fromEntries(
   sources.map((path) => [path, createHash("sha256").update(readFileSync(path)).digest("hex")]),
@@ -69,6 +71,9 @@ const rawProxy = join(root, "raw-fixture.cjs");
 writeFileSync(
   rawProxy,
   `
+if (process.platform !== "win32" && process.env.NODE_V8_COVERAGE) {
+  throw new Error("synthetic reservation curl inherited coverage");
+}
 const args = process.argv.slice(2);
 const url = new URL(args[args.indexOf("--url") + 1]);
 fetch(process.env.RESERVATION_FIXTURE_URL + url.pathname + url.search).then(async response => {
@@ -330,8 +335,7 @@ try {
         GH_BIN_ARGS: JSON.stringify(["-u", "NODE_V8_COVERAGE", process.execPath, proxy]),
         ...(process.env.NODE_V8_COVERAGE ? { NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE } : {}),
         GH_TOKEN: "synthetic-fixture-no-live-access",
-        CURL_BIN: process.execPath,
-        CURL_BIN_ARGS: JSON.stringify([rawProxy]),
+        ...mockCommandBinEnv("curl", rawProxy),
         RESERVATION_FIXTURE_URL: url,
         ...(scenario.service
           ? {

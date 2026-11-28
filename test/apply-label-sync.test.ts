@@ -2519,6 +2519,7 @@ for (const scenario of [
   "changed receipt",
   "changed timeline receipt",
   "changed head",
+  "merged after ready labels",
   "lease revoked after unknown label write",
 ] as const) {
   test(`exact publication reconciles labels only for a current review: ${scenario}`, () => {
@@ -2624,6 +2625,9 @@ Full review comments:
 const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("fs");
 const logPath = ${JSON.stringify(logPath)};
 const revokedPath = ${JSON.stringify(revokedPath)};
+const mergeAfterLabels = ${scenario === "merged after ready labels"};
+const mergedPath = ${JSON.stringify(join(root, "merged"))};
+const merged = existsSync(mergedPath);
 const revokeAfterUnknownWrite = ${scenario === "lease revoked after unknown label write"};
 const comment = ${JSON.stringify(synced.comment)};
 const comments = [
@@ -2684,8 +2688,8 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
     html_url: "https://github.com/openclaw/openclaw/pull/74482",
     created_at: "2026-07-03T19:00:00Z",
     updated_at: "2026-07-03T21:45:00Z",
-    closed_at: null,
-    state: "open",
+    closed_at: merged ? "2026-07-03T21:47:00Z" : null,
+    state: merged ? "closed" : "open",
     locked: false,
     active_lock_reason: null,
     author_association: "CONTRIBUTOR",
@@ -2702,7 +2706,9 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
   console.log(JSON.stringify({
     number: 74482,
     html_url: "https://github.com/openclaw/openclaw/pull/74482",
-    state: "open",
+    state: merged ? "closed" : "open",
+    merged,
+    merged_at: merged ? "2026-07-03T21:47:00Z" : null,
     changed_files: 1,
     commits: 2,
     review_comments: 0,
@@ -2732,6 +2738,7 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
     body
   }));
 } else if (args[0] === "issue" && args[1] === "edit") {
+  if (mergeAfterLabels) writeFileSync(mergedPath, "merged");
   if (revokeAfterUnknownWrite && !existsSync(revokedPath)) {
     writeFileSync(revokedPath, "revoked");
     console.error("HTTP 503: Service Unavailable");
@@ -2760,6 +2767,7 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
             "--skip-dashboard",
             "--item-number",
             "74482",
+            ...(scenario === "merged after ready labels" ? ["--event-apply-proof"] : []),
           ],
         });
       });
@@ -2771,6 +2779,19 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
         .filter(Boolean)
         .map((line) => JSON.parse(line) as string[]);
       const edits = calls.filter((args) => args[0] === "issue" && args[1] === "edit");
+      if (scenario === "merged after ready labels") {
+        assert.equal(edits.length, 1);
+        assert.ok(edits[0]?.some((arg) => arg.includes("ready for maintainer look")));
+        assert.equal(
+          calls.some((args) => args[0] === "patched-review-body"),
+          false,
+          "the publisher must withhold the verdict after a same-head merge",
+        );
+        const [result] = JSON.parse(readFileSync(reportPath, "utf8"));
+        assert.equal(result.action, "skipped_already_closed");
+        assert.equal(result.terminalStateVerified, true);
+        return;
+      }
       if (scenario === "lease revoked after unknown label write") {
         assert.equal(existsSync(revokedPath), true, "the first label write must be attempted");
         assert.equal(edits.length, 1, "a retry must not write after its lease is revoked");

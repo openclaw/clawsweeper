@@ -117,8 +117,6 @@ export class ReviewCoverageCensusStore {
     storage.sql.exec(
       "CREATE INDEX IF NOT EXISTS coverage_census_items_slot ON coverage_census_items(slot,repo,generation)",
     );
-    // Quota checks need only row counts and logical sizes. Keep their scans
-    // off the payload pages, including while both census copies are resident.
     storage.sql.exec(
       "CREATE INDEX IF NOT EXISTS coverage_census_items_usage ON coverage_census_items(slot,bytes)",
     );

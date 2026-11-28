@@ -6,12 +6,15 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
+import { mockCommandBinEnv } from "./mock-command-bin-env.ts";
 
 import { reviewPromptForTest } from "../dist/clawsweeper.js";
 import { frontMatterValue, reportWithoutReviewRecord } from "../dist/report-front-matter.js";
 import { reviewRecordFrontMatterLine } from "../dist/review-record.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
 import { reviewDecisionParser } from "../dist/clawsweeper-decision-parser.js";
+
+export { mockCommandBinEnv };
 
 export const tmpPrefix = join(tmpdir(), "clawsweeper-test-");
 export const emptyReviewedPrActivityCursor =
@@ -877,6 +880,8 @@ export function promotionGhMock(options: {
 	const closeCommandDelayMs = ${JSON.stringify(options.closeCommandDelayMs ?? 0)};
 	const number = ${options.number};
 	const commentStatePath = join(__dirname, "..", "comment-state-" + number + ".json");
+	const closedAtPath = join(__dirname, "..", "pr-closed-at-" + number);
+	const closedAt = existsSync(closedAtPath) ? readFileSync(closedAtPath, "utf8") : null;
 	const commentReadStatePath = join(__dirname, "..", "comment-read-" + number);
 	const reviewReadStatePath = join(__dirname, "..", "review-read-" + number);
 	const reviewThreadReadStatePath = join(__dirname, "..", "review-thread-read-" + number);
@@ -1058,8 +1063,8 @@ export function promotionGhMock(options: {
     body: ${JSON.stringify(options.body ?? "Stale PR body.")},
     created_at: itemCreatedAt,
     updated_at: ${options.trackCommentActivity ? 'existsSync(commentStatePath) ? JSON.parse(readFileSync(commentStatePath, "utf8")).updated_at : liveUpdatedAt' : "liveUpdatedAt"},
-    closed_at: null,
-    state: "open",
+    closed_at: closedAt,
+    state: closedAt ? "closed" : "open",
     locked: false,
     active_lock_reason: null,
     author_association: authorAssociation,
@@ -1074,7 +1079,8 @@ export function promotionGhMock(options: {
     number,
     title,
     html_url: "https://github.com/openclaw/openclaw/pull/" + number,
-    state: "open",
+    state: closedAt ? "closed" : "open",
+    closed_at: closedAt,
     created_at: itemCreatedAt,
     updated_at: ${options.trackCommentActivity ? 'existsSync(commentStatePath) ? JSON.parse(readFileSync(commentStatePath, "utf8")).updated_at : liveUpdatedAt' : "liveUpdatedAt"},
     mergeable,
@@ -1219,6 +1225,7 @@ export function promotionGhMock(options: {
 } else if (args[0] === "pr" && args[1] === "close" && args[2] === String(number)) {
   if (closeCommandLogPath) appendFileSync(closeCommandLogPath, args.join(" ") + "\\n");
   if (${JSON.stringify(options.closeCommandError ?? "")}) { console.error(${JSON.stringify(options.closeCommandError ?? "")}); process.exit(1); }
+  writeFileSync(closedAtPath, new Date().toISOString());
   if (closeCommandDelayMs > 0) setTimeout(() => console.log(""), closeCommandDelayMs);
   else console.log("");
 	} else if (args[0] === "issue" && args[1] === "edit") {
@@ -1505,24 +1512,9 @@ export function withGhCommand(override: NodeJS.ProcessEnv, run: () => void): voi
   }
 }
 
-export function mockCommandBinEnv(command: string, commandPath: string): NodeJS.ProcessEnv {
-  const key = command.replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
-  return {
-    [`${key}_BIN`]: process.execPath,
-    [`${key}_BIN_ARGS`]: JSON.stringify([commandPath]),
-  };
-}
-
 export function mockGhBinEnv(ghPath: string, binDir?: string): NodeJS.ProcessEnv {
-  // These scripts simulate the external CLI, not ClawSweeper. A deadline can
-  // interrupt Node's profile write and poison the real workers' coverage report.
   return {
-    ...(process.platform === "win32"
-      ? mockCommandBinEnv("gh", ghPath)
-      : {
-          GH_BIN: "/usr/bin/env",
-          GH_BIN_ARGS: JSON.stringify(["-u", "NODE_V8_COVERAGE", process.execPath, ghPath]),
-        }),
+    ...mockCommandBinEnv("gh", ghPath),
     ...(binDir ? { PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}` } : {}),
   };
 }

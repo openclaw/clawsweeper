@@ -1,0 +1,1 @@
+- Keep preliminary intake labels retired when a stale durable review retains a completed review cycle.

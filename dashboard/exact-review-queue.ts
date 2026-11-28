@@ -6209,7 +6209,14 @@ export class ExactReviewQueue {
             event: "publication_terminal_check_failed",
             category: exactReviewDispatchFailure(error).failureClass,
           });
-          return { ...candidate, state: { state: "unavailable" as const } };
+          return {
+            ...candidate,
+            state: {
+              state: "unavailable" as const,
+              retryAt:
+                error instanceof GitHubRequestError ? error.rateLimitHint?.retryAt : undefined,
+            },
+          };
         }
       },
     );
@@ -6534,6 +6541,11 @@ export class ExactReviewQueue {
         item.updatedAt = checkedAt;
         continue;
       }
+      if (
+        targetAdmission?.outcome === "public" &&
+        this.settleReportlessCommand(checkedState, item, candidate.state, checkedAt)
+      )
+        continue;
       if (candidate.state.state === "terminal") {
         delete checkedState.items[item.key];
         terminalPublications += 1;
@@ -6817,18 +6829,91 @@ export class ExactReviewQueue {
     return this.ready;
   }
 
+  // No report exists when a producer stops at closed-item admission. Use the
+  // live target and the fenced command obligation, never the historical archive.
+  private settleReportlessCommand(
+    state: ExactReviewQueueState,
+    item: ExactReviewQueueItem,
+    live: ExactReviewTargetItemState,
+    now: number,
+    retryAt = now + EXACT_REVIEW_ADMISSION_INTERVAL_MS,
+  ) {
+    const revision = exactReviewPublicationRevision(item.decision);
+    if (!revision || item.terminalFinalization || !isReportlessCommand(item)) return false;
+    this.storage.transactionSync(() => {
+      const producer = item.decision.publication!.producerDecision;
+      const occupied =
+        live.state === "open" ? state.items[exactReviewItemKey(producer)] : undefined;
+      const distinct =
+        occupied && !exactReviewCommandObligationSurvives(producer, occupied.decision);
+      if (
+        live.state === "unavailable" ||
+        (distinct &&
+          occupied.state !== "parked" &&
+          !exactReviewDecisionHasCommandContext(occupied.decision)) ||
+        revision.sourceRevision < this.publicationHeadRevisionSync(revision.targetKey)
+      ) {
+        // An unrelated running review cannot carry this command. Keep it available
+        // for recovery. The stale-publication pruner handles verified successors.
+        item.nextAttemptAt = Math.max(
+          item.nextAttemptAt,
+          retryAt,
+          live.state === "unavailable" ? (live.retryAt ?? 0) : 0,
+          now + EXACT_REVIEW_ADMISSION_INTERVAL_MS,
+        );
+        item.backoffReason = "admission_retry";
+        item.updatedAt = now;
+        this.writeStateSync(state);
+        return;
+      }
+      const projection = this.recordLifecycleAdmission(item, item.decision, now);
+      let disposition = projection.terminalDisposition?.kind;
+      let refreshed = false;
+      if (!disposition || disposition === "requeue") {
+        if (occupied) {
+          // A matching command already has an owner. Preserve other commands and parked budgets.
+          disposition = distinct ? "superseded" : "requeue";
+        } else if (live.state === "open") {
+          refreshExactReviewPublicationItem(state, item, now, this.env, this.itemRevisionAllocator);
+          disposition = "requeue";
+          refreshed = true;
+        } else {
+          disposition = live.disposition;
+        }
+      }
+      this.recordLifecycleTerminalDispositionSync(
+        projection,
+        disposition,
+        now,
+        state,
+        undefined,
+        false,
+      );
+      if (!refreshed) delete state.items[item.key];
+      this.writeStateSync(state);
+      this.incrementQueueMetricsSync(
+        refreshed
+          ? { publicationRefreshed: 1 }
+          : { publicationCompleted: 1, publicationSuperseded: 1 },
+      );
+    });
+    return true;
+  }
+
   private async terminalizePublicationCandidates(
     candidates: Array<Pick<ExactReviewQueueItem, "key" | "revision" | "decision">>,
     options: { apply?: boolean; legacyReconciliation?: "v1" | "state_batch_v2" } = {},
     hostedTargetMetadataToken = exactReviewHostedTargetMetadataTokenSource(this.env),
   ) {
-    const ordinaryCandidates = candidates.filter(
-      (item) => !exactReviewDecisionHasCommandContext(item.decision.publication!.producerDecision),
+    const probeCandidates = candidates.filter(
+      (item) =>
+        !exactReviewDecisionHasCommandContext(item.decision.publication!.producerDecision) ||
+        (!options.legacyReconciliation && options.apply !== false && isReportlessCommand(item)),
     );
-    if (!ordinaryCandidates.length) return [];
+    if (!probeCandidates.length) return [];
 
     const targetAdmissions = await this.hostedTargetAdmissions(
-      ordinaryCandidates.map((item) => item.decision.targetRepo),
+      probeCandidates.map((item) => item.decision.targetRepo),
       hostedTargetMetadataToken,
     );
     const targetTokens = new Map<string, Promise<string>>();
@@ -6841,7 +6926,7 @@ export class ExactReviewQueue {
       return token;
     };
     const liveStates = await mapWithConcurrency(
-      ordinaryCandidates,
+      probeCandidates,
       EXACT_REVIEW_ADMISSION_LIVE_CHECK_CONCURRENCY,
       async (candidate) => {
         const hostedAdmission = targetAdmissions.get(candidate.decision.targetRepo);
@@ -6867,7 +6952,15 @@ export class ExactReviewQueue {
             event: "publication_terminal_check_failed",
             category: exactReviewDispatchFailure(error).failureClass,
           });
-          return { ...candidate, hostedAdmission, state: { state: "unavailable" as const } };
+          return {
+            ...candidate,
+            hostedAdmission,
+            state: {
+              state: "unavailable" as const,
+              retryAt:
+                error instanceof GitHubRequestError ? error.rateLimitHint?.retryAt : undefined,
+            },
+          };
         }
       },
     );
@@ -6911,7 +7004,6 @@ export class ExactReviewQueue {
         (item.state !== "pending" && (!options.legacyReconciliation || item.state !== "parked")) ||
         !exactReviewQueueIsPublication(item) ||
         item.terminalFinalization ||
-        exactReviewDecisionHasCommandContext(item.decision.publication!.producerDecision) ||
         batchOwnership.itemKeys.includes(item.key) ||
         (options.legacyReconciliation === "v1" &&
           !exactReviewLegacyTerminalPublicationCandidate(item, legacyAuthorityByTarget!)) ||
@@ -6920,11 +7012,28 @@ export class ExactReviewQueue {
             item,
             legacyStateBatchAuthorityByTarget!,
             this.publicationHeadRevisionSync(item.decision.publication!.itemKey.toLowerCase()),
-          )) ||
-        (candidate.hostedAdmission?.outcome !== "terminal" && candidate.state.state !== "terminal")
+          ))
       ) {
         continue;
       }
+      if (exactReviewDecisionHasCommandContext(item.decision.publication!.producerDecision)) {
+        if (options.legacyReconciliation || options.apply === false || !isReportlessCommand(item))
+          continue;
+        if (candidate.hostedAdmission?.outcome !== "terminal") {
+          this.settleReportlessCommand(
+            checkedState,
+            item,
+            candidate.state,
+            checkedAt,
+            candidate.hostedAdmission?.retryAt,
+          );
+          continue;
+        }
+        // The repository lost hosted eligibility. Retire locally through the
+        // same path as other publications, without issuing a target credential.
+      }
+      if (candidate.hostedAdmission?.outcome !== "terminal" && candidate.state.state !== "terminal")
+        continue;
       if (options.apply !== false && candidate.hostedAdmission?.outcome === "terminal") {
         this.recordHostedTargetTerminal(item, checkedAt);
       }
@@ -8845,6 +8954,7 @@ export class ExactReviewQueue {
     requestedSize: number,
     leaseSize: number,
     probedPairs: ReadonlySet<string> | null = null,
+    claiming = false,
   ) {
     // The outer comparison charges one publisher slot for the whole batch. The
     // shared helper counts candidate rows, so widen only its scan window by
@@ -8855,6 +8965,12 @@ export class ExactReviewQueue {
       ...this.supersededPublicationItemKeysSync(state),
     ]);
     for (const item of Object.values(state.items)) {
+      // Reportless commands belong to the departure probe even when an older
+      // runner asks for a compatible direct claim before the first alarm.
+      if (claiming && isReportlessCommand(item)) {
+        excludedItemKeys.add(item.key);
+        continue;
+      }
       // Apply the departure fence before admission consumes its bounded scan.
       if (
         probedPairs &&
@@ -10289,6 +10405,7 @@ export class ExactReviewQueue {
       requestedSize,
       leaseSize,
       probedPairs,
+      true,
     );
   }
 
@@ -11614,15 +11731,10 @@ export class ExactReviewQueue {
       };
     }
     const completedRevision = item.revision;
-    const decision: ExactReviewDecision = {
-      ...publication.producerDecision,
-      sourceAction:
-        publication.producerDecision.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION ||
-        publication.producerDecision.sourceAction === "command_proof_result"
-          ? publication.producerDecision.sourceAction
-          : EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION,
-      supersedesInProgress: true,
-    };
+    const decision = requeuedProducerDecision(
+      publication,
+      EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION,
+    );
     // The successor is the same automatic source-drift generation that /enqueue
     // admits, so the same loop breaker applies. Without it, a review whose own
     // writes keep moving updated_at would requeue itself forever.
@@ -16062,16 +16174,12 @@ function exactReviewFreshRecoveryFromPublicationItem(
 ): { decision: ExactReviewDecision; key: string } | null {
   if (!exactReviewQueueIsPublication(item) || !item.decision.publication) return null;
   if (decisionPublicationPolicy(item.decision)) return null;
-  const decision = exactReviewDecisionFrom({
-    ...item.decision.publication.producerDecision,
-    sourceAction:
-      item.decision.publication.producerDecision.sourceAction ===
-        FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION ||
-      item.decision.publication.producerDecision.sourceAction === "command_proof_result"
-        ? item.decision.publication.producerDecision.sourceAction
-        : EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
-    supersedesInProgress: true,
-  });
+  const decision = exactReviewDecisionFrom(
+    requeuedProducerDecision(
+      item.decision.publication,
+      EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
+    ),
+  );
   return decision ? { decision, key: exactReviewItemKey(decision) } : null;
 }
 
@@ -17204,6 +17312,24 @@ function expireExactReviewPublicationItems(
   return changed;
 }
 
+function requeuedProducerDecision(
+  publication: ExactReviewPublication,
+  sourceAction:
+    | typeof EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION
+    | typeof EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
+): ExactReviewDecision {
+  const { bayJourneyDeliveryId: _retired, ...producer } = publication.producerDecision;
+  return {
+    ...producer,
+    sourceAction:
+      producer.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION ||
+      producer.sourceAction === "command_proof_result"
+        ? producer.sourceAction
+        : sourceAction,
+    supersedesInProgress: true,
+  };
+}
+
 function refreshExactReviewPublicationItem(
   state: ExactReviewQueueState,
   item: ExactReviewQueueItem,
@@ -17216,15 +17342,10 @@ function refreshExactReviewPublicationItem(
   const publication = item.decision.publication;
   if (!publication) throw new Error(`publication metadata missing for ${item.key}`);
   delete state.items[item.key];
-  const decision: ExactReviewDecision = {
-    ...publication.producerDecision,
-    sourceAction:
-      publication.producerDecision.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION ||
-      publication.producerDecision.sourceAction === "command_proof_result"
-        ? publication.producerDecision.sourceAction
-        : EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
-    supersedesInProgress: true,
-  };
+  const decision = requeuedProducerDecision(
+    publication,
+    EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
+  );
   const recoveryKey = exactReviewItemKey(decision);
   const current = state.items[recoveryKey];
   if (current) {
@@ -17331,6 +17452,19 @@ function exactReviewQueueDebouncedAttempt(
             : "dispatch_debounce") as ExactReviewBackoffReason)
         : undefined,
   };
+}
+
+function isReportlessCommand(item: Pick<ExactReviewQueueItem, "key" | "decision">): boolean {
+  const publication = item.decision.publication;
+  return (
+    publication?.protocolVersion === 2 &&
+    item.key !== publication.itemKey &&
+    publication.liveProceeded === false &&
+    publication.liveTerminalNoop &&
+    !publication.directLifecycle &&
+    !decisionPublicationPolicy(publication.producerDecision) &&
+    exactReviewDecisionHasCommandContext(publication.producerDecision)
+  );
 }
 
 function exactReviewQueuePendingReviewCount(state: ExactReviewQueueState) {
@@ -19033,10 +19167,11 @@ async function exactReviewTargetItemState(
       }
       return { state: "open", headSha, ...maintainer };
     }
-    if (state === "closed") return { state: "terminal" };
+    if (state === "closed") return { state: "terminal", disposition: "target_closed" };
     throw new Error("live review item state response missing state");
   } catch (error) {
-    if (error instanceof GitHubRequestError && error.status === 410) return { state: "terminal" };
+    if (error instanceof GitHubRequestError && error.status === 410)
+      return { state: "terminal", disposition: "target_missing" };
     if (error instanceof GitHubRequestError && error.status === 404) {
       // GitHub masks inaccessible private repositories as 404. Treat the item
       // as missing only when this token can still read its repository.
@@ -19048,7 +19183,7 @@ async function exactReviewTargetItemState(
         body: undefined,
         errorLabel: "live review target repository",
       });
-      return { state: "terminal" };
+      return { state: "terminal", disposition: "target_missing" };
     }
     throw error;
   }

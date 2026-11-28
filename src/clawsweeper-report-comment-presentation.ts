@@ -229,7 +229,10 @@ function renderKeepOpenCommentFromReport(
   // when proof blocks merge. An evidence entry that only repeats it adds nothing.
   // Entries that carry a location, commit, command, or link stay, because that is
   // the support for the proof.
-  const proofSummary = isPullRequest ? proofPolicy.assessment.summary : "";
+  const scoreProof = reviewDecision.realBehaviorProof.summary.trim()
+    ? reviewDecision.realBehaviorProof
+    : proofPolicy.assessment;
+  const proofSummary = isPullRequest ? scoreProof.summary : "";
   const evidence = reviewDecision.evidence
     .filter(
       (entry) =>
@@ -449,7 +452,7 @@ function renderKeepOpenCommentFromReport(
       appendHeadingSection(
         lines,
         "Review scores",
-        publicReviewScoresBlock(prRating, proofPolicy, reviewFindings, securityReview),
+        publicReviewScoresBlock(reviewDecision, scoreProof, proofPolicy),
       );
     }
     const productBlock = publicProductBlock(reviewDecision.productReview);

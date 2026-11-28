@@ -4,6 +4,8 @@
 //
 //   bot-logins
 //     Prints every login ClawSweeper writes as, as a JSON array for `jq --argjson`.
+//   rest-bot-logins
+//     Prints the App account logins returned in REST `user.login` fields.
 //   review-lease-comment-ids --item-number N [--owner OWNER]
 //     Reads REST issue comments as JSON lines on stdin (`gh api --jq '.[]'`) and
 //     prints the id of each review-start lease comment a ClawSweeper App posted
@@ -29,6 +31,9 @@ const { positionals, values } = parseArgs({
 switch (positionals[0]) {
   case "bot-logins":
     console.log(JSON.stringify([...CLAWSWEEPER_BOT_LOGINS]));
+    break;
+  case "rest-bot-logins":
+    console.log(JSON.stringify([...CLAWSWEEPER_APP_BOT_LOGINS]));
     break;
   case "review-lease-comment-ids": {
     const itemNumber = Number(values["item-number"]);
@@ -57,6 +62,6 @@ switch (positionals[0]) {
   }
   default:
     throw new Error(
-      "usage: workflow-bot-comments.ts bot-logins | review-lease-comment-ids --item-number N [--owner OWNER] [--in-place]",
+      "usage: workflow-bot-comments.ts bot-logins | rest-bot-logins | review-lease-comment-ids --item-number N [--owner OWNER] [--in-place]",
     );
 }

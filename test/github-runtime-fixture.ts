@@ -120,7 +120,7 @@ export async function installEtagBroker(t: TestContext, root: string, source = "
     `
 const { createServer } = require("node:http");
 const { createHash, createHmac } = require("node:crypto");
-const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
+const { appendFileSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const root = __dirname;
 const entries = new Map();
@@ -147,7 +147,12 @@ createServer((req, res) => {
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify(result));
   });
-}).listen(0, "127.0.0.1", function () { writeFileSync(${JSON.stringify(addressPath)}, "http://127.0.0.1:" + this.address().port); });
+}).listen(0, "127.0.0.1", function () {
+  const addressPath = ${JSON.stringify(addressPath)};
+  const pending = addressPath + ".pending";
+  writeFileSync(pending, "http://127.0.0.1:" + this.address().port);
+  renameSync(pending, addressPath);
+});
 `,
   );
   const child = spawn(process.execPath, [serverPath], { stdio: ["ignore", "ignore", "pipe"] });

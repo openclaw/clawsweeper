@@ -1627,6 +1627,21 @@ Reason: The bug is narrow and source-reproducible.
   );
 });
 
+test("issue summary preserves a negated reproduction assessment", () => {
+  const assessment = "No high-confidence current-main reproduction is available.";
+  const comment = renderReviewCommentFromReport(
+    typedRendererReport(
+      reportFrontMatter({ type: "issue", number: "158373", decision: "keep_open" }),
+      {
+        summary: "Keep open pending a faithful fixture.",
+        reproductionAssessment: assessment,
+      },
+    ),
+    "none",
+  );
+  assert.ok(comment.includes(`Reproducibility: ${assessment}`), comment.split("**Next step**")[0]);
+});
+
 test("high-confidence root-cause clusters appear in keep-open review comments", () => {
   const rootCauseCluster: Decision["rootCauseCluster"] = {
     confidence: "high",

@@ -44,7 +44,7 @@ chmod 700 "$review_tools_root/bin/trufflehog"
 export PATH="$review_tools_root/bin:$PATH"
 version="$(env -i HOME="$review_tools_root" "$review_tools_root/bin/trufflehog" --version 2>&1)"
 if [[ "$version" != "trufflehog 3.99.4" ]]; then
-  echo "Trusted review scanner reported an unexpected version." >&2
+  echo "Trusted review scanner version mismatch." >&2
   exit 1
 fi
 printf 'A harmless review scanner installation check.\n' > "$review_tools_root/smoke/clean.txt"

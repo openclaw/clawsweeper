@@ -1,1 +1,0 @@
-- Read census quota totals from a covering index to avoid scanning stored item payloads during page acceptance.

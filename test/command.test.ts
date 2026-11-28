@@ -54,7 +54,9 @@ test("expire-review-lease patches the queued placeholder and preserves unrelated
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 if (args[0] !== "api" || args[1] !== "repos/${repo}/issues/comments/9991") process.exit(1);
-if (args.includes("PATCH")) {
+if (args.includes("DELETE")) {
+  fs.writeFileSync(${JSON.stringify(patchPath)}, JSON.stringify({ deleted: true }));
+} else if (args.includes("PATCH")) {
   const field = args.find((arg) => arg.startsWith("body="));
   if (!field) process.exit(2);
   fs.writeFileSync(${JSON.stringify(patchPath)}, JSON.stringify({ body: field.slice(5) }));
@@ -111,11 +113,15 @@ process.stdout.write(JSON.stringify(JSON.parse(fs.readFileSync(${JSON.stringify(
     leaseExpiresAt: expiresAt,
     leaseOwner: "worker-1",
   });
-  for (const owner of ["worker-1", "other-worker"]) {
-    writeFileSync(
-      commentPath,
-      JSON.stringify({ id: 9991, body: quiet, user: { login: "clawsweeper[bot]" } }),
-    );
+  for (const [fixture, owner, expected, login = "clawsweeper[bot]"] of [
+    [quiet, "worker-1", { body: original }],
+    [quiet, "other-worker", null],
+    [body, "worker-1", { deleted: true }],
+    [body, "worker-1", null, "clawsweeper"],
+    [body, "other-worker", null],
+    [`<!-- clawsweeper-command-ack:357 -->\n${body}`, "worker-1", null],
+  ] as const) {
+    writeFileSync(commentPath, JSON.stringify({ id: 9991, body: fixture, user: { login } }));
     rmSync(patchPath, { force: true });
     execFileSync(
       process.execPath,
@@ -136,8 +142,7 @@ process.stdout.write(JSON.stringify(JSON.parse(fs.readFileSync(${JSON.stringify(
         env: leaseEnv,
       },
     );
-    if (owner === "worker-1")
-      assert.equal(JSON.parse(readFileSync(patchPath, "utf8")).body, original);
+    if (expected) assert.deepEqual(JSON.parse(readFileSync(patchPath, "utf8")), expected);
     else assert.equal(existsSync(patchPath), false);
   }
 });
