@@ -443,6 +443,7 @@ export type LowValueTest = { file: string; reason: string } & (
   | {
       lineStart: number;
       lineEnd: number;
+      sourceLines?: string[]; // Absent in stored reviews that verified only the survivor.
       behaviors: {
         behavior: string;
         fault: string;

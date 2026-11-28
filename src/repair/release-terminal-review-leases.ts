@@ -1,8 +1,8 @@
 import { CLAWSWEEPER_APP_BOT_LOGINS } from "../clawsweeper-bot-identity.js";
 import { ghPaged } from "../clawsweeper-github-context.js";
-import { ghJson } from "../clawsweeper-github-execution.js";
+import { ghJson, ghWithRetry } from "../clawsweeper-github-execution.js";
 import { withGitHubRun } from "../clawsweeper-github-runtime.js";
-import { ghTextWithRetry } from "./github-cli.js";
+import { isGitHubForbiddenError } from "../github-retry.js";
 import { requiredEnv } from "../required-env.js";
 import { setTargetRepo } from "../repository-profiles.js";
 import {
@@ -40,16 +40,13 @@ withGitHubRun(() => {
     throw new Error(`Cannot release terminal review leases on open item ${repo}#${number}`);
   }
 
-  function cleanupWrite(path: string, method: "DELETE" | "PATCH", body?: string) {
+  function cleanupWrite(path: string, method: "DELETE" | "PATCH", ...fields: string[]) {
     try {
-      const args = ["api", path, "--method", method];
-      if (body !== undefined) args.push("--input", "-");
-      ghTextWithRetry(args, body === undefined ? {} : { input: JSON.stringify({ body }) });
+      ghWithRetry(["api", path, "--method", method, ...fields]);
     } catch (error) {
       // A locked conversation can reject an individual write even when the
       // installation can edit other comments or remove its eyes reaction.
-      const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
-      if (!item.locked || !/^(?:gh:\s*)?HTTP 403\b|\(HTTP 403\)\s*$/im.test(stderr)) throw error;
+      if (item.locked !== true || !isGitHubForbiddenError(error)) throw error;
       console.log(JSON.stringify({ action: "skipped_locked_conversation", method, path }));
     }
   }
@@ -60,7 +57,7 @@ withGitHubRun(() => {
     const current = ghJson<Comment>(["api", path], { losslessJson: true });
     const update = terminalLeaseUpdate(current);
     if (update === "delete") cleanupWrite(path, "DELETE");
-    else if (update) cleanupWrite(path, "PATCH", update.body);
+    else if (update) cleanupWrite(path, "PATCH", "-f", `body=${update.body}`);
   }
 
   type Reaction = { id: number; content: string; user: { login: string } };

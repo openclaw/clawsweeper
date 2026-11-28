@@ -1,0 +1,1 @@
+- Keep a batch review eligible for retry when the pull request reopens during review-start cleanup.

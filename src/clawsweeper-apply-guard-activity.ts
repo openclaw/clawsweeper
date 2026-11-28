@@ -236,7 +236,7 @@ function githubContentsPath(path: string): string {
 }
 
 export function authorPrBudgetSignalBlockReason(markdown: string): string | null {
-  const { realBehaviorProof: proof, prRating: rating } = reportReviewDecision(markdown);
+  const { hostProof: proof, prRating: rating } = reportReviewDecision(markdown);
   if (
     ["S", "A", "B"].includes(rating.overallTier) &&
     ["sufficient", "override"].includes(proof.status)

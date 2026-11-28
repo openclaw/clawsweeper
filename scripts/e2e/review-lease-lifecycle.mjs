@@ -324,7 +324,8 @@ try {
         response.end(JSON.stringify(value));
       };
       if (path === "/internal/exact-review/heartbeat") return send({ ok: true });
-      if (path === `/repos/${repo}/pulls/${number}`) return send({ head: { sha: head } });
+      if (path === `/repos/${repo}/pulls/${number}`)
+        return send({ state: closed ? "closed" : "open", head: { sha: head } });
       if (path === `/repos/${repo}/issues/${number}/labels/recovery`) {
         event.leasePresent = comments.some((entry) =>
           entry.body.includes("clawsweeper-review-status:started"),

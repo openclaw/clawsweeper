@@ -42,7 +42,7 @@ function leaseGuards(calls: string[], activityBlock: string | null = null) {
     getActiveApplyMutationLease: () => ({ itemNumber: 42, lease }),
     ghJson: () => {
       calls.push("pull");
-      return { head: { sha: headSha } };
+      return { state: "open", head: { sha: headSha } };
     },
     GitHubRuntimeBudgetError: class extends Error {},
     initialReviewHeadSha: headSha,

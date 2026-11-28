@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   createExactReviewBundle,
   exactReviewDecisionSha256,
+  exactReviewDecisionDigests,
   validateExactReviewBundle,
   type ExactReviewBundleContext,
 } from "../../dist/repair/exact-review-bundle.js";
@@ -229,6 +230,40 @@ test("exact review bundle rejects extras and symlinks", () => {
   );
 });
 
+test("a stored normalized bundle validates with or without the retired delivery ID", (t) => {
+  const value = fixture();
+  t.after(() => fs.rmSync(value.root, { recursive: true, force: true }));
+  const decision = {
+    targetRepo: value.context.targetRepo,
+    itemNumber: value.context.itemNumber,
+    sourceAction: "artifact_retention_recovery",
+    commandStatusMarker: "current-command",
+  };
+  const digests = (input: unknown) => exactReviewDecisionDigests(JSON.stringify(input));
+  const retained = { ...decision, bayJourneyDeliveryId: "retired-delivery" };
+  const closed = { ...value.context, liveProceeded: false, liveTerminalNoop: true };
+  createExactReviewBundle({
+    bundleDir: value.bundleDir,
+    createdAt: "2026-11-27T19:24:11Z",
+    context: { ...closed, ...digests(decision) },
+  });
+  for (const saved of [decision, retained]) {
+    assert.equal(
+      validateExactReviewBundle(value.bundleDir, { ...closed, ...digests(saved) }).review
+        .artifact_present,
+      false,
+    );
+  }
+  assert.throws(
+    () =>
+      validateExactReviewBundle(value.bundleDir, {
+        ...closed,
+        ...digests({ ...retained, commandStatusMarker: "other-command" }),
+      }),
+    /does not match/,
+  );
+});
+
 test("exact review decision digest ignores object key ordering", () => {
   assert.equal(
     exactReviewDecisionSha256('{"targetRepo":"openclaw/openclaw","itemNumber":42}'),
@@ -249,24 +284,33 @@ test("exact review bundle requires a report after review proceeds", () => {
   );
 });
 
-test("bundle validation uses the producer workflow identity across runs", () => {
+test("a delivery-bearing bundle keeps the released decision digest across runs", (t) => {
   const value = fixture();
-  createExactReviewBundle({
-    bundleDir: value.bundleDir,
-    reviewPath: value.report,
-    createdAt: "2026-07-15T12:00:00Z",
-    context: value.context,
-  });
-  const decision = JSON.stringify({
+  t.after(() => fs.rmSync(value.root, { recursive: true, force: true }));
+  const decision = {
     targetRepo: value.context.targetRepo,
     targetBranch: value.context.targetBranch,
     itemNumber: value.context.itemNumber,
     itemKind: value.context.itemKind,
+    sourceEvent: "issues",
+    sourceAction: "artifact_retention_recovery",
+    supersedesInProgress: false,
+    commandStatusMarker: "<!-- clawsweeper-command-status:42:re_review:command-42 -->",
+    bayJourneyDeliveryId: "749a1c61-7a1a-4155-a24f-fd481bcaa51b",
+  };
+  const manifest = createExactReviewBundle({
+    bundleDir: value.bundleDir,
+    reviewPath: value.report,
+    createdAt: "2026-07-15T12:00:00Z",
+    context: { ...value.context, ...exactReviewDecisionDigests(JSON.stringify(decision)) },
   });
-  const result = spawnSync(
-    process.execPath,
-    ["dist/repair/exact-review-bundle-cli.js", "validate"],
-    {
+  // v0.3.5 and the rollback reader both expect this digest for the complete decision.
+  assert.equal(
+    manifest.review.decision_sha256,
+    "359911ead5e9ba971b1eb0167228996b17d6233c1f53b1f924c31e7b021e073b",
+  );
+  const validate = (trustedDecision: typeof decision) =>
+    spawnSync(process.execPath, ["dist/repair/exact-review-bundle-cli.js", "validate"], {
       cwd: process.cwd(),
       encoding: "utf8",
       env: {
@@ -276,7 +320,7 @@ test("bundle validation uses the producer workflow identity across runs", () => 
         GITHUB_SHA: "b".repeat(40),
         EXACT_REVIEW_BUNDLE_DIR: value.bundleDir,
         EXACT_REVIEW_CLAIM_GENERATION: String(value.context.claimGeneration),
-        EXACT_REVIEW_DECISION: decision,
+        EXACT_REVIEW_DECISION: JSON.stringify(trustedDecision),
         EXACT_REVIEW_GENERATION_ATTEMPT: String(value.context.runAttempt),
         EXACT_REVIEW_ITEM_KEY: value.context.itemKey,
         EXACT_REVIEW_ITEM_KIND: value.context.itemKind,
@@ -293,7 +337,10 @@ test("bundle validation uses the producer workflow identity across runs", () => 
         EXACT_REVIEW_TARGET_BRANCH: value.context.targetBranch,
         EXACT_REVIEW_TARGET_REPO: value.context.targetRepo,
       },
-    },
-  );
+    });
+  const result = validate(decision);
   assert.equal(result.status, 0, result.stderr);
+  const changed = validate({ ...decision, commandStatusMarker: "other-command" });
+  assert.notEqual(changed.status, 0);
+  assert.match(changed.stderr, /does not match the trusted workflow context/);
 });

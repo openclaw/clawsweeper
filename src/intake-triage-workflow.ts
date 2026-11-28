@@ -31,6 +31,8 @@ import {
 import { runResponsesIntake, type IntakeApiOptions } from "./intake-triage-api.js";
 import { runDecisionsIntake } from "./intake-triage-decisions.js";
 import { isRecord } from "./value-coerce.js";
+import { reviewCommentMarker } from "./clawsweeper-review-comment-identity.js";
+import { parseReviewHistory } from "./review-history.js";
 import { isClawSweeperComment } from "./clawsweeper-review-comments.js";
 
 export interface IntakeSnapshot extends IntakePacket {
@@ -166,7 +168,9 @@ export async function runIntakeWorkflow(
           isClawSweeperComment(comment) &&
           isRecord(comment) &&
           typeof comment.body === "string" &&
-          comment.body.includes("<!-- clawsweeper-review-version "),
+          (comment.body.includes("<!-- clawsweeper-review-version ") ||
+            (comment.body.includes(reviewCommentMarker(snapshot.number)) &&
+              parseReviewHistory(comment.body).totalCompletedCycles > 0)),
       )
     ) {
       options.admissionUnchanged?.(true);

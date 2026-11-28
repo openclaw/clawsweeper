@@ -306,9 +306,10 @@ jobs:
             elif [ -n "$lifecycle_terminal" ]; then
               if [ "$lifecycle_terminal" = "target_closed" ]; then
                 if ! (
-                  export GH_TOKEN="$TARGET_GH_TOKEN" CLAWSWEEPER_GITHUB_POOL_CLASS=target_app
-                  node dist/repair/release-terminal-review-leases.js &&
-                    test "$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" --jq .state)" = closed
+                  GH_TOKEN="$TARGET_GH_TOKEN" CLAWSWEEPER_GITHUB_POOL_CLASS=target_app \
+                    node dist/repair/release-terminal-review-leases.js &&
+                  CLAWSWEEPER_PUBLIC_GH_TOKEN="$GH_TOKEN" GH_TOKEN="$TARGET_GH_TOKEN" \
+                    node dist/repair/confirm-terminal-item-closed.js
                 ); then
                   # Leave this member's post-effects pending so completion retries it.
                   continue

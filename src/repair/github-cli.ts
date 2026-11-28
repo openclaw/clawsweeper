@@ -182,7 +182,7 @@ export function ghText(ghArgs: string[], options: GhRunOptions = {}): string {
       encoding: "utf8",
       input: options.input,
       maxBuffer: 64 * 1024 * 1024,
-      stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
     return stripAnsi(text).trim();
   } catch (error) {

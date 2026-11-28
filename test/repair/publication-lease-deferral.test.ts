@@ -102,3 +102,109 @@ if (command === "apply-artifacts") {
     });
   }
 }
+
+test("a protected-label publication releases only the producer's in-place review banner", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "guarded-publication-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const artifacts = join(root, "artifacts/event");
+  const code = join(root, "code");
+  mkdirSync(artifacts, { recursive: true });
+  mkdirSync(join(code, "dist"), { recursive: true });
+  const number = "129388";
+  const repo = "openclaw/openclaw";
+  const owner = "github-run-46053739737-1";
+  const commentId = "5442236054";
+  const itemKey = `${repo}#${number}`;
+  writeFileSync(
+    join(artifacts, `${number}.md`),
+    [
+      "---",
+      `number: ${number}`,
+      `repository: ${repo}`,
+      "type: pull_request",
+      "reviewed_at: 2026-11-27T19:02:28Z",
+      "item_updated_at: 2026-11-27T19:02:23Z",
+      "pull_head_sha: " + "a".repeat(40),
+      "item_source_revision: " + "b".repeat(64),
+      `review_lease_owner: ${owner}`,
+      `review_lease_comment_id: ${commentId}`,
+      "action_taken: proposed_close",
+      "decision: close",
+      "---",
+      "Oversized PR",
+      "",
+    ].join("\n"),
+  );
+  // Replay the apply outcome from the recovery run through the production publisher.
+  writeFileSync(
+    join(code, "dist/clawsweeper.js"),
+    `
+const fs = require("node:fs");
+const path = require("node:path");
+const [command, ...args] = process.argv.slice(2);
+const value = name => args[args.indexOf(name) + 1];
+const report = ${JSON.stringify(number + ".md")};
+if (command === "apply-artifacts") {
+  fs.mkdirSync(value("--items-dir"), { recursive: true });
+  fs.copyFileSync(path.join(value("--artifact-dir"), report), path.join(value("--items-dir"), report));
+} else if (command === "apply-decisions") {
+  const item = path.join(value("--items-dir"), report);
+  fs.writeFileSync(item, fs.readFileSync(item, "utf8").replace("action_taken: proposed_close", "action_taken: skipped_protected_label"));
+  fs.mkdirSync(path.dirname(value("--report-path")), { recursive: true });
+  fs.writeFileSync(value("--report-path"), JSON.stringify([{ number: ${number}, action: "skipped_protected_label", guardedOpenStateVerified: true }]));
+} else if (command === "expire-review-lease") {
+  fs.writeFileSync("released.json", JSON.stringify(args));
+  if (process.env.CLEANUP_ERROR) throw new Error(process.env.CLEANUP_ERROR);
+} else throw new Error("unexpected command: " + command);
+`,
+  );
+  const publish = (cleanupError = "") => {
+    rmSync(join(root, "records"), { recursive: true, force: true });
+    return spawnSync(process.execPath, [resolve("dist/repair/publish-event-result.js")], {
+      env: {
+        CLEANUP_ERROR: cleanupError,
+        PATH: process.env.PATH,
+        TARGET_REPO: repo,
+        ITEM_NUMBER: number,
+        EXACT_REVIEW_WORK_ROOT: root,
+        CLAWSWEEPER_CODE_ROOT: code,
+        EXACT_EVENT_PUBLICATION: "true",
+        EXACT_REVIEW_BATCH_MUTATION_OUTPUT: join(root, "outcome.json"),
+        EXACT_REVIEW_BATCH_ITEM_KEY: itemKey,
+        EXACT_REVIEW_BATCH_REVISION: "699",
+        EXACT_REVIEW_BATCH_CLAIM_GENERATION: "1",
+      },
+      encoding: "utf8",
+    });
+  };
+  const result = publish();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(
+    JSON.parse(readFileSync(join(root, "outcome.json"), "utf8")).disposition.guardedOpenAction,
+    "skipped_protected_label",
+  );
+  assert.ok(
+    existsSync(join(root, "released.json")),
+    "the guarded publication left the start banner on the old verdict",
+  );
+  assert.deepEqual(JSON.parse(readFileSync(join(root, "released.json"), "utf8")), [
+    "--repo",
+    repo,
+    "--item-number",
+    number,
+    "--comment-id",
+    commentId,
+    "--release-owner",
+    owner,
+  ]);
+  for (const terminalSkip of ["GitHub API HTTP 404;", "HTTP 403: conversation is locked"]) {
+    const skipped = publish(terminalSkip);
+    assert.equal(skipped.status, 0, skipped.stderr);
+  }
+  const transient = publish("HTTP 503 Service Unavailable");
+  assert.notEqual(transient.status, 0);
+  assert.equal(
+    JSON.parse(readFileSync(join(root, "outcome.json"), "utf8")).reasonCode,
+    "github_transient",
+  );
+});

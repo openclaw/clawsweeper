@@ -55,6 +55,7 @@ const server = http.createServer((request, response) => {
   if (url.pathname === "/pull") {
     return json(response, 200, {
       number: 42,
+      state: "open",
       updated_at: "2026-08-13T00:00:00Z",
       changed_files: 1,
       commits: 1,

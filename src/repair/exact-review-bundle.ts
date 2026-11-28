@@ -30,6 +30,8 @@ export interface ExactReviewBundleContext {
   runAttempt: number;
   producerJob: string;
   decisionSha256: string;
+  // Read compatibility for manifests written without the retired delivery ID.
+  normalizedDecisionSha256?: string;
   targetRepo: string;
   targetBranch: string;
   itemNumber: number;
@@ -92,13 +94,25 @@ export interface CreateExactReviewBundleOptions {
 }
 
 export function exactReviewDecisionSha256(decisionJson: string): string {
+  return exactReviewDecisionDigests(decisionJson).decisionSha256;
+}
+
+export function exactReviewDecisionDigests(
+  decisionJson: string,
+): Pick<ExactReviewBundleContext, "decisionSha256" | "normalizedDecisionSha256"> {
   let value: unknown;
   try {
     value = JSON.parse(decisionJson);
   } catch {
     throw new Error("exact review decision is not valid JSON");
   }
-  return sha256(canonicalJson(value));
+  // A rolled-back v1 publisher hashes the entire decision it fetched from the queue.
+  const decisionSha256 = sha256(canonicalJson(value));
+  if (value && typeof value === "object" && Object.hasOwn(value, "bayJourneyDeliveryId")) {
+    Reflect.deleteProperty(value, "bayJourneyDeliveryId");
+    return { decisionSha256, normalizedDecisionSha256: sha256(canonicalJson(value)) };
+  }
+  return { decisionSha256 };
 }
 
 export function createExactReviewBundle(
@@ -233,7 +247,10 @@ function assertExpectedManifest(
     liveTerminalMissing: manifest.review.live_terminal_missing,
     liveGuardedOpen: manifest.review.live_guarded_open,
   } satisfies ExactReviewBundleContext;
-  const { publicationPolicy: _policy, ...boundContext } = expected;
+  const { publicationPolicy: _policy, normalizedDecisionSha256, ...boundContext } = expected;
+  if (manifest.review.decision_sha256 === normalizedDecisionSha256) {
+    boundContext.decisionSha256 = normalizedDecisionSha256;
+  }
   if (JSON.stringify(actual) !== JSON.stringify(boundContext)) {
     throw new Error("exact review bundle does not match the trusted workflow context");
   }

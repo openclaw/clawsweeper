@@ -44,7 +44,7 @@ function staleFRatedPullRequestPromotion(
   staleMinAgeDays: number,
   readHeadActivity: PullRequestHeadActivityReader,
 ): PullRequestClosePromotion | null {
-  const { realBehaviorProof: proof, prRating: rating } = reportReviewDecision(markdown);
+  const { hostProof: proof, prRating: rating } = reportReviewDecision(markdown);
   if (rating.overallTier !== "F") return null;
   if (!isOlderThanDays(item.createdAt, staleMinAgeDays)) return null;
   if (

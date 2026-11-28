@@ -62,8 +62,11 @@ function workflowBotComments(args: string[], input = ""): string {
   });
 }
 
-test("workflow bot logins print every login ClawSweeper writes as", () => {
+test("workflow bot logins distinguish REST App accounts from the full set of author logins", () => {
   assert.deepEqual(JSON.parse(workflowBotComments(["bot-logins"])), [...CLAWSWEEPER_BOT_LOGINS]);
+  assert.deepEqual(JSON.parse(workflowBotComments(["rest-bot-logins"])), [
+    ...CLAWSWEEPER_APP_BOT_LOGINS,
+  ]);
 });
 
 test("workflow lease lookup selects only App-authored lease comments for the item and owner", () => {
@@ -142,13 +145,13 @@ test("terminal cleanup removes owned leases and eyes while preserving durable re
   ];
   const reactions = [
     { id: 6, content: "eyes", user: bot },
-    { id: 7, content: "eyes", user: { login: "clawsweeper", type: "User" } },
+    { id: 7, content: "eyes", user: { login: CLAWSWEEPER_APP_SLUG } },
   ];
   const adapter = join(root, "adapter.cjs");
   writeFileSync(
     adapter,
     `
-    const {appendFileSync, readFileSync} = require("node:fs");
+    const {appendFileSync} = require("node:fs");
     const args = process.argv.slice(2);
     const comments = ${JSON.stringify(comments)};
     if (args[1] === process.env.REFUSED_PATH) {
@@ -161,7 +164,6 @@ test("terminal cleanup removes owned leases and eyes while preserving durable re
       if (id === 5) comment.body = ${JSON.stringify(durable)};
       console.log("HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n" + JSON.stringify(comment));
     } else if (args.includes("--method")) {
-      if (args.includes("--input")) args.push(JSON.parse(readFileSync(0, "utf8")).body);
       appendFileSync(${JSON.stringify(join(root, "writes"))}, JSON.stringify(args) + "\\n");
     } else if (args[1].includes("/comments?")) console.log(JSON.stringify([comments]));
     else if (args[1].includes("/reactions?")) console.log(JSON.stringify([${JSON.stringify(reactions)}]));
@@ -197,9 +199,8 @@ test("terminal cleanup removes owned leases and eyes while preserving durable re
       "repos/openclaw/openclaw/issues/comments/2",
       "--method",
       "PATCH",
-      "--input",
-      "-",
-      durable,
+      "-f",
+      "body=" + durable,
     ],
     ["api", "repos/openclaw/openclaw/issues/42/reactions/6", "--method", "DELETE"],
   ]);

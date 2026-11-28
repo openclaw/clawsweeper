@@ -1,0 +1,1 @@
+- Show the reviewer’s recorded proof assessment with its grade and explain contributor-proof exemptions separately in PR reviews.

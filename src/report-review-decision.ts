@@ -88,6 +88,8 @@ export type ReportReviewDecision = Pick<
   };
   regressionAssessment: RegressionAssessment | null;
   regressionProvenance: PublicRegressionProvenance | null;
+  /** Use hostProof for proof-based automation, including close promotions. realBehaviorProof is the recorded reviewer assessment. */
+  hostProof: RealBehaviorProof;
   authorityChainProofRequired: boolean;
 };
 
@@ -173,7 +175,7 @@ export function reportReviewDecision(markdown: string): ReportReviewDecision {
       mergedAt: decision.fixedPullRequest?.mergedAt ?? undefined,
     },
     labelJustifications: selectedLabelJustifications(decision.labelJustifications, decision),
-    realBehaviorProof: applyHostProofRules(markdown, decision.realBehaviorProof),
+    hostProof: applyHostProofRules(markdown, decision.realBehaviorProof),
     authorityChainProofRequired: decision.realBehaviorProof.summary
       .trim()
       .startsWith(AUTHORITY_CHAIN_PROOF_MARKER),

@@ -410,7 +410,7 @@ function closeIntro(reason: CloseReason, profile: RepositoryProfile): string {
     case "unconfirmed_product_direction":
       return "Thanks for the contribution. ClawSweeper proposes closing this for now: the implementation may be reasonable, but passing review and proof does not establish that OpenClaw should add this product surface.";
     case "unsponsored_feature_request":
-      return "Thanks for sharing this idea. ClawSweeper is parking it in the idea archive because no maintainer has confirmed this product direction yet.";
+      return "Thanks for sharing this idea. The proposed product direction still needs maintainer sponsorship.";
     case "author_pr_budget_exceeded":
       return "Thanks for the contribution. ClawSweeper is trimming this lowest-signal PR because the author is over the repository's open-PR budget.";
     case "stale_version_bug":
@@ -433,6 +433,7 @@ function closeOutro(
   canonicalLinks: readonly string[],
   profile: RepositoryProfile,
   proposeDuplicateClose: boolean,
+  actionTaken?: string,
 ): string {
   switch (reason) {
     case "implemented_on_main":
@@ -458,8 +459,15 @@ function closeOutro(
       return "So I’m closing this as inactive for now. If you pick the work back up, push a rebased branch with green checks and reopen (or open a fresh PR) and it will be reviewed again.";
     case "unconfirmed_product_direction":
       return "This is a proposal only until the separate default-off apply policy is enabled and all live maintainer-signal checks pass. A maintainer can sponsor the direction, request a narrower version, or apply `clawsweeper:human-review` to keep it open.";
-    case "unsponsored_feature_request":
-      return `This idea is parked, not rejected. A maintainer can reopen this issue after reconsidering it. When the idea fits an extension, ${markdownLink("ClawHub.com", profile.communityUrl ?? "https://clawhub.ai/")} remains the self-serve path.`;
+    case "unsponsored_feature_request": {
+      const outcome =
+        actionTaken === "closed"
+          ? "ClawSweeper archived this idea. A maintainer can reopen this issue to sponsor it."
+          : actionTaken === "skipped_protected_label"
+            ? "A protected label kept this issue open. A maintainer can sponsor the idea here."
+            : "ClawSweeper recommends archiving this request until a maintainer sponsors the idea.";
+      return `${outcome} When the idea fits an extension, ${markdownLink("ClawHub.com", profile.communityUrl ?? "https://clawhub.ai/")} remains the self-serve path.`;
+    }
     case "author_pr_budget_exceeded":
       return "Closing or finishing other open PRs frees review budget. This PR can be reopened once the author is under budget, or sooner when real behavior proof is added.";
     case "stale_version_bug":
@@ -594,6 +602,7 @@ function renderCloseComment(
     reviewLine: string;
     currentItem?: { repo?: string; kind?: ItemKind; number?: number } | undefined;
     proposeDuplicateClose?: boolean;
+    actionTaken?: string | undefined;
   },
   profile: RepositoryProfile,
 ): string {
@@ -663,6 +672,7 @@ function renderCloseComment(
     canonicalLinks,
     profile,
     options.proposeDuplicateClose === true,
+    options.actionTaken,
   );
   if (outro) lines.push("", outro);
   if (options.reviewLine) details.push("", options.reviewLine);
@@ -704,6 +714,7 @@ export function renderCloseCommentFromReport(
         securityReview: decision.securityReview,
         rootCauseCluster: decision.rootCauseCluster,
         reviewLine: closeReviewLineFromReport(markdown, profile),
+        actionTaken: frontMatterValue(markdown, "action_taken"),
         ...options,
         currentItem: {
           repo: markdownRepository(markdown),
@@ -820,10 +831,12 @@ export function publicRootCauseClusterBlock(
 function publicReproducibilityLine(reproductionAssessment: string): string {
   const assessmentLine = sentence(reproductionAssessment);
   if (!assessmentLine) return "";
-  const match = assessmentLine.match(/^(yes|no|unclear|not applicable)\b/i);
+  const match = assessmentLine.match(
+    /^(yes|no|unclear|not applicable)(?:\s*[,.:;]\s*|\s+[-–—]\s+|$)/i,
+  );
   if (!match) return `Reproducibility: ${assessmentLine}`;
   const status = match[1]?.toLowerCase() ?? "";
-  const detail = sentence(assessmentLine.slice(match[0].length).replace(/^[\s,.:;-]+/, ""));
+  const detail = sentence(assessmentLine.slice(match[0].length));
   return `Reproducibility: ${status}.${detail ? ` ${detail}` : ""}`;
 }
 
