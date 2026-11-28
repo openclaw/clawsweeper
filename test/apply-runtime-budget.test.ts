@@ -68,12 +68,13 @@ const applyRuntimeClockPreload = `
 const { appendFileSync, existsSync, readFileSync } = require("node:fs");
 const { join, resolve } = require("node:path");
 const state = JSON.parse(readFileSync(join(__dirname, "runtime-clock.json"), "utf8"));
+// Concurrent gh dispatches receive absolute deadlines from the apply process.
+// Every process using this fixture must compare them against the same clock.
+Date.now = () => state.laterMs !== undefined && existsSync(state.laterAfterPath)
+  ? state.laterMs
+  : state.startedAtMs;
 if (process.argv[2] === "apply-decisions" &&
     resolve(process.argv[1] || "") === state.entrypoint) {
-  // The apply clock jumps to laterMs once the laterAfterPath marker exists.
-  Date.now = () => state.laterMs !== undefined && existsSync(state.laterAfterPath)
-    ? state.laterMs
-    : state.startedAtMs;
   Atomics.wait = (_array, _index, _value, milliseconds) => {
     appendFileSync(state.sleepTracePath, JSON.stringify({ event: "wait", milliseconds }) + "\\n");
     throw new Error("apply attempted an unnecessary synchronous wait");
