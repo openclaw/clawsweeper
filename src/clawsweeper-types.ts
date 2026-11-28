@@ -1140,6 +1140,7 @@ export interface AuditResult {
 export type ReviewArtifactDestination = "items" | "closed" | "skip_closed";
 
 export interface GitHubRuntimeBudget {
+  leaseCleanupReserveMs?: number;
   startedAtMs: number;
   maxRuntimeMs: number;
   limitReason?: string;

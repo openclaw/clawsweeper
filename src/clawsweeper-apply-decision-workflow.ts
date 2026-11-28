@@ -1,3 +1,4 @@
+import { withGitHubRuntimeBudget } from "./clawsweeper-github-runtime.js";
 import { configuredGitcrawlClusterService } from "./gitcrawl-cluster-service.js";
 import { sha256 } from "./content-hash.js";
 import { GitHubItemMovedError } from "./github-item-identity.js";
@@ -464,14 +465,20 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     } | null = null;
     const currentPublicationLease = (): AcquiredReviewStartLease | null =>
       activeApplyMutationLease?.lease ?? null;
+    // Spend the remaining time only on releasing a known lease. Keep the original
+    // deadline and the separate report-flush reserve, even after work has yielded.
+    const leaseCleanupBudget = { ...runtimeBudget };
+    const releaseOwnedApplyLease = (itemNumber: number, lease: AcquiredReviewStartLease) =>
+      withGitHubRuntimeBudget(leaseCleanupBudget, () =>
+        deleteOwnedDedicatedReviewStartLease(itemNumber, lease, { throwOnError: true }),
+      );
     const releaseActiveApplyMutationLease = (): void => {
       const active = activeApplyMutationLease;
       activeApplyMutationLease = null;
+      delete runtimeBudget.leaseCleanupReserveMs;
       if (!active) return;
       try {
-        deleteOwnedDedicatedReviewStartLease(active.itemNumber, active.lease, {
-          throwOnError: true,
-        });
+        releaseOwnedApplyLease(active.itemNumber, active.lease);
       } catch (error) {
         if (error instanceof GitHubRateLimitError) throw error;
         console.error(
@@ -1276,6 +1283,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         requiresApplyMutationLease,
         setActiveApplyMutationLease: (lease) => {
           activeApplyMutationLease = lease;
+          // Allow time for the ownership read and release without extending the run.
+          runtimeBudget.leaseCleanupReserveMs = Math.min(
+            10_000,
+            Math.floor(runtimeBudget.maxRuntimeMs / 10),
+          );
         },
       });
       currentApplyMutationBoundaryBlockReason = (): string | null => {
@@ -2617,9 +2629,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           if (!pairedLease) return;
           if (pairedOperationCompleted && options.onOperationCompleted) {
             try {
-              deleteOwnedDedicatedReviewStartLease(pairedLease.itemNumber, pairedLease.lease, {
-                throwOnError: true,
-              });
+              releaseOwnedApplyLease(pairedLease.itemNumber, pairedLease.lease);
             } catch (error) {
               console.error(
                 `[apply] linked issue #${pairedNumber} closed and archived but could not delete owned review lease ${pairedLease.lease.commentId}: ${mutationErrorMessage(error)}`,
@@ -2628,9 +2638,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             return;
           }
           try {
-            deleteOwnedDedicatedReviewStartLease(pairedLease.itemNumber, pairedLease.lease, {
-              throwOnError: true,
-            });
+            releaseOwnedApplyLease(pairedLease.itemNumber, pairedLease.lease);
           } catch (error) {
             if (!operationError || !isLockedConversationCommentError(error)) throw error;
             console.error(
