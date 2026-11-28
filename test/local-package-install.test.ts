@@ -44,7 +44,8 @@ test(
   "packed local reviewer installs and runs outside the source checkout",
   { timeout: 240_000 },
   async (t) => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "local-package-install-")));
+    // Match the import guard's native path spelling, including Windows short names in TEMP.
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "local-package-install-")));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const stage = join(root, "stage");
     const seed = join(root, "seed");
