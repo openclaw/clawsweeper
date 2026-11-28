@@ -27,27 +27,36 @@ let finished = false;
 let escalation;
 
 function signalGroup(signal) {
-  if (!child.pid) return;
+  if (!child.pid) return true;
   if (process.platform === "win32") {
     spawnSync(
       join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"),
       ["/pid", String(child.pid), "/t", "/f"],
       { stdio: "ignore", windowsHide: true },
     );
-    return;
+    return true;
   }
   try {
     process.kill(-child.pid, signal);
   } catch (error) {
-    if (error.code !== "ESRCH") throw error;
+    if (error.code !== "ESRCH") {
+      console.error(`Target checkout git process group cleanup failed (${signal}): ${error.code}.`);
+      return false;
+    }
   }
+  return true;
 }
 
 function stop(signal = "SIGTERM") {
   if (stopping || finished) return;
   stopping = true;
   signalGroup(signal);
-  escalation = setTimeout(() => signalGroup("SIGKILL"), 1_000);
+  escalation = setTimeout(() => {
+    if (!signalGroup("SIGKILL")) {
+      process.exitCode = 124;
+      child.unref();
+    }
+  }, 1_000);
 }
 
 const deadline = setTimeout(() => {
@@ -63,8 +72,8 @@ function finish(code) {
   finished = true;
   clearTimeout(deadline);
   clearTimeout(escalation);
-  signalGroup("SIGKILL");
   process.exitCode = stopping ? 124 : (code ?? 1);
+  if (!signalGroup("SIGKILL") && process.exitCode === 0) process.exitCode = 1;
 }
 
 child.once("error", (error) => {
