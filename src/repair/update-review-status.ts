@@ -75,7 +75,7 @@ export function renderReviewProgressSection(
       REVIEW_PROGRESS_START,
       "### ClawSweeper review complete",
       "",
-      "ClawSweeper finished reviewing this revision. The review result is being finalized.",
+      "ClawSweeper finished reviewing this revision.",
       ...(options.runUrl ? ["", `[View the workflow run](${options.runUrl}).`] : []),
       REVIEW_PROGRESS_END,
     ].join("\n");

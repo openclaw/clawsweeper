@@ -1,0 +1,1 @@
+- Stop completed automatic review acknowledgements from saying the verdict is still being finalized.
