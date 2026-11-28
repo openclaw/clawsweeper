@@ -1469,14 +1469,31 @@ export const git = {
 };
 
 export function withMockGh(root: string, script: string, run: () => void): void {
-  const originalGhBin = process.env.GH_BIN;
-  const originalGhBinArgs = process.env.GH_BIN_ARGS;
   const binDir = join(root, "bin");
   mkdirSync(binDir, { recursive: true });
   const ghPath = join(binDir, "gh.js");
   writeFileSync(ghPath, script, { mode: 0o755 });
+  withGhCommand(mockGhBinEnv(ghPath), run);
+}
+
+export function withHangingGh(root: string, marker: string, run: () => void): void {
+  if (process.platform === "win32") {
+    withMockGh(
+      root,
+      `require("node:fs").appendFileSync(${JSON.stringify(marker)}, "attempted\\n"); setTimeout(() => {}, 10_000);`,
+      run,
+    );
+    return;
+  }
+  const shim = join(root, "hanging-gh.sh");
+  writeFileSync(shim, '#!/bin/sh\nprintf "attempted\\n" >> "$1"\nexec sleep 10\n');
+  withGhCommand({ GH_BIN: "/bin/sh", GH_BIN_ARGS: JSON.stringify([shim, marker]) }, run);
+}
+
+function withGhCommand(override: NodeJS.ProcessEnv, run: () => void): void {
+  const originalGhBin = process.env.GH_BIN;
+  const originalGhBinArgs = process.env.GH_BIN_ARGS;
   try {
-    const override = mockGhBinEnv(ghPath);
     process.env.GH_BIN = override.GH_BIN;
     process.env.GH_BIN_ARGS = override.GH_BIN_ARGS;
     run();
