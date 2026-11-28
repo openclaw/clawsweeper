@@ -1,1 +1,1 @@
-- Prevent timed-out synthetic curl receipt reads from leaving empty V8 profiles in Linux and macOS test runs.
+- Prevent timed-out synthetic curl reads and interrupted Codex process-group fixtures from leaving empty V8 profiles in Linux and macOS test runs.

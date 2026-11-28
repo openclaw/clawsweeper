@@ -840,8 +840,9 @@ thresholds (`--coverage`), and its `--shard`, `--coverage-out`, and
 and are ignored by Git.
 
 On Linux and macOS, the shared `mockCommandBinEnv` test helper clears
-`NODE_V8_COVERAGE` before starting Node. This includes the curl stand-in used
-for raw GitHub receipts, whose read timeout can interrupt a profile write.
+`NODE_V8_COVERAGE` before starting Node. The raw receipt and lease workflow
+fixtures use this launcher for their synthetic transports. The Codex cancellation
+test uses it for the process group that can receive `SIGKILL` during shutdown.
 Production subprocesses inherit coverage. On Windows the fixtures launch Node
 directly.
 

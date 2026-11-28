@@ -16,6 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mockCommandBinEnv } from "../../test/mock-command-bin-env.ts";
 
 const repo = "openclaw/lease-fixture",
   number = 357,
@@ -249,10 +250,13 @@ const output = resolve(process.argv[2] || ".artifacts/review-lease-lifecycle");
 mkdirSync(output, { recursive: true });
 const root = mkdtempSync(join(tmpdir(), "lease-lifecycle-"));
 const proxy = join(root, "proxy.cjs");
+const proxyCommands = { ...mockCommandBinEnv("gh", proxy), ...mockCommandBinEnv("curl", proxy) };
+const coveredProxy = join(root, "proxy-inherited-coverage");
 writeFileSync(
   proxy,
   `
 const fs = require("node:fs"), args = process.argv.slice(2), raw = args.includes("--url");
+if (process.platform !== "win32" && process.env.NODE_V8_COVERAGE) fs.writeFileSync(${JSON.stringify(coveredProxy)}, "");
 const endpoint = raw ? new URL(args[args.indexOf("--url") + 1]).pathname : "/" + args[1];
 const index = args.indexOf("--method"), method = raw || index < 0 ? "GET" : args[index + 1];
 const input = args.indexOf("--input"), field = args.find(value => value.startsWith("body=") || value.startsWith("state="));
@@ -388,10 +392,7 @@ try {
           LEASE_ROLE: role,
           LEASE_CONTROL: join(root, `${name}-${role}`),
           GH_TOKEN: "synthetic-no-live-access",
-          GH_BIN: process.execPath,
-          GH_BIN_ARGS: JSON.stringify([proxy]),
-          CURL_BIN: process.execPath,
-          CURL_BIN_ARGS: JSON.stringify([proxy]),
+          ...proxyCommands,
           GITHUB_RUN_ID: role === "quiet" ? "42" : "1000",
           GITHUB_RUN_ATTEMPT: "1",
         },
@@ -454,10 +455,7 @@ try {
                 GH_TOKEN: "synthetic-no-live-access",
                 LEASE_FIXTURE_URL: url,
                 LEASE_ROLE: "legacy",
-                GH_BIN: process.execPath,
-                GH_BIN_ARGS: JSON.stringify([proxy]),
-                CURL_BIN: process.execPath,
-                CURL_BIN_ARGS: JSON.stringify([proxy]),
+                ...proxyCommands,
               },
               stdio: ["ignore", "pipe", "pipe"],
             },
@@ -553,6 +551,7 @@ try {
       await new Promise((done) => server.close(done));
     }
   }
+  assert.equal(existsSync(coveredProxy), false, "synthetic lease transport inherited V8 coverage");
   const sources = [
     "src/clawsweeper-review-comment-leases.ts",
     "src/clawsweeper-review-comment-publication.ts",
@@ -561,6 +560,7 @@ try {
     "src/repair/comment-router/admission.ts",
     "scripts/e2e/review-lease-lifecycle.mjs",
     "test/helpers.ts",
+    "test/mock-command-bin-env.ts",
   ];
   const summary = {
     passed: results.length,
