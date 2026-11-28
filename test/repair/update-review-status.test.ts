@@ -83,7 +83,7 @@ test("review progress replaces one marker-backed section in place", () => {
   });
   assert.equal((complete.match(/clawsweeper-review-progress:start/g) ?? []).length, 1);
   assert.match(complete, /review complete/i);
-  assert.doesNotMatch(complete, /review in progress|review blocked/i);
+  assert.doesNotMatch(complete, /review in progress|review blocked|being finalized/i);
   const closed = mergeReviewProgressSection(reviewing, {
     state: "closed",
     failureReason: null,
