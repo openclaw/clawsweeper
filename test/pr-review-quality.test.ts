@@ -62,6 +62,7 @@ const lowValueTest = (index: number) => ({
   file: `test/reload-${index}.test.ts`,
   lineStart: 8,
   lineEnd: 8,
+  sourceLines: ['  expect(result.draft).toBe("saved");'],
   reason: "The second draft-value assertion repeats the reload contract.",
   behaviors: [behavior],
 });
@@ -181,6 +182,15 @@ test("report round trip preserves product, provenance, and testing reviews", () 
     }));
     assert.deepEqual(reportReviewDecision(legacyReport).testingReview.lowValueTests, [cut]);
   }
+  const { sourceLines: _sourceLines, ...oldRange } = lowValueTest(3);
+  const oldReport = updateReviewRecordDecision(report, () => ({
+    testingReview: { ...testingReview, lowValueTests: [oldRange, lowValueTest(2)] },
+  }));
+  assert.deepEqual(reportReviewDecision(oldReport).testingReview.lowValueTests, [
+    oldRange,
+    lowValueTest(2),
+  ]);
+  assert.doesNotMatch(renderReviewCommentFromReport(oldReport, "none"), /reload-3\.test/);
   const comment = renderReviewCommentFromReport(report, "none");
   for (const field of [
     behavior.behavior,

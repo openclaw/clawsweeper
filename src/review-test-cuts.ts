@@ -1,7 +1,7 @@
 import type { LowValueTest, TestCutRange } from "./clawsweeper-types.js";
 import { readReviewGit, reviewObjectId, safeReviewPath } from "./pr-review-evidence.js";
 
-/** Only publish witnesses that still exist outside all the proposed removals at the PR head. */
+/** Match each cut to the reviewed head, then check that its witnesses survive all removals. */
 export function verifyTestCutSources(
   cuts: LowValueTest[],
   checkoutDir: string,
@@ -28,7 +28,11 @@ export function verifyTestCutSources(
     .filter((cut) => "behaviors" in cut)
     .filter(
       (cut) =>
+        cut.sourceLines?.length === cut.lineEnd - cut.lineStart + 1 &&
         cut.lineEnd <= lines(cut.file).length &&
+        cut.sourceLines.every(
+          (line, index) => lines(cut.file)[cut.lineStart - 1 + index] === line,
+        ) &&
         cut.behaviors.every(
           ({ survivor }) =>
             lines(survivor.file)[survivor.line - 1]?.trim() === survivor.assertion &&

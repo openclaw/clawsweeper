@@ -1,0 +1,1 @@
+- Verify the complete source of each suggested test cut at the reviewed pull request head before publishing it.

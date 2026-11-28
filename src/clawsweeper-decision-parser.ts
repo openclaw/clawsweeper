@@ -615,6 +615,10 @@ export function createDecisionParser({
           rejectUnexpectedKeys(test, LOW_VALUE_TEST_SCHEMA_KEYS, entryPath);
           if (!cut.file || !cut.reason) throw new Error(`${entryPath} requires a file and reason`);
           const range = testLineRange(test, entryPath);
+          const sourceLines =
+            source === "stored" && test.sourceLines === undefined
+              ? undefined
+              : requireSingleLineStringArray(test.sourceLines, `${entryPath}.sourceLines`);
           if (!Array.isArray(test.behaviors) || !test.behaviors.length) {
             throw new Error(`${entryPath}.behaviors must be a nonempty array`);
           }
@@ -665,7 +669,7 @@ export function createDecisionParser({
             return [{ behavior, fault, survivor: { file, line, assertion, failure, inputs } }];
           });
           return behaviors.length === test.behaviors.length
-            ? [{ ...cut, ...range, behaviors }]
+            ? [{ ...cut, ...range, ...(sourceLines && { sourceLines }), behaviors }]
             : [];
         }),
       missingE2e: requireReportLine(record.missingE2e, `${path}.missingE2e`),

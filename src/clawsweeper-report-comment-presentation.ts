@@ -188,9 +188,10 @@ function publicFindingsBlock(
     .map(publicProvenanceLine);
   if (provenanceLines.length) blocks.push("### Provenance", provenanceLines.join("\n"));
   const testLines = [
-    ...testingReview.lowValueTests.map((test) => {
+    ...testingReview.lowValueTests.flatMap((test) => {
       const { file, reason } = test;
       if ("behaviors" in test) {
+        if (!test.sourceLines) return [];
         return [
           `- Suggested test cut ${publicInlineCode(`${file}:${test.lineStart}-${test.lineEnd}`)}: ${publicInlineText(reason)}`,
           ...test.behaviors.map(
