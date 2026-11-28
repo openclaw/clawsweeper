@@ -1,3 +1,4 @@
+import { assertChildExited } from "../helpers/assert-child-exited.ts";
 import {
   installCoverageFailure,
   COVERAGE_FAILURE_PRIVATE_MARKER,
@@ -713,9 +714,8 @@ for (const stage of ["count", "start", "next", "page"] as const)
             },
           },
         );
+        assertChildExited(result);
         assert.equal(result.status, 1);
-        assert.equal(result.signal, null);
-        assert.equal(result.error, undefined);
         assert.match(result.stdout, /## Weekly review coverage/);
         assert.ok(result.stdout.includes("collection/publication unavailable"));
         assert.match(result.stderr, /coverage_command_failed/);
@@ -896,9 +896,8 @@ for (const thrown of ["Error", "undefined", "object"] as const)
             },
           },
         );
+        assertChildExited(result);
         assert.equal(result.status, 1);
-        assert.equal(result.signal, null);
-        assert.equal(result.error, undefined);
         assert.match(result.stdout, /## Weekly review coverage/);
         assert.ok(result.stdout.includes("collection/publication unavailable"));
         assert.match(result.stderr, /coverage_command_failed/);
