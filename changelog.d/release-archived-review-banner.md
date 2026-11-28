@@ -1,0 +1,1 @@
+- Remove the reviewing worker’s banner when apply finds the PR already closed and archives the report.
