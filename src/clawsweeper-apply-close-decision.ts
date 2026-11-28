@@ -40,7 +40,7 @@ function applyCloseDecision(markdown: string, closeReason: CloseReason): Decisio
     closeReason,
     confidence: "high",
     closeComment: review.publishedCloseComment,
-    realBehaviorProof: review.realBehaviorProof,
+    realBehaviorProof: review.hostProof,
   };
 }
 

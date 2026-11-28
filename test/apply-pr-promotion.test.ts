@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import test from "node:test";
 import { sectionValue } from "../dist/report-front-matter.js";
-import { readReviewRecord } from "../dist/review-record.js";
+import { readReviewRecord, updateReviewRecordDecision } from "../dist/review-record.js";
 
 import {
   canonicalPullRequestClusterForTest,
@@ -490,6 +490,66 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
       },
     ]);
   });
+});
+
+test("stale F-rated promotion uses the host proof override", () => {
+  const number = 330;
+  for (const labels of [[], ["proof: override"]]) {
+    withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
+      const report = updateReviewRecordDecision(
+        stalePullRequestReport({
+          number,
+          pull_head_sha: "head-sha",
+          labels: JSON.stringify(labels),
+          pr_rating_proof: "D",
+        }),
+        (decision) => ({
+          prRating: { ...decision.prRating, overallTier: "F", proofTier: "D" },
+          realBehaviorProof: {
+            status: "insufficient",
+            evidenceKind: "terminal",
+            needsContributorAction: true,
+            summary: "The trace does not exercise the changed behavior.",
+          },
+        }),
+      );
+      const synced = reportWithSyncedReviewComment(report, number, "none");
+      writeFileSync(join(itemsDir, `${number}.md`), synced.report);
+      withMockGh(
+        root,
+        promotionGhMock({ number, labels, comment: synced.comment, headRunPullRequests: [] }),
+        () =>
+          runOpenClawApplyDecisionsForTest({
+            itemsDir,
+            closedDir,
+            plansDir,
+            reportPath,
+            dryRun: true,
+            extraArgs: [
+              "--skip-dashboard",
+              "--apply-close-reasons",
+              "low_signal_unmergeable_pr",
+              "--stale-min-age-days",
+              "30",
+              "--item-numbers",
+              String(number),
+            ],
+          }),
+      );
+      const actions: { action: string; reason: string }[] = JSON.parse(
+        readFileSync(reportPath, "utf8"),
+      );
+      if (labels.includes("proof: override")) {
+        assert.deepEqual(
+          actions.map((entry) => entry.action),
+          ["kept_open"],
+        );
+      } else {
+        const close = actions.find((entry) => entry.action === "closed");
+        assert.match(close?.reason ?? "", /low-signal unmergeable PR/);
+      }
+    });
+  }
 });
 
 test("apply-decisions promotes old F-rated stale PRs with low-signal close semantics", () => {

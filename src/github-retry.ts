@@ -35,7 +35,7 @@ export class GitHubRateLimitError extends Error {
   readonly authoritative: boolean;
 
   constructor(cause: unknown, now = Date.now(), options: GitHubRateLimitOptions = {}) {
-    const message = ghErrorText(cause);
+    const message = ghRetryDiagnostic(cause);
     const retryAfter = message.match(/\bretry-after\s*[:=]\s*(\d+)\b/i)?.[1];
     const reset = message.match(/\bx-ratelimit-reset\s*[:=]\s*(\d+)\b/i)?.[1];
     const propagated = message.match(/\brate limited until\s+(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/i)?.[1];
@@ -123,7 +123,7 @@ const GH_TRANSIENT_PATTERNS = [
 export function ghRetryKind(error: unknown): GhRetryKind {
   // Coordinator retries belong to their queue, not the GitHub retry loop.
   if (error instanceof ExactReviewBatchQueueTransportError) return "none";
-  const message = ghErrorText(error);
+  const message = ghRetryDiagnostic(error);
   if (GH_THROTTLE_PATTERNS.some((pattern) => pattern.test(message))) return "throttle";
   if (hasGitHubStatus(message, [429])) return "throttle";
   if (hasGitHubStatus(message, [500, 502, 503, 504])) return "transient";
@@ -142,6 +142,14 @@ export function isLockedConversationCommentError(error: unknown): boolean {
     /(?:issue|conversation|discussion).{0,80}locked|locked.{0,80}(?:issue|conversation|discussion)/i.test(
       message,
     )
+  );
+}
+
+/** gh reports the HTTP status on stderr. Its command line can contain a PATCH body. */
+export function isGitHubForbiddenError(error: unknown): boolean {
+  return (
+    !(error instanceof GitHubRateLimitError) &&
+    /^(?:gh:\s*)?HTTP 403\b|\(HTTP 403\)\s*$/im.test(errorField(error, "stderr"))
   );
 }
 
@@ -166,12 +174,45 @@ export function summarizeGhArgs(args: readonly string[]): string {
   return `gh ${args.slice(0, 3).join(" ")}`;
 }
 
+/** Preserve gh's response when a spawnSync caller turns a nonzero exit into an error. */
+export function ghCommandError(result: {
+  status: number | null;
+  stdout: string | null;
+  stderr: string | null;
+}): Error {
+  const { status, stdout, stderr } = result;
+  return Object.assign(new Error(stderr?.trim() || `GitHub CLI exited with status ${status}`), {
+    status,
+    stdout,
+    stderr,
+  });
+}
+
+function ghRetryDiagnostic(error: unknown): string {
+  const diagnostic = ghErrorText(error);
+  // A flattened command failure has no reliable boundary between multiline
+  // arguments and the response. It cannot establish a retry or a reset hint.
+  return diagnostic.startsWith("Command failed:") ? "" : diagnostic;
+}
+
 function ghErrorText(error: unknown): string {
-  return [
-    error instanceof Error ? error.message : String(error),
-    errorField(error, "stdout"),
+  const message = error instanceof Error ? error.message : String(error);
+  if (typeof error !== "object" || error === null || !("stdout" in error || "stderr" in error)) {
+    return message;
+  }
+  // Node's command-failure message includes all of argv, including multiline
+  // PATCH bodies. Captured diagnostics and native transport codes describe the failure.
+  const response = [
     errorField(error, "stderr"),
-  ].join("\n");
+    errorField(error, "stdout"),
+    errorField(error, "code"),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  if (response || "status" in error || "cmd" in error || message.startsWith("Command failed:")) {
+    return response;
+  }
+  return message;
 }
 
 function hasGitHubStatus(message: string, statuses: readonly number[]): boolean {
@@ -191,7 +232,7 @@ function hasGitHubStatus(message: string, statuses: readonly number[]): boolean 
   });
 }
 
-function errorField(error: unknown, field: "stdout" | "stderr"): string {
+function errorField(error: unknown, field: "stdout" | "stderr" | "code"): string {
   if (typeof error !== "object" || error === null || !(field in error)) return "";
   const value = (error as Record<string, unknown>)[field];
   if (Buffer.isBuffer(value)) return value.toString("utf8");

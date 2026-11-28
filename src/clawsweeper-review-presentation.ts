@@ -3,12 +3,14 @@ import { publicLikelyOwner } from "./clawsweeper-regression-provenance.js";
 import { PR_STATUS_LABELS } from "./clawsweeper-policy.js";
 import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import type {
+  Decision,
   Evidence,
   LikelyOwner,
   PrRating,
   PrRatingTier,
   PrStatusLabelKind,
   PullRequestReviewState,
+  RealBehaviorProof,
   ReviewFinding,
   SecurityConcern,
   SecurityReview,
@@ -328,11 +330,14 @@ export function publicSecurityReviewLine(review: SecurityReview): string {
 
 // The proof tier stays rated when the contributor proof gate does not apply,
 // so the row shows what proof exists, not the gate status.
-function publicProofMeaning(rating: PrRating, policy: RealBehaviorProofPolicy): string {
-  if (policy.proofBlocksMerge) {
+function publicProofMeaning(
+  rating: PrRating,
+  proof: RealBehaviorProof,
+  proofBlocksMerge: boolean,
+): string {
+  if (proofBlocksMerge) {
     return "Real behavior proof is necessary before merge. See [Before merge](#before-merge).";
   }
-  const proof = policy.assessment;
   const summary = sentence(proof.summary);
   if (rating.proofTier === "NA") {
     return summary
@@ -382,15 +387,18 @@ function publicRatedName(tier: PrRatingTier): string {
 }
 
 export function publicReviewScoresBlock(
-  rating: PrRating,
+  {
+    prRating: rating,
+    reviewFindings: findings,
+    securityReview,
+  }: Pick<Decision, "prRating" | "reviewFindings" | "securityReview">,
+  proof: RealBehaviorProof,
   policy: RealBehaviorProofPolicy,
-  findings: readonly ReviewFinding[],
-  securityReview: SecurityReview,
 ): string {
-  const shiny = hasShinyProof(policy.assessment) ? " ✨ media proof bonus" : "";
+  const shiny = hasShinyProof(proof) ? " ✨ media proof bonus" : "";
   let overallMeaning =
     sentence(rating.summary) || "Overall readiness follows the weaker of proof and patch quality.";
-  const proofMeaning = publicProofMeaning(rating, policy);
+  const proofMeaning = publicProofMeaning(rating, proof, policy.proofBlocksMerge);
   if (policy.proofBlocksMerge && policy.assessment.status === "not_applicable") {
     overallMeaning = `Recorded reviewer rating: ${overallMeaning} Real behavior proof remains required by host policy.`;
   }
@@ -403,13 +411,20 @@ export function publicReviewScoresBlock(
           ? sentence(rating.summary) ||
             "Patch quality blocks readiness; see the Before merge checklist."
           : "No actionable review findings were identified.";
-  return [
+  const rows = [
     "| Measure | Result | What it means |",
     "|---|---|---|",
     `| **Overall readiness** | ${publicRatedName(rating.overallTier)} | ${publicTableCell(overallMeaning)} |`,
     `| **Proof confidence** | ${publicRatedName(rating.proofTier)}${shiny} | ${publicTableCell(proofMeaning)} |`,
     `| **Patch quality** | ${publicRatedName(rating.patchTier)} | ${publicTableCell(patchMeaning)} |`,
-  ].join("\n");
+  ];
+  if (!policy.required && proof.summary !== policy.assessment.summary) {
+    rows.push(
+      "",
+      `The scores reflect the reviewer's assessment. ${sentence(policy.assessment.summary)}`,
+    );
+  }
+  return rows.join("\n");
 }
 
 export function publicMergeReadinessBlock(
