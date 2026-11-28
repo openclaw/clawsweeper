@@ -1,0 +1,1 @@
+- Report invalid preflight flags before trying to infer a repository from the local checkout.

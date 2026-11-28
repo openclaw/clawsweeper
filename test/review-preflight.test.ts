@@ -124,7 +124,9 @@ test("optional export failure preserves the native JSON report", (t) => {
   });
 });
 
-test("preflight invalid combinations and help exit without a review", () => {
+test("preflight invalid combinations and help exit without a review", (t) => {
+  const target = mkdtempSync(join(tmpdir(), "preflight-no-origin-"));
+  t.after(() => rmSync(target, { recursive: true, force: true }));
   // A guard regression must fail against Node, never launch the operator's reviewer.
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -133,11 +135,15 @@ test("preflight invalid combinations and help exit without a review", () => {
   };
   delete env.EXACT_REVIEW_DECISION;
   const run = (args: string[]) =>
-    spawnSync(process.execPath, ["dist/clawsweeper.js", "review", ...args], {
-      encoding: "utf8",
-      env,
-      timeout: 10_000,
-    });
+    spawnSync(
+      process.execPath,
+      ["dist/clawsweeper.js", "review", "--target-dir", target, ...args],
+      {
+        encoding: "utf8",
+        env,
+        timeout: 10_000,
+      },
+    );
   for (const args of [
     ["--preflight", "--result-format", "json"],
     ["--preflight", "--local-range"],

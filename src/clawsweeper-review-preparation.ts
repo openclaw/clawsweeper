@@ -60,6 +60,17 @@ export type PrepareReviewDependencies = Pick<
 > &
   Partial<Pick<CreateReviewCommandWorkflowDependencies, "gitInfo" | "resolveReviewCheckout">>;
 
+export function validateReviewPreflightArgs(args: Args): void {
+  if (
+    boolArg(args.preflight) &&
+    (!boolArg(args.local_range) || stringArg(args.result_format, "text") !== "json")
+  ) {
+    throw new UserFacingCommandError(
+      "--preflight requires --local-range and --result-format json.",
+    );
+  }
+}
+
 export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDependencies) {
   const {
     buildLocalRangeReview,
@@ -87,17 +98,10 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
     return resolveReviewCheckout;
   }
 
+  validateReviewPreflightArgs(args);
   const profile = repoFromArgs(args);
   const localRange = boolArg(args.local_range);
   const localOnly = boolArg(args.local_only) || localRange;
-  if (
-    boolArg(args.preflight) &&
-    (!localRange || stringArg(args.result_format, "text") !== "json")
-  ) {
-    throw new UserFacingCommandError(
-      "--preflight requires --local-range and --result-format json.",
-    );
-  }
   const outputSelection = reviewOutputSelection(args, {
     destinationFlag: "artifact_dir",
     hostedEvidenceRequired: !localOnly,
