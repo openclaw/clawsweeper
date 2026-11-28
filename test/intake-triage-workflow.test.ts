@@ -16,10 +16,17 @@ import {
   recordWorkflowActionEvent,
   startWorkflowMutationAttempt,
 } from "../dist/action-ledger-runtime.js";
-import { INTAKE_POLICY, intakeRequest } from "../dist/intake-triage-contract.js";
+import {
+  INTAKE_POLICY,
+  intakeRequest,
+  type IntakeAnswers,
+} from "../dist/intake-triage-contract.js";
 import { githubTest, installGhFixture } from "./github-runtime-fixture.ts";
 
-function fixture(t: TestContext) {
+function fixture(
+  t: TestContext,
+  answers: IntakeAnswers = { category: "bug", reproduction: "present", environment: "present" },
+) {
   const root = mkdtempSync(join(tmpdir(), "intake-workflow-"));
   const values = {
     CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
@@ -84,7 +91,7 @@ function fixture(t: TestContext) {
         digest: options.request.digest,
         backend: "responses",
         outcome: "classified",
-        answers: { category: "bug", reproduction: "present", environment: "present" },
+        answers,
         usage: { inputTokens: 100, outputTokens: 20 },
         durationMs: 1,
       };
@@ -181,40 +188,91 @@ test("preliminary publication records intent and usage without completing a revi
   assert.ok(!JSON.stringify(events).includes(f.live.body));
 });
 
-test("PR intake does not publish a missing-reproduction label from a body-only classification", async (t) => {
-  // The intake log for openclaw/openclaw#206396 records all three labels despite the Gateway repro.
-  const f = fixture(t);
-  f.live = {
-    ...f.live,
-    kind: "pull_request",
-    headSha: process.env.EXACT_REVIEW_SOURCE_HEAD_SHA!,
-    title: "fix(exec): charge shared pages once in the host memory budget",
+// The Decisions result behind openclaw/openclaw#206396 said "missing" even
+// though the author supplied a workload comparison and linked the observed output.
+const observedOutput = "https://github.com/openclaw/openclaw/pull/42#issuecomment-7210339681";
+for (const { name, body, reproduction, needsRepro } of [
+  {
+    name: "asks for a missing trigger",
+    body: "Gateway jobs sometimes die. I do not know how to trigger it.",
+    reproduction: "missing",
+    needsRepro: true,
+  },
+  {
+    name: "leaves a cited evidence comment for full review",
+    body: [
+      "## Evidence",
+      `Observed lines: ${observedOutput}`,
+      "| Workload | main | this PR |",
+      "|---|---|---|",
+      "| `chromium --headless=new about:blank` 60 s | killed in 1.5 s | alive at 60 s |",
+    ].join("\n"),
+    reproduction: "missing",
+    needsRepro: false,
+  },
+  {
+    name: "counts a described trigger and observed failure",
     body: "Run headless Chromium through Gateway exec at a 601 MiB budget. Main kills it in 1.5 s. The PR keeps it alive for the 60 s run.",
-  };
-  const result = await runIntakeWorkflow({
-    ...f.options,
-    kind: "pull_request",
-    backend: "decisions",
-    infer: async (options) => {
-      await options.recordAttempt({ digest: options.request.digest, backend: "decisions" });
-      return {
-        policy: INTAKE_POLICY,
-        digest: options.request.digest,
-        backend: "decisions",
-        outcome: "classified",
-        answers: { category: "bug", reproduction: "missing", environment: "missing" },
-        usage: null,
-        durationMs: 1,
-      };
-    },
+    reproduction: "present",
+    needsRepro: false,
+  },
+  {
+    name: "recognizes a bold evidence citation",
+    body: `**Observed lines:** ${observedOutput}`,
+    reproduction: "missing",
+    needsRepro: false,
+  },
+  {
+    name: "recognizes a bulleted evidence citation",
+    body: `- Observed lines: ${observedOutput}`,
+    reproduction: "missing",
+    needsRepro: false,
+  },
+  {
+    name: "recognizes emphasis and a named link in an ordered list",
+    body: `1. _Repro steps_: [Gateway output](${observedOutput})`,
+    reproduction: "missing",
+    needsRepro: false,
+  },
+  {
+    name: "checks the link destination even when the caption names the current PR",
+    body: `**Observed lines:** [${observedOutput}](https://github.com/openclaw/openclaw/pull/51#issuecomment-12)`,
+    reproduction: "missing",
+    needsRepro: true,
+  },
+  {
+    name: "ignores a citation shown as a fenced example",
+    body: ["```markdown", `Observed lines: ${observedOutput}`, "```"].join("\n"),
+    reproduction: "missing",
+    needsRepro: true,
+  },
+  {
+    name: "still asks when a discussion link is unrelated to the evidence",
+    body: `## Evidence\nDiscussion: ${observedOutput}\nNo trigger yet.`,
+    reproduction: "missing",
+    needsRepro: true,
+  },
+]) {
+  test(`preliminary bug PR intake ${name}`, async (t) => {
+    const f = fixture(t, { category: "bug", reproduction, environment: "missing" });
+    f.live = {
+      ...f.live,
+      kind: "pull_request",
+      headSha: process.env.EXACT_REVIEW_SOURCE_HEAD_SHA!,
+      title: "fix(exec): charge shared pages once in the host memory budget",
+      body,
+    };
+    const result = await runIntakeWorkflow({ ...f.options, kind: "pull_request" });
+    assert.deepEqual(result.labels, [
+      "clawsweeper:intake:bug",
+      ...(needsRepro ? ["clawsweeper:intake:needs-repro"] : []),
+      "clawsweeper:intake:needs-environment",
+    ]);
+    const edit = f.writes.find((command) => command.includes("--add-label"));
+    assert.ok(edit);
+    assert.equal(edit.includes("clawsweeper:intake:needs-repro"), needsRepro);
   });
-  assert.deepEqual(result.labels, [
-    "clawsweeper:intake:bug",
-    "clawsweeper:intake:needs-environment",
-  ]);
-  assert.ok(f.writes.some((command) => command.includes("--add-label")));
-  assert.ok(f.writes.every((command) => !command.includes("clawsweeper:intake:needs-repro")));
-});
+}
 
 test("an item with a published review keeps its labels and spends no inference", async (t) => {
   // Production: openclaw/openclaw#196836 already had its durable review, yet every

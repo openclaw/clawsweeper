@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import MarkdownIt from "markdown-it/browser";
+import { escapeRegExp } from "./clawsweeper-markdown.js";
 import { isRecord } from "./value-coerce.js";
 
-export const INTAKE_POLICY = "intake-v1";
+export const INTAKE_POLICY = "intake-v2";
 export const INTAKE_DEFAULT_MODEL = "gpt-6-luna";
 export const INTAKE_MAX_INPUT_BYTES = 12_000;
 export const INTAKE_MAX_RESPONSE_BYTES = 32_000;
@@ -27,7 +29,7 @@ export const INTAKE_QUESTIONS = [
   {
     name: "reproduction",
     instructions:
-      "Does the submission itself include concrete actions or an executable example to trigger the claimed failure? Do not reproduce anything.",
+      "Does the submission give concrete actions or an executable example that triggers the claimed failure? Count a described workload with its observed failure, including in a before/after comparison. For a PR that only points to reproduction evidence outside the submission, choose unclear. Do not reproduce anything.",
     choices: [
       {
         value: "present",
@@ -140,13 +142,46 @@ export const INTAKE_LABELS = [
   "clawsweeper:intake:needs-environment",
 ] as const;
 
-export function intakeLabels(result: IntakeResult, kind: IntakePacket["kind"]): string[] {
+const citationMarkdown = new MarkdownIt({ html: true, linkify: true });
+const citationLabel = /^(?:repro(?:duction)?(?: steps| output)?|observed (?:output|lines)):$/i;
+
+function citesReproductionComment(packet: IntakePacket): boolean {
+  if (packet.kind !== "pull_request") return false;
+  // Intake cannot see the observed output in the PR comment cited by openclaw/openclaw#206396.
+  const comment = new RegExp(
+    `^https://github\\.com/${escapeRegExp(packet.repository)}/pull/${packet.number}#issuecomment-\\d+$`,
+    "i",
+  );
+  for (const block of citationMarkdown.parse(packet.body, {})) {
+    let label: string | null = "";
+    for (const token of block.children ?? []) {
+      if (token.tag === "strong" || token.tag === "em") continue;
+      if (token.type === "softbreak" || token.type === "hardbreak") {
+        label = "";
+      } else if (token.type === "text" && label !== null) {
+        label += token.content;
+      } else {
+        if (
+          token.type === "link_open" &&
+          label !== null &&
+          citationLabel.test(label.trim()) &&
+          comment.test(String(token.attrGet("href") ?? ""))
+        )
+          return true;
+        label = null;
+      }
+    }
+  }
+  return false;
+}
+
+export function intakeLabels(result: IntakeResult, packet: IntakePacket): string[] {
   const answers = result.outcome === "classified" ? parseIntakeAnswers(result.answers) : null;
   if (!answers) return [];
   const labels: string[] = [];
   if (answers.category !== "unclear") labels.push(`clawsweeper:intake:${answers.category}`);
   if (answers.category === "bug") {
-    if (kind === "issue" && answers.reproduction === "missing")
+    if (answers.reproduction === "missing" && !citesReproductionComment(packet))
       labels.push("clawsweeper:intake:needs-repro");
     if (answers.environment === "missing") labels.push("clawsweeper:intake:needs-environment");
   }
