@@ -843,8 +843,8 @@ On Linux and macOS, the shared `mockCommandBinEnv` test helper clears
 `NODE_V8_COVERAGE` before starting Node. The raw receipt and lease workflow
 fixtures use this launcher for their synthetic transports. The Codex cancellation
 test uses it for the process group that can receive `SIGKILL` during shutdown.
-Production subprocesses inherit coverage. On Windows the fixtures launch Node
-directly.
+Production subprocesses inherit coverage. On Windows, `mockCommandBinEnv`
+launches Node directly.
 
 ## GitHub Actions Setup
 
