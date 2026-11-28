@@ -4516,6 +4516,7 @@ test("destination import transactions prevent concurrent opposing parent edges",
   const secondSource = trustedChildRoot(root, "cycle-race-second-source");
   const firstShard = writeActionEventShard(firstSource, shardIdentity(first), [first]);
   const secondShard = writeActionEventShard(secondSource, shardIdentity(second), [second]);
+  const loadedPath = path.join(root, "cycle-race-loaded");
   const readyPath = path.join(root, "cycle-race-ready");
   const releasePath = path.join(root, "cycle-race-release");
   const moduleUrl = pathToFileURL(
@@ -4538,10 +4539,16 @@ fs.linkSync = (sourcePath, targetPath) => {
   return originalLink(sourcePath, targetPath);
 };
 const { importActionEventShards } = await import(${JSON.stringify(moduleUrl)});
+fs.writeFileSync(process.argv[5], "loaded");
 importActionEventShards(process.argv[1], process.argv[2]);`;
-  const importScript = `const { importActionEventShards } = await import(${JSON.stringify(
-    moduleUrl,
-  )});
+  const importScript = `import fs from "node:fs";
+const { importActionEventShards } = await import(${JSON.stringify(moduleUrl)});
+const wait = Atomics.wait;
+Atomics.wait = (...args) => {
+  // The first importer may finish only once the second has observed its lock.
+  fs.writeFileSync(process.argv[3], "contended");
+  return wait(...args);
+};
 importActionEventShards(process.argv[1], process.argv[2]);`;
   await withImportRaceChildren(async (own) => {
     const firstDone = own(
@@ -4555,20 +4562,21 @@ importActionEventShards(process.argv[1], process.argv[2]);`;
           destination,
           readyPath,
           releasePath,
+          loadedPath,
         ],
         { stdio: ["ignore", "pipe", "pipe"] },
       ),
     );
+    await waitForPath(loadedPath, 60_000);
     await waitForPath(readyPath);
     const secondDone = own(
       spawn(
         process.execPath,
-        ["--input-type=module", "-e", importScript, secondSource, destination],
+        ["--input-type=module", "-e", importScript, secondSource, destination, releasePath],
         { stdio: ["ignore", "pipe", "pipe"] },
       ),
     );
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    fs.writeFileSync(releasePath, "release\n");
+    await waitForPath(releasePath, 60_000);
 
     const [firstResult, secondResult] = await Promise.all([firstDone, secondDone]);
     assert.equal(firstResult.code, 0, firstResult.stderr || firstResult.stdout);
