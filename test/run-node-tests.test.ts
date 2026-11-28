@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -276,9 +277,45 @@ test("test runner preserves child arguments, exit codes, and terminating signals
   }
 });
 
+test("full-size integration suites finish before parallel files and retain their exit code", async () => {
+  const root = createFixture([
+    "test/codex-review-runner.test.ts",
+    "test/dashboard-coverage-byte-pressure.test.ts",
+    "test/a.test.ts",
+    "test/local-package-install.test.ts",
+  ]);
+  const launches: string[][] = [];
+  try {
+    const outcome = await runNodeTests({
+      target: "unit",
+      cwd: root,
+      concurrency: 16,
+      spawnProcess(_cmd: string, args: string[]) {
+        launches.push(args);
+        const child = new EventEmitter();
+        queueMicrotask(() => child.emit("exit", launches.length === 1 ? 1 : 0, null));
+        return child;
+      },
+    });
+    assert.deepEqual(launches, [
+      [
+        "--test",
+        "--test-concurrency=1",
+        "test/codex-review-runner.test.ts",
+        "test/dashboard-coverage-byte-pressure.test.ts",
+        "test/local-package-install.test.ts",
+      ],
+      ["--test", "--test-concurrency=16", "test/a.test.ts"],
+    ]);
+    assert.equal(outcome.code, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 async function runQuietly(options: Record<string, unknown>) {
   let output = "";
-  const closed = Promise.withResolvers<void>();
+  const closes: Promise<void>[] = [];
   const outcome = await runNodeTests({
     concurrency: 2,
     nodeArguments: ["--test-reporter=spec"],
@@ -293,14 +330,11 @@ async function runQuietly(options: Record<string, unknown>) {
       const child = spawn(command, arguments_, { ...spawnOptions, env, stdio: "pipe" });
       child.stdout.on("data", (chunk) => (output += chunk));
       child.stderr.on("data", (chunk) => (output += chunk));
-      child.once("close", () => closed.resolve());
+      closes.push(new Promise<void>((resolve) => child.once("close", () => resolve())));
       return child;
     },
-  }).catch((error: unknown) => {
-    closed.resolve();
-    throw error;
   });
-  await closed.promise;
+  await Promise.all(closes);
   return { ...outcome, output };
 }
 
@@ -386,6 +420,18 @@ test("sharded raw coverage replays into the whole-target thresholds", async () =
     });
     assert.equal(oneShard.code, 1, oneShard.output);
     assert.match(oneShard.output, /50\.00% function coverage does not meet threshold of 57%/);
+
+    // The two files cover different functions. Dropping either group's
+    // profiles would fail the same whole-target function threshold above.
+    renameSync(join(root, "test/a.test.ts"), join(root, "test/local-package-install.test.ts"));
+    const partitioned = await runQuietly({
+      target: "all",
+      cwd: root,
+      nodeArguments: [],
+      coverage: { mode: "check" },
+    });
+    assert.equal(partitioned.code, 0, partitioned.output);
+    assert.match(partitioned.output, /library\.js +\| +100\.00 \| +100\.00 \| +100\.00 \|/);
 
     const foreign = await runQuietly({
       target: "all",
