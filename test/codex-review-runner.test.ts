@@ -774,11 +774,13 @@ process.stdout.write(JSON.stringify({ payloads: [{ text: challenged }], meta: { 
   );
   chmodSync(openclawPath, 0o755);
   const previous = {
+    PATH: process.env.PATH,
     CLAWSWEEPER_RUNNER: process.env.CLAWSWEEPER_RUNNER,
     CLAWSWEEPER_OPENCLAW_BIN: process.env.CLAWSWEEPER_OPENCLAW_BIN,
     CLAWSWEEPER_OPENCLAW_MODEL: process.env.CLAWSWEEPER_OPENCLAW_MODEL,
     CODEX_BIN: process.env.CODEX_BIN,
   };
+  process.env.PATH = `${join(root, "bin")}${delimiter}${process.env.PATH ?? ""}`;
   process.env.CLAWSWEEPER_RUNNER = "openclaw";
   process.env.CLAWSWEEPER_OPENCLAW_BIN = openclawPath;
   process.env.CLAWSWEEPER_OPENCLAW_MODEL = "openai/gpt-5";
