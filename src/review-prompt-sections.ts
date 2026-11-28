@@ -28,6 +28,7 @@ export type ReviewPromptSection =
   | "media"
   | "maintainer_author"
   | "external_author"
+  | "proof_exempt_author"
   | "authority_chain"
   | "team_session_provenance";
 
@@ -37,16 +38,18 @@ export function reviewPromptSections(
   context: ItemContext,
   hints: ReviewPromptRuntimeHints = {},
 ): Record<ReviewPromptSection, boolean> {
+  const contributorProof = usesContributorProofPolicy(
+    item.author,
+    item.authorAssociation,
+    hints.localRange,
+  );
   const maintainer = !hints.localRange && isMaintainerAuthorAssociation(item.authorAssociation);
   return {
     follow_up: item.kind === "pull_request" && context.previousClawSweeperReview != null,
     media: Boolean(hints.mediaProofSummary?.trim() && hints.mediaProofManifestPath?.trim()),
     maintainer_author: maintainer,
-    external_author: usesContributorProofPolicy(
-      item.author,
-      item.authorAssociation,
-      hints.localRange,
-    ),
+    external_author: contributorProof,
+    proof_exempt_author: item.kind === "pull_request" && !contributorProof,
     authority_chain: item.kind === "pull_request",
     team_session_provenance:
       !hints.localRange &&

@@ -158,7 +158,7 @@ export function authorPrBudgetPromotion(
   markdown: string,
   state: AuthorPrBudgetApplyState,
 ): PullRequestClosePromotion {
-  const { realBehaviorProof: proof, prRating: rating } = reportReviewDecision(markdown);
+  const { hostProof: proof, prRating: rating } = reportReviewDecision(markdown);
   const author = `@${state.author.replace(/^@/, "")}`;
   const summary = `${author} currently has ${state.openPrCount} open PRs in this repository, above the budget of ${state.budget}. ClawSweeper is closing this PR as one of the author's lowest-signal submissions under that budget: its overall rating is ${rating.overallTier} and its real behavior proof is ${proof.status}. Closing or finishing other PRs frees review budget, and this PR can be reopened once the author is under budget or when real proof is added.`;
   return {
@@ -378,7 +378,7 @@ function linkedPullRequestReportMarkdown(
 
 function proofPassedInReport(markdown: string | null): boolean {
   if (!markdown) return false;
-  const proof = reportReviewDecision(markdown).realBehaviorProof;
+  const proof = reportReviewDecision(markdown).hostProof;
   return proof.status === "sufficient" || proof.status === "override";
 }
 
@@ -431,7 +431,7 @@ export function unsafeCanonicalPullRequestReason(
     if (review.decision === "close" && review.confidence === "high") {
       return `linked canonical PR #${linkedPull.number} is itself proposed for close`;
     }
-    const proof = review.realBehaviorProof;
+    const proof = review.hostProof;
     if (
       !proofPassed &&
       (proof.status === "missing" ||

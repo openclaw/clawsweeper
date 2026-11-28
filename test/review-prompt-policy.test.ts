@@ -197,6 +197,7 @@ test("runtime prompt renders only the applicable PR review instructions", () => 
   };
   const git = { mainSha: "abc123", latestRelease: null };
   const firstReview = reviewPromptForTest(item({ kind: "pull_request" }), context, git);
+  assert.doesNotMatch(firstReview, /exempt from the contributor proof requirement/);
   assert.match(firstReview, /For this external PR, real-behavior proof gates merge/);
   assert.doesNotMatch(firstReview, /This PR is maintainer-authored|Re-review: when the context/);
   assert.match(firstReview, /Authority chain, inside the existing outputs/);
@@ -210,6 +211,7 @@ test("runtime prompt renders only the applicable PR review instructions", () => 
     git,
   );
   assert.match(followUp, /This PR is maintainer-authored/);
+  assert.match(followUp, /exempt from the contributor proof requirement/);
   assert.match(followUp, /Re-review: when the context/);
   assert.doesNotMatch(followUp, /For this external PR, real-behavior proof gates merge/);
   assert.doesNotMatch(followUp, /<!-- \/?review-section/);
@@ -226,6 +228,7 @@ test("runtime prompt renders only the applicable PR review instructions", () => 
     git,
   );
   assert.doesNotMatch(botReview, /For this external PR, real-behavior proof gates merge/);
+  assert.match(botReview, /exempt from the contributor proof requirement/);
   assert.match(botReview, /Authority chain, inside the existing outputs/);
 });
 

@@ -113,7 +113,7 @@ function desiredClawSweeperLabelsFromPublicReport(
       );
   labels = nextMaturityLabels(labels, isPullRequest ? [] : decision.maturityLabels);
   if (isPullRequest) {
-    const realBehaviorProof = decision.realBehaviorProof;
+    const realBehaviorProof = decision.hostProof;
     labels = nextMergeRiskLabels(labels, decision.mergeRiskLabels);
     labels = nextRealBehaviorProofSufficientLabels(labels, realBehaviorProof);
     labels = nextRealBehaviorProofMediaLabels(labels, realBehaviorProof);
@@ -152,7 +152,7 @@ function labelTransitionReason(
   options: ReviewCommentRenderOptions = {},
 ): string {
   const isPullRequest = frontMatterValue(markdown, "type") === "pull_request";
-  const realBehaviorProof = decision.realBehaviorProof;
+  const realBehaviorProof = decision.hostProof;
   if (action === "add") {
     const finalReason = finalJustifications.get(label);
     if (finalReason) return finalReason;
@@ -296,7 +296,7 @@ export function labelJustificationsFromPublicReport(
     if (!label || byLabel.has(label)) return;
     byLabel.set(label, { label, reason });
   };
-  const realBehaviorProof = decision.realBehaviorProof;
+  const realBehaviorProof = decision.hostProof;
   if (isPullRequest && frontMatterValue(markdown, "review_status") !== "failed") {
     const proofPolicy = reportRealBehaviorProofPolicy(markdown);
     const rating = decision.prRating;

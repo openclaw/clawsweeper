@@ -22,6 +22,7 @@ import {
   reviewFinding,
   withReviewRecord,
 } from "./helpers.ts";
+import { requireReviewRecord } from "../dist/review-record.js";
 import { reportReviewDecision } from "../dist/report-review-decision.js";
 
 function typedProofReport(report: string, decision: Record<string, unknown> = {}): string {
@@ -558,7 +559,20 @@ test("maintainer and bot proof exemptions keep readiness, ratings, and security 
     const markers = reviewAutomationMarkersFromReport(report);
 
     assert.match(comment, /✅ \*\*Ready for maintainer review\*\*/, scenario.author);
-    // The model rating stays as recorded; the proof gate does not apply to these authors.
+    const recorded = requireReviewRecord(report).decision;
+    const published = reportReviewDecision(report);
+    assert.deepEqual(published.realBehaviorProof, recorded.realBehaviorProof);
+    assert.deepEqual(published.prRating, recorded.prRating);
+    const proofRow = comment
+      .split("\n")
+      .find((line) => line.startsWith("| **Proof confidence** |"));
+    assert.ok(proofRow?.includes(recorded.realBehaviorProof.summary), scenario.author);
+    assert.ok(!proofRow?.includes("not required"), scenario.author);
+    assert.match(
+      comment,
+      /The scores reflect the reviewer's assessment\. Real behavior proof is not required/,
+      scenario.author,
+    );
     assert.match(
       comment,
       /\| \*\*Overall readiness\*\* \| [^|]+ \| The model capped readiness based on its recorded proof assessment\. \|/,
@@ -700,6 +714,11 @@ test("maintainer and bot proof exemptions keep readiness, ratings, and security 
     const markers = reviewAutomationMarkersFromReport(report);
     assert.match(comment, /needs real behavior proof before merge/i, scenario.author);
     assert.match(comment, /Authority-chain proof required:/, scenario.author);
+    assert.doesNotMatch(
+      comment,
+      /Real behavior proof is not required for maintainer- or bot-authored/,
+      scenario.author,
+    );
     assert.match(markers, /clawsweeper-verdict:needs-human/, scenario.author);
     assert.doesNotMatch(markers, /clawsweeper-verdict:pass/, scenario.author);
   }
