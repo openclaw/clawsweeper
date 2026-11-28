@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import childProcess, { execFileSync, spawn, spawnSync } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { createHmac } from "node:crypto";
+import { once } from "node:events";
 import {
   chmodSync,
   existsSync,
@@ -1449,7 +1450,7 @@ function planningRepository(targetRepo: string, untrackedOpen: number) {
 test("audit timeout persists nine targets and resumes after three real children drain", async () => {
   const root = mkdtempSync(join(tmpdir(), "audit-wave-resume-"));
   const statePath = join(root, "cursor-batch.json");
-  const children: ReturnType<typeof spawn>[] = [];
+  const children = new Map<string, ReturnType<typeof spawn>>();
   const active = new Set<string>();
   const dispatched: string[] = [];
   let peak = 0;
@@ -1477,7 +1478,8 @@ test("audit timeout persists nine targets and resumes after three real children 
         active.add(id);
         peak = Math.max(peak, active.size);
         const receipt = join(root, `${id}.json`);
-        children.push(
+        children.set(
+          id,
           spawn(
             process.execPath,
             [
@@ -1502,11 +1504,17 @@ test("audit timeout persists nine targets and resumes after three real children 
       }
       if (resuming) resumedPolls++;
       const id = args[2];
-      const receipt = join(root, `${id}.json`);
-      if (!existsSync(receipt))
+      const child = children.get(id);
+      assert.ok(child, `unknown audit run ${id}`);
+      if (child.exitCode === null && child.signalCode === null)
         return JSON.stringify({ databaseId: Number(id), status: "in_progress" });
+      assert.equal(
+        child.exitCode,
+        0,
+        `audit run ${id} exited with ${child.signalCode ?? child.exitCode}`,
+      );
       active.delete(id);
-      return readFileSync(receipt, "utf8");
+      return readFileSync(join(root, `${id}.json`), "utf8");
     },
   };
   try {
@@ -1540,10 +1548,24 @@ test("audit timeout persists nine targets and resumes after three real children 
     );
     assert.equal(peak, 3);
     assert.equal(active.size, 0);
+    assert.ok(
+      [...children.values()].every((child) => child.exitCode === 0),
+      "audit children are still running after their receipts were consumed",
+    );
     assert.equal(JSON.parse(readFileSync(statePath, "utf8")), null);
   } finally {
-    for (const child of children) if (child.exitCode === null) child.kill();
-    rmSync(root, { recursive: true, force: true });
+    try {
+      // An assertion can fail while a fixture is still waiting for release.
+      // Let it finish writing its receipt and exit before removing its workspace.
+      writeFileSync(join(root, "release"), "go");
+      await Promise.all(
+        [...children.values()].map((child) =>
+          child.exitCode === null && child.signalCode === null ? once(child, "close") : undefined,
+        ),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 

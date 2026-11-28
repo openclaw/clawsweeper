@@ -1,0 +1,1 @@
+- Wait for audit-wave test children to exit before treating their receipts as complete, so teardown lets V8 finish writing their coverage profiles.

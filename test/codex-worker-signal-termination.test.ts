@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { resolveCommand } from "../dist/command.js";
+import { mockCommandBinEnv } from "./mock-command-bin-env.ts";
 
 function alive(pid: number): boolean {
   // Orphan zombies have exited even when PID 1 has not reaped them yet.
@@ -65,7 +67,7 @@ const grandchild = spawn(process.execPath, ["-e", ${JSON.stringify(`
       process.exit(0);
     }, 150);
   });
-  require("node:fs").writeFileSync(${JSON.stringify(readyPath)}, "ready");
+  require("node:fs").writeFileSync(${JSON.stringify(readyPath)}, process.env.NODE_V8_COVERAGE ? "covered" : "ready");
   setInterval(() => {}, 1000);
 `)}], { stdio: ${JSON.stringify(scenario.includes("inherited") || gracefulDescendant ? "inherit" : "ignore")} });
 ${ignoresSignal ? 'process.on("SIGTERM", () => {});' : ""}
@@ -83,8 +85,7 @@ setInterval(() => {}, 1000);
       writeFileSync(
         optionsPath,
         JSON.stringify({
-          command: binary,
-          args: [],
+          ...resolveCommand("codex", [], mockCommandBinEnv("codex", binary)),
           timeoutMs: scenario === "timeout" ? 2_000 : naturalExit ? 5_000 : 60_000,
           resultPath,
           stdoutPath: join(root, "stdout"),
@@ -122,7 +123,14 @@ setInterval(() => {}, 1000);
         assert.deepEqual(await exit, { code: 0, signal: null }, stderr);
         await waitUntil(() => pids.every((pid) => !alive(pid)));
         const result = JSON.parse(readFileSync(resultPath, "utf8"));
-        if (gracefulDescendant) assert.equal(readFileSync(cleanupPath, "utf8"), "finished");
+        if (gracefulDescendant) {
+          assert.equal(readFileSync(cleanupPath, "utf8"), "finished");
+          assert.equal(
+            readFileSync(readyPath, "utf8"),
+            "ready",
+            "synthetic descendant inherited V8 coverage",
+          );
+        }
         if (naturalExit) {
           assert.equal(result.status, naturalStatus);
           assert.equal(result.signal, null);

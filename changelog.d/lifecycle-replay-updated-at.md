@@ -1,0 +1,1 @@
+- Keep lifecycle audit timestamps and ordering stable when a queue replay repeats facts already on record.
