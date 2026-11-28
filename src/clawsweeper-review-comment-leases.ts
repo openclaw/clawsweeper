@@ -418,6 +418,29 @@ export function postReviewStartStatusComment(
   }
 }
 
+// The caller supplies the current comment read from GitHub. Command acknowledgements
+// and completed review comments have their own lifetimes.
+export function deleteOwnedReviewStartPlaceholder(
+  itemNumber: number,
+  lease: Pick<AcquiredReviewStartLease, "commentId" | "owner">,
+  comment: Record<string, unknown>,
+): boolean {
+  const body = commentBody(comment) ?? "";
+  if (
+    commentId(comment) !== lease.commentId ||
+    reviewStartLeaseOwner(comment) !== lease.owner ||
+    /<!--\s*clawsweeper-command-(?:ack|status):/i.test(body)
+  )
+    return false;
+  if (!hasReviewStartLeaseCommentMarker(body, itemNumber)) return false;
+  if (body.trimEnd().endsWith(reviewCommentMarker(itemNumber))) return false;
+  ghObservedMutationCommand({
+    identity: `review_lease_delete:${itemNumber}:${lease.commentId}`,
+    args: ["api", `repos/${targetRepo()}/issues/comments/${lease.commentId}`, "--method", "DELETE"],
+  });
+  return true;
+}
+
 export function deleteOwnedDedicatedReviewStartLease(
   itemNumber: number,
   lease: AcquiredReviewStartLease,
@@ -457,18 +480,7 @@ export function deleteOwnedDedicatedReviewStartLease(
       );
       return true;
     }
-    if (!hasReviewStartLeaseCommentMarker(body, itemNumber)) return false;
-    if (body.trimEnd().endsWith(reviewCommentMarker(itemNumber))) return false;
-    ghObservedMutationCommand({
-      identity: `review_lease_delete:${itemNumber}:${lease.commentId}`,
-      args: [
-        "api",
-        `repos/${targetRepo()}/issues/comments/${lease.commentId}`,
-        "--method",
-        "DELETE",
-      ],
-    });
-    return true;
+    return deleteOwnedReviewStartPlaceholder(itemNumber, lease, matching);
   } catch (error) {
     if (options.throwOnError) throw error;
     console.error(

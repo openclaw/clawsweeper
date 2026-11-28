@@ -3,7 +3,7 @@ import { requiredEnv } from "../required-env.js";
 import { decisionPublicationPolicy } from "../manual-publication-policy.js";
 import {
   createExactReviewBundle,
-  exactReviewDecisionSha256,
+  exactReviewDecisionDigests,
   validateExactReviewBundle,
   type ExactReviewBundleContext,
 } from "./exact-review-bundle.js";
@@ -46,7 +46,7 @@ function contextFromEnv(env: NodeJS.ProcessEnv): ExactReviewBundleContext {
     runId: optionalEnv(env, "EXACT_REVIEW_PRODUCER_RUN_ID") || requiredEnv("GITHUB_RUN_ID", env),
     runAttempt: positiveIntegerEnv(env, "EXACT_REVIEW_GENERATION_ATTEMPT"),
     producerJob: requiredEnv("EXACT_REVIEW_PRODUCER_JOB", env),
-    decisionSha256: exactReviewDecisionSha256(requiredEnv("EXACT_REVIEW_DECISION", env)),
+    ...exactReviewDecisionDigests(requiredEnv("EXACT_REVIEW_DECISION", env)),
     targetRepo: requiredEnv("EXACT_REVIEW_TARGET_REPO", env),
     targetBranch: requiredEnv("EXACT_REVIEW_TARGET_BRANCH", env),
     itemNumber: positiveIntegerEnv(env, "EXACT_REVIEW_ITEM_NUMBER"),
