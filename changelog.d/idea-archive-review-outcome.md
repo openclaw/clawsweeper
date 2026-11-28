@@ -1,0 +1,1 @@
+- Describe idea archiving as a recommendation until closure and explain when a protected label kept the issue open.
