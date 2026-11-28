@@ -2557,36 +2557,65 @@ test("producer and import writers serialize the platform's lock identity version
 test(
   "macOS process identities distinguish processes started within the same second",
   { skip: process.platform === "darwin" ? false : "requires macOS proc_pidinfo" },
-  () => {
-    const filesModuleUrl = pathToFileURL(
-      path.join(process.cwd(), "dist", "action-ledger-files.js"),
-    ).href;
-    const script = `
-const { processIncarnationIdentitySha256 } = await import(${JSON.stringify(filesModuleUrl)});
-process.stdout.write(JSON.stringify({
-  identity: processIncarnationIdentitySha256(),
-  second: new Date().toISOString().slice(0, 19)
-}));
-`;
-    const samples: Array<{ identity: string; second: string }> = [];
-    for (let index = 0; index < 12; index += 1) {
-      const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
-        encoding: "utf8",
+  async () => {
+    await withImportRaceChildren(async (own) => {
+      // Start the holders together. Read their kernel start times after all
+      // are alive so identity-probe latency cannot move them between seconds.
+      const pids = Array.from({ length: 12 }, () => {
+        const child = spawn("/bin/cat", [], { stdio: ["pipe", "ignore", "ignore"] });
+        own(child);
+        assert.ok(child.pid);
+        return child.pid;
       });
-      assert.equal(result.status, 0, result.stderr);
-      const sample = JSON.parse(result.stdout) as { identity: string | null; second: string };
-      assert.ok(sample.identity);
-      samples.push({ identity: sample.identity, second: sample.second });
+      const starts = childProcess.execFileSync(
+        "/bin/ps",
+        ["-o", "pid=,lstart=", "-p", pids.join(",")],
+        {
+          encoding: "utf8",
+        },
+      );
+      const byStart = new Map<string, string[]>();
+      for (const line of starts.trim().split("\n")) {
+        const match = /^(\d+)\s+(.+)$/.exec(line.trim());
+        assert.ok(match);
+        const pid = Number(match[1]);
+        assert.ok(pids.includes(pid));
+        const identity = processIncarnationIdentitySha256(pid, { fresh: true });
+        assert.ok(identity);
+        const group = byStart.get(match[2]!) ?? [];
+        group.push(identity);
+        byStart.set(match[2]!, group);
+      }
+      assert.equal(starts.trim().split("\n").length, pids.length);
+      const sameSecond = [...byStart.values()].sort((a, b) => b.length - a.length)[0]!;
+      assert.ok(sameSecond.length >= 2);
+      assert.equal(new Set(sameSecond).size, sameSecond.length);
+    });
+  },
+);
+
+test(
+  "macOS PID reuse in one second distinguishes the start microseconds",
+  { skip: process.platform !== "darwin" },
+  (t) => {
+    const actualSpawn = childProcess.spawnSync;
+    let micros = 100;
+    const probe = t.mock.method(childProcess, "spawnSync", ((command, ...args) =>
+      command === "/usr/bin/python3"
+        ? { status: 0, stdout: `${process.pid}:1700000000:${micros}`, stderr: "" }
+        : actualSpawn(command, ...args)) as typeof spawnSync);
+    syncBuiltinESMExports();
+    try {
+      const first = processIncarnationIdentitySha256(process.pid, { fresh: true });
+      micros++;
+      const second = processIncarnationIdentitySha256(process.pid, { fresh: true });
+      assert.ok(first && second);
+      assert.notEqual(first, second);
+    } finally {
+      probe.mock.restore();
+      syncBuiltinESMExports();
+      processIncarnationIdentitySha256(process.pid, { fresh: true });
     }
-    const bySecond = new Map<string, Array<{ identity: string; second: string }>>();
-    for (const sample of samples) {
-      const group = bySecond.get(sample.second) ?? [];
-      group.push(sample);
-      bySecond.set(sample.second, group);
-    }
-    const sameSecond = [...bySecond.values()].sort((left, right) => right.length - left.length)[0]!;
-    assert.ok(sameSecond.length >= 2);
-    assert.equal(new Set(sameSecond.map((sample) => sample.identity)).size, sameSecond.length);
   },
 );
 
