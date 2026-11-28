@@ -955,6 +955,7 @@ for (const mode of [
   "forbidden",
   "corrupt",
   "read-timeout",
+  "startup-timeout",
 ]) {
   test(`batch preparation retains ${mode} no-mutation outcomes`, () => {
     runHydrationProof({ mode, unrelatedRecords: 0 });
