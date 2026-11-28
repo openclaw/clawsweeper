@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { TestContext } from "node:test";
 import { ghJson } from "../dist/clawsweeper-github-execution.js";
 import { rawGitHubJsonRead } from "../dist/github-raw-json-read.js";
@@ -16,12 +17,56 @@ function installReadFixture(
   const gh = installGhFixture(
     t,
     `if (args[0] === "auth") {
+      writeFileSync(join(root, "keyring-requested"), "");
       if (args.at(-1) === "github.com") console.log("synthetic-config-token");
       else if (args.at(-1) === "a.example") console.log("synthetic-a-token");
       else if (args.at(-1) === "broken.example") { console.error("keyring unavailable"); process.exit(2); }
       else { console.error("no oauth token found for " + args.at(-1)); process.exit(1); }
     } else console.log(JSON.stringify({ resources: { core: { remaining: 0, reset: 1900000000 } } }));`,
   );
+  const previous = {
+    CURL_BIN: process.env.CURL_BIN,
+    CURL_BIN_ARGS: process.env.CURL_BIN_ARGS,
+    GH_CONFIG_DIR: process.env.GH_CONFIG_DIR,
+  };
+  process.env.GH_CONFIG_DIR = gh.root;
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  if (process.platform !== "win32") {
+    // Each redirect still starts a real CLI under the same deadline, without
+    // charging a fresh Node runtime and V8 profiler to every fake HTTP hop.
+    const script = fileURLToPath(new URL("./fixtures/receipt-read-cli.sh", import.meta.url));
+    Object.assign(process.env, {
+      GH_BIN: "/bin/sh",
+      GH_BIN_ARGS: JSON.stringify([script, gh.root, "gh"]),
+      CURL_BIN: "/bin/sh",
+      CURL_BIN_ARGS: JSON.stringify([script, gh.root, "curl"]),
+    });
+    writeFileSync(join(gh.root, "request-count"), "0\n");
+    writeFileSync(join(gh.root, "last-response"), String(responses.length - 1) + "\n");
+    for (const [i, response] of responses.entries()) {
+      writeFileSync(join(gh.root, i + ".exit"), String(response.exit ?? 0) + "\n");
+      writeFileSync(
+        join(gh.root, i + ".response"),
+        `HTTP/1.1 ${response.status ?? 200} Status\r\nContent-Type: application/json\r\n${response.headers ?? ""}\r\n${JSON.stringify(response.body)}`,
+      );
+    }
+    return () => ({
+      requests: Array.from(
+        { length: Number(readFileSync(join(gh.root, "request-count"), "utf8")) },
+        (_, i) => ({
+          args: readFileSync(join(gh.root, i + ".args"), "utf8")
+            .split("\0")
+            .slice(0, -1),
+          headers: readFileSync(join(gh.root, i + ".headers"), "utf8"),
+        }),
+      ),
+    });
+  }
   const statePath = join(gh.root, "raw.json");
   writeFileSync(statePath, JSON.stringify({ responses, requests: [] }));
   const script = join(gh.root, "curl.cjs");
@@ -38,19 +83,7 @@ if (response.exit) process.exit(response.exit);
 process.stdout.write("HTTP/1.1 " + (response.status || 200) + " Status\\r\\nContent-Type: application/json\\r\\n" + (response.headers || "") + "\\r\\n" + JSON.stringify(response.body));
 `,
   );
-  const previous = {
-    CURL_BIN: process.env.CURL_BIN,
-    CURL_BIN_ARGS: process.env.CURL_BIN_ARGS,
-    GH_CONFIG_DIR: process.env.GH_CONFIG_DIR,
-  };
-  process.env.GH_CONFIG_DIR = gh.root;
   Object.assign(process.env, mockCommandBinEnv("curl", script));
-  t.after(() => {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  });
   return () =>
     JSON.parse(readFileSync(statePath, "utf8")) as {
       requests: Array<{ args: string[]; headers: string }>;
@@ -109,6 +142,17 @@ test("keyring lookup uses gh's normalized request hostname", (t) => {
   const fixture = installReadFixture(t, [{ body: { id: 20 } }]);
   rawGitHubJsonRead(args, { ...process.env, GH_TOKEN: "", GITHUB_TOKEN: "" }, 1000);
   assert.match(fixture().requests[0]!.headers, /Bearer synthetic-config-token/);
+});
+
+test("keyring lookup and receipt transport spend one shared deadline", (t) => {
+  const fixture = installReadFixture(t, [{ body: { id: 20 } }]);
+  const marker = join(process.env.GH_CONFIG_DIR!, "keyring-requested");
+  const start = Date.now();
+  t.mock.method(Date, "now", () => start + (existsSync(marker) ? 700 : 0));
+  rawGitHubJsonRead(args, { ...process.env, GH_TOKEN: "", GITHUB_TOKEN: "" }, 1000);
+  const [request] = fixture().requests;
+  assert.match(request!.headers, /Bearer synthetic-config-token/);
+  assert.equal(request!.args[request!.args.indexOf("--max-time") + 1], "0.3");
 });
 
 test("API-host fallback selects the first configured owner lexically", (t) => {

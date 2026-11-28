@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { githubTest as test, installGhFixture } from "./github-runtime-fixture.ts";
+import { githubTest as test, installStaticGhFixture } from "./github-runtime-fixture.ts";
 import YAML from "yaml";
 
 import { ExactReviewQueue } from "../dashboard/exact-review-queue.ts";
@@ -342,7 +342,7 @@ test("wire evidence completes high-level gh invocations without leaking their ar
 });
 
 test("runtime attribution follows the selected credential instead of throttle text", (t) => {
-  const fixture = installGhFixture(t, 'process.stdout.write("{}");');
+  const fixture = installStaticGhFixture(t, {});
   const keys = [
     "CLAWSWEEPER_GITHUB_EGRESS_METRICS_PATH",
     "CLAWSWEEPER_GITHUB_STAGE",

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import nodeTest, { type TestContext } from "node:test";
 import { setTimeout } from "node:timers/promises";
 import { withGitHubRun } from "../dist/clawsweeper-github-runtime.js";
@@ -30,6 +31,20 @@ export const githubTest = ((name: string, operation: (t: TestContext) => void | 
     });
     return withGitHubRun(() => operation(t));
   })) as typeof nodeTest;
+
+// Record the real command arguments and credential pool without booting Node
+// for a fixture whose entire response is a constant JSON value.
+export function installStaticGhFixture(t: TestContext, value: Record<string, unknown>) {
+  const body = JSON.stringify(value);
+  const fixture = installGhFixture(t, `process.stdout.write(${JSON.stringify(body)});`);
+  if (process.platform !== "win32") {
+    writeFileSync(join(fixture.root, "static-response"), body);
+    const script = fileURLToPath(new URL("./fixtures/receipt-read-cli.sh", import.meta.url));
+    process.env.GH_BIN = "/bin/sh";
+    process.env.GH_BIN_ARGS = JSON.stringify([script, fixture.root, "record-gh"]);
+  }
+  return fixture;
+}
 
 export function installGhFixture(t: TestContext, source: string) {
   const root = mkdtempSync(join(tmpdir(), "github-runtime-fixture-"));
