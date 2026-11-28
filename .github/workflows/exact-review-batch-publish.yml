@@ -155,6 +155,7 @@ jobs:
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ github.token }}
+          TARGET_GH_TOKEN: ${{ steps.target-token.outputs.token }}
           CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES: ${{ vars.CLAWSWEEPER_COMMENT_LOOKBACK_MINUTES || '180' }}
           CLAWSWEEPER_COMMENT_MAX_COMMENTS: ${{ vars.CLAWSWEEPER_COMMENT_MAX_COMMENTS || '1000' }}
         run: |
@@ -232,7 +233,8 @@ jobs:
               lifecycle_terminal="requeue"
             elif jq -e '.disposition.terminalMissingExpected == true' "$outcome_path" >/dev/null; then
               lifecycle_terminal="target_missing"
-            elif jq -e '.disposition.terminalClosedExpected == true' "$outcome_path" >/dev/null; then
+            elif { [ "$receipt_outcome" = "accepted" ] || [ "$receipt_outcome" = "deduped" ]; } && \
+              jq -e '.disposition.terminalClosedExpected == true' "$outcome_path" >/dev/null; then
               lifecycle_terminal="target_closed"
             elif jq -e '.disposition.guardedOpenAction != null and .disposition.guardedOpenAction != ""' "$outcome_path" >/dev/null; then
               lifecycle_terminal="guarded_open"
@@ -302,6 +304,13 @@ jobs:
               lifecycle_response="$(pnpm run --silent repair:exact-review-batch post-effect --route router-receipt --payload "$post_effect_payload")"
               jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
             elif [ -n "$lifecycle_terminal" ]; then
+              if [ "$lifecycle_terminal" = "target_closed" ]; then
+                if ! GH_TOKEN="$TARGET_GH_TOKEN" CLAWSWEEPER_GITHUB_POOL_CLASS=target_app \
+                  node dist/repair/release-terminal-review-leases.js; then
+                  # Leave this member's post-effects pending so completion retries it.
+                  continue
+                fi
+              fi
               export LIFECYCLE_TERMINAL="$lifecycle_terminal"
               lifecycle_payload="$(node src/repair/exact-review-queue-request.ts batch-lifecycle terminal)"
               post_effect_payload="${outcome_path}.post-effect.json"

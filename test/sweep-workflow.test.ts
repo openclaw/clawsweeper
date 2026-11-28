@@ -1943,11 +1943,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.doesNotMatch(releaseTerminal.if ?? "", /publication-context.*live_terminal_noop/);
   assert.match(releaseTerminal.if ?? "", /publish-event-result.*terminal_noop/);
-  // Lease comments are selected by the owner of the App logins and lease markers.
-  assert.match(
-    releaseTerminal.run ?? "",
-    /workflow-bot-comments\.ts review-lease-comment-ids --item-number "\$ITEM_NUMBER"\)/,
-  );
+  assert.equal(releaseTerminal.run, "node dist/repair/release-terminal-review-leases.js");
   assert.match(
     releaseUnsuccessful.run ?? "",
     /workflow-bot-comments\.ts review-lease-comment-ids\s+\\\s+--item-number "\$ITEM_NUMBER" --owner "\$LEASE_OWNER"/,

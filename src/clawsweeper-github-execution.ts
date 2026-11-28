@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { resolveCommand } from "./command.js";
 import { ROOT } from "./clawsweeper-repository-paths.js";
-import { ghRetryKind, ghRetryWaitMs, summarizeGhArgs } from "./github-retry.js";
+import { ghCommandError, ghRetryKind, ghRetryWaitMs, summarizeGhArgs } from "./github-retry.js";
 import { parseGhJson, parseGhJsonLinesWithRetry, parseGhJsonWithRetry } from "./github-json.js";
 import type {
   GitHubDeadlineOptions,
@@ -272,9 +272,7 @@ export function ghRawOnceWithCheckpoint(
   }
   if (result.status !== 0) {
     const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
-    const error = new Error(
-      [`Command failed: gh ${args.join(" ")}`, stderr].filter(Boolean).join("\n"),
-    );
+    const error = ghCommandError(result);
     throw new GitHubDispatchError(
       classifyGitHubDispatchResult({
         status: result.status,

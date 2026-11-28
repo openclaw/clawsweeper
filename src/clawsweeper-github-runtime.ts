@@ -42,6 +42,7 @@ import {
 import {
   GitHubRateLimitError,
   githubCredentialScopeForToken,
+  ghCommandError,
   ghRetryKind,
   type GitHubCredentialScope,
 } from "./github-retry.js";
@@ -843,11 +844,7 @@ function ghIncludedRequest(
     recordGitHubRequest(args, scope, "success");
     return parsed;
   }
-  const error = new Error(
-    [`Command failed: gh ${args.join(" ")}`, String(result.stderr || "").trim()]
-      .filter(Boolean)
-      .join("\n"),
-  );
+  const error = ghCommandError(result);
   const retryKind = ghRetryKind(error);
   if (retryKind !== "throttle") {
     recordGitHubRequest(args, scope, retryKind === "transient" ? "transient" : "error");
@@ -1002,10 +999,7 @@ export function ghOnce(args: string[], timeoutMs: number): string {
     throw result.error;
   }
   if (result.status !== 0) {
-    const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
-    throw new Error(
-      [`Command failed: gh ${resolvedArgs.join(" ")}`, stderr].filter(Boolean).join("\n"),
-    );
+    throw ghCommandError(result);
   }
   return (result.stdout ?? "").trim();
 }

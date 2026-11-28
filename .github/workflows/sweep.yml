@@ -2598,34 +2598,7 @@ jobs:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
-        run: |
-          set -euo pipefail
-          test -n "$GH_TOKEN"
-          test "$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" --jq .state)" = "closed"
-          lease_ids="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100" --paginate --jq '.[]' |
-            node src/workflow-bot-comments.ts review-lease-comment-ids --item-number "$ITEM_NUMBER")"
-          while IFS= read -r lease_id; do
-            [ -n "$lease_id" ] || continue
-            lease_body="$(gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --jq .body)"
-            if grep -Eqi '<!--[[:space:]]*clawsweeper-command-(ack|status):' <<< "$lease_body"; then
-              continue
-            fi
-            gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE
-          done <<< "$lease_ids"
-          bot_logins="$(node src/workflow-bot-comments.ts bot-logins)"
-          reaction_ids="$(gh api -X GET \
-            -H "Accept: application/vnd.github+json" \
-            "repos/$TARGET_REPO/issues/$ITEM_NUMBER/reactions" \
-            -f content="eyes" \
-            -F per_page=100 \
-            --paginate \
-            --jq '.[]' |
-            jq -r --argjson bot_logins "$bot_logins" \
-              'select(.content == "eyes") | select(.user.login as $login | $bot_logins | index($login)) | .id')"
-          while IFS= read -r reaction_id; do
-            [ -n "$reaction_id" ] || continue
-            gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/reactions/$reaction_id" --method DELETE
-          done <<< "$reaction_ids"
+        run: node dist/repair/release-terminal-review-leases.js
 
       - name: Confirm terminal item remains closed
         id: confirm-terminal-item
