@@ -285,7 +285,7 @@ function applyGuardsForFixture(lease: { owner: string; commentId: number; headSh
     setActiveApplyMutationLease: (value) => {
       active = value;
     },
-    ghJson: () => ({ head: { sha: headSha } }),
+    ghJson: () => ({ state: "open", head: { sha: headSha } }),
     GitHubRuntimeBudgetError: class extends Error {},
     initialReviewHeadSha: headSha,
     issueReviewCommentState: state.issueReviewCommentState,

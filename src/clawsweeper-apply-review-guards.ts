@@ -8,6 +8,7 @@ import type {
   ItemContext,
   PrCloseCoverageProofGateBlock,
 } from "./clawsweeper-types.js";
+import { PULL_CLOSED_DURING_APPLY } from "./clawsweeper-apply-lease-guards.js";
 import { replaceFrontMatterValue } from "./report-front-matter.js";
 import {
   PR_CLOSE_COVERAGE_PROOF_REASONS,
@@ -97,7 +98,7 @@ export function createApplyReviewGuards(
   let staleCanonicalClosedUnmergedValidated = false;
 
   const recordReviewGuardSkip = (
-    action: "kept_open" | "skipped_stale_review_comment_sync",
+    action: "kept_open" | "skipped_stale_review_comment_sync" | "skipped_already_closed",
     reason: string,
     restoreOriginal = true,
     activeReviewLeaseExpiresAt?: string,
@@ -115,6 +116,9 @@ export function createApplyReviewGuards(
       number,
       action,
       reason,
+      ...(emitEventApplyProof && action === "skipped_already_closed"
+        ? { terminalStateVerified: true }
+        : {}),
       ...(emitEventApplyProof && action === "kept_open" && activeReviewLeaseExpiresAt
         ? { activeReviewLeaseVerified: true, activeReviewLeaseExpiresAt }
         : {}),
@@ -134,6 +138,9 @@ export function createApplyReviewGuards(
     restoreOriginal = true,
     activeReviewLeaseExpiresAt?: string,
   ): boolean => {
+    if (reason === PULL_CLOSED_DURING_APPLY) {
+      return recordReviewGuardSkip("skipped_already_closed", reason, restoreOriginal);
+    }
     const sourceChanged =
       reason === "pull request review activity changed since review" ||
       reason === "pull request review activity exceeds the bounded reviewed cursor" ||
