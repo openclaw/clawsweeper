@@ -1,4 +1,4 @@
-import { CLAWSWEEPER_APP_BOT_LOGINS, CLAWSWEEPER_BOT_LOGINS } from "../clawsweeper-bot-identity.js";
+import { CLAWSWEEPER_APP_BOT_LOGINS } from "../clawsweeper-bot-identity.js";
 import { ghPaged } from "../clawsweeper-github-context.js";
 import { ghJson, ghWithRetry } from "../clawsweeper-github-execution.js";
 import { withGitHubRun } from "../clawsweeper-github-runtime.js";
@@ -62,7 +62,7 @@ withGitHubRun(() => {
 
   type Reaction = { id: number; content: string; user: { login: string } };
   for (const reaction of ghPaged<Reaction>(`${issue}/reactions?content=eyes`)) {
-    if (reaction.content === "eyes" && CLAWSWEEPER_BOT_LOGINS.has(reaction.user?.login)) {
+    if (reaction.content === "eyes" && CLAWSWEEPER_APP_BOT_LOGINS.has(reaction.user?.login)) {
       cleanupWrite(`${issue}/reactions/${reaction.id}`, "DELETE");
     }
   }

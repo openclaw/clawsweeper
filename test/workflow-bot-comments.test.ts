@@ -62,8 +62,11 @@ function workflowBotComments(args: string[], input = ""): string {
   });
 }
 
-test("workflow bot logins print every login ClawSweeper writes as", () => {
+test("workflow bot logins distinguish REST App accounts from the full set of author logins", () => {
   assert.deepEqual(JSON.parse(workflowBotComments(["bot-logins"])), [...CLAWSWEEPER_BOT_LOGINS]);
+  assert.deepEqual(JSON.parse(workflowBotComments(["rest-bot-logins"])), [
+    ...CLAWSWEEPER_APP_BOT_LOGINS,
+  ]);
 });
 
 test("workflow lease lookup selects only App-authored lease comments for the item and owner", () => {
@@ -142,7 +145,7 @@ test("terminal cleanup removes owned leases and eyes while preserving durable re
   ];
   const reactions = [
     { id: 6, content: "eyes", user: bot },
-    { id: 7, content: "eyes", user: { login: "someone" } },
+    { id: 7, content: "eyes", user: { login: CLAWSWEEPER_APP_SLUG } },
   ];
   const adapter = join(root, "adapter.cjs");
   writeFileSync(
