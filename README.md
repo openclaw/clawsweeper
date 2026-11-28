@@ -839,11 +839,11 @@ thresholds (`--coverage`), and its `--shard`, `--coverage-out`, and
 `node scripts/run-node-tests.mjs --help`. Crabbox diagnostic bundles under `.crabbox/` are generated scratch
 and are ignored by Git.
 
-On Linux and macOS, the shared synthetic GitHub CLI fixtures clear
-`NODE_V8_COVERAGE` before starting their Node stand-ins. Those fixtures do not
-execute ClawSweeper source; interrupting their profile writes must not break the
-real coverage report. Production subprocesses keep inherited coverage. Other
-fixture launchers and Windows retain their existing behavior.
+On Linux and macOS, the shared synthetic command launchers in `test/helpers.ts`
+clear `NODE_V8_COVERAGE` before starting Node. This includes the curl stand-in
+used for raw GitHub receipts, whose read timeout can interrupt a profile write.
+Production subprocesses inherit coverage. On Windows the fixtures launch Node
+directly.
 
 ## GitHub Actions Setup
 

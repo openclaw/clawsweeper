@@ -1,0 +1,1 @@
+- Prevent timed-out synthetic curl receipt reads from leaving empty V8 profiles in Linux and macOS test runs.
