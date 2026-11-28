@@ -1,1 +1,1 @@
-- Verify the complete source of each suggested test cut at the reviewed pull request head before publishing it.
+- Verify new test-cut suggestions against the reviewed pull request head and preserve suggestions when rendering older reviews.

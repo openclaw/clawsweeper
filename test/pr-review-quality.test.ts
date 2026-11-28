@@ -183,14 +183,20 @@ test("report round trip preserves product, provenance, and testing reviews", () 
     assert.deepEqual(reportReviewDecision(legacyReport).testingReview.lowValueTests, [cut]);
   }
   const { sourceLines: _sourceLines, ...oldRange } = lowValueTest(3);
-  const oldReport = updateReviewRecordDecision(report, () => ({
-    testingReview: { ...testingReview, lowValueTests: [oldRange, lowValueTest(2)] },
-  }));
-  assert.deepEqual(reportReviewDecision(oldReport).testingReview.lowValueTests, [
-    oldRange,
-    lowValueTest(2),
-  ]);
-  assert.doesNotMatch(renderReviewCommentFromReport(oldReport, "none"), /reload-3\.test/);
+  const mixedReview = { ...testingReview, lowValueTests: [oldRange, lowValueTest(2)] };
+  assert.throws(
+    () => parseDecision(pullRequestDecision({ testingReview: mixedReview })),
+    /sourceLines/,
+  );
+  const oldReport = updateReviewRecordDecision(report, () => ({ testingReview: mixedReview }));
+  assert.deepEqual(
+    reportReviewDecision(oldReport).testingReview.lowValueTests,
+    mixedReview.lowValueTests,
+  );
+  assert.match(
+    renderReviewCommentFromReport(oldReport, "none"),
+    /- Suggested test cut `test\/reload-3\.test\.ts:8-8`/,
+  );
   const comment = renderReviewCommentFromReport(report, "none");
   for (const field of [
     behavior.behavior,
