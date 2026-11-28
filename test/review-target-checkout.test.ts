@@ -354,3 +354,39 @@ exec "$REAL_GIT" "$@"
   assert.ok(elapsed < 15_000, `elapsed ${elapsed}`);
   assert.equal(existsSync(fixture.cache), false);
 });
+
+test(
+  "checkout preserves the timeout when the final group signal is denied",
+  { skip: process.platform === "win32" },
+  (t) => {
+    const root = mkdtempSync(join(tmpdir(), "checkout-cleanup-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const preload = join(root, "cleanup-error.cjs");
+    writeFileSync(
+      preload,
+      `const kill = process.kill;
+process.kill = (pid, signal) => {
+  if (signal === "SIGKILL") throw Object.assign(new Error("cleanup denied"), { code: "EPERM" });
+  return kill(pid, signal);
+};`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--require",
+        preload,
+        "scripts/git-network-deadline.mjs",
+        "-c",
+        "alias.stall=!sleep 2",
+        "stall",
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, CLAWSWEEPER_REVIEW_TARGET_CHECKOUT_TIMEOUT_MS: "200" },
+        timeout: 5000,
+      },
+    );
+    assert.equal(result.status, 124, result.stderr);
+    assert.match(result.stderr, /cleanup failed \(SIGKILL\): EPERM/);
+  },
+);
