@@ -28,11 +28,13 @@ Labels in the finite `clawsweeper:intake:*` family are preliminary. They never
 set priority, impact, reproduction proof, good-first-issue eligibility, maturity,
 merge risk, or readiness. A bug issue or PR can receive `clawsweeper:intake:needs-repro`
 when the submission lacks a concrete trigger. A workload and its observed failure
-count as a trigger, including in a results table. When a PR explicitly cites
-a comment on that PR for repro steps or observed output, intake leaves the
-reproduction assessment to full review because it cannot read the comment. Lists
-and emphasis around the citation count, and named links use their destination. The other
-intake labels still apply. Intake must not satisfy review requests or populate review caches.
+count as a trigger, including in a results table. If the author points elsewhere
+for steps or observed output, the classifier uses the surrounding PR text to
+decide whether the reference is relevant. When the trigger is only in that
+evidence, it answers `unclear` and full review assesses it. An unrelated link
+on a bug PR without a trigger still permits `needs-repro`. The publisher maps
+the classifier’s answers to labels. Intake must not satisfy review requests or
+populate review caches.
 
 Adding a cheap call before a full review adds spend. Cost savings require moving
 an existing metadata task to intake, not counting both calls as a saving.

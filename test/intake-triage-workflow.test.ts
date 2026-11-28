@@ -188,69 +188,19 @@ test("preliminary publication records intent and usage without completing a revi
   assert.ok(!JSON.stringify(events).includes(f.live.body));
 });
 
-// The Decisions result behind openclaw/openclaw#206396 said "missing" even
-// though the author supplied a workload comparison and linked the observed output.
-const observedOutput = "https://github.com/openclaw/openclaw/pull/42#issuecomment-7210339681";
+const discussion = "https://github.com/openclaw/openclaw/pull/42#issuecomment-7210339681";
 for (const { name, body, reproduction, needsRepro } of [
   {
-    name: "asks for a missing trigger",
-    body: "Gateway jobs sometimes die. I do not know how to trigger it.",
+    name: "publishes a missing trigger alongside an unrelated discussion",
+    body: `The design discussion is [here](${discussion}). I have no steps to trigger the failure.`,
     reproduction: "missing",
     needsRepro: true,
   },
   {
-    name: "leaves a cited evidence comment for full review",
-    body: [
-      "## Evidence",
-      `Observed lines: ${observedOutput}`,
-      "| Workload | main | this PR |",
-      "|---|---|---|",
-      "| `chromium --headless=new about:blank` 60 s | killed in 1.5 s | alive at 60 s |",
-    ].join("\n"),
-    reproduction: "missing",
+    name: "defers an unclear trigger to full review",
+    body: `I recorded exactly how I got it to fail [here](${discussion}).`,
+    reproduction: "unclear",
     needsRepro: false,
-  },
-  {
-    name: "counts a described trigger and observed failure",
-    body: "Run headless Chromium through Gateway exec at a 601 MiB budget. Main kills it in 1.5 s. The PR keeps it alive for the 60 s run.",
-    reproduction: "present",
-    needsRepro: false,
-  },
-  {
-    name: "recognizes a bold evidence citation",
-    body: `**Observed lines:** ${observedOutput}`,
-    reproduction: "missing",
-    needsRepro: false,
-  },
-  {
-    name: "recognizes a bulleted evidence citation",
-    body: `- Observed lines: ${observedOutput}`,
-    reproduction: "missing",
-    needsRepro: false,
-  },
-  {
-    name: "recognizes emphasis and a named link in an ordered list",
-    body: `1. _Repro steps_: [Gateway output](${observedOutput})`,
-    reproduction: "missing",
-    needsRepro: false,
-  },
-  {
-    name: "checks the link destination even when the caption names the current PR",
-    body: `**Observed lines:** [${observedOutput}](https://github.com/openclaw/openclaw/pull/51#issuecomment-12)`,
-    reproduction: "missing",
-    needsRepro: true,
-  },
-  {
-    name: "ignores a citation shown as a fenced example",
-    body: ["```markdown", `Observed lines: ${observedOutput}`, "```"].join("\n"),
-    reproduction: "missing",
-    needsRepro: true,
-  },
-  {
-    name: "still asks when a discussion link is unrelated to the evidence",
-    body: `## Evidence\nDiscussion: ${observedOutput}\nNo trigger yet.`,
-    reproduction: "missing",
-    needsRepro: true,
   },
 ]) {
   test(`preliminary bug PR intake ${name}`, async (t) => {

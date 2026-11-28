@@ -153,23 +153,15 @@ test("intake rejects extra authority and only yields provisional submission labe
     usage: null,
     durationMs: 1,
   };
-  const issue = {
-    repository: "openclaw/openclaw",
-    number: 42,
-    kind: "issue" as const,
-    title: "Crash",
-    body: "",
-  };
-  assert.deepEqual(intakeLabels(result, issue), [
+  assert.deepEqual(intakeLabels(result), [
     "clawsweeper:intake:bug",
     "clawsweeper:intake:needs-repro",
     "clawsweeper:intake:needs-environment",
   ]);
-  assert.deepEqual(intakeLabels({ ...result, outcome: "refused" }, issue), []);
-  assert.deepEqual(
-    intakeLabels({ ...result, answers: { ...answers, category: "support" } }, issue),
-    ["clawsweeper:intake:support"],
-  );
+  assert.deepEqual(intakeLabels({ ...result, outcome: "refused" }), []);
+  assert.deepEqual(intakeLabels({ ...result, answers: { ...answers, category: "support" } }), [
+    "clawsweeper:intake:support",
+  ]);
 });
 
 test("scanner refusal prevents both ledger recording and provider dispatch", async (t) => {
