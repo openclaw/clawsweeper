@@ -103,7 +103,7 @@ if (command === "apply-artifacts") {
   }
 }
 
-test("a protected-label publication releases only the producer's in-place review banner", (t) => {
+test("guarded and closed publications release the producer's review banner", (t) => {
   const root = mkdtempSync(join(tmpdir(), "guarded-publication-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const artifacts = join(root, "artifacts/event");
@@ -149,19 +149,26 @@ if (command === "apply-artifacts") {
   fs.copyFileSync(path.join(value("--artifact-dir"), report), path.join(value("--items-dir"), report));
 } else if (command === "apply-decisions") {
   const item = path.join(value("--items-dir"), report);
-  fs.writeFileSync(item, fs.readFileSync(item, "utf8").replace("action_taken: proposed_close", "action_taken: skipped_protected_label"));
+  const closed = process.env.ITEM_CLOSED === "true";
+  const action = closed ? "skipped_already_closed" : "skipped_protected_label";
+  fs.writeFileSync(item, fs.readFileSync(item, "utf8").replace("action_taken: proposed_close", "action_taken: " + action));
+  if (closed) {
+    fs.mkdirSync(value("--closed-dir"), { recursive: true });
+    fs.renameSync(item, path.join(value("--closed-dir"), report));
+  }
   fs.mkdirSync(path.dirname(value("--report-path")), { recursive: true });
-  fs.writeFileSync(value("--report-path"), JSON.stringify([{ number: ${number}, action: "skipped_protected_label", guardedOpenStateVerified: true }]));
+  fs.writeFileSync(value("--report-path"), JSON.stringify([{ number: ${number}, action, guardedOpenStateVerified: !closed, terminalStateVerified: closed }]));
 } else if (command === "expire-review-lease") {
   fs.writeFileSync("released.json", JSON.stringify(args));
   if (process.env.CLEANUP_ERROR) throw new Error(process.env.CLEANUP_ERROR);
 } else throw new Error("unexpected command: " + command);
 `,
   );
-  const publish = (cleanupError = "") => {
+  const publish = (cleanupError = "", closed = false) => {
     rmSync(join(root, "records"), { recursive: true, force: true });
     return spawnSync(process.execPath, [resolve("dist/repair/publish-event-result.js")], {
       env: {
+        ITEM_CLOSED: String(closed),
         CLEANUP_ERROR: cleanupError,
         PATH: process.env.PATH,
         TARGET_REPO: repo,
@@ -197,6 +204,10 @@ if (command === "apply-artifacts") {
     "--release-owner",
     owner,
   ]);
+  rmSync(join(root, "released.json"));
+  const closed = publish("", true);
+  assert.equal(closed.status, 0, closed.stderr);
+  assert.ok(existsSync(join(root, "released.json")), "closed PR kept its review lease");
   for (const terminalSkip of ["GitHub API HTTP 404;", "HTTP 403: conversation is locked"]) {
     const skipped = publish(terminalSkip);
     assert.equal(skipped.status, 0, skipped.stderr);

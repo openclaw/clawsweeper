@@ -407,7 +407,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     options.exactEventPublication &&
     syncedCount === 0 &&
     guardedOpenAction !== "skipped_locked_conversation" &&
-    (guardedOpenAction || policyNoopExpected)
+    (guardedOpenAction || policyNoopExpected || closedCount > 0)
   ) {
     const owner = frontMatterValue(markdown, "review_lease_owner");
     const commentId = frontMatterValue(markdown, "review_lease_comment_id");
