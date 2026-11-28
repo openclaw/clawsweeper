@@ -5,6 +5,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { signalProcessGroup } from "../src/process-group.ts";
 
 const configured = Number(
   process.env.CLAWSWEEPER_REVIEW_TARGET_CHECKOUT_TIMEOUT_MS ??
@@ -36,11 +37,7 @@ function signalGroup(signal) {
     );
     return;
   }
-  try {
-    process.kill(-child.pid, signal);
-  } catch (error) {
-    if (error.code !== "ESRCH") throw error;
-  }
+  signalProcessGroup(child.pid, signal);
 }
 
 function stop(signal = "SIGTERM") {

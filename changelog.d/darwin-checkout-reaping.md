@@ -1,0 +1,1 @@
+- Preserve the checkout timeout result on macOS when its Git process group has already stopped.
