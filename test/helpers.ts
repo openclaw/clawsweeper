@@ -1490,7 +1490,7 @@ export function withHangingGh(root: string, marker: string, run: () => void): vo
   withGhCommand({ GH_BIN: "/bin/sh", GH_BIN_ARGS: JSON.stringify([shim, marker]) }, run);
 }
 
-function withGhCommand(override: NodeJS.ProcessEnv, run: () => void): void {
+export function withGhCommand(override: NodeJS.ProcessEnv, run: () => void): void {
   const originalGhBin = process.env.GH_BIN;
   const originalGhBinArgs = process.env.GH_BIN_ARGS;
   try {
