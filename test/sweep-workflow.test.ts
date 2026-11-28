@@ -381,6 +381,11 @@ test("queued publication expires only its posted review lease after successful h
   assert.equal(expiry["continue-on-error"], true);
   assert.equal(expiry.env.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
   assert.equal(expiry.env.COMMENT_ID, "${{ steps.reserve-exact-review-lease.outputs.comment_id }}");
+  assert.equal(
+    expiry.env.TERMINAL_DURING_REVIEW,
+    "${{ steps.review-exact-event-item.outputs.terminal_during_review }}",
+  );
+  assert.equal(expiry.env.LEASE_OWNER, "github-run-${{ github.run_id }}-${{ github.run_attempt }}");
   assert.match(expiry.run, /node dist\/clawsweeper.js expire-review-lease/);
   assert.match(expiry.run, /--comment-id "\$COMMENT_ID"/);
   assert.match(expiry.if, /always\(\)/);
