@@ -113,6 +113,10 @@ async function runStatusSmoke(
     const result = await promisify(execFile)(
       process.execPath,
       [
+        // Load Node's fetch implementation before the one-second deployment
+        // window. The data URL makes no request to the fixture or GitHub.
+        "--import",
+        "data:text/javascript," + encodeURIComponent('await (await fetch("data:,ready")).text();'),
         fileURLToPath(new URL("../scripts/dashboard-smoke.mjs", import.meta.url)),
         `http://127.0.0.1:${address.port}`,
       ],
