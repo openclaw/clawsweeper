@@ -1,12 +1,8 @@
-import {
-  pendingCopyDriftScenario,
-  pendingWitnessDriftScenario,
-} from "./fixtures/review-coverage-pending-promotion.ts";
+import { runCensusScenario } from "./fixtures/isolated-census.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { stickyDriftScenario } from "./fixtures/review-coverage-sticky-drift.ts";
-test("count reversion during orphan cleanup never revives an old qualified witness", async () => {
-  const r = await stickyDriftScenario();
+test("count reversion during orphan cleanup never revives an old qualified witness", async (t) => {
+  const r = await runCensusScenario(t, "stickyDriftScenario");
   assert.equal(r.before.orphans, 256);
   assert.equal(r.drifted.orphans, 128);
   assert.equal(r.drifted.percent, null);
@@ -19,8 +15,8 @@ test("count reversion during orphan cleanup never revives an old qualified witne
   assert.equal(r.returned.latestPayloadSha256, r.before.latestPayloadSha256);
 });
 
-test("sticky drift survives durable control lifecycles and clears only after real two-pass promotion", async () => {
-  const r = await stickyDriftScenario({ lifecycle: true, recover: true });
+test("sticky drift survives durable control lifecycles and clears only after real two-pass promotion", async (t) => {
+  const r = await runCensusScenario(t, "stickyDriftScenario", { lifecycle: true, recover: true });
   assert.equal(r.returned.percent, null);
   assert.equal(r.afterCleanup.compatible, false);
   assert.ok(r.lifecycle.length >= 7);
@@ -39,8 +35,8 @@ test("sticky drift survives durable control lifecycles and clears only after rea
 test(
   "real20k drift stays Unknown across bounded cleanup while healthy and zero peers remain complete",
   { timeout: 180_000 },
-  async () => {
-    const r = await stickyDriftScenario({
+  async (t) => {
+    const r = await runCensusScenario(t, "stickyDriftScenario", {
       count: 20_000,
       mixed: true,
       lifecycle: true,
@@ -64,8 +60,12 @@ test(
 test(
   "actual20k retired identities remain invalid through count reversion and recover by two new sweeps",
   { timeout: 180_000 },
-  async () => {
-    const r = await stickyDriftScenario({ count: 20_000, lifecycle: true, recover: true });
+  async (t) => {
+    const r = await runCensusScenario(t, "stickyDriftScenario", {
+      count: 20_000,
+      lifecycle: true,
+      recover: true,
+    });
     assert.equal(r.before.orphans, 20_000);
     assert.equal(r.drifted.orphans, 20_000 - 128);
     assert.equal(r.returned.percent, null);
@@ -80,8 +80,8 @@ test(
 test(
   "ordinary count drift invalidates a pending promotion before capacity frees",
   { timeout: 180_000 },
-  async () => {
-    const r = await pendingCopyDriftScenario();
+  async (t) => {
+    const r = await runCensusScenario(t, "pendingCopyDriftScenario");
     assert.equal(r.pending.promoting, true);
     assert.equal(r.pending.promotingCount, 1000);
     assert.equal(r.contradicted.promoting, false);
@@ -97,8 +97,11 @@ test(
 test(
   "pending copy drift hold survives durable control and recovers only by fresh witnesses",
   { timeout: 180_000 },
-  async () => {
-    const r = await pendingCopyDriftScenario({ lifecycle: true, recover: true });
+  async (t) => {
+    const r = await runCensusScenario(t, "pendingCopyDriftScenario", {
+      lifecycle: true,
+      recover: true,
+    });
     assert.equal(r.contradicted.promoting, false);
     assert.equal(r.returned.percent, null);
     assert.ok(
@@ -116,8 +119,8 @@ test(
   },
 );
 
-test("ordinary count drift cannot reuse a pre-drift first witness after one new sweep", async () => {
-  const r = await pendingWitnessDriftScenario();
+test("ordinary count drift cannot reuse a pre-drift first witness after one new sweep", async (t) => {
+  const r = await runCensusScenario(t, "pendingWitnessDriftScenario");
   assert.equal(r.returned.percent, null);
   assert.equal(r.oneSweep.percent, null);
   assert.equal(r.oneSweep.completeHash, r.oldWindow.completeHash);
