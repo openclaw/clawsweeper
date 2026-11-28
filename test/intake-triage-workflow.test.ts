@@ -253,6 +253,36 @@ test("an item with a published review keeps its labels and spends no inference",
   assert.equal(forged.outcome, "published");
 });
 
+test("a stale PR review with a completed cycle keeps intake labels retired", async (t) => {
+  const f = fixture(t);
+  f.live = { ...f.live, kind: "pull_request", headSha: process.env.EXACT_REVIEW_SOURCE_HEAD_SHA! };
+  const body = [
+    "<details>",
+    "<summary>Review history (1 earlier review cycle)</summary>",
+    "",
+    "<!-- clawsweeper-review-history v=1 total=1 -->",
+    "- reviewed 2026-11-28T00:41:30.436Z sha e82f254c86ca100820d1b70e46ca02803b0f8bc5 :: passed. :: none",
+    "",
+    "</details>",
+    "",
+    `<!-- clawsweeper-review-status:stale item=42 reviewed_sha=e82f254c86ca100820d1b70e46ca02803b0f8bc5 current_sha=${f.live.headSha} reason=stale_head -->`,
+    "<!-- clawsweeper-review item=42 -->",
+  ].join("\n");
+  let calls = 0;
+  const result = await runIntakeWorkflow({
+    ...f.options,
+    kind: "pull_request",
+    readComments: () => [{ user: { login: "clawsweeper[bot]" }, body }],
+    infer: (options) => {
+      calls++;
+      return f.options.infer!(options);
+    },
+  });
+  assert.deepEqual(f.writes, []);
+  assert.equal(calls, 0);
+  assert.equal(result.outcome, "already_reviewed");
+});
+
 githubTest("intake reads REST catalog pages from its explicit target repository", async (t) => {
   const f = fixture(t);
   f.options.repository = "example/other";
