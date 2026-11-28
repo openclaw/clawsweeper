@@ -23,7 +23,7 @@ const issue = `repos/${repo}/issues/${number}`;
 function terminalLeaseUpdate(comment: Comment): { body: string } | "delete" | undefined {
   if (!CLAWSWEEPER_APP_BOT_LOGINS.has(comment.user?.login)) return;
   const body = comment.body;
-  if (/<!--\s*clawsweeper-command-(?:ack|status):/i.test(body)) return;
+  if (typeof body !== "string" || /<!--\s*clawsweeper-command-(?:ack|status):/i.test(body)) return;
   const cleared = clearInPlaceReviewStartStatus(body, number);
   if (cleared !== body) return { body: cleared };
   const tail = body.trimEnd();

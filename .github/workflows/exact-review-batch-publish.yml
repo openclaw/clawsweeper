@@ -305,8 +305,12 @@ jobs:
               jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
             elif [ -n "$lifecycle_terminal" ]; then
               if [ "$lifecycle_terminal" = "target_closed" ]; then
-                if ! GH_TOKEN="$TARGET_GH_TOKEN" CLAWSWEEPER_GITHUB_POOL_CLASS=target_app \
-                  node dist/repair/release-terminal-review-leases.js; then
+                if ! (
+                  GH_TOKEN="$TARGET_GH_TOKEN" CLAWSWEEPER_GITHUB_POOL_CLASS=target_app \
+                    node dist/repair/release-terminal-review-leases.js &&
+                  CLAWSWEEPER_PUBLIC_GH_TOKEN="$GH_TOKEN" GH_TOKEN="$TARGET_GH_TOKEN" \
+                    node dist/repair/confirm-terminal-item-closed.js
+                ); then
                   # Leave this member's post-effects pending so completion retries it.
                   continue
                 fi

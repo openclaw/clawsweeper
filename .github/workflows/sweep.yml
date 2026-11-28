@@ -2605,10 +2605,11 @@ jobs:
         if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.release-terminal-review-leases.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.publication-context.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-write-token.outputs.token }}
+          REPO_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
         run: |
-          test "$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" --jq .state)" = "closed"
+          node dist/repair/confirm-terminal-item-closed.js
           echo "confirmed=true" >> "$GITHUB_OUTPUT"
 
       - name: React to target item completion
