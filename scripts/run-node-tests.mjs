@@ -51,6 +51,7 @@ const RESOURCE_INTENSIVE_FILES = new Set([
   "test/dashboard-coverage-sticky-drift.test.ts",
   "test/local-package-install.test.ts",
   "test/local-range-review.test.ts",
+  "test/review-git-acquisition.test.ts",
   "test/review-lease-reservation.test.ts",
   "test/repair/coverage-credential-probe.test.ts",
   "test/repair/exact-review-batch-workflow.test.ts",
