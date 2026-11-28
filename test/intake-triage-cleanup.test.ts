@@ -33,6 +33,7 @@ for (const kind of ["issue", "pull_request"] as const) {
         labels: [
           "human-label",
           "clawsweeper:intake:bug",
+          "clawsweeper:intake:needs-repro",
           "clawsweeper:intake:custom-human-label",
           "P1",
           "impact:crash-loop",
@@ -113,6 +114,7 @@ for (const kind of ["issue", "pull_request"] as const) {
           .find((args) => args[0] === "issue" && args[1] === "edit")
           ?.flatMap((arg) => arg.split(","));
         assert.ok(edit?.includes("clawsweeper:intake:bug"));
+        assert.ok(edit?.includes("clawsweeper:intake:needs-repro"));
         assert.ok(!edit?.includes("clawsweeper:intake:custom-human-label"));
         if (kind === "pull_request") {
           assert.equal(writes.length, 1);
@@ -121,6 +123,7 @@ for (const kind of ["issue", "pull_request"] as const) {
         assert.ok(!markdown.includes('"clawsweeper:intake:bug"'));
       } else {
         assert.ok(item.labels.includes("clawsweeper:intake:bug"));
+        assert.ok(item.labels.includes("clawsweeper:intake:needs-repro"));
         assert.deepEqual(writes, []);
         assert.equal(receipt, false);
       }

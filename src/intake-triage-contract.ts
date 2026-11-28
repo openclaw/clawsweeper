@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { isRecord } from "./value-coerce.js";
 
-export const INTAKE_POLICY = "intake-v1";
+export const INTAKE_POLICY = "intake-v2";
 export const INTAKE_DEFAULT_MODEL = "gpt-6-luna";
 export const INTAKE_MAX_INPUT_BYTES = 12_000;
 export const INTAKE_MAX_RESPONSE_BYTES = 32_000;
@@ -27,7 +27,7 @@ export const INTAKE_QUESTIONS = [
   {
     name: "reproduction",
     instructions:
-      "Does the submission itself include concrete actions or an executable example to trigger the claimed failure? Do not reproduce anything.",
+      "Does the submission say how to trigger the claimed failure? Count a workload and its observed failure as a concrete trigger. For a PR, read references in context: if the author points elsewhere for the steps or run results and the trigger is absent here, choose unclear. An unrelated link does not supply reproduction evidence. Do not open links or reproduce anything.",
     choices: [
       {
         value: "present",
@@ -35,7 +35,8 @@ export const INTAKE_QUESTIONS = [
       },
       {
         value: "missing",
-        description: "A failure is claimed but no concrete trigger is supplied.",
+        description:
+          "A failure is claimed without a concrete trigger. For a PR, the author also gives no reference to reproduction evidence.",
       },
       { value: "not_applicable", description: "No failure is claimed." },
       { value: "unclear", description: "Cannot determine from the submission." },
@@ -140,14 +141,13 @@ export const INTAKE_LABELS = [
   "clawsweeper:intake:needs-environment",
 ] as const;
 
-export function intakeLabels(result: IntakeResult, kind: IntakePacket["kind"]): string[] {
+export function intakeLabels(result: IntakeResult): string[] {
   const answers = result.outcome === "classified" ? parseIntakeAnswers(result.answers) : null;
   if (!answers) return [];
   const labels: string[] = [];
   if (answers.category !== "unclear") labels.push(`clawsweeper:intake:${answers.category}`);
   if (answers.category === "bug") {
-    if (kind === "issue" && answers.reproduction === "missing")
-      labels.push("clawsweeper:intake:needs-repro");
+    if (answers.reproduction === "missing") labels.push("clawsweeper:intake:needs-repro");
     if (answers.environment === "missing") labels.push("clawsweeper:intake:needs-environment");
   }
   return labels;
