@@ -1,0 +1,1 @@
+- Release the review worker’s start banner when a PR closes during review and publication is queued.
