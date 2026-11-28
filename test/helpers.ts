@@ -880,6 +880,8 @@ export function promotionGhMock(options: {
 	const closeCommandDelayMs = ${JSON.stringify(options.closeCommandDelayMs ?? 0)};
 	const number = ${options.number};
 	const commentStatePath = join(__dirname, "..", "comment-state-" + number + ".json");
+	const closedAtPath = join(__dirname, "..", "pr-closed-at-" + number);
+	const closedAt = existsSync(closedAtPath) ? readFileSync(closedAtPath, "utf8") : null;
 	const commentReadStatePath = join(__dirname, "..", "comment-read-" + number);
 	const reviewReadStatePath = join(__dirname, "..", "review-read-" + number);
 	const reviewThreadReadStatePath = join(__dirname, "..", "review-thread-read-" + number);
@@ -1061,8 +1063,8 @@ export function promotionGhMock(options: {
     body: ${JSON.stringify(options.body ?? "Stale PR body.")},
     created_at: itemCreatedAt,
     updated_at: ${options.trackCommentActivity ? 'existsSync(commentStatePath) ? JSON.parse(readFileSync(commentStatePath, "utf8")).updated_at : liveUpdatedAt' : "liveUpdatedAt"},
-    closed_at: null,
-    state: "open",
+    closed_at: closedAt,
+    state: closedAt ? "closed" : "open",
     locked: false,
     active_lock_reason: null,
     author_association: authorAssociation,
@@ -1077,7 +1079,8 @@ export function promotionGhMock(options: {
     number,
     title,
     html_url: "https://github.com/openclaw/openclaw/pull/" + number,
-    state: "open",
+    state: closedAt ? "closed" : "open",
+    closed_at: closedAt,
     created_at: itemCreatedAt,
     updated_at: ${options.trackCommentActivity ? 'existsSync(commentStatePath) ? JSON.parse(readFileSync(commentStatePath, "utf8")).updated_at : liveUpdatedAt' : "liveUpdatedAt"},
     mergeable,
@@ -1222,6 +1225,7 @@ export function promotionGhMock(options: {
 } else if (args[0] === "pr" && args[1] === "close" && args[2] === String(number)) {
   if (closeCommandLogPath) appendFileSync(closeCommandLogPath, args.join(" ") + "\\n");
   if (${JSON.stringify(options.closeCommandError ?? "")}) { console.error(${JSON.stringify(options.closeCommandError ?? "")}); process.exit(1); }
+  writeFileSync(closedAtPath, new Date().toISOString());
   if (closeCommandDelayMs > 0) setTimeout(() => console.log(""), closeCommandDelayMs);
   else console.log("");
 	} else if (args[0] === "issue" && args[1] === "edit") {

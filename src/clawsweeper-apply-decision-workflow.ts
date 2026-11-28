@@ -1083,6 +1083,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         liveItem = fetchApplyItem(number);
       }
       const { item, state } = liveItem;
+      let expectedPullState = state;
       if (state === "open" && exactEventPublication && process.env.EXACT_REVIEW_DECISION &&
         requiresMaintainerReviewRequest(item) &&
         !isExplicitReviewRequest(JSON.parse(process.env.EXACT_REVIEW_DECISION))) {
@@ -1265,6 +1266,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         currentReviewActivityBlock,
         dryRun,
         getActiveApplyMutationLease: () => activeApplyMutationLease,
+        expectedPullState: () => expectedPullState,
         initialReviewHeadSha,
         item,
         liveReadGeneration,
@@ -2831,6 +2833,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         },
         oversizedActivityBlock: () => oversizedActivityGuard ? oversizedActivityGuard.check(liveReadGeneration.id, true) : "missing metadata activity receipt",
         onOversizedClosed: () => {
+          expectedPullState = "closed";
           oversizedActivityGuard?.markClosed();
           try {
           const liveComment = withGuardReadOptions({ bypassGenerationCache: true }, () => issueReviewComment(number));

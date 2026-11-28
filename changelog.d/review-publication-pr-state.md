@@ -1,0 +1,1 @@
+- Recheck the live pull request state before publishing a review so a merge at the reviewed commit stops a pending ready verdict.

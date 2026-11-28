@@ -8,6 +8,9 @@ import { asRecord } from "./value-coerce.js";
 import { frontMatterValue } from "./report-front-matter.js";
 import { reviewLeaseRevisionFromReport } from "./clawsweeper-record-metadata.js";
 
+export const PULL_CLOSED_DURING_APPLY = "pull request closed during apply";
+class PullClosedDuringApply extends Error {}
+
 type ActiveApplyMutationLease = { itemNumber: number; lease: AcquiredReviewStartLease } | null;
 
 type ApplyLeaseGuardDependencies = Pick<
@@ -30,6 +33,7 @@ type ApplyLeaseGuardDependencies = Pick<
   currentReviewActivityBlock: () => string | null;
   dryRun: boolean;
   getActiveApplyMutationLease: () => ActiveApplyMutationLease;
+  expectedPullState?: () => string;
   initialReviewHeadSha: string;
   item: Item;
   liveReadGeneration?: LiveReadGeneration;
@@ -50,6 +54,7 @@ export function createApplyLeaseGuards({
   getActiveApplyMutationLease,
   ghJson,
   GitHubRuntimeBudgetError,
+  expectedPullState = () => "open",
   initialReviewHeadSha,
   issueReviewCommentState,
   item,
@@ -131,6 +136,11 @@ export function createApplyLeaseGuards({
           })
         : ghJson<unknown>(args),
     );
+    const expected = expectedPullState();
+    if (expected === "open" && pull.state === "closed") throw new PullClosedDuringApply();
+    if (pull.state !== expected) {
+      throw new Error(`expected PR to be ${expected}, live state is ${String(pull.state)}`);
+    }
     const sha = asRecord(pull.head).sha;
     return typeof sha === "string" ? sha.trim().toLowerCase() : "";
   };
@@ -193,7 +203,10 @@ export function createApplyLeaseGuards({
         lease: null,
         currentLease: null,
         preserve: false,
-        blockReason: `apply-time review lease check failed; next apply will retry: ${detail}`,
+        blockReason:
+          error instanceof PullClosedDuringApply
+            ? PULL_CLOSED_DURING_APPLY
+            : `apply-time review lease check failed; next apply will retry: ${detail}`,
       };
     }
   };
@@ -251,7 +264,9 @@ export function createApplyLeaseGuards({
         (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " "),
         180,
       );
-      return `apply mutation lease verification failed; next apply will retry: ${detail}`;
+      return error instanceof PullClosedDuringApply
+        ? PULL_CLOSED_DURING_APPLY
+        : `apply mutation lease verification failed; next apply will retry: ${detail}`;
     }
   };
 
