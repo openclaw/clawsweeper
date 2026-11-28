@@ -815,19 +815,19 @@ test("slow workflow discovery stops at the shared deadline with dead-letter head
   });
   const address = server.address();
   assert.ok(address && typeof address !== "string");
-  const sharedDeadlineMs = Date.now() + DEAD_LETTER_RESERVED_MS + 1500;
-  const startedAt = Date.now();
+  const workWindowMs = 1500;
   try {
     const result = await runProduction({
       apiUrl: `http://127.0.0.1:${address.port}`,
-      sharedDeadlineMs,
+      sharedDeadlineMs: { afterStartupMs: DEAD_LETTER_RESERVED_MS + workWindowMs },
       output,
       zombieOutput,
       zombieSeed,
     });
     assert.equal(result.exitCode, 0, result.stderr);
-    assert.ok(Date.now() - startedAt < 5000, "the 20-second history request must be cut short");
     const summary = JSON.parse(await readFile(output, "utf8"));
+    const startedAt = summary.deadline.shared_deadline_ms - DEAD_LETTER_RESERVED_MS - workWindowMs;
+    assert.ok(Date.now() - startedAt < 5000, "the 20-second history request must be cut short");
     assert.equal(summary.deadline_reached, true);
     assert.equal(summary.workflow_discovery.distinct_stale_workflows, runs.length);
     assert.equal(summary.workflow_discovery.inspected_workflows, 1);
@@ -862,7 +862,7 @@ async function runProduction({
   execute = false,
 }: {
   apiUrl: string;
-  sharedDeadlineMs: number;
+  sharedDeadlineMs: number | { afterStartupMs: number };
   output: string;
   zombieOutput: string;
   zombieSeed: string;
@@ -880,12 +880,20 @@ async function runProduction({
     zombieSeed,
   ];
   if (execute) args.push("--execute");
+  // The workflow gives a running process an absolute deadline. Start the short
+  // history-request window after Node boots, before the real CLI reads its env.
+  if (typeof sharedDeadlineMs !== "number") {
+    const setup = `process.env.EXACT_REVIEW_RECONCILE_DEADLINE_MS = String(Date.now() + ${sharedDeadlineMs.afterStartupMs});`;
+    args.unshift("--import", `data:text/javascript,${encodeURIComponent(setup)}`);
+  }
   const child = spawn(process.execPath, args, {
     env: {
       ...process.env,
       GITHUB_API_URL: apiUrl,
       GITHUB_TOKEN: "deadline-test-token",
-      EXACT_REVIEW_RECONCILE_DEADLINE_MS: String(sharedDeadlineMs),
+      ...(typeof sharedDeadlineMs === "number"
+        ? { EXACT_REVIEW_RECONCILE_DEADLINE_MS: String(sharedDeadlineMs) }
+        : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
