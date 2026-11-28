@@ -373,10 +373,6 @@ function writeMetadataGit(harness: string): string {
     `import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 const args = process.argv.slice(2);
-if (!args.includes("--numstat") && !args.includes("--name-status")) {
-  const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit", env: process.env });
-  process.exit(result.status ?? 1);
-}
 const result = spawnSync(${JSON.stringify(realGit)}, args, { encoding: "utf8", env: process.env });
 if (result.status !== 0) process.exit(result.status ?? 1);
 let output = result.stdout;
@@ -417,9 +413,19 @@ if (args.includes("--name-status")) {
 process.stdout.write(output);
 `,
   );
-  writeFileSync(join(harness, "git"), `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`, {
-    mode: 0o755,
-  });
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  writeFileSync(
+    join(harness, "git"),
+    `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    --numstat|--name-status) exec ${quote(process.execPath)} ${quote(script)} "$@" ;;
+  esac
+done
+exec ${quote(realGit)} "$@"
+`,
+    { mode: 0o755 },
+  );
   return modeFile;
 }
 

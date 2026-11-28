@@ -1,5 +1,6 @@
 import { createReviewCoreRuntime } from "./clawsweeper-review-core.js";
 import { createLocalRangeReviewer } from "./clawsweeper-local-review.js";
+import { validateReviewPreflightArgs } from "./clawsweeper-review-preparation.js";
 import { runLocalRangeReview } from "./clawsweeper-local-command.js";
 import { reviewDecisionParser } from "./clawsweeper-decision-parser.js";
 import { run, ensureDir } from "./clawsweeper-review-io.js";
@@ -38,6 +39,7 @@ import { renderReviewCommentFromReport } from "./clawsweeper-report-comment-pres
 import type { Args } from "./clawsweeper-args.js";
 
 export function localReviewCommand(args: Args): void {
+  validateReviewPreflightArgs(args);
   const profile = localReviewRepositoryProfile(
     args,
     resolve(stringArg(args.target_dir ?? args.openclaw_dir, process.cwd())),

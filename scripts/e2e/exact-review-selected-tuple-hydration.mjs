@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import childProcess, { execFileSync, spawnSync } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
@@ -141,6 +141,27 @@ function observeChildren() {
   const config = json(process.env.CSW_HYDRATION_PROOF_CONFIG);
   const entry = basename(process.argv[1] || "");
   const log = (value) => fs.appendFileSync(config.trace, `${JSON.stringify(value)}\n`, "utf8");
+  if (
+    entry === "prepare-exact-review-batch.mjs" &&
+    process.argv[2] !== "worker" &&
+    config.mode === "read-timeout"
+  ) {
+    // Arrange a genuinely stalled, signed read before handing the child back
+    // to the controller's real two-second watchdog. The startup-timeout case
+    // exercises the same watchdog from spawn with no readiness handshake.
+    const spawn = childProcess.spawn;
+    childProcess.spawn = (command, args, options) => {
+      const child = spawn(command, args, options);
+      if (args?.[1] === "worker") {
+        const ready = join(args[3], "fixture-read-pending");
+        const startupDeadline = Date.now() + 30_000;
+        const wait = new Int32Array(new SharedArrayBuffer(4));
+        while (!fs.existsSync(ready) && Date.now() < startupDeadline) Atomics.wait(wait, 0, 0, 10);
+      }
+      return child;
+    };
+    syncBuiltinESMExports();
+  }
   if (entry === "clawsweeper.js" || entry === "publish-event-result.js") {
     const Clock = Date;
     globalThis.Date = class extends Clock {
@@ -153,6 +174,8 @@ function observeChildren() {
     };
   }
   if (entry === "prepare-exact-review-batch.mjs" && process.argv[2] === "worker") {
+    if (config.mode === "startup-timeout")
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
     const item = json(process.argv[3]);
     const root = process.argv[4];
     const selected = new Set(tuplePaths(item.decision.targetRepo, item.decision.itemNumber));
@@ -181,6 +204,7 @@ function observeChildren() {
       assert.ok(selected.has(path), `unselected canonical read: ${path}`);
       log({ kind: "canonical-read", itemKey: item.itemKey, path });
       if (config.mode === "read-timeout" && item.decision.itemNumber === 42) {
+        fs.writeFileSync(join(root, "fixture-read-pending"), "ready");
         await new Promise(() => setInterval(() => {}, 1000));
       }
       if (config.mode === "forbidden" && item.decision.itemNumber === 42) {
@@ -349,7 +373,8 @@ export function runHydrationProof({
     const configPath = join(root, "config.json");
     // Two serial stalls prove progress after a timeout; healthy publication has
     // separate scenarios using the regular preparation budget.
-    const numbers = mode === "read-timeout" ? [42] : [42, 43, 44, 45];
+    const timed = mode === "read-timeout" || mode === "startup-timeout";
+    const numbers = timed ? [42] : [42, 43, 44, 45];
     const items = repos.flatMap((repo) =>
       numbers.map((number) => member(repo, number, repos.indexOf(repo) * 4 + number - 42)),
     );
@@ -466,7 +491,7 @@ export function runHydrationProof({
         CSW_HYDRATION_PROOF_CONFIG: configPath,
         EXACT_REVIEW_QUEUE_URL: "https://canonical.invalid",
         CLAWSWEEPER_WEBHOOK_SECRET: "synthetic-hydration-secret",
-        ...(mode === "read-timeout" ? { EXACT_REVIEW_BATCH_ITEM_TIMEOUT_MS: "2000" } : {}),
+        ...(timed ? { EXACT_REVIEW_BATCH_ITEM_TIMEOUT_MS: "2000" } : {}),
         GITHUB_WORKSPACE: workspace,
         GITHUB_REPOSITORY: "openclaw/clawsweeper",
         REPO_TOKEN: "synthetic-fixture-token",
@@ -506,7 +531,12 @@ export function runHydrationProof({
     assert.deepEqual(inventory(join(canonical, "records")), before);
     assert.deepEqual(fs.readdirSync(join(workspace, ".artifacts/exact-review-batch/workers")), []);
     const reads = events.filter((event) => event.kind === "canonical-read");
-    if (mode === "heartbeat" || invalidDecision) {
+    if (mode === "startup-timeout") {
+      assert.equal(telemetry.timeouts, 2);
+      assert.equal(workers.length, 0);
+      assert.equal(publishers.length, 0);
+    }
+    if (mode === "heartbeat" || mode === "startup-timeout" || invalidDecision) {
       assert.equal(reads.length, 0, "rejected members must not read canonical records");
       assert.equal(events.filter((event) => event.kind === "download").length, 0);
       for (const outcome of outcomes) {

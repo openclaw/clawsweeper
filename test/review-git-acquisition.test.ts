@@ -270,6 +270,7 @@ test("Git acquisition never removes a preexisting shallow lock", () => {
   try {
     writeFileSync(lock, "another acquisition owns this lock\n");
     const result = runGitAcquisitionResult(args, { cwd: target, env, maxBuffer, timeoutMs: 3000 });
+    assert.equal(result.error, undefined);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /shallow\.lock/);
     assert.equal(readFileSync(lock, "utf8"), "another acquisition owns this lock\n");
@@ -281,10 +282,13 @@ test("Git acquisition never removes a preexisting shallow lock", () => {
 test("trusted Git overrides preserve arguments and cannot spoof supervisor output", () => {
   const root = mkdtempSync(join(tmpdir(), "review-git-override-"));
   try {
-    const script = join(root, "git.mjs");
+    const windows = process.platform === "win32";
+    const script = join(root, windows ? "git.mjs" : "git.sh");
     writeFileSync(
       script,
-      'process.stdout.write(JSON.stringify({pid:1}) + "\\n" + JSON.stringify(process.argv.slice(2)));',
+      windows
+        ? 'process.stdout.write(JSON.stringify({pid:1}) + "\\n" + JSON.stringify(process.argv.slice(2)));'
+        : `printf '{"pid":1}\\n'; exec jq -cnj --args '$ARGS.positional' -- "$@"`,
     );
     const result = runGitAcquisitionResult(["fetch", "argument with space"], {
       cwd: root,
@@ -292,7 +296,7 @@ test("trusted Git overrides preserve arguments and cannot spoof supervisor outpu
       timeoutMs: 3000,
       env: {
         ...process.env,
-        GIT_BIN: process.execPath,
+        GIT_BIN: windows ? process.execPath : "/bin/sh",
         GIT_BIN_ARGS: JSON.stringify([script, "prefix"]),
       },
     });
@@ -369,12 +373,12 @@ test("early Git rejection while sending a large object list preserves its settle
     input: "a".repeat(2 * 1024 * 1024),
     env: {
       ...process.env,
-      GIT_BIN: process.execPath,
-      GIT_BIN_ARGS: JSON.stringify([
-        "-e",
-        'process.stderr.write("fatal: HTTP 403\\n"); process.exit(128);',
-        "--",
-      ]),
+      GIT_BIN: process.platform === "win32" ? process.execPath : "/bin/sh",
+      GIT_BIN_ARGS: JSON.stringify(
+        process.platform === "win32"
+          ? ["-e", 'process.stderr.write("fatal: HTTP 403\\n"); process.exit(128);', "--"]
+          : ["-c", 'printf "fatal: HTTP 403\\n" >&2; exit 128', "--"],
+      ),
     },
   });
   assert.equal(result.status, 128);

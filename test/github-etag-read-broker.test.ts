@@ -5,6 +5,7 @@ import {
   githubTest as test,
   installEtagBroker,
   installGhFixture,
+  installStaticGhFixture,
 } from "./github-runtime-fixture.ts";
 
 import {
@@ -97,7 +98,7 @@ test("projected GitHub reads bypass the durable ETag broker", (t) => {
     EXACT_REVIEW_QUEUE_URL: "http://127.0.0.1:9",
     CLAWSWEEPER_WEBHOOK_SECRET: "etag-broker-secret-placeholder",
   });
-  const fixture = installGhFixture(t, "process.stdout.write(JSON.stringify({ projected: true }));");
+  const fixture = installStaticGhFixture(t, { projected: true });
   const route = "/repos/openclaw/openclaw/pulls/1234";
   const projections = [
     ["--jq", "{body}"],

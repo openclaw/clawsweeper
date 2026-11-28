@@ -27,17 +27,35 @@ import { spawn } from "node:child_process";
 import {
   globSync,
   mkdirSync,
+  mkdtempSync,
+  rmSync,
   readdirSync,
   readFileSync,
   realpathSync,
   writeFileSync,
 } from "node:fs";
-import { availableParallelism } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MAX_TEST_CONCURRENCY = 16;
+// These files each run a full-size census or launch a nested integration
+// suite. A file worker is not a bound on the subprocesses, SQLite working
+// sets or coverage writers it creates. Run those suites one at a time.
+const RESOURCE_INTENSIVE_FILES = new Set([
+  "test/action-ledger-runtime.test.ts",
+  "test/codex-review-runner.test.ts",
+  "test/dashboard-coverage-byte-pressure.test.ts",
+  "test/dashboard-coverage-cleanup-progress.test.ts",
+  "test/dashboard-coverage-sticky-drift.test.ts",
+  "test/local-package-install.test.ts",
+  "test/local-range-review.test.ts",
+  "test/review-git-acquisition.test.ts",
+  "test/review-lease-reservation.test.ts",
+  "test/repair/coverage-credential-probe.test.ts",
+  "test/repair/exact-review-batch-workflow.test.ts",
+]);
 const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM"];
 const TARGET_PATTERNS = Object.freeze({
   unit: ["test/*.test.ts"],
@@ -328,15 +346,71 @@ export async function runNodeTests({
     }
   }
 
-  console.error(
-    `[run-node-tests] target=${target}${shardLabel}${coverage ? ` coverage=${coverage.mode}` : ""} concurrency=${concurrency} files=${files.length}`,
-  );
-  const child = spawnProcess(
-    process.execPath,
-    ["--test", `--test-concurrency=${concurrency}`, ...runnerArguments, ...nodeArguments, ...files],
-    childOptions,
-  );
+  const runGroup = (group, workers, flags, options) => {
+    console.error(
+      `[run-node-tests] target=${target}${shardLabel}${coverage ? ` coverage=${coverage.mode}` : ""} concurrency=${workers} files=${group.length}`,
+    );
+    const child = spawnProcess(
+      process.execPath,
+      ["--test", `--test-concurrency=${workers}`, ...flags, ...nodeArguments, ...group],
+      options,
+    );
+    return waitForTestRunner(child, signalSource);
+  };
+  // Forwarded runner options can filter or redirect reporter output (including
+  // the coverage replay test); preserve the native single invocation for them.
+  const exclusive =
+    nodeArguments.length || concurrency === 1
+      ? []
+      : files.filter((file) => RESOURCE_INTENSIVE_FILES.has(file));
+  const ordinary = exclusive.length
+    ? files.filter((file) => !RESOURCE_INTENSIVE_FILES.has(file))
+    : files;
+  let temporaryProfiles;
+  try {
+    let first;
+    if (exclusive.length && ordinary.length) {
+      // The final coverage gate must see both groups as a single suite.
+      if (coverage?.mode === "check")
+        temporaryProfiles = mkdtempSync(join(tmpdir(), "clawsweeper-proof-coverage-"));
+      first = await runGroup(
+        exclusive,
+        1,
+        [],
+        temporaryProfiles
+          ? { ...childOptions, env: { ...process.env, NODE_V8_COVERAGE: temporaryProfiles } }
+          : childOptions,
+      );
+      if (first.signal) return first;
+    }
+    const next = await runGroup(
+      temporaryProfiles
+        ? [...ordinary, COVERAGE_REPLAY_ENTRY]
+        : ordinary.length
+          ? ordinary
+          : exclusive,
+      ordinary.length ? concurrency : 1,
+      runnerArguments,
+      temporaryProfiles
+        ? {
+            ...childOptions,
+            env: { ...process.env, CLAWSWEEPER_COVERAGE_REPLAY_DIR: temporaryProfiles },
+          }
+        : childOptions,
+    );
+    if (profileDirectory !== undefined && !next.signal) {
+      const { profiles, scripts } = pruneCoverageProfiles(profileDirectory, cwd);
+      console.error(
+        `[run-node-tests] coverage-out=${profileDirectory} profiles=${profiles} checkout-scripts=${scripts}`,
+      );
+    }
+    return !next.signal && first && first.code !== 0 ? first : next;
+  } finally {
+    if (temporaryProfiles) rmSync(temporaryProfiles, { recursive: true, force: true });
+  }
+}
 
+function waitForTestRunner(child, signalSource) {
   return new Promise((resolvePromise, reject) => {
     const signalHandlers = new Map(
       FORWARDED_SIGNALS.map((signal) => [signal, () => child.kill(signal)]),
@@ -354,19 +428,7 @@ export async function runNodeTests({
     });
     child.once("exit", (code, signal) => {
       cleanup();
-      if (profileDirectory === undefined || signal) {
-        resolvePromise({ code, signal });
-        return;
-      }
-      try {
-        const { profiles, scripts } = pruneCoverageProfiles(profileDirectory, cwd);
-        console.error(
-          `[run-node-tests] coverage-out=${profileDirectory} profiles=${profiles} checkout-scripts=${scripts}`,
-        );
-        resolvePromise({ code, signal });
-      } catch (error) {
-        reject(error);
-      }
+      resolvePromise({ code, signal });
     });
   });
 }

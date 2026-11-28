@@ -44,7 +44,8 @@ test(
   "packed local reviewer installs and runs outside the source checkout",
   { timeout: 240_000 },
   async (t) => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "local-package-install-")));
+    // Match the import guard's native path spelling, including Windows short names in TEMP.
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "local-package-install-")));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const stage = join(root, "stage");
     const seed = join(root, "seed");
@@ -67,6 +68,9 @@ test(
     // This is a separate test runner, not an internal Node test worker.
     delete env.NODE_TEST_CONTEXT;
     delete env.NODE_TEST_WORKER_ID;
+    // Installed code lives outside the source coverage root. Do not make the
+    // parity runner and its CLI children profile a second copy of the package.
+    delete env.NODE_V8_COVERAGE;
     const run = (command: string, args: string[], options = {}) => {
       const invocation = resolveSpawnCommand(command, args, { cwd: root, env, ...options });
       const result = spawnSync(invocation.command, invocation.args, {
@@ -333,10 +337,10 @@ test(
       `import { registerHooks } from "node:module";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify(installed + sep)})) {
+if (process.argv[1] && realpathSync.native(process.argv[1]).startsWith(${JSON.stringify(installed + sep)})) {
   const packages = ${JSON.stringify([...installedPackages.values()].sort((a, b) => b.root.length - a.root.length))};
   const owner = url => {
-    const path = realpathSync(fileURLToPath(url));
+    const path = realpathSync.native(fileURLToPath(url));
     return packages.find(pkg => path.startsWith(pkg.root + ${JSON.stringify(sep)}));
   };
   registerHooks({ resolve(specifier, context, nextResolve) {

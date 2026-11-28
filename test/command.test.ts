@@ -183,14 +183,17 @@ test("runText explains missing executables", () => {
 
 test("runTextConcurrently runs commands together and reports each result as runText would", () => {
   const root = mkdtempSync(join(tmpdir(), "cmd-concurrent-"));
+  const markers = join(root, "rendezvous");
+  mkdirSync(markers);
+  const previousOptions = process.env.NODE_OPTIONS;
   // Each command waits until all three have started, so they finish only if
   // they run at the same time; the timeout turns a serial run into a failure.
   const rendezvous = (name: string) => [
     "-e",
     `const fs = require("node:fs");
-     fs.writeFileSync(${JSON.stringify(join(root, name))}, "");
+     fs.writeFileSync(${JSON.stringify(join(markers, name))}, "");
      const poll = setInterval(() => {
-       if (fs.readdirSync(${JSON.stringify(root)}).length >= 3) {
+       if (fs.readdirSync(${JSON.stringify(markers)}).length >= 3) {
          clearInterval(poll);
          process.stdout.write(${JSON.stringify(`${name}\n`)});
        }
@@ -200,15 +203,29 @@ test("runTextConcurrently runs commands together and reports each result as runT
   const slow = ["-e", "setTimeout(() => {}, 10_000)"];
   try {
     const startedAt = Date.now();
+    // These results compare a running child timeout with spawnSync. The next
+    // test exercises expiry before dispatch. Start the test's real elapsed
+    // clock in the dispatcher so cold Node startup cannot choose the latter.
+    const clock = join(root, "dispatcher-clock.cjs");
+    writeFileSync(
+      clock,
+      `if (!process.argv[1]) {
+      let first;
+      Date.now = () => { const now = performance.now(); first ??= now; return ${startedAt} + Math.floor(now - first); };
+    }`,
+    );
+    process.env.NODE_OPTIONS = [previousOptions, `--require=${JSON.stringify(clock)}`]
+      .filter(Boolean)
+      .join(" ");
     const results = runTextConcurrently(
       [
+        { command: process.execPath, args: slow, options: { deadlineAt: startedAt + 500 } },
         ...["a", "b", "c"].map((name) => ({
           command: process.execPath,
           args: rendezvous(name),
           options: { deadlineAt: startedAt + 10_000 },
         })),
         { command: process.execPath, args: failing },
-        { command: process.execPath, args: slow, options: { deadlineAt: startedAt + 500 } },
         {
           command: "clawsweeper-missing-command-for-test",
           args: [],
@@ -218,7 +235,7 @@ test("runTextConcurrently runs commands together and reports each result as runT
       6,
     );
 
-    assert.deepEqual(results.slice(0, 3), [{ output: "a" }, { output: "b" }, { output: "c" }]);
+    assert.deepEqual(results.slice(1, 4), [{ output: "a" }, { output: "b" }, { output: "c" }]);
     const sameFailure = (
       result: (typeof results)[number] | undefined,
       sequential: () => string,
@@ -234,12 +251,14 @@ test("runTextConcurrently runs commands together and reports each result as runT
         return true;
       });
     };
-    sameFailure(results[3], () => runText(process.execPath, failing));
-    sameFailure(results[4], () => runText(process.execPath, slow, { timeoutMs: 50 }));
+    sameFailure(results[4], () => runText(process.execPath, failing));
+    sameFailure(results[0], () => runText(process.execPath, slow, { timeoutMs: 50 }));
     sameFailure(results[5], () =>
       runText("clawsweeper-missing-command-for-test", [], { env: { PATH: "" } }),
     );
   } finally {
+    if (previousOptions === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = previousOptions;
     rmSync(root, { recursive: true, force: true });
   }
 });

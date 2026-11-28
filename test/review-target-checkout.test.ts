@@ -364,9 +364,16 @@ test(
     const preload = join(root, "cleanup-error.cjs");
     writeFileSync(
       preload,
-      `const kill = process.kill;
+      `const cp = require("node:child_process");
+const spawnSync = cp.spawnSync;
+const kill = process.kill;
+// Git exits on TERM, but the final signal still finds a live helper in its group.
+cp.spawnSync = (file, args, options) => file === "/bin/ps"
+  ? {status: 0, stdout: args.at(-1) + " " + process.geteuid() + " S\\n", stderr: ""}
+  : spawnSync(file, args, options);
+require("node:module").syncBuiltinESMExports();
 process.kill = (pid, signal) => {
-  if (signal === "SIGKILL") throw Object.assign(new Error("cleanup denied"), { code: "EPERM" });
+  if (signal === "SIGKILL" || signal === 0) throw Object.assign(new Error("cleanup denied"), { code: "EPERM" });
   return kill(pid, signal);
 };`,
     );
@@ -388,5 +395,54 @@ process.kill = (pid, signal) => {
     );
     assert.equal(result.status, 124, result.stderr);
     assert.match(result.stderr, /cleanup failed \(SIGKILL\): EPERM/);
+  },
+);
+
+test(
+  "Darwin final cleanup distinguishes reaped groups from live permission failures",
+  {
+    skip: process.platform !== "darwin",
+  },
+  (t) => {
+    const root = mkdtempSync(join(tmpdir(), "checkout-group-state-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const probe = join(root, "group-state.cjs");
+    writeFileSync(
+      probe,
+      `
+const cp = require("node:child_process");
+const original = cp.spawnSync;
+let group;
+process.kill = (pid, signal) => {
+  if (pid >= 0 || !["SIGKILL", 0].includes(signal)) throw new Error("unexpected signal");
+  if (signal === 0 && !process.env.FIXTURE_STATE) throw Object.assign(new Error("reaped"), {code:"ESRCH"});
+  group = -pid;
+  throw Object.assign(new Error("fixture permission denied"), {code:"EPERM"});
+};
+cp.spawnSync = (file, args, options) => file === "/bin/ps"
+  ? {status:0, stdout:process.env.FIXTURE_STATE ? group + " " + (process.geteuid() + Number(process.env.FIXTURE_FOREIGN)) + " " + process.env.FIXTURE_STATE + "\\n" : "", stderr:""}
+  : original(file, args, options);
+require("node:module").syncBuiltinESMExports();
+`,
+    );
+    for (const [state, foreign] of [
+      ["", "0"],
+      ["Z", "0"],
+      ["S", "0"],
+      ["Z", "1"],
+    ]) {
+      const run = spawnSync(
+        process.execPath,
+        ["--require", probe, "scripts/git-network-deadline.mjs", "--version"],
+        {
+          env: { ...process.env, FIXTURE_STATE: state, FIXTURE_FOREIGN: foreign },
+          encoding: "utf8",
+        },
+      );
+      assert.equal(run.status, state === "S" || foreign === "1" ? 1 : 0, run.stderr);
+      if (state === "S" || foreign === "1") {
+        assert.match(run.stderr, /cleanup failed \(SIGKILL\): EPERM/);
+      }
+    }
   },
 );

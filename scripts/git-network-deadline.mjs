@@ -5,6 +5,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { signalProcessGroup } from "../src/process-group.ts";
 
 const configured = Number(
   process.env.CLAWSWEEPER_REVIEW_TARGET_CHECKOUT_TIMEOUT_MS ??
@@ -37,14 +38,12 @@ function signalGroup(signal) {
     return true;
   }
   try {
-    process.kill(-child.pid, signal);
+    signalProcessGroup(child.pid, signal);
+    return true;
   } catch (error) {
-    if (error.code !== "ESRCH") {
-      console.error(`Target checkout git process group cleanup failed (${signal}): ${error.code}.`);
-      return false;
-    }
+    console.error(`Target checkout git process group cleanup failed (${signal}): ${error.code}.`);
+    return false;
   }
-  return true;
 }
 
 function stop(signal = "SIGTERM") {

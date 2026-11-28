@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
 import { parse } from "yaml";
 
@@ -27,7 +28,13 @@ import {
   failedReviewRetryEligibility,
   isInfrastructureFailedReview,
 } from "../dist/clawsweeper-record-metadata.js";
-import { tmpPrefix, withMockGh, withReviewRecord, workPlanCandidateReport } from "./helpers.ts";
+import {
+  tmpPrefix,
+  withMockGh,
+  withHangingGh,
+  withReviewRecord,
+  workPlanCandidateReport,
+} from "./helpers.ts";
 import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
 
 function failedReviewReport(overrides = {}) {
@@ -842,11 +849,31 @@ test("failed issue retry bounds a hung GitHub fetch and flushes its report", () 
   const fixture = failedIssueRetryFixture(root, 4344);
   const maxRuntimeMs = 2_200;
   try {
-    const startedAt = Date.now();
-    withMockGh(root, "setTimeout(() => {}, 10_000);", () => {
-      runFailedIssueRetry(fixture, ["--max-runtime-ms", String(maxRuntimeMs)]);
+    const attempted = join(root, "gh-started");
+    const timing = join(root, "elapsed.json");
+    // Keep the real CLI, command timeout and report flush. Measure the retry
+    // operation after module loading, before Node writes its coverage profile.
+    const preload = join(root, "measure-retry.mjs");
+    writeFileSync(
+      preload,
+      `import ${JSON.stringify(pathToFileURL(resolve("dist/clawsweeper-runtime.js")).href)};
+import {writeFileSync} from "node:fs";
+const start = performance.now();
+process.once("beforeExit", () => writeFileSync(${JSON.stringify(timing)}, JSON.stringify(performance.now() - start)));`,
+    );
+    withHangingGh(root, attempted, () => {
+      execFileSync(process.execPath, [
+        "--import",
+        pathToFileURL(preload).href,
+        "dist/clawsweeper.js",
+        ...failedIssueRetryArgs(fixture, ["--max-runtime-ms", String(maxRuntimeMs)]),
+      ]);
     });
-    assert.ok(Date.now() - startedAt < 4_000, "hung gh exceeded the retry runtime bound");
+    assert.equal(readFileSync(attempted, "utf8"), "attempted\n");
+    assert.ok(
+      JSON.parse(readFileSync(timing, "utf8")) < 4_000,
+      "hung gh exceeded the retry runtime bound",
+    );
     const report = JSON.parse(readFileSync(fixture.reportPath, "utf8")) as Array<{
       number: number;
       action: string;

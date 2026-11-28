@@ -45,7 +45,12 @@ function payload() {
   };
 }
 
-async function scenario(name: string, mode: string, missing: boolean | "B" = false) {
+async function scenario(
+  signal: AbortSignal,
+  name: string,
+  mode: string,
+  missing: boolean | "B" = false,
+) {
   const trace: { role: string; method: string | undefined; querySHA: string; bytes: number }[] = [];
   let sentBytes = 0;
   const server = createServer(async (req, res) => {
@@ -248,6 +253,7 @@ async function scenario(name: string, mode: string, missing: boolean | "B" = fal
   const started = performance.now();
   const child = spawn(process.execPath, ["--import", preload, cli], {
     cwd: local,
+    signal,
     // No inherited host credentials or secret-bearing env. Production URL stays fixed.
     env: {
       PATH: process.env.PATH,
@@ -325,9 +331,11 @@ async function scenario(name: string, mode: string, missing: boolean | "B" = fal
 
 test(
   "compiled fixed-URL CLI: real paired HTTP, redaction, limits, no fallback or redirects",
-  { timeout: 35_000 },
-  async () => {
+  { concurrency: 4, timeout: 35_000 },
+  async (t) => {
     const cases = [
+      // Start the intentional 15s stall alongside the independent HTTP cases.
+      ["timeout", "timeout", "timeout", 1],
       ["healthy", "parsed", "none", 0],
       ["rate403remaining", "http", "rate", 0],
       ["rate403retry", "http", "rate", 0],
@@ -355,29 +363,36 @@ test(
       ["redirect", "http", "http", 1],
       ["transport", "transport", "transport", 1],
       ["oversize", "body_oversize", "body_oversize", 1],
-      ["timeout", "timeout", "timeout", 1],
     ] as const;
-    for (const [mode, phase, category, exit] of cases) {
-      const actual = await scenario(mode, mode);
-      assert.equal(actual.exit, exit, mode);
-      assert.equal(actual.result.observations[0].phase, phase, mode);
-      assert.equal(actual.result.observations[0].category, category, mode);
-      if (mode === "oversize") assert.ok(actual.sentBytes > PROBE_LIMITS.bytes);
-      if (mode === "timeout")
-        assert.ok(
-          actual.elapsedMs >= 15_000 && actual.elapsedMs < 20_000,
-          "actual elapsed deadline",
-        );
-    }
-    const missing = await scenario("missing", "healthy", true);
-    assert.equal(missing.exit, 1);
-    const missingB = await scenario("mint-failure", "healthy", "B");
-    assert.equal(missingB.exit, 1);
-    assert.equal(missingB.result.observations[0].phase, "parsed");
-    assert.equal(missingB.result.observations[1].phase, "missing_role");
-    assert.ok(
-      missing.result.observations.every((o: { category: string }) => o.category === "missing_role"),
+    await Promise.all(
+      cases.map(([mode, phase, category, exit]) =>
+        t.test(mode, { timeout: 35_000 }, async ({ signal }) => {
+          const actual = await scenario(signal, mode, mode);
+          assert.equal(actual.exit, exit, mode);
+          assert.equal(actual.result.observations[0].phase, phase, mode);
+          assert.equal(actual.result.observations[0].category, category, mode);
+          if (mode === "oversize") assert.ok(actual.sentBytes > PROBE_LIMITS.bytes);
+          if (mode === "timeout")
+            assert.ok(
+              actual.elapsedMs >= 15_000 && actual.elapsedMs < 20_000,
+              "actual elapsed deadline",
+            );
+        }),
+      ),
     );
+    await t.test("missing roles", { timeout: 35_000 }, async ({ signal }) => {
+      const missing = await scenario(signal, "missing", "healthy", true);
+      assert.equal(missing.exit, 1);
+      const missingB = await scenario(signal, "mint-failure", "healthy", "B");
+      assert.equal(missingB.exit, 1);
+      assert.equal(missingB.result.observations[0].phase, "parsed");
+      assert.equal(missingB.result.observations[1].phase, "missing_role");
+      assert.ok(
+        missing.result.observations.every(
+          (o: { category: string }) => o.category === "missing_role",
+        ),
+      );
+    });
   },
 );
 

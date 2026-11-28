@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { TestContext } from "node:test";
 import { githubTest as test, installGhFixture } from "./github-runtime-fixture.ts";
 import {
@@ -12,7 +15,13 @@ import {
   fixedInReportText,
 } from "../dist/clawsweeper-status-context.js";
 import { GitHubRateLimitError } from "../dist/github-retry.js";
-import { closeDecision, item, reportFrontMatter, withReviewRecord } from "./helpers.ts";
+import {
+  closeDecision,
+  item,
+  reportFrontMatter,
+  withGhCommand,
+  withReviewRecord,
+} from "./helpers.ts";
 import { repositoryProfileFor, setTargetRepo, targetRepo } from "../dist/repository-profiles.js";
 import { ReviewRecordFormatError, updateReviewRecordDecision } from "../dist/review-record.js";
 
@@ -88,9 +97,6 @@ function statusContextWithCalls(
     rateLimitOnApplyRead?: boolean;
     rateLimitOnIssueRead?: boolean;
     rateLimitOnContainmentRead?: boolean;
-    runtimeBudgetOnApplyRead?: boolean;
-    runtimeBudgetOnIssueRead?: boolean;
-    runtimeBudgetOnContainmentRead?: boolean;
     freshApplyBody?: boolean;
     mergeCommitReachable?: boolean;
     linkedIssueCloserNumber?: number;
@@ -138,12 +144,10 @@ function statusContextWithCalls(
       process.stderr.write("API rate limit exceeded");
       process.exitCode = 1;
     };
-    const exhaustBudget = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
     let value;
     if (path === "rate_limit") {
       value = { resources: { core: { remaining: 0, reset: 0 }, graphql: { remaining: 0, reset: 0 } } };
     } else if (path === "graphql") {
-      if (options.runtimeBudgetOnIssueRead) exhaustBudget();
       if (options.rateLimitOnIssueRead) failRateLimit();
       if (args.some(argument => argument.includes("closingIssuesReferences"))) {
         value = { data: { repository: { pullRequest: {
@@ -179,7 +183,6 @@ function statusContextWithCalls(
     } else if (path.startsWith("repos/openclaw/openclaw/pulls?")) {
       value = recentPulls;
     } else if (path === "repos/openclaw/openclaw/pulls/123") {
-      if (options.runtimeBudgetOnApplyRead) exhaustBudget();
       if (options.rateLimitOnApplyRead) failRateLimit();
       value = { body: options.freshApplyBody ? "Fixes #456" : "No longer linked" };
     } else if (path === "repos/openclaw/openclaw/pulls/900") {
@@ -187,7 +190,6 @@ function statusContextWithCalls(
     } else if (path === "repos/openclaw/openclaw/pulls/901") {
       value = { ...${JSON.stringify(pull(901, "other-current", 456))}, base: { ref: defaultBranch } };
     } else if (path.startsWith("repos/openclaw/openclaw/compare/current...")) {
-      if (options.runtimeBudgetOnContainmentRead) exhaustBudget();
       if (options.rateLimitOnContainmentRead) failRateLimit();
       value = { status: options.mergeCommitReachable === false ? "diverged" : "ahead" };
     } else {
@@ -487,36 +489,78 @@ test("PR implementation closeout accepts a reviewed canonical PR even while the 
 });
 
 test("apply-time PR closeout propagates GitHub runtime budget exhaustion", (t) => {
-  const applyRead = statusContextWithCalls(t, "main", { runtimeBudgetOnApplyRead: true });
-  assert.throws(
-    () =>
-      withGitHubRuntimeBudget({ startedAtMs: Date.now(), maxRuntimeMs: 3000 }, () =>
-        applyRead.context.implementedOnMainPullRequestProvenanceApplyBlock(
-          fixingPullRequestReport(),
-          item({ number: 123, kind: "pull_request" }),
-          "implemented_on_main",
-        ),
-      ),
-    GitHubRuntimeBudgetError,
+  const previousRepo = targetRepo();
+  setTargetRepo("openclaw/openclaw");
+  t.after(() => setTargetRepo(previousRepo));
+  const repo = "repos/openclaw/openclaw";
+  const first = `${repo}/pulls/123`;
+  const last = `${repo}/compare/current...main`;
+  const linkedIssue = {
+    number: 456,
+    state: "OPEN",
+    repository: { nameWithOwner: "openclaw/openclaw" },
+  };
+  const responses = new Map<string, unknown>([
+    [first, { body: "Fixes #456" }],
+    [
+      "graphql",
+      {
+        data: {
+          repository: { pullRequest: { closingIssuesReferences: { nodes: [linkedIssue] } } },
+        },
+      },
+    ],
+    [repo, { default_branch: "main" }],
+    [`${repo}/pulls/900`, pull(900, "current", 456)],
+  ]);
+  const root = mkdtempSync(join(tmpdir(), "closeout-budget-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const [route, value] of responses) {
+    const file = join(root, route + ".json");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(value));
+  }
+  // Each request still dispatches a real CLI under the shared deadline.
+  // Use Git's bundled shell on Windows.
+  const script = join(root, "read.sh");
+  writeFileSync(
+    script,
+    `set -eu
+cd "$1"
+route=$3
+printf '%s\\n' "$route" >> paths
+read -r stalled < stalled
+if [ "$route" = "$stalled" ]; then exec sleep 5; fi
+exec cat "./$route.json"
+`,
   );
-  assert.deepEqual(applyRead.calls(), ["repos/openclaw/openclaw/pulls/123"]);
-
-  const canonicalPull = statusContextWithCalls(t, "main", {
-    freshApplyBody: true,
-    runtimeBudgetOnContainmentRead: true,
+  const command =
+    process.platform === "win32"
+      ? {
+          GH_BIN: "git",
+          GH_BIN_ARGS: JSON.stringify(["-c", "alias.fixture=!sh", "fixture", script, root]),
+        }
+      : { GH_BIN: "/bin/sh", GH_BIN_ARGS: JSON.stringify([script, root]) };
+  withGhCommand(command, () => {
+    for (const stalled of [first, last]) {
+      writeFileSync(join(root, "stalled"), stalled + "\n");
+      writeFileSync(join(root, "paths"), "");
+      const context = createStatusContext();
+      assert.throws(
+        () =>
+          withGitHubRuntimeBudget({ startedAtMs: Date.now(), maxRuntimeMs: 3000 }, () =>
+            context.implementedOnMainPullRequestProvenanceApplyBlock(
+              fixingPullRequestReport(),
+              item({ number: 123, kind: "pull_request" }),
+              "implemented_on_main",
+            ),
+          ),
+        GitHubRuntimeBudgetError,
+      );
+      const calls = readFileSync(join(root, "paths"), "utf8").trim().split("\n");
+      assert.deepEqual(calls, stalled === first ? [first] : [...responses.keys(), last]);
+    }
   });
-  assert.throws(
-    () =>
-      withGitHubRuntimeBudget({ startedAtMs: Date.now(), maxRuntimeMs: 3000 }, () =>
-        canonicalPull.context.implementedOnMainPullRequestProvenanceApplyBlock(
-          fixingPullRequestReport(),
-          item({ number: 123, kind: "pull_request" }),
-          "implemented_on_main",
-        ),
-      ),
-    GitHubRuntimeBudgetError,
-  );
-  assert.equal(canonicalPull.calls().at(-1), "repos/openclaw/openclaw/compare/current...main");
 });
 
 test("apply-time PR closeout accepts the merged canonical PR's formal relationship to a still-open issue", (t) => {

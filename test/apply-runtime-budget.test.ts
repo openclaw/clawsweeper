@@ -29,6 +29,7 @@ import {
   tmpPrefix,
   withMockCodexProof,
   withMockGh,
+  withHangingGh,
 } from "./helpers.ts";
 
 function runtimeBudgetFixture(number: number) {
@@ -68,12 +69,13 @@ const applyRuntimeClockPreload = `
 const { appendFileSync, existsSync, readFileSync } = require("node:fs");
 const { join, resolve } = require("node:path");
 const state = JSON.parse(readFileSync(join(__dirname, "runtime-clock.json"), "utf8"));
+// Concurrent gh dispatches receive absolute deadlines from the apply process.
+// Every process using this fixture must compare them against the same clock.
+Date.now = () => state.laterMs !== undefined && existsSync(state.laterAfterPath)
+  ? state.laterMs
+  : state.startedAtMs;
 if (process.argv[2] === "apply-decisions" &&
     resolve(process.argv[1] || "") === state.entrypoint) {
-  // The apply clock jumps to laterMs once the laterAfterPath marker exists.
-  Date.now = () => state.laterMs !== undefined && existsSync(state.laterAfterPath)
-    ? state.laterMs
-    : state.startedAtMs;
   Atomics.wait = (_array, _index, _value, milliseconds) => {
     appendFileSync(state.sleepTracePath, JSON.stringify({ event: "wait", milliseconds }) + "\\n");
     throw new Error("apply attempted an unnecessary synchronous wait");
@@ -167,45 +169,37 @@ test("apply-decisions exits cleanly at an expired token deadline and retries the
   const invocationLog = join(fixture.root, "gh-invocations.log");
   const originalDeadline = process.env.CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS;
   try {
-    withMockGh(
-      fixture.root,
-      `
-const { appendFileSync } = require("node:fs");
-appendFileSync(${JSON.stringify(invocationLog)}, "attempted\\n");
-setTimeout(() => {}, 10_000);
-`,
-      () => {
-        process.env.CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS = String(Date.now() - 1);
-        runApplyDecisionsForTest({
-          ...fixture,
-          extraArgs: ["--cursor-trace", fixture.cursorTracePath],
-        });
-        const stoppedReport = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
-        assert.deepEqual(
-          stoppedReport.map((entry: { number: number; action: string }) => [
-            entry.number,
-            entry.action,
-          ]),
-          [[0, "skipped_runtime_budget"]],
-        );
-        assert.match(stoppedReport[0]?.reason ?? "", /^apply token budget reached/);
-        assert.deepEqual(JSON.parse(readFileSync(fixture.cursorTracePath, "utf8")), {
-          schema_version: 1,
-          examined_item_numbers: [],
-        });
-        assert.equal(existsSync(invocationLog), false, "expired token attempted a GitHub call");
-        assert.equal(existsSync(join(fixture.itemsDir, "728.md")), true);
+    withHangingGh(fixture.root, invocationLog, () => {
+      process.env.CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS = String(Date.now() - 1);
+      runApplyDecisionsForTest({
+        ...fixture,
+        extraArgs: ["--cursor-trace", fixture.cursorTracePath],
+      });
+      const stoppedReport = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
+      assert.deepEqual(
+        stoppedReport.map((entry: { number: number; action: string }) => [
+          entry.number,
+          entry.action,
+        ]),
+        [[0, "skipped_runtime_budget"]],
+      );
+      assert.match(stoppedReport[0]?.reason ?? "", /^apply token budget reached/);
+      assert.deepEqual(JSON.parse(readFileSync(fixture.cursorTracePath, "utf8")), {
+        schema_version: 1,
+        examined_item_numbers: [],
+      });
+      assert.equal(existsSync(invocationLog), false, "expired token attempted a GitHub call");
+      assert.equal(existsSync(join(fixture.itemsDir, "728.md")), true);
 
-        process.env.CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS = String(Date.now() + 30_000);
-        runApplyDecisionsForTest({
-          ...fixture,
-          extraArgs: ["--max-runtime-ms", "2200", "--cursor-trace", fixture.cursorTracePath],
-        });
-        assert.match(readFileSync(invocationLog, "utf8"), /attempted/);
-        assertRuntimeYield(fixture, 2_200);
-        assert.equal(existsSync(join(fixture.itemsDir, "728.md")), true);
-      },
-    );
+      process.env.CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS = String(Date.now() + 30_000);
+      runApplyDecisionsForTest({
+        ...fixture,
+        extraArgs: ["--max-runtime-ms", "2200", "--cursor-trace", fixture.cursorTracePath],
+      });
+      assert.match(readFileSync(invocationLog, "utf8"), /attempted/);
+      assertRuntimeYield(fixture, 2_200);
+      assert.equal(existsSync(join(fixture.itemsDir, "728.md")), true);
+    });
   } finally {
     if (originalDeadline === undefined) delete process.env.CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS;
     else process.env.CLAWSWEEPER_APPLY_TOKEN_DEADLINE_MS = originalDeadline;
