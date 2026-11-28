@@ -3937,21 +3937,21 @@ function projectReviewCoverageFleet(
     !inventory.items
   )
     return result;
-  if (
-    inventory.items.some(
-      (item) =>
-        !reviewCoverageRecordExcluded(item.labels) && records?.get(item.number)?.unavailable,
-    )
-  ) {
-    result.coverage_status = "unknown";
-    result.reason = "canonical_evidence_unavailable";
-    return result;
+  if (records?.size) {
+    if (
+      inventory.items.some(
+        (item) =>
+          !reviewCoverageRecordExcluded(item.labels) && records.get(item.number)?.unavailable,
+      )
+    ) {
+      result.coverage_status = "unknown";
+      result.reason = "canonical_evidence_unavailable";
+      return result;
+    }
+    const openNumbers = new Set<number>();
+    for (const item of inventory.items) openNumbers.add(item.number);
+    result.record_drift = [...records.keys()].filter((number) => !openNumbers.has(number)).length;
   }
-  const openNumbers = new Set<number>();
-  for (const item of inventory.items) openNumbers.add(item.number);
-  result.record_drift = [...(records?.keys() ?? [])].filter(
-    (number) => !openNumbers.has(number),
-  ).length;
   for (const item of inventory.items) {
     if (reviewCoverageRecordExcluded(item.labels)) continue;
     const record = records?.get(item.number);

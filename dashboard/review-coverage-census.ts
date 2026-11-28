@@ -118,6 +118,9 @@ export class ReviewCoverageCensusStore {
       "CREATE INDEX IF NOT EXISTS coverage_census_items_slot ON coverage_census_items(slot,repo,generation)",
     );
     storage.sql.exec(
+      "CREATE INDEX IF NOT EXISTS coverage_census_items_usage ON coverage_census_items(slot,bytes)",
+    );
+    storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS coverage_census_cursors (repo TEXT NOT NULL, generation TEXT NOT NULL, pass INTEGER NOT NULL, kind TEXT NOT NULL, cursor TEXT NOT NULL, PRIMARY KEY(repo,generation,pass,kind,cursor))",
     );
     storage.sql.exec(
