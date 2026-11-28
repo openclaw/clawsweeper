@@ -6,12 +6,15 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
+import { mockCommandBinEnv } from "./mock-command-bin-env.ts";
 
 import { reviewPromptForTest } from "../dist/clawsweeper.js";
 import { frontMatterValue, reportWithoutReviewRecord } from "../dist/report-front-matter.js";
 import { reviewRecordFrontMatterLine } from "../dist/review-record.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
 import { reviewDecisionParser } from "../dist/clawsweeper-decision-parser.js";
+
+export { mockCommandBinEnv };
 
 export const tmpPrefix = join(tmpdir(), "clawsweeper-test-");
 export const emptyReviewedPrActivityCursor =
@@ -1486,20 +1489,6 @@ export function withMockGh(root: string, script: string, run: () => void): void 
     if (originalGhBinArgs === undefined) delete process.env.GH_BIN_ARGS;
     else process.env.GH_BIN_ARGS = originalGhBinArgs;
   }
-}
-
-export function mockCommandBinEnv(command: string, commandPath: string): NodeJS.ProcessEnv {
-  const key = command.replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
-  // Strip V8 coverage before Node starts the synthetic CLI. Its caller may
-  // time out while Node is flushing a profile, including during raw receipt reads.
-  const launcher =
-    process.platform === "win32"
-      ? { file: process.execPath, args: [commandPath] }
-      : { file: "/usr/bin/env", args: ["-u", "NODE_V8_COVERAGE", process.execPath, commandPath] };
-  return {
-    [`${key}_BIN`]: launcher.file,
-    [`${key}_BIN_ARGS`]: JSON.stringify(launcher.args),
-  };
 }
 
 export function mockGhBinEnv(ghPath: string, binDir?: string): NodeJS.ProcessEnv {
