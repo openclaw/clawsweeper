@@ -6,12 +6,15 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
+import { mockCommandBinEnv } from "./mock-command-bin-env.ts";
 
 import { reviewPromptForTest } from "../dist/clawsweeper.js";
 import { frontMatterValue, reportWithoutReviewRecord } from "../dist/report-front-matter.js";
 import { reviewRecordFrontMatterLine } from "../dist/review-record.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
 import { reviewDecisionParser } from "../dist/clawsweeper-decision-parser.js";
+
+export { mockCommandBinEnv };
 
 export const tmpPrefix = join(tmpdir(), "clawsweeper-test-");
 export const emptyReviewedPrActivityCursor =
@@ -1488,24 +1491,9 @@ export function withMockGh(root: string, script: string, run: () => void): void 
   }
 }
 
-export function mockCommandBinEnv(command: string, commandPath: string): NodeJS.ProcessEnv {
-  const key = command.replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
-  return {
-    [`${key}_BIN`]: process.execPath,
-    [`${key}_BIN_ARGS`]: JSON.stringify([commandPath]),
-  };
-}
-
 export function mockGhBinEnv(ghPath: string, binDir?: string): NodeJS.ProcessEnv {
-  // These scripts simulate the external CLI, not ClawSweeper. A deadline can
-  // interrupt Node's profile write and poison the real workers' coverage report.
   return {
-    ...(process.platform === "win32"
-      ? mockCommandBinEnv("gh", ghPath)
-      : {
-          GH_BIN: "/usr/bin/env",
-          GH_BIN_ARGS: JSON.stringify(["-u", "NODE_V8_COVERAGE", process.execPath, ghPath]),
-        }),
+    ...mockCommandBinEnv("gh", ghPath),
     ...(binDir ? { PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}` } : {}),
   };
 }

@@ -3,16 +3,17 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runText } from "../../dist/command.js";
-import { mockGhBinEnv, withMockGh } from "../../test/helpers.ts";
+import { rawGitHubJsonRead } from "../../dist/github-raw-json-read.js";
+import { mockCommandBinEnv, mockGhBinEnv, withMockGh } from "../../test/helpers.ts";
 
 const root = mkdtempSync(join(tmpdir(), "clawsweeper-fixture-coverage-"));
 const coverage = join(root, "coverage");
 const gh = join(root, "gh.cjs");
 const originalCoverage = process.env.NODE_V8_COVERAGE;
 const args = ["api", "space value", "a&b", 'quote"value', "tail\\"];
-const fixture = `process.stdout.write(JSON.stringify({
-  args: process.argv.slice(2), coverage: process.env.NODE_V8_COVERAGE ?? null
-}));\n`;
+const fixture = `const args = process.argv.slice(2);
+if (args.includes("--url")) process.stdout.write("HTTP/1.1 200 OK\\r\\n\\r\\n");
+process.stdout.write(JSON.stringify({ args, coverage: process.env.NODE_V8_COVERAGE ?? null }));\n`;
 
 try {
   mkdirSync(coverage);
@@ -23,6 +24,22 @@ try {
   withMockGh(root, fixture, () => {
     assert.deepEqual(JSON.parse(runText("gh", args)), expected);
   });
+  const endpoint = "repos/openclaw/openclaw/issues/comments/42";
+  const receipt = JSON.parse(
+    rawGitHubJsonRead(
+      ["api", endpoint],
+      {
+        ...process.env,
+        GH_HOST: "github.com",
+        GH_CONFIG_DIR: root,
+        GH_TOKEN: "fixture-only",
+        ...mockCommandBinEnv("curl", gh),
+      },
+      5_000,
+    ),
+  );
+  assert.equal(receipt.args.at(-1), `https://api.github.com/${endpoint}`);
+  assert.equal(receipt.coverage, expected.coverage, "synthetic curl receipt inherited coverage");
   assert.equal(process.env.NODE_V8_COVERAGE, coverage);
   const fixtureProfiles = readdirSync(coverage).length;
   if (process.platform !== "win32") assert.equal(fixtureProfiles, 0);
@@ -68,7 +85,7 @@ try {
       attempts,
       interrupted,
       result: "passed",
-      limits: "Shared GitHub CLI stand-ins on POSIX only; other fixture launchers are unchanged.",
+      limits: "Shared synthetic command fixtures on POSIX.",
     }),
   );
 } finally {
