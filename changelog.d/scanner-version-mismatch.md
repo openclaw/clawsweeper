@@ -1,0 +1,1 @@
+- Reject a mismatched review scanner version before running the installation smoke check or publishing the archive.

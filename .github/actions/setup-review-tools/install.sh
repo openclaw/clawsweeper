@@ -43,7 +43,10 @@ tar -xzf "$review_tools_root/archive.tar.gz" -C "$review_tools_root/bin" truffle
 chmod 700 "$review_tools_root/bin/trufflehog"
 export PATH="$review_tools_root/bin:$PATH"
 version="$(env -i HOME="$review_tools_root" "$review_tools_root/bin/trufflehog" --version 2>&1)"
-[[ "$version" == "trufflehog 3.99.4" ]]
+if [[ "$version" != "trufflehog 3.99.4" ]]; then
+  echo "Trusted review scanner version mismatch." >&2
+  exit 1
+fi
 printf 'A harmless review scanner installation check.\n' > "$review_tools_root/smoke/clean.txt"
 chmod 600 "$review_tools_root/smoke/clean.txt"
 if ! env -i HOME="$review_tools_root" TMPDIR="$review_tools_root" \
