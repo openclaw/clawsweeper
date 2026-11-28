@@ -28,6 +28,82 @@ import {
 import { ExactReviewReviewLoopStore } from "../dashboard/exact-review-review-loop.ts";
 import { isExplicitReviewRequest } from "../src/maintainer-review-policy.ts";
 
+test("only new lifecycle facts advance the projection timestamp", (t) => {
+  const target = "openclaw/openclaw#71";
+  const identity = { canonicalTargetKey: target, fenceKey: target, revision: 1 };
+  const address = { statusMarker: "review-status", statusCommentId: 71 };
+  const claim = { claimGeneration: 1, runId: "1071", runAttempt: 1 };
+  const lifecycle = new ExactReviewLifecycleProjectionStore(new MemoryDurableStorage());
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  lifecycle.recordAdmission({
+    ...identity,
+    ...address,
+    deliveryId: "review-command",
+    sourceAction: "manual_explicit_review",
+    commandOriginated: true,
+    observedAt: now,
+  });
+
+  const read = () => lifecycle.read(target, target, 1)!;
+  const checkReplay = (record: (observedAt: number) => void) => {
+    record(++now);
+    const first = read();
+    assert.equal(first.updatedAt, now);
+    record(++now);
+    assert.deepEqual(read(), first);
+  };
+  checkReplay((observedAt) => lifecycle.recordClaim({ ...identity, ...claim, observedAt }));
+  checkReplay((observedAt) =>
+    lifecycle.recordReviewResult({ ...identity, ...claim, outcome: "completed", observedAt }),
+  );
+  checkReplay((observedAt) =>
+    lifecycle.recordGithubEffect({
+      ...identity,
+      commentId: 72,
+      digest: "a".repeat(64),
+      observedAt,
+    }),
+  );
+  checkReplay((observedAt) =>
+    lifecycle.recordCanonicalReceipt({
+      ...identity,
+      receiptId: "canonical",
+      outcome: "accepted",
+      observedAt,
+    }),
+  );
+  checkReplay((observedAt) =>
+    lifecycle.recordRouterReceipt({
+      ...identity,
+      receiptId: "router",
+      outcome: "durable",
+      observedAt,
+    }),
+  );
+  const terminal = { ...identity, kind: "review_completed_routed" as const };
+  checkReplay((observedAt) => lifecycle.recordTerminalDisposition({ ...terminal, observedAt }));
+  // A new operation ID is a new fact even when the terminal kind already matches.
+  checkReplay((observedAt) =>
+    lifecycle.recordTerminalDisposition({ ...terminal, operationId: "completion", observedAt }),
+  );
+  assert.equal(
+    lifecycle.authorizeCommandAcknowledgement({ ...identity, ...address, observedAt: ++now })
+      .allowed,
+    true,
+  );
+  checkReplay((observedAt) => {
+    const receipt = lifecycle.observeCommandAcknowledgement({
+      ...identity,
+      ...address,
+      commandCommentId: 70,
+      completionCommentId: 71,
+      observedAt,
+    });
+    assert.equal(receipt.accepted, true);
+  });
+});
+
 test("early policy no-op workflow completion finishes the queue and Bay lifecycle without publication", async () => {
   const storage = new MemoryDurableStorage();
   const leased = leasedExactReviewQueueItem(42, "420");

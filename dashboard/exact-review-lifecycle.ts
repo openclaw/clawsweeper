@@ -375,7 +375,7 @@ export class ExactReviewLifecycleProjectionStore {
       terminalDisposition: null,
       updatedAt: input.observedAt,
     };
-    this.writeSync(projection);
+    this.writeSync(projection, input.observedAt);
     return projection;
   }
 
@@ -392,7 +392,7 @@ export class ExactReviewLifecycleProjectionStore {
     if (input.runAttempt !== null && !positiveInteger(input.runAttempt)) {
       throw new Error("invalid lifecycle claim attempt");
     }
-    return this.mutate(input, (projection) => {
+    return this.withProjection(input, (projection) => {
       const fact: LifecycleClaimFact = {
         fenceKey: input.fenceKey,
         claimGeneration: input.claimGeneration,
@@ -401,7 +401,10 @@ export class ExactReviewLifecycleProjectionStore {
         claimedAt: input.observedAt,
       };
       const existing = projection.claims.find((candidate) => sameClaim(candidate, fact));
-      if (!existing) projection.claims.push(fact);
+      if (!existing) {
+        projection.claims.push(fact);
+        this.writeSync(projection);
+      }
       return projection;
     });
   }
@@ -421,7 +424,7 @@ export class ExactReviewLifecycleProjectionStore {
     requirePresent = false,
   ) {
     this.validateIdentity(input);
-    return this.mutate<ExactReviewLifecycleProjection | null>(
+    return this.withProjection<ExactReviewLifecycleProjection | null>(
       input,
       (projection) => {
         // Legacy leases without admission rows have no lifecycle metadata to validate.
@@ -442,10 +445,12 @@ export class ExactReviewLifecycleProjectionStore {
         const existing = projection.reviewResults.find((candidate) =>
           sameReviewResult(candidate, fact),
         );
-        if (!existing) projection.reviewResults.push(fact);
+        if (!existing) {
+          projection.reviewResults.push(fact);
+          this.writeSync(projection);
+        }
         return projection;
       },
-      true,
       requirePresent ? undefined : () => null,
     );
   }
@@ -461,7 +466,7 @@ export class ExactReviewLifecycleProjectionStore {
     if (!positiveInteger(input.commentId) || !/^[0-9a-f]{64}$/.test(input.digest)) {
       throw new Error("invalid lifecycle GitHub effect");
     }
-    return this.mutate(input, (projection) => {
+    return this.withProjection(input, (projection) => {
       const next = {
         commentId: input.commentId,
         digest: input.digest,
@@ -474,7 +479,10 @@ export class ExactReviewLifecycleProjectionStore {
       ) {
         throw new Error("conflicting lifecycle GitHub effect");
       }
-      projection.githubEffect ??= next;
+      if (!projection.githubEffect) {
+        projection.githubEffect = next;
+        this.writeSync(projection);
+      }
       return projection;
     });
   }
@@ -488,7 +496,7 @@ export class ExactReviewLifecycleProjectionStore {
   ) {
     this.validateIdentity(input);
     if (!validText(input.receiptId, 1, 300)) throw new Error("invalid lifecycle canonical receipt");
-    return this.mutate(input, (projection) => {
+    return this.withProjection(input, (projection) => {
       const existing = projection.canonicalReceipts.find(
         (candidate) => candidate.receiptId === input.receiptId,
       );
@@ -501,6 +509,7 @@ export class ExactReviewLifecycleProjectionStore {
           receiptId: input.receiptId,
           observedAt: input.observedAt,
         });
+        this.writeSync(projection);
       }
       return projection;
     });
@@ -572,7 +581,7 @@ export class ExactReviewLifecycleProjectionStore {
     if (input.operationId !== undefined && !validText(input.operationId, 1, 300)) {
       throw new Error("invalid lifecycle terminal operation id");
     }
-    return this.mutateIdempotentlySync(input, (projection) => {
+    const result = this.mutateIdempotentlySync(input, (projection) => {
       if (input.operationId) {
         const operation = projection.terminalOperationIds.find(
           (entry) => entry.operationId === input.operationId,
@@ -583,6 +592,8 @@ export class ExactReviewLifecycleProjectionStore {
           }
           return true;
         }
+      } else if (projection.terminalDisposition?.kind === input.kind) {
+        return true;
       }
       const terminal = applyTerminalDisposition(projection, input);
       if (input.operationId) {
@@ -590,6 +601,8 @@ export class ExactReviewLifecycleProjectionStore {
       }
       return false;
     });
+    // Without an operation ID the queue still reconciles its finalization work.
+    return { projection: result.projection, duplicate: !!input.operationId && result.duplicate };
   }
 
   cancelParkedCommandClosureSync(input: ProjectionIdentity & { observedAt: number }) {
@@ -626,58 +639,53 @@ export class ExactReviewLifecycleProjectionStore {
   ) {
     this.validateIdentity(input);
     validateAcknowledgementAddress(input.statusMarker, input.statusCommentId);
-    return this.mutate(
-      input,
-      (projection) => {
-        const lifecycle = lifecycleState(projection);
-        const acknowledgement = commandAcknowledgementState(projection);
-        if (acknowledgement !== "pending") {
-          return { projection, allowed: false, lifecycle, acknowledgement, attemptId: null };
-        }
+    return this.withProjection(input, (projection) => {
+      const lifecycle = lifecycleState(projection);
+      const acknowledgement = commandAcknowledgementState(projection);
+      if (acknowledgement !== "pending") {
+        return { projection, allowed: false, lifecycle, acknowledgement, attemptId: null };
+      }
+      if (
+        projection.admission.statusMarker !== input.statusMarker ||
+        projection.admission.statusCommentId !== input.statusCommentId
+      ) {
+        return { projection, allowed: false, lifecycle, acknowledgement, attemptId: null };
+      }
+      for (const attempt of projection.acknowledgement.attempts) {
         if (
-          projection.admission.statusMarker !== input.statusMarker ||
-          projection.admission.statusCommentId !== input.statusCommentId
+          attempt.failedAt === undefined &&
+          attempt.expiredAt === undefined &&
+          attempt.terminalSkip === undefined &&
+          input.observedAt - attempt.attemptedAt >= EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS
         ) {
-          return { projection, allowed: false, lifecycle, acknowledgement, attemptId: null };
+          attempt.expiredAt = input.observedAt;
         }
-        for (const attempt of projection.acknowledgement.attempts) {
-          if (
-            attempt.failedAt === undefined &&
-            attempt.expiredAt === undefined &&
-            attempt.terminalSkip === undefined &&
-            input.observedAt - attempt.attemptedAt >= EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS
-          ) {
-            attempt.expiredAt = input.observedAt;
-          }
-        }
-        const activeAttempt = projection.acknowledgement.attempts.some(
-          (attempt) =>
-            attempt.failedAt === undefined &&
-            attempt.expiredAt === undefined &&
-            attempt.terminalSkip === undefined,
-        );
-        if (activeAttempt) {
-          return { projection, allowed: false, lifecycle, acknowledgement, attemptId: null };
-        }
-        const attemptId = `ack:${projection.acknowledgement.attempts.length + 1}`;
-        projection.acknowledgement.attempts.push({
-          attemptId,
-          statusMarker: input.statusMarker,
-          statusCommentId: input.statusCommentId,
-          attemptedAt: input.observedAt,
-        });
-        projection.updatedAt = input.observedAt;
-        this.writeSync(projection);
-        return {
-          projection,
-          allowed: true,
-          lifecycle,
-          acknowledgement,
-          attemptId,
-        };
-      },
-      false,
-    );
+      }
+      const activeAttempt = projection.acknowledgement.attempts.some(
+        (attempt) =>
+          attempt.failedAt === undefined &&
+          attempt.expiredAt === undefined &&
+          attempt.terminalSkip === undefined,
+      );
+      if (activeAttempt) {
+        return { projection, allowed: false, lifecycle, acknowledgement, attemptId: null };
+      }
+      const attemptId = `ack:${projection.acknowledgement.attempts.length + 1}`;
+      projection.acknowledgement.attempts.push({
+        attemptId,
+        statusMarker: input.statusMarker,
+        statusCommentId: input.statusCommentId,
+        attemptedAt: input.observedAt,
+      });
+      this.writeSync(projection, input.observedAt);
+      return {
+        projection,
+        allowed: true,
+        lifecycle,
+        acknowledgement,
+        attemptId,
+      };
+    });
   }
 
   recordCommandAcknowledgementFailure(
@@ -692,30 +700,25 @@ export class ExactReviewLifecycleProjectionStore {
     if (!/^ack:[1-9]\d*$/.test(input.attemptId))
       throw new Error("invalid lifecycle acknowledgement attempt");
     validateAcknowledgementAddress(input.statusMarker, input.statusCommentId);
-    return this.mutate(
-      input,
-      (projection) => {
-        const attempt = [...projection.acknowledgement.attempts]
-          .reverse()
-          .find(
-            (candidate) =>
-              candidate.failedAt === undefined &&
-              candidate.expiredAt === undefined &&
-              candidate.terminalSkip === undefined &&
-              candidate.attemptId === input.attemptId &&
-              candidate.statusMarker === input.statusMarker &&
-              candidate.statusCommentId === input.statusCommentId,
-          );
-        if (!attempt || projection.acknowledgement.observed) {
-          return { projection, released: false };
-        }
-        attempt.failedAt = input.observedAt;
-        projection.updatedAt = input.observedAt;
-        this.writeSync(projection);
-        return { projection, released: true };
-      },
-      false,
-    );
+    return this.withProjection(input, (projection) => {
+      const attempt = [...projection.acknowledgement.attempts]
+        .reverse()
+        .find(
+          (candidate) =>
+            candidate.failedAt === undefined &&
+            candidate.expiredAt === undefined &&
+            candidate.terminalSkip === undefined &&
+            candidate.attemptId === input.attemptId &&
+            candidate.statusMarker === input.statusMarker &&
+            candidate.statusCommentId === input.statusCommentId,
+        );
+      if (!attempt || projection.acknowledgement.observed) {
+        return { projection, released: false };
+      }
+      attempt.failedAt = input.observedAt;
+      this.writeSync(projection, input.observedAt);
+      return { projection, released: true };
+    });
   }
 
   recordCommandAcknowledgementTerminalSkip(
@@ -733,36 +736,31 @@ export class ExactReviewLifecycleProjectionStore {
     if (!COMMAND_ACKNOWLEDGEMENT_TERMINAL_SKIP_REASONS.includes(input.reason))
       throw new Error("invalid lifecycle acknowledgement terminal skip reason");
     validateAcknowledgementAddress(input.statusMarker, input.statusCommentId);
-    return this.mutate(
-      input,
-      (projection) => {
-        const attempt = [...projection.acknowledgement.attempts]
-          .reverse()
-          .find(
-            (candidate) =>
-              candidate.attemptId === input.attemptId &&
-              candidate.statusMarker === input.statusMarker &&
-              candidate.statusCommentId === input.statusCommentId,
-          );
-        if (!attempt || projection.acknowledgement.observed) {
-          return { projection, skipped: false };
-        }
-        if (attempt.terminalSkip) {
-          return {
-            projection,
-            skipped: attempt.terminalSkip.reason === input.reason,
-          };
-        }
-        if (attempt.failedAt !== undefined || attempt.expiredAt !== undefined) {
-          return { projection, skipped: false };
-        }
-        attempt.terminalSkip = { reason: input.reason, observedAt: input.observedAt };
-        projection.updatedAt = input.observedAt;
-        this.writeSync(projection);
-        return { projection, skipped: true };
-      },
-      false,
-    );
+    return this.withProjection(input, (projection) => {
+      const attempt = [...projection.acknowledgement.attempts]
+        .reverse()
+        .find(
+          (candidate) =>
+            candidate.attemptId === input.attemptId &&
+            candidate.statusMarker === input.statusMarker &&
+            candidate.statusCommentId === input.statusCommentId,
+        );
+      if (!attempt || projection.acknowledgement.observed) {
+        return { projection, skipped: false };
+      }
+      if (attempt.terminalSkip) {
+        return {
+          projection,
+          skipped: attempt.terminalSkip.reason === input.reason,
+        };
+      }
+      if (attempt.failedAt !== undefined || attempt.expiredAt !== undefined) {
+        return { projection, skipped: false };
+      }
+      attempt.terminalSkip = { reason: input.reason, observedAt: input.observedAt };
+      this.writeSync(projection, input.observedAt);
+      return { projection, skipped: true };
+    });
   }
 
   observeCommandAcknowledgement(input: {
@@ -862,9 +860,10 @@ export class ExactReviewLifecycleProjectionStore {
         ) {
           throw new Error("conflicting lifecycle acknowledgement receipt");
         }
-        projection.acknowledgement.observed ??= observed;
-        projection.updatedAt = input.observedAt;
-        this.writeSync(projection);
+        if (!projection.acknowledgement.observed) {
+          projection.acknowledgement.observed = observed;
+          this.writeSync(projection, input.observedAt);
+        }
         return {
           accepted: true,
           projection,
@@ -1168,21 +1167,17 @@ export class ExactReviewLifecycleProjectionStore {
     };
   }
 
-  private mutate<T>(
+  private withProjection<T>(
     input: ProjectionIdentity,
     apply: (projection: ExactReviewLifecycleProjection) => T,
-    writeResult = true,
     onMissing?: () => T,
   ): T {
-    return this.storage.transactionSync(() =>
-      this.mutateSync(input, apply, writeResult, onMissing),
-    );
+    return this.storage.transactionSync(() => this.withProjectionSync(input, apply, onMissing));
   }
 
-  private mutateSync<T>(
+  private withProjectionSync<T>(
     input: ProjectionIdentity,
     apply: (projection: ExactReviewLifecycleProjection) => T,
-    writeResult = true,
     onMissing?: () => T,
   ): T {
     this.ensureSchemaSync();
@@ -1192,28 +1187,18 @@ export class ExactReviewLifecycleProjectionStore {
       throw new Error("missing lifecycle admission fact");
     }
     this.assertIdentity(projection, input);
-    const result = apply(projection);
-    if (writeResult) {
-      projection.updatedAt = Date.now();
-      this.writeSync(projection);
-    }
-    return result;
+    return apply(projection);
   }
 
   private mutateIdempotentlySync(
     input: ProjectionIdentity,
     apply: (projection: ExactReviewLifecycleProjection) => boolean,
   ) {
-    this.ensureSchemaSync();
-    const projection = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
-    if (!projection) throw new Error("missing lifecycle admission fact");
-    this.assertIdentity(projection, input);
-    const duplicate = apply(projection);
-    if (!duplicate) {
-      projection.updatedAt = Date.now();
-      this.writeSync(projection);
-    }
-    return { projection, duplicate };
+    return this.withProjectionSync(input, (projection) => {
+      const duplicate = apply(projection);
+      if (!duplicate) this.writeSync(projection);
+      return { projection, duplicate };
+    });
   }
 
   private readSync(canonicalTargetKey: string, fenceKey: string, revision: number) {
@@ -1229,7 +1214,8 @@ export class ExactReviewLifecycleProjectionStore {
     return row ? projectionFromRow(String(row.projection_json || "")) : null;
   }
 
-  private writeSync(projection: ExactReviewLifecycleProjection) {
+  private writeSync(projection: ExactReviewLifecycleProjection, updatedAt = Date.now()) {
+    projection.updatedAt = updatedAt;
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
          (canonical_target_key, revision, fence_key, projection_json, updated_at)
