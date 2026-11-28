@@ -216,6 +216,42 @@ test("unsponsored feature issue proposals emit source-bound trusted close marker
   assert.doesNotMatch(markers, /needs-human/);
 });
 
+test("an unsponsored feature review describes the recorded archive outcome", () => {
+  const reason = "unsponsored_feature_request";
+  for (const action of ["skipped_protected_label", "proposed_close", "closed"]) {
+    const report = withReviewRecord(
+      reportFrontMatter({
+        type: "issue",
+        number: 321,
+        decision: "close",
+        close_reason: reason,
+        action_taken: action,
+      }),
+      {
+        decision: "close",
+        closeReason: reason,
+        summary: "A maintainer needs to confirm the requested behavior.",
+      },
+    );
+    const comment = renderReviewCommentFromReport(report, reason);
+    assert.match(comment, /A maintainer needs to confirm the requested behavior/);
+    if (action === "closed") {
+      assert.match(comment, /reopen this issue/i);
+    } else {
+      assert.doesNotMatch(
+        comment,
+        /parking it in the idea archive|idea is parked|reopen this issue/i,
+      );
+      assert.match(
+        comment,
+        action === "skipped_protected_label"
+          ? /protected label kept this issue open/i
+          : /recommends archiving/i,
+      );
+    }
+  }
+});
+
 test("protected labels and maintainer authorship exclude unsolicited planning", () => {
   assert.deepEqual(protectedLabels(["Security", "bug", "maintainer", "SECURITY"]), [
     "security",
